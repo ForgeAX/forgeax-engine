@@ -14,11 +14,26 @@
   "forgeax": {
     "smokeInvocation": "pnpm --filter @forgeax/hello-format-tier1 build",
     "metrics": {
-      "bundle-size": { "enabled": false, "reason": "Evidence producer UI is not a shipped engine bundle." },
-      "fps": { "enabled": false, "reason": "Visual evidence is correctness-focused; no performance claim is made." },
-      "bench": { "enabled": false, "reason": "The producer has no benchmark surface." },
-      "gate": { "enabled": true, "command": "pnpm --filter @forgeax/hello-format-tier1 build" },
-      "spike-report": { "enabled": false, "reason": "This is a feature-owned evidence producer, not a spike." }
+      "bundle-size": {
+        "enabled": false,
+        "reason": "Evidence producer UI is not a shipped engine bundle."
+      },
+      "fps": {
+        "enabled": false,
+        "reason": "Visual evidence is correctness-focused; no performance claim is made."
+      },
+      "bench": {
+        "enabled": false,
+        "reason": "The producer has no benchmark surface."
+      },
+      "gate": {
+        "enabled": true,
+        "command": "pnpm --filter @forgeax/hello-format-tier1 build"
+      },
+      "spike-report": {
+        "enabled": false,
+        "reason": "This is a feature-owned evidence producer, not a spike."
+      }
     }
   },
   "dependencies": {
@@ -28,7 +43,8 @@
     "@forgeax/engine-pack": "workspace:*",
     "@forgeax/engine-render": "workspace:*",
     "@forgeax/engine-runtime": "workspace:*",
-    "@forgeax/engine-types": "workspace:*"
+    "@forgeax/engine-types": "workspace:*",
+    "@forgeax/engine-scene": "workspace:*"
   },
   "devDependencies": {
     "@forgeax/apps-shared": "workspace:*",

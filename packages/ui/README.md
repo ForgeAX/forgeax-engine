@@ -28,14 +28,21 @@ if (!checked.ok) return emitJson(checked.error.detail.diagnostics);
 Use `checked.value.category` (`native`, `normalizable`, or `runtime-bound`) and `checked.value.diagnostics` as the machine-readable authoring result. The source strings are returned byte-for-byte unchanged.
 
 ```ts
-import { mountUi } from '@forgeax/engine-ui';
+import { mountUi, uiAssetContribution } from '@forgeax/engine-ui';
 
-const loaded = assets.loadByGuid<UiAsset>(HUD_GUID);
+const decoder = assets.installDecoder(uiAssetContribution.kind, uiAssetContribution.decoder);
+const loaded = await assets.load(HUD_GUID, uiAssetContribution.kind);
 if (!loaded.ok) return report(loaded.error);
-const mounted = mountUi(loaded.value, { root: ctx.uiRoot, layer: 60 });
+const content = assets.read(loaded.value).unwrap();
+assets.release(loaded.value).unwrap();
+const mounted = mountUi(content, { root: ctx.uiRoot, layer: 60 });
 if (!mounted.ok) return report(mounted.error);
-ctx.effect(() => () => mounted.value.dispose(), 'game/hud');
+ctx.effect(() => () => { mounted.value.dispose(); decoder.dispose(); }, 'game/hud');
 ```
+
+App assembly accepts `assetDecoders: [uiAssetContribution]`. A host and its plugins
+can lease this same decoder independently; removing one lease preserves the others.
+Competing decoder implementations for `ui` remain an installation error.
 
 ## Preview and deterministic capture
 
@@ -50,7 +57,7 @@ import {
 
 const session = createUiPreviewSession({
   guid: HUD_GUID,
-  assets,
+  readAsset: (guid) => source.read(guid),
   root: previewRoot,
   rect: { width: 320, height: 180 },
   scenario: createDomPartScenario({ requiredParts: ['root', 'score'] }),
@@ -63,6 +70,7 @@ await writePng(captured.value.png);
 await writeJson(captured.value.evidence);
 ```
 
+The host supplies its existing source read function; the session owns no asset cache or invalidation.
 When subscribing to asset changes, await the listener result. A subscribed target refresh that
 rebuilds an invalid revision returns structured `preview-load-failed`; read
 `error.detail.diagnostics` for each source path/range and repair hint, then call
@@ -97,7 +105,7 @@ The adapter must report `viewport`, `deviceScale`, `fonts`, `resources`, `scenar
 
 ```mermaid
 flowchart LR
-  source["*.pack.json + UiAsset GUID"] --> load["loadByGuid<UiAsset>"]
+  source["*.pack.json + UiAsset GUID"] --> load["assets.load(GUID, uiKind) → read"]
   load --> mount["mountUi(root, layer)"]
   mount --> instance["UiInstance: host + open ShadowRoot + signal"]
   instance --> behavior["dynamic DOM/framework island"]
@@ -250,15 +258,18 @@ retain their raw bytes. The sidecar's `importSettings.resources` can declare
 additional relative files for dynamic use, including `.txt` license companions.
 Escaping paths, remote URLs and undeclared resources fail explicitly.
 
-Install `createUiLoader()` through `assets.installDecoder(uiKind, loader)`.
+Install `uiAssetContribution` through App assembly or `assets.installDecoder`.
 Its decoder admits streaming URLs through the existing publication-scoped
 `artifacts.locate` seam without reading their bodies. When no locator is available,
 or the artifact is not streamed, it retains the verified `artifacts.read` path.
 `UiAsset.resources` contains the resulting bytes or URL with its media type.
 Retired reads return `asset-load-cancelled`, and integrity/transport failures
-retain their AssetRegistry error. `loader.load` also accepts an already verified
+retain their AssetRegistry error. `createUiLoader().load` also accepts an already verified
 Pack loader envelope, including its admitted `streams`, or a payload with no
-companions; serialized payload fields cannot supply decoded resources.
+companions; serialized payload fields cannot supply decoded resources. The decoder
+validates the UI source once and copies its browser requirements and localization
+tree before awaiting companion reads. It attaches verified resources to this
+snapshot without parsing the publication again.
 
 At mount, parsed HTML attributes and CSS URL nodes project admitted stream URLs
 directly and verified bytes to standard data URLs. Browser DOM and Blitz consume

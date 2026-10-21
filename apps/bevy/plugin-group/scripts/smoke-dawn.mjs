@@ -1,4 +1,6 @@
 #!/usr/bin/env node
+import { constructRuntimeRendererHost } from '@forgeax/engine-runtime/internal/renderer-host';
+let smokeAssets;
 import { createSmokePlatform } from '../../../../scripts/smoke-platform.mjs';
 import { createSmokeRenderer, drawSmokeFrame, rendererBackend, subscribeSmokeErrors } from "../../scripts/renderer-smoke.mjs";
 // bevy-plugin-group headless Dawn smoke — proves group expansion through createApp.
@@ -95,7 +97,9 @@ console.log = (...args) => consoleLogCalls.push(args.join(' '));
 
 let renderer;
 try {
-  renderer = await createSmokeRenderer(createRenderer, mockCanvas, {}, { shaderManifestUrl: manifestUrl });
+  const hostResult = await constructRuntimeRendererHost(mockCanvas, {}, { shaderManifestUrl: manifestUrl });
+if (!hostResult.ok) throw hostResult.error;
+({ renderer, assets: smokeAssets } = hostResult.value);
 } catch (error) {
   console.log = originalLog;
   console.error(`[smoke] FAIL - createRenderer: ${error instanceof Error ? error.message : String(error)}`);
@@ -105,7 +109,7 @@ const errors = [];
 subscribeSmokeErrors(renderer, (error) => errors.push({ code: error.code, hint: error.hint }));
 
 const eye = [-2, 2.5, 5];
-const world = new World();
+const world = new World({ assets: smokeAssets });
 const worldAttachment1 = renderer.attach(world);
 if (!worldAttachment1.ok) throw worldAttachment1.error;
 world.spawn(

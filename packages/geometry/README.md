@@ -39,6 +39,11 @@ an authoring map's attributes derives a different mask without retaining the map
 or its buffers. Layout offsets, formats, and digests still derive from the one
 canonical attribute schema.
 
+Runtime Mesh decoding uses the same canonical preparation for JSON, procedural
+descriptors and binary bodies. A binary body excludes duplicate JSON geometry.
+Empty meshes retain zero vertices and finite zero bounds; an empty index array
+on a nonempty mesh selects vertex-only geometry.
+
 `unpackInterleavedVertexAttributes` copies the complete attribute set into one
 owned backing buffer with nonoverlapping typed views. Respect each view's byte
 offset and length. Transferring that buffer transfers every lane together;
@@ -194,6 +199,10 @@ polylines. `create2dGeometry(shape)` returns a filled mesh for closed shapes and
 returns the ring form for closed non-annulus shapes; ellipse and sector rings follow
 the same visual approximation as Bevy's source example. `compute2dBounds(shape, pose)`
 derives the transformed AABB and bounding circle from that same shape contract.
+Curve bounds are analytic and independent of tessellation resolution: circles,
+annuli, ellipses, capsules and circular sectors/segments need no mesh allocation.
+Polygonal and open shapes retain their exact vertex extrema. Invalid authored
+resolution still fails the shared shape admission.
 
 ```ts
 import { create2dGeometry, create2dRingGeometry } from '@forgeax/engine-geometry';
@@ -336,7 +345,7 @@ Key differences from Three.js:
 | "I want a box / sphere / plane / cylinder / cone / torus from code" | `@forgeax/engine-geometry` (this package) |
 | "I want to register the mesh and get a handle" | `@forgeax/engine-runtime` (`renderer.assets.register(meshAsset)`) |
 | "I want to spawn an entity with this mesh" | `@forgeax/engine-runtime` (`MeshFilter` + `MeshRenderer` + `MaterialAsset`) -- see `forgeax-engine-material` skill |
-| "I want to load a glTF file" | `@forgeax/engine-gltf` importer, then `@forgeax/engine-assets-runtime` (`loadByGuid`) |
+| "I want to load a glTF file" | `@forgeax/engine-gltf` importer, then `@forgeax/engine-assets-runtime` (`assets.load(guid, 'mesh')`) |
 | "I want to read the world-space position / forward / up from a spawned entity" | `@forgeax/engine-math` (`mat4.getTranslation` / `getForward` / `getUp`) |
 
 ## Knowledge-base references
@@ -529,9 +538,10 @@ Measured examples, pinned source references and RHI replay evidence: [advanced m
 
 `MeshDistanceField` is shared POD in Types; Geometry owns its builders, identity
 and codec. `meshDistanceFieldSource` validates the complete static triangle
-partition and expands source section sidedness. `attachMeshDistanceField` checks
-an ordinary Mesh publication against the encoded field and returns a Mesh with
-validated data; it performs no work when both attachment members are absent.
+partition and expands source section sidedness. `decodeMeshDistanceFieldAttachment` checks
+an ordinary Mesh publication against the encoded field and returns the complete
+validated field. The Mesh decoder owns the no-attachment path and composes the
+field with its geometry.
 The artifact codec profile and native cook fingerprint derive their policy
 revision from `MESH_DISTANCE_FIELD_GENERATION_VERSION`.
 
@@ -571,3 +581,23 @@ not implicit recooks. This pure producer owns no native hull or physics state.
 Mesh material slot projection lives in `mesh-material-slots`: runtime/sidecar
 conversion and accepted reimport application share default GUID decoding.
 Removed slots stay unbound, and submesh indices follow the reconciled mapping.
+
+Fixed-cardinality primitive factories (box, plane, sphere, cylinder/cone,
+capsule, torus, teapot and terrain grids) write canonical position, normal
+and UV arrays directly. Their shared finalizer computes tangents, packed
+vertices and bounds. The public interleaved input adapter retains its stride
+and index preflight, then enters that same finalizer.
+
+MeshBuilder captures canonical input fields once at admission and retains
+validated private copies. Each build derives packing and bounds from that
+accepted storage; returned attribute arrays are independent of later builds.
+
+`decodeMeshDistanceFieldAttachment(mesh, descriptor, bytes)` returns a complete
+Mesh distance-field attachment. The mesh decoder keeps its ordinary no-attachment
+route; successful attachment decode cannot mean an absent field. Source geometry
+admission and hashing run once, artifact decode owns field structural validation,
+and the direct attachment validator shares only the source-identity policy.
+
+Surface-edge ordering reads the weld identities of its selected endpoints.
+Changing an exact representative within a weld group preserves that identity;
+the same endpoint records feed final line packing.

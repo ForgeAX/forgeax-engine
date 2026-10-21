@@ -89,6 +89,7 @@ export { plugin as ${JSON.stringify(options.export ?? 'plugin')} };
     : ''
 }export default definePack({
   schemaVersion: '2.0.0',
+  plugins: true,
   packageId: definePackageId(${JSON.stringify(packageId)}),
   build: () => ok(${outputs}),
 });

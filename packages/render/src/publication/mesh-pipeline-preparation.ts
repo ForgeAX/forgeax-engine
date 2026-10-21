@@ -1,9 +1,10 @@
 import type { AssetRegistry } from '@forgeax/engine-assets-runtime';
 import type { World } from '@forgeax/engine-ecs';
 import type { RhiCaps } from '@forgeax/engine-rhi';
-import { err, type Handle, type MeshAsset, ok, type Result } from '@forgeax/engine-types';
+import { type AssetHandle, err, type MeshAsset, ok, type Result } from '@forgeax/engine-types';
 import { DynamicGeometryError } from '../dynamic-geometry';
 import { renderMaterialContext } from '../extract/material-context';
+import type { RenderableSnapshot } from '../render-system-extract';
 import { extractFrames } from '../render-system-extract-tail';
 import type { MeshPipelinePreparation } from './contract';
 import { publicationMaterialProgramKeys } from './programs';
@@ -12,7 +13,7 @@ import { publicationMaterialProgramKeys } from './programs';
 export function captureMeshPipelinePreparation(input: {
   readonly world: World;
   readonly entity: number;
-  readonly meshHandle: Handle<'MeshAsset', 'shared'>;
+  readonly meshHandle: AssetHandle<'mesh'>;
   readonly mesh: MeshAsset;
   readonly assets: AssetRegistry;
   readonly capabilities: RhiCaps;
@@ -55,7 +56,7 @@ export function captureMeshPipelinePreparation(input: {
       );
     const programs = new Map<string, MeshPipelinePreparation['programs'][number]>();
     for (const material of row.materials) {
-      for (const key of publicationMaterialProgramKeys(material)) {
+      for (const key of publicationMaterialProgramKeys(material.snapshot)) {
         if (programs.has(key)) continue;
         const shader = input.assets.shaderRegistry.findMaterialArtifact(key);
         if (!shader.ok) return invalid(shader.error);
@@ -76,12 +77,38 @@ export function captureMeshPipelinePreparation(input: {
       entityKey: _entityKey,
       transform,
       gpuDrivenDraws: _gpuDraws,
+      materialOverrides: _overrides,
       ...snapshot
     } = row;
+    const materials: MeshPipelinePreparation['materials'][number][] = [];
+    const ids = new Map<RenderableSnapshot['material'], number>();
+    const materialId = (resource: RenderableSnapshot['material']) => {
+      const previous = ids.get(resource);
+      if (previous !== undefined) return previous;
+      const id = materials.length + 1;
+      ids.set(resource, id);
+      materials.push({ id, value: resource.snapshot });
+      return id;
+    };
     return ok({
+      materials,
       entity: input.entity,
       transform,
-      template: { snapshot, dispatch: row.pipelinePreparation },
+      template: {
+        snapshot: {
+          ...snapshot,
+          material: materialId(row.material),
+          materials: row.materials.map(materialId),
+          ...(row.materialOverrides === undefined
+            ? {}
+            : {
+                materialOverrides: row.materialOverrides.map((resource) =>
+                  resource === undefined ? 0 : materialId(resource),
+                ),
+              }),
+        },
+        dispatch: row.pipelinePreparation,
+      },
       programs: [...programs.values()],
     });
   } catch (cause) {

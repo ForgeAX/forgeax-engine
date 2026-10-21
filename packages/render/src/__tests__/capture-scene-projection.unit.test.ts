@@ -32,7 +32,20 @@ it('keeps terrain sections distinct when rebasing visible draws into the retaine
     material: {} as never,
     materials: [],
     materialBindingSources: [],
-    terrainSection: { index, lod: index, neighbors: [index, index, index, index] },
+    terrainSection: {
+      index,
+      lod: index,
+      neighbors: [index, index, index, index],
+      source: {
+        version: 0,
+        asset: { columns: 1, rows: 1, spacing: 1, subsectionVertices: 2, heightRange: [0, 1] },
+        layers: [],
+        activeLayers: [],
+        grids: [],
+        sectionCount: 2,
+        sections: undefined,
+      },
+    },
   })) satisfies RenderableSnapshot[];
   const dispatch = rows.map((_, renderableIndex) => ({
     renderableIndex,

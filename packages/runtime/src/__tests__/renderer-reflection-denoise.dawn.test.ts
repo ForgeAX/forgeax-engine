@@ -96,7 +96,6 @@ it('denoises traced Lite reflections without ghosting under camera motion', {
     h.setSun(0);
     // Fully traced glossy metal: one GGX ray per pixel and frame is the noise source.
     const glossy = await h.publish(
-      'reflection-denoise-glossy',
       Materials.standard({ baseColor: [1, 1, 1, 1], metallic: 1, roughness: 0.3 }),
     );
     h.world.set(h.wall, MeshRenderer, { materials: [glossy] }).unwrap();

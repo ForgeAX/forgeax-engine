@@ -5,7 +5,7 @@ import { Session } from 'node:inspector';
 import { pathToFileURL } from 'node:url';
 import { resolve } from 'node:path';
 import { curve3, vec3 } from '@forgeax/engine-math';
-import { createProfileSweepGeometry } from '@forgeax/engine-geometry';
+import { createMeshBuilder, createProfileSweepGeometry } from '@forgeax/engine-geometry';
 import { MeshFilter } from '@forgeax/engine-render';
 import { pickTriangle } from '../src/pick-triangle';
 import { pickVertexOnEntity } from '../src/pick-vertex';
@@ -32,7 +32,7 @@ const post = (method: string, params = {}) =>
     session.post(method as any, params, (err, value) => (err ? reject(err) : resolve(value))),
   );
 const pct = (values: number[], q: number) =>
-  values.toSorted((a, b) => a - b)[Math.floor((values.length - 1) * q)];
+  [...values].sort((a, b) => a - b)[Math.floor((values.length - 1) * q)];
 const records: any[] = [];
 async function compare(name: string, callA: () => unknown, callB: () => unknown, spec: object) {
   const raw: any[] = [];
@@ -130,9 +130,11 @@ for (const segments of [16, 512, 4096, 16384]) {
   });
   // Static vertex query isolates the former per-triangle temporary vector allocations.
   s.world.removeComponent(s.entity, (await import('@forgeax/engine-skinning')).Skin).unwrap();
-  const mesh = { ...s.mesh, attributes: { position: s.mesh.attributes.position } };
+  const position = s.mesh.attributes.position;
+  if (position === undefined) throw new Error('benchmark mesh requires positions');
+  const mesh = { ...s.mesh, attributes: { position } };
   s.world
-    .set(s.entity, MeshFilter, { assetHandle: s.world.allocSharedRef('MeshAsset', mesh) })
+    .set(s.entity, MeshFilter, { assetHandle: s.assets.create(createMeshBuilder(mesh).build().unwrap()).unwrap() })
     .unwrap();
   const vertex = () => pickVertexOnEntity(s.world, s.camera, 74, 64, 128, 128, s.entity);
   const bv = baselineVertex

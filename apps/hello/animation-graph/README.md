@@ -67,8 +67,7 @@ can introspect a shared or deserialized graph and drive the right node directly.
 
 `defineAnimationGraph` validates topology at **construction time** and returns a
 `Result`; each illegal shape carries a structured `.code` / `.hint` / `.detail`
-(exhaustively switchable on `AnimationGraphErrorCode`, all re-exported from
-`@forgeax/engine-runtime`):
+(exhaustively switchable on `.code`):
 
 | `.code` | Cause |
 |:--|:--|
@@ -77,9 +76,9 @@ can introspect a shared or deserialized graph and drive the right node directly.
 | `animation-graph-node-weight-invalid` | a static weight is negative / non-finite |
 | `animation-graph-cycle` | the graph is not acyclic |
 
-At **evaluation time**, an unresolved clip handle raises
-`AnimationGraphClipMissingError` (`animation-graph-clip-missing`) before any slot
-is written, so a dangling clip never leaves a dirty pose.
+At **evaluation time**, an unresolved clip reference throws `AnimationAssetError`
+(`animation-asset-not-found` / `animation-asset-stale`) before any slot is
+written, so a dangling clip never leaves a dirty pose.
 
 Out of scope for this feature (deferred): finite-state machines, per-bone masks,
 crossfade/transition primitives, and DCC-imported graphs — the graph is built in

@@ -30,6 +30,7 @@
     "./scene-entity-classification": "./src/scene-entity-classification.ts",
     "./preview-camera": "./src/preview-camera.ts",
     "./preview-surface": "./src/preview-surface.ts",
+    "./preview-facts": "./src/preview-facts.ts",
     "./render-resize-sync": "./src/render-resize-sync.ts",
     "./inspection-presentation": "./src/inspection-presentation.ts",
     "./tool-runtime": "./src/tool-runtime.ts",
@@ -38,7 +39,8 @@
     "./view-trace": "./src/view-trace.ts",
     "./frontend-contract": "./src/frontend-contract.ts",
     "./plugin-i18n": "./src/plugin-i18n.ts",
-    "./document-navigation": "./src/document-navigation.ts"
+    "./document-navigation": "./src/document-navigation.ts",
+    "./pack-authoring": "./src/pack-authoring.ts"
   },
   "dependencies": {
     "@forgeax/engine-host": "workspace:*",

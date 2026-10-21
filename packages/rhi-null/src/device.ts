@@ -191,7 +191,7 @@ export class RhiNullDevice implements RhiDevice {
   }
 
   get limits(): RhiLimits {
-    return EMPTY_LIMITS;
+    return NULL_LIMITS as RhiLimits;
   }
 
   get queue(): RhiQueue {
@@ -399,9 +399,8 @@ export class RhiNullDevice implements RhiDevice {
   }
 }
 
-/** Empty numeric-limits map. The headless backend reports no concrete numeric
- *  limits; capability planning reads caps booleans instead. */
-const EMPTY_LIMITS: RhiLimits = {} as RhiLimits;
+/** Structural capacity for eight attachments of up to 16 bytes per sample. */
+export const NULL_LIMITS = { maxColorAttachmentBytesPerSample: 128 } as const;
 
 const TEXTURE_BINDING = 0x04;
 

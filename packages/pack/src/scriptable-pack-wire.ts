@@ -4,6 +4,7 @@ const definitionFields = [
   'schemaVersion',
   'packageId',
   'name',
+  'plugins',
   'parameters',
   'sceneComponents',
   'runtime',

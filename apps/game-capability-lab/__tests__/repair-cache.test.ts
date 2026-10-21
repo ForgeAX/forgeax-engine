@@ -1,5 +1,7 @@
 import { readFileSync } from 'node:fs';
-import type { AssetRegistry } from '@forgeax/engine-assets-runtime';
+import { AssetRegistry } from '@forgeax/engine-assets-runtime';
+import { World } from '@forgeax/engine-ecs';
+import { Name, sceneAssetContribution } from '@forgeax/engine-scene';
 import type { SceneAsset } from '@forgeax/engine-types';
 import { describe, expect, it } from 'vitest';
 import {
@@ -54,12 +56,14 @@ describe('game-default nested repair cache', () => {
         nestedrepairpickup: { components: { Name: { value: 'NestedRepairPickup' } } },
       },
     } as SceneAsset;
-    const assets = {
-      loadByGuid: async () => ({ ok: true, value: nested }),
-    } as unknown as AssetRegistry;
+    const assets = new AssetRegistry();
+    const world = new World({ assets });
+    world.components.register(Name).unwrap();
+    assets.installDecoder(sceneAssetContribution.kind, sceneAssetContribution.decoder);
+    const nestedHandle = assets.create(nested).unwrap();
     const authored = {
       kind: 'scene',
-      entities: { carrier: { components: {}, instance: { source: NESTED_SCENE_GUID } } },
+      entities: { carrier: { components: {}, instance: { source: nestedHandle } } },
     } as SceneAsset;
     const loaded = { mapping: new Map(), nodes: [] } as LoadedScene;
 

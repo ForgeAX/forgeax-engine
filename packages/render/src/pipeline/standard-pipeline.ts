@@ -34,7 +34,11 @@ import {
   SUBSURFACE_DEFERRED_COLOR_FORMATS,
 } from '../standard-attachments';
 import { addSubsurfaceDiffusion } from '../subsurface/graph';
-import { DEFERRED_PASS_SELECTOR, FORWARD_PASS_SELECTOR } from '../systems/pass-selector';
+import {
+  DEFERRED_PASS_SELECTOR,
+  FORWARD_PASS_SELECTOR,
+  TRANSMISSION_BACK_PASS_SELECTOR,
+} from '../systems/pass-selector';
 import {
   addStandardSceneDataPass,
   aggregateTemporalDemand,
@@ -216,13 +220,12 @@ function buildStandardDeferredLane(
     return err(
       new RenderGraphError({
         code: 'resource-descriptor-invalid',
-        expected:
-          'visible surfaces require primitive-index, seven targets, 48 aligned attachment bytes and single sampling',
+        expected: `visible surfaces require primitive-index, seven targets, ${DEFERRED_ATTACHMENT_BYTES.visibleSurface} attachment bytes and single sampling`,
         hint: 'request these device features/limits before enabling visibleSurface',
         detail: {
           resourceLabel: 'visible-surface',
           field: 'capabilities',
-          expected: 'primitive-index / 7 targets / 48 bytes / single sample',
+          expected: `primitive-index / 7 targets / ${DEFERRED_ATTACHMENT_BYTES.visibleSurface} bytes / single sample`,
           actual: JSON.stringify(topology.lane),
         },
       }),
@@ -246,15 +249,12 @@ function buildStandardDeferredLane(
       }),
     );
   }
-  if (
-    topology.subsurface !== undefined &&
-    (topology.lane.maxColorAttachmentBytesPerSample ?? 32) < requiredSurfaceBytes
-  ) {
+  if ((topology.lane.maxColorAttachmentBytesPerSample ?? 32) < requiredSurfaceBytes) {
     return err(
       new RenderGraphError({
         code: 'resource-descriptor-invalid',
-        expected: 'subsurface Deferred attachments fit the device byte limit',
-        hint: `request at least ${requiredSurfaceBytes} bytes/sample before enabling subsurface`,
+        expected: 'Deferred attachments fit the device byte limit',
+        hint: `request at least ${requiredSurfaceBytes} bytes/sample for this Deferred profile`,
         detail: {
           resourceLabel: 'subsurface-profile',
           field: 'capabilities',
@@ -283,15 +283,14 @@ function buildStandardDeferredLane(
   const addShadows = (cameraPyramid: GraphTextureView | undefined) => {
     const featureShadows = context.contributeShadowFeatures?.();
     if (featureShadows !== undefined && !featureShadows.ok) return featureShadows;
-    return addTypedShadowPasses(
-      graph,
-      topology,
-      context.projectGpuDrivenShadow,
-      featureShadows?.value,
-      cameraPyramid,
-      context.gpuDrivenStaticShadowLayers,
-      reuseAdjacentShadow,
-    );
+    return addTypedShadowPasses(graph, topology, {
+      projectGpuDrivenShadow: context.projectGpuDrivenShadow,
+      shadowFeatures: featureShadows?.value,
+      cameraPyramid: cameraPyramid,
+      staticLayers: context.gpuDrivenShadowDepthLayers,
+      depthLayers: context.shadowDepthLayers,
+      reuseAdjacentShadow: reuseAdjacentShadow,
+    });
   };
   // The atmosphere samples the directional map along open view rays before
   // geometry, so its receivers are not the camera's surfaces and the camera
@@ -635,6 +634,7 @@ function buildStandardDeferredLane(
       ? {}
       : { directionalShadow: shadows.value.directional }),
     spotShadow: shadows.value.spot,
+    shadowMoments: shadows.value.moments,
     ...(cloudShadow.value === undefined ? {} : { cloudShadow: cloudShadow.value }),
     ...(shadows.value.point === undefined ? {} : { pointShadow: shadows.value.point }),
     cluster: buffers.value,
@@ -819,6 +819,52 @@ function buildStandardDeferredLane(
 
   if (cloudScene.value !== undefined) sceneOutput = cloudScene.value;
 
+  const sortedTransmission =
+    transmissionActive &&
+    topology.transparency?.weightedBlended !== true &&
+    topology.singleLayerMedium !== true;
+  if (sortedTransmission && transmissionDemand.needsBackPass === true) {
+    const backdrop = addTransmissionBackdropPasses({
+      graph,
+      name: 'transmission-backdrop-backs',
+      source: sceneOutput,
+      demand: transmissionDemand,
+      copySize: internalCopySize,
+      surfaceSize: topology.surface,
+      encodeRoughMip: context.encodeTransmissionMip,
+      includeConsumerPasses: false,
+    });
+    if (!backdrop.ok) return backdrop;
+    const backs = addTypedScenePass(graph, {
+      environment: atmosphere.value,
+      name: 'transmission-backs',
+      color: sceneOutput,
+      depth: depth.value,
+      ...receiver,
+      selector: TRANSMISSION_BACK_PASS_SELECTOR,
+      colorLoadOp: 'load',
+      depthLoadOp: 'load',
+      recordMode: 'transmission',
+      transparentDepthWrite: true,
+      transmissionBackdrop: backdrop.value.backdrop?.view,
+    });
+    if (!backs.ok) return backs;
+  }
+  if (sortedTransmission) {
+    const prefix = addTypedScenePass(graph, {
+      environment: atmosphere.value,
+      name: 'transparent-before-transmission',
+      color: sceneOutput,
+      depth: depth.value,
+      ...receiver,
+      selector: FORWARD_PASS_SELECTOR,
+      colorLoadOp: 'load',
+      depthLoadOp: 'load',
+      recordMode: 'translucent-before-transmission',
+      transparentDepthWrite: true,
+    });
+    if (!prefix.ok) return prefix;
+  }
   const transmission = addTransmissionBackdropPasses({
     graph,
     source: sceneOutput,
@@ -878,7 +924,8 @@ function buildStandardDeferredLane(
         depthLoadOp: 'load',
         ...receiver,
         passKind: 'forward',
-        recordMode: 'transmission',
+        recordMode: sortedTransmission ? 'translucent' : 'transmission',
+        transparentDepthWrite: true,
         // Inject the complete backdrop view so the Standard shader can select
         // the producer's optional roughness mip level. mipViews[0] is only the
         // copy destination view and intentionally exposes one level.
@@ -886,17 +933,19 @@ function buildStandardDeferredLane(
       });
       if (!transmissionPass.ok) return transmissionPass;
     }
-    const transparentPass = addStandardTransparentPasses(graph, {
-      color: sceneOutput,
-      depth: depth.value,
-      size: internalSize,
-      transparency: topology.transparency,
-      template: {
-        environment: atmosphere.value,
-        ...receiver,
-        passKind: 'forward',
-      },
-    });
+    const transparentPass = sortedTransmission
+      ? ok(undefined)
+      : addStandardTransparentPasses(graph, {
+          color: sceneOutput,
+          depth: depth.value,
+          size: internalSize,
+          transparency: topology.transparency,
+          template: {
+            environment: atmosphere.value,
+            ...receiver,
+            passKind: 'forward',
+          },
+        });
     if (!transparentPass.ok) return transparentPass;
   }
   if (backdropActive) {
@@ -966,7 +1015,7 @@ function buildStandardDeferredLane(
   if (!post.ok) return post;
   return ok(undefined);
 }
-export interface StandardPipeline extends RenderPipeline {
+interface StandardPipeline extends RenderPipeline {
   readonly identity: typeof STANDARD_PIPELINE_ID;
 }
 

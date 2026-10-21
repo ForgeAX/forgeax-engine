@@ -1,20 +1,20 @@
 import type { EntityHandle, QueryRow, QuerySpan, World } from '@forgeax/engine-ecs';
 import { createRenderReadLease } from '@forgeax/engine-ecs/projection';
-import type { SceneAsset } from '@forgeax/engine-types';
+import type { AssetHandle } from '@forgeax/engine-types';
 import {
   ChildOf,
   GlobalTransform,
   MorphWeights,
   propagateTransforms,
   Transform,
-  worldInstantiateScenePayload,
+  worldInstantiateScene,
 } from '../index';
 
 declare const world: World;
 declare const entity: EntityHandle;
 declare const camera: EntityHandle;
 declare const renderer: Renderer;
-declare const sceneAsset: SceneAsset;
+declare const sceneAsset: AssetHandle<'scene'>;
 
 type RenderProjection = {
   readonly spans: readonly {
@@ -56,7 +56,7 @@ declare const pick: PickingQuery;
 // The authoring/import lane writes local TRS, while scene propagation owns the
 // derived world column. The payload entrypoint is the import owner.
 const authored = world.set(entity, Transform, { pos: [1, 2, 3] });
-const imported = worldInstantiateScenePayload(world, sceneAsset);
+const imported = worldInstantiateScene(world, sceneAsset);
 const propagated = propagateTransforms(world);
 void authored;
 void imported;

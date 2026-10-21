@@ -12,7 +12,7 @@
 //   exp-cube-c-cutout-shadow-pattern: floor region under cube C shows a cutout pattern
 
 import { World } from '@forgeax/engine-ecs';
-import { HANDLE_CUBE } from '@forgeax/engine-assets-runtime';
+
 import { Transform } from '@forgeax/engine-scene';
 
 import { Camera, DirectionalLight, MeshFilter, MeshRenderer, ShadowParticipation } from '@forgeax/engine-render';
@@ -24,6 +24,10 @@ import { Materials } from '@forgeax/engine-render';
 import type { MaterialAsset } from '@forgeax/engine-runtime';
 import { forgeaxBundlerAdapter } from 'virtual:forgeax/bundler';
 import '../shaders/cutout-shadow.wgsl';
+import { AssetRegistry } from '@forgeax/engine-assets-runtime';
+
+import { createPrimitiveMesh } from '@forgeax/engine-geometry';
+
 
 const CUTOUT_SHADER_PATH = 'shadow_opt_out::cutout_shadow';
 
@@ -46,7 +50,12 @@ async function bootstrap(target: HTMLCanvasElement): Promise<void> {
   console.warn('[shadow-opt-out] Standard pipeline active');
 
 
-  const world = new World();
+  const world = new World({ assets: constructed.value.assets });
+const sceneAssets = world.assets;
+if (!(sceneAssets instanceof AssetRegistry)) throw new Error('Scene requires its runtime asset owner');
+
+const primitiveCube = sceneAssets.create(createPrimitiveMesh('cube').unwrap()).unwrap();
+
   const worldAttachment1 = renderer.attach(world);
   if (!worldAttachment1.ok) throw worldAttachment1.error;
 
@@ -94,51 +103,42 @@ async function bootstrap(target: HTMLCanvasElement): Promise<void> {
   // never appear on the floor in the browser. dawn smoke missed this
   // because the browser and Dawn smokes exercise the same forward fragment
   // shadow path ([[m4-structural-smoke-masks-pso-variant-mismatch]]).
-  const floorMatHandle = world.allocSharedRef<'MaterialAsset', MaterialAsset>(
-    'MaterialAsset',
-    Materials.standard({ baseColor: [0.85, 0.85, 0.85, 1] }),
-  );
+  const floorMatHandle = sceneAssets.create(Materials.standard({ baseColor: [0.85, 0.85, 0.85, 1] })).unwrap();
   world.spawn(
     {
       component: Transform,
       data: {
         pos: [0, -0.01, 0], quat: [0, 0, 0, 1], scale: [10, 0.02, 10],},
     },
-    { component: MeshFilter, data: { assetHandle: HANDLE_CUBE } },
+    { component: MeshFilter, data: { assetHandle: primitiveCube } },
     { component: MeshRenderer, data: { materials: [floorMatHandle] } },
   );
 
   // ── Cube A: red, casts shadow (default) ───────────────────────────────
-  const matAHandle = world.allocSharedRef<'MaterialAsset', MaterialAsset>(
-    'MaterialAsset',
-    Materials.standard({ baseColor: [0.9, 0.1, 0.1, 1] }),
-  );
+  const matAHandle = sceneAssets.create(Materials.standard({ baseColor: [0.9, 0.1, 0.1, 1] })).unwrap();
   world.spawn(
     {
       component: Transform,
       data: { pos: [-3, 1.25, 0], quat: [0, 0, 0, 1], scale: [1.5, 1.5, 1.5]},
     },
-    { component: MeshFilter, data: { assetHandle: HANDLE_CUBE } },
+    { component: MeshFilter, data: { assetHandle: primitiveCube } },
     { component: MeshRenderer, data: { materials: [matAHandle] } },
   );
 
   // ── Cube B: green, ShadowParticipation { cast: false } ──────────────────────────────────
-  const matBHandle = world.allocSharedRef<'MaterialAsset', MaterialAsset>(
-    'MaterialAsset',
-    Materials.standard({ baseColor: [0.1, 0.8, 0.1, 1] }),
-  );
+  const matBHandle = sceneAssets.create(Materials.standard({ baseColor: [0.1, 0.8, 0.1, 1] })).unwrap();
   world.spawn(
     {
       component: Transform,
       data: { pos: [0, 1.25, 0], quat: [0, 0, 0, 1], scale: [1.5, 1.5, 1.5]},
     },
-    { component: MeshFilter, data: { assetHandle: HANDLE_CUBE } },
+    { component: MeshFilter, data: { assetHandle: primitiveCube } },
     { component: MeshRenderer, data: { materials: [matBHandle] } },
     { component: ShadowParticipation, data: { cast: false, receive: true } },
   );
 
   // ── Cube C: custom cutout shadow shader ───────────────────────────────
-  const matCHandle = world.allocSharedRef<'MaterialAsset', MaterialAsset>('MaterialAsset', {
+  const matCHandle = sceneAssets.create({
     kind: 'material',
     passes: [
       { name: 'Forward', program: { module: 'forgeax::default-standard-pbr' }, renderState: { tags: { LightMode: 'Forward' }, queue: 2000 } },
@@ -153,13 +153,13 @@ async function bootstrap(target: HTMLCanvasElement): Promise<void> {
       metallic: 0,
       roughness: 0.5,
     },
-  } as MaterialAsset);
+  } as MaterialAsset).unwrap();
   world.spawn(
     {
       component: Transform,
       data: { pos: [3, 1.25, 0], quat: [0, 0, 0, 1], scale: [1.5, 1.5, 1.5]},
     },
-    { component: MeshFilter, data: { assetHandle: HANDLE_CUBE } },
+    { component: MeshFilter, data: { assetHandle: primitiveCube } },
     { component: MeshRenderer, data: { materials: [matCHandle] } },
   );
 

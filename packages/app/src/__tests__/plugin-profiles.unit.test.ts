@@ -1,5 +1,5 @@
 import { AnimationPlayer } from '@forgeax/engine-animation';
-import type { AssetRegistry, CatalogSource } from '@forgeax/engine-assets-runtime';
+import { AssetRegistry, type CatalogSource } from '@forgeax/engine-assets-runtime';
 import type { AudioBackend } from '@forgeax/engine-audio';
 import { createWorldContext, World } from '@forgeax/engine-ecs';
 import { type InputBackend, ownedInputBackendPlugin } from '@forgeax/engine-input';
@@ -98,23 +98,23 @@ describe('Engine built-in plugin profiles', () => {
       renderer,
       input,
       audio,
-      animationPayloads: () => undefined,
       animation: { cadence: 'fixed' as const },
     };
     const profile = realm === 'host' ? mainEngineProfile(options) : workerEngineProfile(options);
-    const world = new World({ time: { fixedDeltaSeconds: 1 / 60, maxStepsPerUpdate: 4 } });
+    const assets = new AssetRegistry();
+    const world = new World({ assets, time: { fixedDeltaSeconds: 1 / 60, maxStepsPerUpdate: 4 } });
     const context = await createWorldContext(
       world,
-      profile.filter((plugin) =>
-        ['scene', 'animation-payloads', 'animation'].includes(metadata(plugin).name ?? ''),
-      ),
+      profile.filter((plugin) => ['scene', 'animation'].includes(metadata(plugin).name ?? '')),
     );
     try {
-      const clip = world.allocSharedRef('AnimationClip', {
-        kind: 'animation-clip',
-        duration: 10,
-        channels: [],
-      });
+      const clip = assets
+        .create({
+          kind: 'animation-clip',
+          duration: 10,
+          channels: [],
+        })
+        .unwrap();
       const player = world
         .spawn(
           { component: Transform, data: {} },
@@ -142,7 +142,6 @@ describe('Engine built-in plugin profiles', () => {
       assetAssembly,
       input,
       inputMap: [],
-      animationPayloads: () => undefined,
     });
     expect(profile.map((plugin) => metadata(plugin).name)).toEqual([
       'renderer',
@@ -151,7 +150,6 @@ describe('Engine built-in plugin profiles', () => {
       'assets-world',
       'input-backend',
       'scene',
-      'animation-payloads',
       'animation',
       'state',
       'input',
@@ -167,7 +165,6 @@ describe('Engine built-in plugin profiles', () => {
         assetAssembly,
         input,
         audio,
-        animationPayloads: () => undefined,
       }),
       ['world'],
     );

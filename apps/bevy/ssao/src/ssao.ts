@@ -1,9 +1,13 @@
-import { HANDLE_CUBE } from '@forgeax/engine-assets-runtime';
+
 import type { EntityHandle, World } from '@forgeax/engine-ecs';
 import { quat } from '@forgeax/engine-math';
-import type { MaterialAsset } from '@forgeax/engine-types';
+
 import { Camera, DirectionalLight, Materials, MeshFilter, MeshRenderer, perspective, PointLight, Skylight, TONEMAP_ACES_FILMIC } from '@forgeax/engine-render';
 import { Transform } from '@forgeax/engine-scene';
+import { AssetRegistry } from '@forgeax/engine-assets-runtime';
+
+import { createPrimitiveMesh } from '@forgeax/engine-geometry';
+
 
 export interface SsaoScene {
   readonly camera: EntityHandle;
@@ -11,17 +15,19 @@ export interface SsaoScene {
 }
 
 export function buildSsaoWorld(world: World, aspect: number): SsaoScene {
-  const material = world.allocSharedRef<'MaterialAsset', MaterialAsset>(
-    'MaterialAsset',
-    Materials.standard({
+const sceneAssets = world.assets;
+if (!(sceneAssets instanceof AssetRegistry)) throw new Error('Scene requires its runtime asset owner');
+
+const primitiveCube = sceneAssets.create(createPrimitiveMesh('cube').unwrap()).unwrap();
+
+  const material = sceneAssets.create(Materials.standard({
       baseColor: [0.48, 0.52, 0.62, 1],
       metallic: 0,
       roughness: 0.78,
-    }),
-  );
+    })).unwrap();
   const floor = world.spawn(
     { component: Transform, data: { pos: [0, -1.1, 0], quat: [0, 0, 0, 1], scale: [5, 0.12, 4] } },
-    { component: MeshFilter, data: { assetHandle: HANDLE_CUBE } },
+    { component: MeshFilter, data: { assetHandle: primitiveCube } },
     { component: MeshRenderer, data: { materials: [material] } },
   );
   floor.unwrap();
@@ -32,7 +38,7 @@ export function buildSsaoWorld(world: World, aspect: number): SsaoScene {
   for (const pos of positions) {
     world.spawn(
       { component: Transform, data: { pos, quat: [0, 0, 0, 1], scale: [0.78, 0.78, 0.78] } },
-      { component: MeshFilter, data: { assetHandle: HANDLE_CUBE } },
+      { component: MeshFilter, data: { assetHandle: primitiveCube } },
       { component: MeshRenderer, data: { materials: [material] } },
     );
   }

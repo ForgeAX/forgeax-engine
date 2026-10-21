@@ -1,12 +1,16 @@
+import { AssetRegistry } from '@forgeax/engine-assets-runtime';
+import { runtimeAssetRegistry } from '@forgeax/engine-assets-runtime/internal';
 import { World } from '@forgeax/engine-ecs';
 import { rhi } from '@forgeax/engine-rhi-null';
-import { type SamplerAsset, type TextureAsset, toShared } from '@forgeax/engine-types';
+import type { AssetHandle, SamplerAsset, TextureAsset } from '@forgeax/engine-types';
 import { expect, it, vi } from 'vitest';
+import { samplerContribution } from '../assets/asset-decoders';
 import { GpuResidencyCache } from '../device/gpu-residency';
 import {
   projectMeshMaterialBindingObservation,
   publishMeshMaterialBindingResidency,
 } from '../mesh-material-bindings';
+import { worldRenderResources } from '../publication/resource-scope';
 import type { RenderSystemInternals } from '../record/render-context';
 import { defaultMaterialSnapshot, type MaterialSnapshot } from '../render-system-extract';
 import {
@@ -14,18 +18,17 @@ import {
   observeMaterialResidency,
 } from '../render-system-residency';
 
+function assetWorld() {
+  const assets = new AssetRegistry();
+  assets.installDecoder(samplerContribution.kind, samplerContribution.decoder);
+  return new World({ assets });
+}
+
 it('keeps mutable readiness, first failures, sampler and video observations without detail rows', async () => {
-  const world = new World();
+  const world = assetWorld();
   const device = (await (await rhi.requestAdapter()).unwrap().requestDevice()).unwrap();
   const store = new GpuResidencyCache();
-  store.configureGpuDevice(
-    device,
-    undefined,
-    () => {
-      throw new Error('No cubemap');
-    },
-    device.caps,
-  );
+  store.configureGpuDevice(device, undefined, device.caps);
   const mips = { kind: 'packed' as const, levelCount: 3 };
   const texture: TextureAsset = {
     kind: 'texture',
@@ -36,8 +39,8 @@ it('keeps mutable readiness, first failures, sampler and video observations with
     data: new Uint8Array(84),
   };
   const sampler: SamplerAsset = { kind: 'sampler', minFilter: 'nearest', magFilter: 'nearest' };
-  const textureHandle = world.allocSharedRef('TextureAsset', texture);
-  const samplerHandle = world.allocSharedRef('SamplerAsset', sampler);
+  const textureHandle = runtimeAssetRegistry(world.assets).create(texture).unwrap();
+  const samplerHandle = runtimeAssetRegistry(world.assets).create(sampler).unwrap();
   const material: MaterialSnapshot = {
     ...defaultMaterialSnapshot(),
     textureHandles: new Map([['source', textureHandle]]),
@@ -47,12 +50,15 @@ it('keeps mutable readiness, first failures, sampler and video observations with
   const internals = {
     gpuStore: store,
     dynamicTextureStore: {
-      getView: () => (videoReady ? store.getTextureGpuView(textureHandle, world) : undefined),
+      getView: () =>
+        videoReady
+          ? store.getTextureGpuView(textureHandle, worldRenderResources(world))
+          : undefined,
     },
   } as unknown as RenderSystemInternals;
   const compare = (value: MaterialSnapshot) => {
-    const full = observeMaterialResidency(world, value, internals);
-    const status = observeMaterialResidency(world, value, internals, false);
+    const full = observeMaterialResidency(worldRenderResources(world), value, internals);
+    const status = observeMaterialResidency(worldRenderResources(world), value, internals, false);
     expect(status.readiness).toBe(full.readiness);
     expect(status.preparationFailure).toEqual(full.preparationFailure);
     expect(status.textures).toEqual([]);
@@ -64,26 +70,21 @@ it('keeps mutable readiness, first failures, sampler and video observations with
     expect(ready.readiness).toBe('ready');
     expect(ready.textures).toEqual([{ handle: Number(textureHandle), mipLevelCount: 3 }]);
     expect(ready.samplers).toEqual([{ handle: Number(samplerHandle), resident: true }]);
-    mips.levelCount = 0;
-    expect(compare(material).preparationFailure?.code).toBe('texture-mip-policy-invalid');
-    mips.levelCount = 3;
+    expect(
+      runtimeAssetRegistry(world.assets).update(textureHandle, {
+        mips: { kind: 'packed', levelCount: 0 },
+      }).ok,
+    ).toBe(false);
     expect(compare(material).readiness).toBe('ready');
     const video = {
       ...material,
-      videoTextureFields: new Map([['clip', toShared<'VideoAsset'>(1)]]),
+      videoTextureFields: new Map([['clip', Number(1) as AssetHandle<'video'>]]),
     };
     expect(compare(video).readiness).toBe('pending');
     videoReady = true;
     expect(compare(video).readiness).toBe('ready');
     store.destroyAll();
-    store.configureGpuDevice(
-      device,
-      undefined,
-      () => {
-        throw new Error('No cubemap');
-      },
-      device.caps,
-    );
+    store.configureGpuDevice(device, undefined, device.caps);
     expect(compare(material).readiness).toBe('ready');
     expect(observeMaterialResidency(undefined, material, internals, false).readiness).toBe(
       'pending',
@@ -94,84 +95,69 @@ it('keeps mutable readiness, first failures, sampler and video observations with
 });
 
 it('observes a repeated material once per World and refreshes the next phase', () => {
-  const first = new World(),
-    second = new World();
-  const clip = toShared<'VideoAsset'>(1);
+  const first = assetWorld(),
+    second = assetWorld();
+  const clip = Number(1) as AssetHandle<'video'>;
   const material = { ...defaultMaterialSnapshot(), videoTextureFields: new Map([['clip', clip]]) };
   let ready = true;
   const getView = vi.fn(() => (ready ? {} : undefined));
   const internals = { dynamicTextureStore: { getView } } as unknown as RenderSystemInternals;
   const observe = createMaterialResidencyObserver(internals, false);
-  for (let i = 0; i < 2048; i++) expect(observe(first, material).readiness).toBe('ready');
+  for (let i = 0; i < 2048; i++)
+    expect(observe(worldRenderResources(first), material).readiness).toBe('ready');
   expect(getView).toHaveBeenCalledTimes(1);
-  expect(observe(second, material).readiness).toBe('ready');
+  expect(observe(worldRenderResources(second), material).readiness).toBe('ready');
   expect(getView).toHaveBeenCalledTimes(2);
-  expect(observe(first, { ...material }).readiness).toBe('ready');
+  expect(observe(worldRenderResources(first), { ...material }).readiness).toBe('ready');
   expect(getView).toHaveBeenCalledTimes(3);
   ready = false;
   const next = createMaterialResidencyObserver(internals, false);
-  expect(next(first, material).readiness).toBe('pending');
+  expect(next(worldRenderResources(first), material).readiness).toBe('pending');
   expect(getView).toHaveBeenCalledTimes(4);
   expect(next(undefined, material).readiness).toBe('pending');
   expect(getView).toHaveBeenCalledTimes(4);
 });
 
-it('validates a shared texture once across value clones, then validates the next phase again', async () => {
-  const world = new World();
+it('reuses the accepted texture allocation across value clones and rejects invalid edits before observation', async () => {
+  const world = assetWorld();
+  const assets = runtimeAssetRegistry(world.assets);
   const device = (await (await rhi.requestAdapter()).unwrap().requestDevice()).unwrap();
   const store = new GpuResidencyCache();
-  store.configureGpuDevice(
-    device,
-    undefined,
-    () => {
-      throw Error('No cubemap');
-    },
-    device.caps,
-  );
-  const mips = { kind: 'packed' as const, levelCount: 1 };
-  const extent = { width: 1, height: 1 };
-  const texture: TextureAsset = {
-    kind: 'texture',
-    format: 'rgba8unorm',
-    colorSpace: 'linear',
-    shape: { viewDimension: '2d', extent },
-    mips,
-    data: new Uint8Array(4),
-  };
-  const handle = world.allocSharedRef('TextureAsset', texture);
+  store.configureGpuDevice(device, undefined, device.caps);
+  const handle = assets
+    .create({
+      kind: 'texture',
+      format: 'rgba8unorm',
+      colorSpace: 'linear',
+      shape: { viewDimension: '2d', extent: { width: 1, height: 1 } },
+      mips: { kind: 'packed', levelCount: 1 },
+      data: new Uint8Array(4),
+    })
+    .unwrap();
   const material = { ...defaultMaterialSnapshot(), baseColorTexture: handle };
   const internals = { gpuStore: store } as RenderSystemInternals;
+  const scope = worldRenderResources(world);
+  const createTexture = vi.spyOn(device, 'createTexture');
   try {
-    // Warm GPU admission separately so these reads measure only observation.
-    store.ensureResident(handle, texture, world).unwrap();
-    const width = vi.fn(() => 1);
-    Object.defineProperty(extent, 'width', { get: width });
     const observe = createMaterialResidencyObserver(internals, false);
-    expect(observe(world, material).readiness).toBe('ready');
-    const reads = width.mock.calls.length;
-    expect(reads).toBeGreaterThan(0);
-    for (let index = 0; index < 2048; index++) {
-      expect(observe(world, { ...material, roughness: index / 2048 }).readiness).toBe('ready');
-    }
-    expect(width).toHaveBeenCalledTimes(reads);
-    mips.levelCount = 0;
-    expect(
-      createMaterialResidencyObserver(internals, false)(world, material).preparationFailure?.code,
-    ).toBe('texture-mip-policy-invalid');
-    mips.levelCount = 1;
-    expect(createMaterialResidencyObserver(internals, false)(world, material).readiness).toBe(
+    for (let index = 0; index < 2048; index++)
+      expect(observe(scope, { ...material, roughness: index / 2048 }).readiness).toBe('ready');
+    expect(createTexture).toHaveBeenCalledTimes(1);
+    expect(assets.update(handle, { mips: { kind: 'packed', levelCount: 0 } }).ok).toBe(false);
+    expect(createMaterialResidencyObserver(internals, false)(scope, material).readiness).toBe(
       'ready',
     );
-    expect(width.mock.calls.length).toBeGreaterThan(reads);
+    expect(createTexture).toHaveBeenCalledTimes(1);
   } finally {
     store.destroyAll();
+    assets.dispose();
   }
 });
 
 it('captures a shared residency record before the producer changes it', () => {
-  const world = new World();
+  const world = assetWorld();
   const observe = createMaterialResidencyObserver({} as RenderSystemInternals, false);
-  const value = observe(world, defaultMaterialSnapshot());
+  const value = observe(worldRenderResources(world), defaultMaterialSnapshot());
   const captured = [];
   for (let entityKey = 1; entityKey <= 128; entityKey++) {
     const projected = projectMeshMaterialBindingObservation({

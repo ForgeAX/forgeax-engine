@@ -1,5 +1,5 @@
 import type { AssetRegistry } from '@forgeax/engine-assets-runtime';
-import type { ArtifactDescriptor, AssetRef } from '@forgeax/engine-types';
+import type { AssetHandle, ArtifactDescriptor, AssetRef } from '@forgeax/engine-types';
 
 export interface LodProducerRoles {
   readonly root: string;
@@ -20,7 +20,7 @@ export interface LodProducerAssetRow {
 }
 
 export interface LodProducerManifest {
-  readonly schemaVersion: 'e03-incremental-inputs/1';
+  readonly schemaVersion: 'e03-incremental-inputs/2';
   readonly provenance: Readonly<Record<string, unknown>>;
   readonly roles: LodProducerRoles;
   readonly admission: {
@@ -30,6 +30,7 @@ export interface LodProducerManifest {
     readonly route: string;
   };
   readonly assets: readonly LodProducerAssetRow[];
+  readonly initialRoot: LodProducerAssetRow;
   readonly shaderClosure: Readonly<Record<string, unknown>>;
 }
 
@@ -44,13 +45,14 @@ export function verifyLodProducerManifestBytes(
   producer: LodProducerIdentity,
 ): Promise<{ readonly manifest: LodProducerManifest; readonly sha256: string }>;
 
-export function catalogLodProducerAssets(
+export function loadLodProducerAssets(
   assets: AssetRegistry,
   manifest: LodProducerManifest,
   readBytes: (path: string) => Promise<Uint8Array>,
   expectedRoles: LodProducerRoles,
 ): Promise<{
   readonly manifest: LodProducerManifest;
+  readonly root: AssetHandle<'mesh'>;
   admitLowest(): Promise<unknown>;
 }>;
 

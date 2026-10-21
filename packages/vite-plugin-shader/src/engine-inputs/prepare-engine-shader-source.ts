@@ -11,7 +11,13 @@ import {
   prepareStandardSource,
   projectShaderConditionals,
 } from '@forgeax/engine-shader-compiler';
-import { derive, type MaterialError, type ParamSchemaEntry } from '@forgeax/engine-types';
+import {
+  derive,
+  type MaterialError,
+  type ParamSchemaEntry,
+  projectMaterialParameterSchema,
+  TERRAIN_MATERIAL_PARAMETERS,
+} from '@forgeax/engine-types';
 import { toRollupLog } from '../wrap.js';
 import {
   type EngineShaderFile,
@@ -32,6 +38,15 @@ const MSDF_TEXT_PARAM_SCHEMA: readonly ParamSchemaEntry[] = [
 
 export function engineMaterialParamSchema(identifier: string): readonly ParamSchemaEntry[] {
   switch (identifier) {
+    case 'forgeax::standard-terrain':
+    case 'forgeax::standard-terrain-ids':
+    case 'forgeax::standard-terrain-shadow':
+    case 'forgeax::standard-terrain-ids-shadow':
+      return projectMaterialParameterSchema(
+        TERRAIN_MATERIAL_PARAMETERS,
+        identifier,
+        'runtime',
+      ).unwrap();
     case 'forgeax::default-standard-pbr':
     case 'forgeax::pbr-skin':
     case 'forgeax::default-shadow-caster':
@@ -49,6 +64,7 @@ export function engineMaterialParamSchema(identifier: string): readonly ParamSch
       return PARTICLE_MESH_SURFACE_PARAM_SCHEMA;
     case 'forgeax::msdf-text':
       return MSDF_TEXT_PARAM_SCHEMA;
+    case 'forgeax::default-unlit':
     case 'forgeax::points-lines':
       return DEFAULT_UNLIT_PARAM_SCHEMA;
     default:
@@ -83,6 +99,8 @@ export function lowerEngineSurfaceEntry(
     'forgeax_material::default_standard_surface',
     SURFACE_SLOT_MODULE,
     'forgeax_material::terrain_vertex',
+    'forgeax_material::terrain_layer_sampling',
+    ...(file.surfaceModule === undefined ? [] : [file.surfaceModule]),
     // standard-cluster keeps the projector import behind PROJECTOR_AVAILABLE;
     // the source-closure preparer still needs the catalog record before the
     // selected variant can prune that guarded edge.
@@ -99,13 +117,22 @@ export function lowerEngineSurfaceEntry(
     templateModule,
     templatePath: file.id,
     templateSource: file.source,
-    surfaceModule: 'forgeax_material::default_standard_surface',
+    surfaceModule: file.surfaceModule ?? 'forgeax_material::default_standard_surface',
     sourceRecords: Object.entries(surfaceImports).map(([path, source]) => ({ path, source })),
     generatedParameters: generateParameterModule(
       engineMaterialParamSchema(file.reservedIdentifier ?? templateModule),
       {
         includeResources:
+          file.surfaceModule !== undefined ||
           (file.reservedIdentifier ?? templateModule) === 'forgeax::default-shadow-caster',
+        excludeResources: new Set(
+          Array.from(
+            file.source.matchAll(
+              /@group\(1\)\s*@binding\(\d+\)\s+var(?:<[^>]+>)?\s+([A-Za-z_]\w*)\s*:/g,
+            ),
+            (match) => match[1] as string,
+          ),
+        ),
         sceneIndex: defines.GPU_DRIVEN_SCENE_INDEX_AVAILABLE === true,
         sceneIndexDeclarations: false,
         sceneMaterialPrivate: defines.GPU_DRIVEN_SCENE_INDEX_AVAILABLE === true,
@@ -117,11 +144,12 @@ export function lowerEngineSurfaceEntry(
   const loweredSource =
     identifier === 'forgeax::default-standard-pbr' ||
     identifier === 'forgeax::pbr-skin' ||
-    identifier === 'forgeax::default-shadow-caster'
+    identifier === 'forgeax::default-shadow-caster' ||
+    file.surfaceModule !== undefined
       ? lowerStandardPhysicalBindings(
           composed.value.source,
           engineMaterialParamSchema(identifier),
-          true,
+          file.surfaceModule === undefined,
           defines,
         )
       : composed.value.source;

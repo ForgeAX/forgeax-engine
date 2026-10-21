@@ -2,6 +2,7 @@ import type { Component, EntityHandle, World } from '@forgeax/engine-ecs';
 import { worldRead } from '@forgeax/engine-ecs/world-read';
 import {
   type AnimationPropertyChannel,
+  type AnimationSampler,
   type AnimationTargetIdValue,
   err,
   ok,
@@ -257,11 +258,7 @@ export function accumulateProperty(
   clip: number,
   channelIndex: number,
   sample: (
-    sampler: {
-      input: Float32Array;
-      output: Float32Array;
-      interpolation: 'LINEAR' | 'STEP' | 'CUBICSPLINE';
-    },
+    sampler: AnimationSampler,
     time: number,
     property: 'rotation' | 'weights',
   ) => number[] | undefined,

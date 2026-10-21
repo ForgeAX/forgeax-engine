@@ -27,7 +27,7 @@ it('keeps the zero-transmission assumption local to the deferred directional gat
   // Transmitting materials require back-side directional shadows. Changing this
   // deferred ABI must revisit the no-contribution proof, not inherit this gate.
   expect(source).toMatch(
-    /evaluateStandardDirect\(position, ndc, viewZ, normal, direction, albedo\.rgb, vec3<f32>\(0\.0\),/,
+    /evaluateStandardDirect\(position, ndc, viewZ, in\.position\.xy, normal, direction, albedo\.rgb, vec3<f32>\(0\.0\),/,
   );
 });
 

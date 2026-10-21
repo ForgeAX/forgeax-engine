@@ -18,9 +18,14 @@ const rendererFactorySource = readFileSync(
   'utf8',
 );
 const consumerSources = [
-  readFileSync(new URL('../render-data.ts', import.meta.url), 'utf8'),
-  readFileSync(new URL('../device/gpu-residency.ts', import.meta.url), 'utf8'),
-  rendererFactorySource,
+  {
+    source: readFileSync(new URL('../render-data.ts', import.meta.url), 'utf8'),
+    names: ['GPU_BUFFER_USAGE_VERTEX', 'GPU_BUFFER_USAGE_INDEX', 'GPU_BUFFER_USAGE_COPY_DST'],
+  },
+  {
+    source: readFileSync(new URL('../device/gpu-residency.ts', import.meta.url), 'utf8'),
+    names: ['GPU_BUFFER_USAGE_VERTEX', 'GPU_BUFFER_USAGE_COPY_DST'],
+  },
 ];
 const featureBufferSources = [
   {
@@ -75,10 +80,8 @@ describe('render buffer usage owner', () => {
   });
 
   it('routes mesh descriptor, update, and bootstrap consumers through the owner', () => {
-    for (const source of consumerSources) {
-      expect(source).toContain('GPU_BUFFER_USAGE_VERTEX');
-      expect(source).toContain('GPU_BUFFER_USAGE_INDEX');
-      expect(source).toContain('GPU_BUFFER_USAGE_COPY_DST');
+    for (const { source, names } of consumerSources) {
+      for (const name of names) expect(source).toContain(name);
       expect(source).not.toMatch(/const GPU_BUFFER_USAGE_(VERTEX|INDEX|COPY_DST)\s*=/);
       expect(source).not.toMatch(/usage:\s*0x[0-9a-f]+/i);
     }

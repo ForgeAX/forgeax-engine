@@ -6,6 +6,7 @@ import { lodLevelHistogram } from './record/cpu-lod';
 import { worldEntityKey } from './record/frame-snapshot';
 import type { CameraSnapshot, DrawOwnerOptions } from './render-contract';
 import type { RenderableSnapshot } from './render-system-extract';
+import type { FrameList } from './scene/frame-list';
 
 export function canonicalizeWorldComposition(
   worlds: readonly World[],
@@ -38,8 +39,8 @@ export function canonicalizeWorldComposition(
 
 export function createLodWorldInspections(
   worlds: readonly RenderResourceScope[],
-  renderables: readonly RenderableSnapshot[],
-  submittedRenderables: readonly RenderableSnapshot[],
+  renderables: FrameList<RenderableSnapshot>,
+  submittedRenderables: FrameList<RenderableSnapshot>,
   camera: CameraSnapshot,
   frameId: number,
   worldKeys: readonly number[],

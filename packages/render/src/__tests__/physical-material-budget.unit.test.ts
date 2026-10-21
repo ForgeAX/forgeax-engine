@@ -63,7 +63,7 @@ it('fits the cooked physical carrier, extended view and clustered SSAO in the de
 it.each([
   [16, false, false],
   [21, false, true],
-  [24, true, true],
+  [25, true, true],
 ] as const)('fits independent maps and clustered SSAO in the %i-texture profile', (limit, extendedLighting, transmissionBackdrop) => {
   const caps = {
     storageBuffer: true,
@@ -207,4 +207,17 @@ it('selects the shared normal input from authored presence, with normal taking p
   expect(standardNormalInputField('baseColorTexture', mask(['bumpTexture']))).toBe(
     'baseColorTexture',
   );
+});
+
+it('keeps IBL intact when shared storage extends the material user region', () => {
+  expect([
+    ...omittedStandardMaterialBindings(
+      ['height', 'weights', 'images'],
+      false,
+      true,
+      false,
+      undefined,
+      8,
+    ),
+  ]).toEqual([14]);
 });

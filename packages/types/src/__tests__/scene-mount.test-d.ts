@@ -2,6 +2,7 @@
 
 import { describe, expectTypeOf, it } from 'vitest';
 import type {
+  AssetHandle,
   SceneAsset,
   SceneEntity,
   SceneEntityAddress,
@@ -17,7 +18,9 @@ describe('keyed nested scene contract', () => {
   });
 
   it('uses a source plus ordered child-relative override declarations', () => {
-    expectTypeOf<SceneInstanceDeclaration['source']>().toEqualTypeOf<string>();
+    expectTypeOf<SceneInstanceDeclaration['source']>().toEqualTypeOf<
+      string | AssetHandle<'scene'>
+    >();
     expectTypeOf<SceneInstanceDeclaration['overrides']>().toEqualTypeOf<
       readonly SceneInstanceOverride[] | undefined
     >();

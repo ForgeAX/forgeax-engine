@@ -49,7 +49,10 @@ try {
   // leave an invisible hit area over the central viewport.
   await page.setViewportSize({ width: 1280, height: 720 });
   const drawerTab = page.getByText(/^(Content Browser|内容浏览器)$/);
-  await drawerTab.click();
+  const reveal = await page.evaluate(() => globalThis.__forgeaxViewReady.mounted.frontendHost.context
+    .get('viewOperationClient').call('presentation.panel.reveal', { panelId: 'content-browser' }));
+  assert.equal(reveal.panels.find(panel => panel.id === 'content-browser')?.visible, true);
+  await page.getByTestId('panel-content-browser').waitFor({ state: 'visible' });
   await page.locator('.fx-edge-drawer-portal-host > .fx-edge-drawer-grip').waitFor();
   // An open drawer must receive input above the central grid resize handles.
   // Place an owned probe at a real sash intersection to make this deterministic.

@@ -1,6 +1,9 @@
 import { mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { runtimeAssets } from '@forgeax/engine-assets-runtime/internal';
+import { createRuntimePackPublication } from '@forgeax/engine-pack/runtime';
+import { materialContribution } from '@forgeax/engine-render';
 import { describe, expect, it, vi } from 'vitest';
 import { AssetRegistry } from '../../../assets-runtime/src/asset-registry';
 import {
@@ -84,7 +87,7 @@ fn read_other(input: SurfaceInput) -> vec3<f32> {
 }
 `;
 
-const material: MaterialAsset = {
+const material = {
   kind: 'material',
   parameters: standardSurfaceParameters([{ name: 'baseColor', type: 'color' }]),
   values: { baseColor: [0.72, 0.18, 0.04, 1] },
@@ -108,7 +111,7 @@ const material: MaterialAsset = {
       renderState: { tags: { LightMode: 'ShadowCaster' } },
     },
   ],
-};
+} satisfies MaterialAsset;
 
 function parseGuid(value: string) {
   const parsed = AssetGuid.parse(value);
@@ -179,6 +182,7 @@ describe('custom Surface publication path', () => {
             forward
               .filter(
                 (selection) =>
+                  selection.context.pipeline !== 'ray' &&
                   selection.context.capability === capability &&
                   (selection.context.visibleSurface === true) === visibleSurface,
               )
@@ -262,12 +266,30 @@ describe('custom Surface publication path', () => {
           },
         ],
       };
+      const publication = createRuntimePackPublication({
+        scopeId: 'asset-runtime',
+        sourcePath: 'custom-surface.material.json',
+        sourceRevision: '1',
+        packageUrl,
+        pack,
+      });
       const fetcher = vi.fn(async (input: RequestInfo | URL) => {
         const url = String(input);
         if (url.endsWith('/pack-index.json')) {
-          return new Response(JSON.stringify([{ guid: GUID, packageUrl, kind: 'material' }]));
+          return new Response(
+            JSON.stringify([
+              {
+                guid: GUID,
+                packageUrl,
+                kind: 'material',
+                sourcePath: 'custom-surface.material.json',
+                publication: publication.publication,
+              },
+            ]),
+          );
         }
-        if (url.endsWith('.pack.json')) return new Response(JSON.stringify(normaliseForPack(pack)));
+        if (url.endsWith('.pack.json'))
+          return new Response(JSON.stringify(normaliseForPack(publication.pack)));
         return new Response('not found', { status: 404 });
       });
       globalThis.fetch = fetcher as typeof fetch;
@@ -280,12 +302,14 @@ describe('custom Surface publication path', () => {
         } as never,
         manifestUrl: undefined,
       });
-      const registry = new AssetRegistry(shaders);
+      const registry = new AssetRegistry({ shaderRegistry: shaders });
+      registry.installDecoder(materialContribution.kind, materialContribution.decoder);
       registry.configurePackIndex('/pack-index.json');
-      const loaded = await registry.loadByGuid(parseGuid(GUID));
+      const loaded = await registry.load(parseGuid(GUID), 'material');
       expect(loaded.ok, loaded.ok ? '' : JSON.stringify(loaded.error)).toBe(true);
-      expect(registry.getMaterialReadiness(GUID)).toMatchObject({ status: 'Ready' });
-      const projection = registry.getMaterialProjection(GUID);
+      const projection = registry.getMaterialProjectionForPayload(
+        runtimeAssets(registry).borrow<MaterialAsset>(loaded.unwrap()).unwrap(),
+      );
       expect(projection).toBeDefined();
       if (projection === undefined) return;
 
@@ -325,7 +349,8 @@ describe('custom Surface publication path', () => {
 
       const context = forward[0]?.context;
       expect(context).toBeDefined();
-      if (context === undefined) return;
+      if (context === undefined || context.pipeline === 'ray')
+        throw new Error('missing raster context');
       if (shadow[0] === undefined) throw new Error('missing shadow selection');
       for (const color of [false, true]) {
         for (const address of ['direct', 'scene-index'] as const) {
@@ -376,10 +401,10 @@ describe('custom Surface publication path', () => {
       // remains free to publish an independent receipt.
       expect(shadowScene.abi?.receiptIdentity).toBe(scene.abi?.receiptIdentity);
       expect(shadowScene.abi?.vertexInputs).toEqual(scene.abi?.vertexInputs);
-      if (!loaded.ok || loaded.value.kind !== 'material') return;
-      const keys = materialProgramKeysForMaterial(loaded.value, registry, context);
+      const resolved = runtimeAssets(registry).borrow<MaterialAsset>(loaded.unwrap()).unwrap();
+      const keys = materialProgramKeysForMaterial(resolved, registry, context);
       expect(keys?.Forward).toBe(direct.specializationKey);
-      const sceneKeys = materialSceneIndexProgramKeysForMaterial(loaded.value, registry, context);
+      const sceneKeys = materialSceneIndexProgramKeysForMaterial(resolved, registry, context);
       expect(sceneKeys?.Forward).toMatchObject({
         specializationKey: scene.specializationKey,
         pass: 'forward',

@@ -9,7 +9,7 @@ import { createRasterRayGenerator } from '../../raytracing/raster-source';
 import { VIEW_UNIFORM_BYTES } from '../../record/view-ubo';
 import { readBuffer } from './path-tracer.fixture';
 import type { RasterRayFixture } from './raster-source.commands';
-import { retainedTransportPlane } from './scene-projection.fixture';
+import { retainedPublishedTransportPlane } from './scene-projection.fixture';
 
 /** Real raster attachments -> GPU receiver rays, including producer diagnostics and replay. */
 export async function verifyRasterRaySource(
@@ -105,7 +105,7 @@ export async function verifyRasterRaySource(
     tracer = (
       await createRayPathTracer(device, recorder.backend.createShaderModule, {
         kernel: fixture.transportKernel,
-        scene: retainedTransportPlane(material.asset).project().scene,
+        scene: (await retainedPublishedTransportPlane(material)).project().scene,
         materials: [{ id: 0, ...material }],
         lights: [],
         settings: {

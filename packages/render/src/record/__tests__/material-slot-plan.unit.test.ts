@@ -1,4 +1,9 @@
+import { vec3 } from '@forgeax/engine-math';
 import { describe, expect, it } from 'vitest';
+import { MaterialResource } from '../../material-resource';
+import type { RenderResourceScope } from '../../publication/resource-scope';
+import type { DispatchList, MaterialSnapshot } from '../../render-system-extract';
+import { MaterialFrame } from '../../scene/material-dispatch';
 import {
   buildDispatchPlan,
   buildMaterialSlotPlan,
@@ -7,349 +12,260 @@ import {
 } from '../frame';
 import type { ValidatedRenderable } from '../frame-snapshot';
 
-function validatedRow(renderableIndex: number): ValidatedRenderable {
+function material(): MaterialResource {
+  return new MaterialResource({
+    materialShaderId: 'forgeax::default-unlit',
+    baseColor: vec3.create(1, 1, 1),
+    metallic: 0,
+    roughness: 1,
+    passes: [],
+  } satisfies MaterialSnapshot);
+}
+function row(
+  index: number,
+  resource = material(),
+): ValidatedRenderable & { world: RenderResourceScope } {
   return {
     source: {
-      material: { materialShaderId: 'forgeax::default-unlit' },
-      materials: [{ materialShaderId: 'forgeax::default-unlit' }],
+      worldId: 0,
+      entityKey: index,
+      material: resource,
+      materials: [resource],
+      transform: { world: new Float32Array(16) },
+      materialBindingSources: [],
     },
-    mesh: {},
-    renderableIndex,
+    world: { identity: `scope-${index}` } as RenderResourceScope,
+    mesh: {} as ValidatedRenderable['mesh'],
+    renderableIndex: index,
+    meshSlot: index,
     renderState: undefined,
     stencilReference: undefined,
-  } as never;
+  };
 }
-
-function ceilingInternals(meshSlotCount: number, materialSlotCount = meshSlotCount) {
+function ceiling(meshSlotCount: number, materialSlotCount = meshSlotCount) {
   return {
     growMeshSsbo: () => ({
-      ok: false as const,
-      code: 'mesh-ssbo-ceiling-reached' as const,
+      ok: false,
+      code: 'mesh-ssbo-ceiling-reached',
       degradedTo: { meshSlotCount, materialSlotCount },
     }),
     meshSsboState: { meshSlotCount, materialSlotCount },
   } as never;
 }
 
-describe('material slot plan', () => {
-  it('interns repeated snapshot identities across renderables', () => {
-    const a = {};
-    const b = {};
-    const c = {};
+describe('material slot identity and scope', () => {
+  it('interns identities and resource classes independently of draw count', () => {
+    const a = material();
+    const b = material();
     expect(
-      buildMaterialSlotPlan([
-        [a, b],
-        [a, c],
-        [b, a],
-      ]),
+      buildMaterialSlotPlan([[a, b], [a], [a]], (_, owner) => (owner === 1 ? 'probe:1' : '')),
     ).toEqual({
-      slotIndices: [
-        [0, 1],
-        [0, 2],
-        [1, 0],
-      ],
-      slots: [a, b, c],
+      slotIndices: [[0, 1], [2], [0]],
+      slots: [a, b, a],
       slotOwners: [0, 0, 1],
+      resourceClasses: ['', '', 'probe:1'],
     });
+    expect(buildMaterialSlotPlan([[material()], [material()]]).slots).toHaveLength(2);
   });
 
-  it('separates per-object probe/pass bindings while interning the same resource class', () => {
-    const material = {};
-    expect(
-      buildMaterialSlotPlan([[material], [material], [material]], (_, owner) =>
-        owner === 1 ? 'probe:1' : 'probe:0',
-      ),
-    ).toEqual({ slotIndices: [[0], [1], [0]], slots: [material, material], slotOwners: [0, 1] });
-  });
-
-  it('preserves sparse groups and binding-class callback observations across fanout', () => {
-    const material = {};
-    const group: object[] = [material];
-    group[2] = material;
-    const groups: object[][] = [group];
-    groups[2] = [material];
-    groups[3] = [material];
-    groups[4] = [material];
-    const trace: number[] = [];
-    const plan = buildMaterialSlotPlan(groups as readonly (readonly object[])[], (_, owner) => {
-      trace.push(owner);
-      return owner === 0 ? 'shared' : `owner:${owner}`;
-    });
-    expect(trace).toEqual([0, 0, 2, 3, 4]);
-    expect(plan.slotIndices[0]?.[0]).toBe(0);
+  it('preserves sparse authored material slots', () => {
+    const a = material();
+    const slots: MaterialResource[] = [a];
+    slots[2] = a;
+    const groups: MaterialResource[][] = [slots];
+    groups[2] = [a];
+    const plan = buildMaterialSlotPlan(groups);
+    expect(plan.slots).toEqual([a]);
     expect(plan.slotIndices[0]?.[2]).toBe(0);
-    expect(plan.slotIndices.slice(2)).toEqual([[1], [2], [3]]);
     expect(1 in plan.slotIndices).toBe(false);
     expect(1 in (plan.slotIndices[0] ?? [])).toBe(false);
-    expect(plan.slotOwners).toEqual([0, 2, 3, 4]);
   });
 
-  it('does not merge equal-looking snapshots with distinct identities', () => {
-    expect(buildMaterialSlotPlan([[{}], [{}]])).toMatchObject({
-      slotIndices: [[0], [1]],
-      slots: [{}, {}],
-      slotOwners: [0, 1],
-    });
+  it('keeps material resource scope without retaining its representative mesh row', () => {
+    const rows = [row(0), row(1)];
+    const plan = buildDispatchPlan(ceiling(8), rows, [], []);
+    expect(plan.materialBindings).toEqual(
+      rows.map((entry) => ({
+        material: entry.source.material,
+        resourceClass: '',
+        world: entry.world,
+        entityKey: entry.source.entityKey,
+      })),
+    );
+    expect(plan.materialSlots).toEqual(rows.map((entry) => entry.source.material.snapshot));
+    expect(plan.materialBindings.some((binding) => 'source' in binding || 'mesh' in binding)).toBe(
+      false,
+    );
   });
 
-  it('observes every owner binding in order and returns to the original class after splits', () => {
-    const a = {};
-    const b = {};
-    const classes = ['base', 'probe', 'base', 'shadow', 'probe'];
-    const reads: [object, number][] = [];
-    const plan = buildMaterialSlotPlan([[a, b], [a], [a], [a, b], [a]], (material, owner) => {
-      reads.push([material, owner]);
-      return classes[owner] ?? '';
-    });
-    expect(reads).toEqual([
-      [a, 0],
-      [b, 0],
-      [a, 1],
-      [a, 2],
-      [a, 3],
-      [b, 3],
-      [a, 4],
+  it('splits a shared material only for a distinct probe resource class', () => {
+    const resource = material();
+    const rows = [row(0, resource), row(1, resource), row(2, resource)];
+    const plan = buildDispatchPlan(
+      ceiling(8),
+      rows,
+      [],
+      [],
+      [],
+      new Map([
+        ['0:0', 'probe:0'],
+        ['0:1', 'probe:1'],
+        ['0:2', 'probe:0'],
+      ]),
+    );
+    expect(plan.materialSlotIndices).toEqual([[0], [1], [0]]);
+    expect(plan.materialBindings.map((binding) => binding.resourceClass)).toEqual([
+      'probe:0',
+      'probe:1',
     ]);
-    expect(plan).toEqual({
-      slotIndices: [[0, 1], [2], [0], [3, 4], [2]],
-      slots: [a, b, a, a, b],
-      slotOwners: [0, 0, 1, 3, 3],
-    });
   });
+});
 
-  it('truncates only at complete mesh and material prefixes', () => {
+describe('independent geometry and material capacity', () => {
+  it('truncates only at complete material prefixes', () => {
     const indices = [[0], [1, 2, 3], [0, 4], [5, 6, 7, 8]];
     expect(findRenderablePrefixForSlotCapacity(indices, 3)).toBe(1);
     expect(findRenderablePrefixForSlotCapacity(indices, 5)).toBe(3);
     expect(materialSlotCountForPrefix(indices, 3)).toBe(5);
   });
 
-  it('keeps retained shadow rows inside the ceiling when the primary view is empty', () => {
-    const shadowRows = [validatedRow(0), validatedRow(1), validatedRow(2)];
-    const plan = buildDispatchPlan(ceilingInternals(2), [], [], [], shadowRows);
-
-    expect(plan.validatedOrdered).toHaveLength(0);
-    expect(plan.shadowValidatedOrdered).toEqual(shadowRows.slice(0, 2));
-    expect(plan.validatedOrdered.length + plan.shadowValidatedOrdered.length).toBeLessThanOrEqual(
-      2,
-    );
+  it('bounds offscreen shadows when the main view is empty', () => {
+    const shadows = [row(0), row(1), row(2)];
+    const plan = buildDispatchPlan(ceiling(2), [], [], [], shadows);
+    expect(plan.validatedOrdered).toEqual([]);
+    expect(plan.shadowValidatedOrdered).toEqual(shadows.slice(0, 2));
+    expect(plan.materialSlots).toHaveLength(2);
   });
 
-  it('reserves the primary rows before retained shadow rows on a mixed ceiling', () => {
-    const primaryRows = [validatedRow(0), validatedRow(1)];
-    const shadowRows = [validatedRow(2), validatedRow(3)];
-    const plan = buildDispatchPlan(ceilingInternals(3), primaryRows, [], [], shadowRows);
-
-    expect(plan.validatedOrdered).toEqual(primaryRows);
-    expect(plan.shadowValidatedOrdered).toEqual(shadowRows.slice(0, 1));
-    expect(plan.validatedOrdered.length + plan.shadowValidatedOrdered.length).toBeLessThanOrEqual(
-      3,
-    );
+  it('reserves main rows before independent shadow transforms', () => {
+    const main = [row(0), row(1)];
+    const shadows = [row(2), row(3)];
+    const plan = buildDispatchPlan(ceiling(3), main, [], [], shadows);
+    expect(plan.validatedOrdered).toEqual(main);
+    expect(plan.shadowValidatedOrdered).toEqual(shadows.slice(0, 1));
   });
 
-  it('does not cap shared-material mesh rows by material capacity', () => {
-    const material = {};
-    const rows = Array.from({ length: 4 }, (_, index) => {
-      const row = validatedRow(index);
-      Object.assign(row.source, { material, materials: [material] });
-      return row;
-    });
-    const plan = buildDispatchPlan(ceilingInternals(3, 1), rows.slice(0, 2), [], [], rows);
+  it('does not use shared material capacity as instance capacity', () => {
+    const resource = material();
+    const rows = Array.from({ length: 4 }, (_, index) => row(index, resource));
+    const plan = buildDispatchPlan(ceiling(3, 1), rows.slice(0, 2), [], [], rows);
     expect(plan.validatedOrdered).toEqual(rows.slice(0, 2));
-    expect(plan.shadowValidatedOrdered).toEqual(rows.slice(0, 1));
-    expect(plan.materialSlotCount).toBe(1);
+    expect(plan.shadowValidatedOrdered.map((entry) => entry.source)).toEqual([rows[0]?.source]);
+    expect(plan.shadowValidatedOrdered[0]?.meshSlot).toBe(2);
     expect(plan.materialSlotIndices).toEqual([[0], [0], [0]]);
+    expect(plan.materialSlotCount).toBe(1);
   });
 
-  it('stops at a complete material prefix when mesh capacity still has room', () => {
-    const main = validatedRow(0);
-    const shadows = [validatedRow(1), validatedRow(2)];
-    const plan = buildDispatchPlan(ceilingInternals(16, 2), [main], [], [], shadows);
-    expect(plan.validatedOrdered).toEqual([main]);
+  it('bounds material capacity when geometry capacity has room', () => {
+    const main = row(0);
+    const shadows = [row(1), row(2)];
+    const plan = buildDispatchPlan(ceiling(16, 2), [main], [], [], shadows);
     expect(plan.shadowValidatedOrdered).toEqual(shadows.slice(0, 1));
     expect(plan.materialSlotIndices).toEqual([[0], [1]]);
-    expect(plan.materialSlotOwners).toEqual([main, shadows[0]]);
+    expect(plan.materialBindings.map((binding) => binding.entityKey)).toEqual([0, 1]);
   });
 
-  it('keeps GPU shadow material indices after a mesh-limited primary prefix', () => {
-    const main = [validatedRow(0), validatedRow(1), validatedRow(2)];
-    const shadow = validatedRow(3);
-    const plan = buildDispatchPlan(ceilingInternals(2, 4), main, [], [], [shadow], undefined, true);
+  it('retains GPU shadow material addresses after main geometry truncation', () => {
+    const main = [row(0), row(1), row(2)];
+    const shadow = row(3);
+    const plan = buildDispatchPlan(ceiling(2, 4), main, [], [], [shadow], undefined, true);
     expect(plan.validatedOrdered).toEqual(main.slice(0, 2));
     expect(plan.shadowValidatedOrdered).toEqual([]);
     expect(plan.materialSlotIndices).toEqual([[0], [1], [3]]);
-    expect(plan.materialSlots[3]).toBe(shadow.source.materials[0]);
-    expect(plan.materialSlotOwners[3]).toBe(shadow);
+    expect(plan.materialSlots[3]).toBe(shadow.source.material.snapshot);
+    expect(plan.materialBindings[3]?.world).toBe(shadow.world);
   });
 });
 
-describe('capable Shadow legacy mesh consumption', () => {
-  it('reduces only geometry capacity while retaining the complete material slot projection', () => {
-    const material = { materialShaderId: 'forgeax::default-standard-pbr' };
-    const rows = Array.from({ length: 1000 }, (_, index) => {
-      const row = validatedRow(index);
-      Object.assign(row.source, { material, materials: [material] });
-      return row;
-    });
-    const requested: number[][] = [];
-    const internals = () => {
-      const state = { meshSlotCount: 0, materialSlotCount: 0 };
-      return {
-        growMeshSsbo: (meshSlotCount: number, materialSlotCount: number) => {
-          requested.push([meshSlotCount, materialSlotCount]);
-          Object.assign(state, { meshSlotCount, materialSlotCount });
-          return { ok: true };
-        },
-        meshSsboState: state,
-      } as never;
-    };
-    const legacy = buildDispatchPlan(internals(), rows.slice(0, 2), [], [], rows);
-    const owned = buildDispatchPlan(internals(), rows.slice(0, 2), [], [], rows, undefined, true);
-    expect(requested).toEqual([
-      [1002, 1],
-      [2, 1],
-    ]);
-    expect(owned.validatedOrdered).toEqual(legacy.validatedOrdered);
-    expect(owned.shadowValidatedOrdered).toEqual([]);
-    expect(owned.materialSlots).toEqual(legacy.materialSlots);
-    expect(owned.materialSlotOwners).toEqual(legacy.materialSlotOwners);
-    expect(owned.materialSlotIndices).toEqual(legacy.materialSlotIndices);
-  });
+describe('shared GPU materials without CPU geometry', () => {
+  const unreadableDispatch = {
+    get length(): never {
+      throw new Error('full instance dispatch accessed');
+    },
+    [Symbol.iterator](): never {
+      throw new Error('full instance dispatch iterated');
+    },
+  } as unknown as DispatchList;
 
-  it('retains all Shadow-only custom material slots and their authored observation order', () => {
-    const trace: string[] = [];
-    const rows = Array.from({ length: 4 }, (_, index) => {
-      const row = validatedRow(index);
-      Object.assign(row.source, {
-        material: {
-          get materialShaderId() {
-            trace.push(`shader:${index}`);
-            return 'custom';
-          },
-        },
-      });
-      return row;
-    });
-    const control = buildDispatchPlan(ceilingInternals(8), [], [], [], rows);
-    const controlTrace = trace.splice(0);
-    expect(controlTrace.length).toBeGreaterThan(0);
-    const candidate = buildDispatchPlan(ceilingInternals(8), [], [], [], rows, undefined, true);
-    expect(trace).toEqual(controlTrace);
-    expect(candidate.materialSlots).toEqual(control.materialSlots);
-    expect(candidate.materialSlotOwners).toEqual(control.materialSlotOwners);
-    expect(candidate.materialSlotCount).toBe(4);
-    expect(candidate.shadowValidatedOrdered).toEqual([]);
-  });
-
-  it('keeps material-only capacity and graceful prefix truncation', () => {
-    const rows = Array.from({ length: 4 }, (_, index) => validatedRow(index));
-    const legacy = buildDispatchPlan(ceilingInternals(2), [], [], [], rows);
-    const owned = buildDispatchPlan(ceilingInternals(2), [], [], [], rows, undefined, true);
-    expect(owned.materialSlots).toEqual(legacy.materialSlots);
-    expect(owned.materialSlotOwners).toEqual(legacy.materialSlotOwners);
-    expect(owned.materialSlotIndices).toEqual(legacy.materialSlotIndices);
-    expect(owned.materialSlotCount).toBe(2);
-    expect(owned.shadowValidatedOrdered).toEqual([]);
-  });
-
-  it('preserves material getter failure before capacity admission', () => {
-    const reason = new Error('material unavailable');
-    const row = validatedRow(0);
-    Object.assign(row.source, {
-      material: {
-        get materialShaderId() {
-          throw reason;
-        },
-      },
-    });
-    for (const owned of [false, true]) {
-      expect(() =>
-        buildDispatchPlan(ceilingInternals(2), [], [], [], [row], undefined, owned),
-      ).toThrow(reason);
-    }
-  });
-});
-
-describe('stock frame sparse material binding index', () => {
-  it('preserves complete slot indices, owners and probe/pass splits across worlds and handles', () => {
-    const materials = [0, -1, 0xffffffff, Number.NaN, Number.POSITIVE_INFINITY].map(
-      (materialHandle) => ({
-        materialHandle,
-        materialShaderId: 'forgeax::default-standard-pbr',
-      }),
-    );
-    const rows = [0, 1, 65536, 1048576].map((worldId, index) => {
-      const row = validatedRow(index);
-      Object.assign(row.source, {
-        worldId,
-        entityKey: 0xffffffff - index,
-        material: materials[0],
-        materials,
-      });
-      return row;
-    });
-    const classes = new Map<string, string>();
-    for (const row of rows)
-      for (const material of materials)
-        if (material.materialHandle !== 0xffffffff)
-          classes.set(
-            `${row.source.worldId}:${row.source.entityKey}:${material.materialHandle}`,
-            row.source.worldId === 1 ? 'forward|probe:2' : '|probe:0',
-          );
-    const control = buildDispatchPlan(ceilingInternals(32), rows, [], [], rows, classes);
-    const candidate = buildDispatchPlan(
-      ceilingInternals(32),
-      rows,
+  it('prepares fixed versions and sparse resource scopes without any instance reads', () => {
+    const a = material();
+    const b = material();
+    const accepted = a.snapshot;
+    const frame = new MaterialFrame(undefined).with(a).with(b);
+    a.adopt({ ...a.snapshot, roughness: 0.125 });
+    const worlds = [row(0).world, row(1).world];
+    const bindings = [
+      { material: a, worldId: 1, resourceClass: 'probe:23' },
+      { material: a, worldId: 1, resourceClass: 'probe:23' },
+      { material: a, worldId: 1, resourceClass: 'probe:41' },
+      { material: b, worldId: 0, resourceClass: '' },
+    ];
+    const plan = buildDispatchPlan(
+      ceiling(0, 3),
+      [],
+      unreadableDispatch,
       [],
       [],
-      rows,
-      classes,
+      undefined,
       false,
-      true,
+      { bindings, worlds, frame },
     );
-    expect(candidate).toEqual(control);
-    expect(classes.size).toBe(16);
+    expect(plan.validatedOrdered).toEqual([]);
+    expect(plan.materialSlotIndices).toEqual([]);
+    expect(plan.materialSlots).toEqual([accepted, accepted, b.snapshot]);
+    expect(plan.materialSlots[0]).toBe(accepted);
+    expect(plan.materialSlots[0]?.roughness).toBe(1);
+    expect(plan.materialBindings).toEqual([
+      { material: a, world: worlds[1], resourceClass: 'probe:23' },
+      { material: a, world: worlds[1], resourceClass: 'probe:41' },
+      { material: b, world: worlds[0], resourceClass: '' },
+    ]);
   });
 
-  it('observes changes on the next frame without retaining an index or stale empty domain', () => {
-    const row = validatedRow(0);
-    const material = { materialHandle: 17, materialShaderId: 'forgeax::default-standard-pbr' };
-    Object.assign(row.source, { worldId: 3, entityKey: 5, material, materials: [material] });
-    const other = validatedRow(1);
-    Object.assign(other.source, { worldId: 3, entityKey: 6, material, materials: [material] });
-    const classes = new Map<string, string>();
-    const resolve = (owned: boolean) =>
-      buildDispatchPlan(ceilingInternals(8), [row, other], [], [], [], classes, false, owned);
-    expect(resolve(true)).toEqual(resolve(false));
-    classes.set('3:5:17', 'probe:1');
-    expect(resolve(true)).toEqual(resolve(false));
-    expect(resolve(true).materialSlotCount).toBe(2);
-    classes.set('3:6:17', 'probe:1');
-    expect(resolve(true).materialSlotCount).toBe(1);
-    classes.clear();
-    expect(resolve(true)).toEqual(resolve(false));
+  it('shares a direct binding with GPU demand and retains GPU slots on geometry truncation', () => {
+    const a = material();
+    const b = material();
+    const direct = row(0, a);
+    const plan = buildDispatchPlan(ceiling(0, 2), [direct], [], [], [], undefined, false, {
+      bindings: [a, b].map((material) => ({ material, worldId: 0, resourceClass: '' })),
+      worlds: [direct.world],
+      frame: new MaterialFrame(undefined).with(a).with(b),
+    });
+    expect(plan.validatedOrdered).toEqual([]);
+    expect(plan.materialSlots).toEqual([a.snapshot, b.snapshot]);
+    expect(plan.materialSlotCount).toBe(2);
   });
 
-  it('keeps custom get observations and errors on the raw default path', () => {
-    const row = validatedRow(0);
-    Object.assign(row.source, { worldId: 1, entityKey: 2 });
-    const reads: string[] = [];
-    class BorrowedClasses extends Map<string, string> {
-      override get(key: string) {
-        reads.push(key);
-        return 'borrowed';
-      }
-      override [Symbol.iterator](): MapIterator<[string, string]> {
-        throw new Error('do not enumerate borrowed bindings');
-      }
-    }
-    buildDispatchPlan(ceilingInternals(8), [row], [], [], [row], new BorrowedClasses());
-    expect(reads).toEqual(['1:2:-1', '1:2:-1']);
-    const reason = new Error('binding unavailable');
-    const broken = new Map<string, string>();
-    broken.get = () => {
-      throw reason;
-    };
-    expect(() => buildDispatchPlan(ceilingInternals(8), [row], [], [], [], broken)).toThrow(reason);
+  it('shares one numeric slot across independent probe binding classes', () => {
+    const a = material();
+    const plan = buildDispatchPlan(
+      ceiling(0, 1),
+      [],
+      unreadableDispatch,
+      [],
+      [],
+      undefined,
+      false,
+      {
+        bindings: ['', 'probe:2'].map((resourceClass) => ({
+          material: a,
+          worldId: 0,
+          resourceClass,
+        })),
+        worlds: [row(0).world],
+        frame: new MaterialFrame(undefined).with(a),
+      },
+    );
+    expect(plan.materialBindings).toHaveLength(2);
+  });
+
+  it('rejects an unfixed shared material instead of borrowing its current value', () => {
+    expect(() =>
+      buildDispatchPlan(ceiling(0, 1), [], unreadableDispatch, [], [], undefined, false, {
+        bindings: [{ material: material(), worldId: 0, resourceClass: '' }],
+        worlds: [row(0).world],
+        frame: new MaterialFrame(undefined),
+      }),
+    ).toThrow('a fixed material version for every prepared binding');
   });
 });

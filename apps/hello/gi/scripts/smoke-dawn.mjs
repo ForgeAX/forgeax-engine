@@ -51,8 +51,8 @@ const { indirectMetrics, luminance, regionMask, unlitMask } = await import('./gi
 const scene = PROCEDURAL_SCENES.cornell;
 const cooked = await gi.cookGiMaterials();
 const { renderer, assets, errors } = await gi.createGiRenderer({ width: SIZE, height: SIZE });
-const world = new World();
-const controls = spawnProceduralScene(world, scene, gi.publishMaterials(world, assets, cooked), 1, boxMesh);
+const world = new World({ assets: assets });
+const controls = spawnProceduralScene(world, scene, await gi.publishMaterials(world, assets, cooked), 1, boxMesh);
 const lease = renderer.attach(world);
 if (!lease.ok) throw new Error(`attach failed: ${JSON.stringify(lease.error)}`);
 const driver = await gi.createFrameDriver({ renderer, world, lease: lease.value });
@@ -176,11 +176,11 @@ const leakScene = PROCEDURAL_SCENES.leak;
 const LEAK_BOUNCES = 7;
 const leakRooms = async (camera) => {
   const lane = await gi.createGiRenderer({ width: SIZE, height: SIZE });
-  const leakWorld = new World();
+  const leakWorld = new World({ assets: lane.assets });
   spawnProceduralScene(
     leakWorld,
     { ...leakScene, camera },
-    gi.publishMaterials(leakWorld, lane.assets, cooked),
+    await gi.publishMaterials(leakWorld, lane.assets, cooked),
     1,
     boxMesh,
   );
@@ -281,11 +281,11 @@ check(
 const CUT_SIZE = 128;
 const cut = await (async () => {
   const lane = await gi.createGiRenderer({ width: CUT_SIZE, height: CUT_SIZE });
-  const cutWorld = new World();
+  const cutWorld = new World({ assets: lane.assets });
   const controls = spawnProceduralScene(
     cutWorld,
     leakScene,
-    gi.publishMaterials(cutWorld, lane.assets, cooked),
+    await gi.publishMaterials(cutWorld, lane.assets, cooked),
     1,
     boxMesh,
   );
@@ -332,8 +332,8 @@ check(
 const FIELD_LEAK_WARMUP = 192;
 const FIELD_LEAK_SAMPLES = 256;
 const fieldLane = await gi.createGiRenderer({ width: SIZE, height: SIZE });
-const fieldWorld = new World();
-spawnProceduralScene(fieldWorld, leakScene, gi.publishMaterials(fieldWorld, fieldLane.assets, cooked), 1, boxMesh);
+const fieldWorld = new World({ assets: fieldLane.assets });
+spawnProceduralScene(fieldWorld, leakScene, await gi.publishMaterials(fieldWorld, fieldLane.assets, cooked), 1, boxMesh);
 const fieldDriver = await gi.createFrameDriver({
   renderer: fieldLane.renderer,
   world: fieldWorld,
@@ -437,11 +437,11 @@ check(
 await bake.writeBakedCatalog(bakeDirectory, [leakBake, cornellBake]);
 
 const bakedLane = await gi.createGiRenderer({ width: SIZE, height: SIZE, timing: true });
-const bakedWorld = new World();
+const bakedWorld = new World({ assets: bakedLane.assets });
 spawnProceduralScene(
   bakedWorld,
   leakScene,
-  gi.publishMaterials(bakedWorld, bakedLane.assets, cooked),
+  await gi.publishMaterials(bakedWorld, bakedLane.assets, cooked),
   1,
   boxMesh,
 );

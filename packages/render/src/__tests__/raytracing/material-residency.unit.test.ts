@@ -1,23 +1,19 @@
-import type { AssetReader } from '@forgeax/engine-assets-runtime';
+import { AssetRegistry } from '@forgeax/engine-assets-runtime';
 import { World } from '@forgeax/engine-ecs';
 import { rhi } from '@forgeax/engine-rhi-null';
-import {
-  type Asset,
-  AssetError,
-  err,
-  ok,
-  type SamplerAsset,
-  type TextureAsset,
-} from '@forgeax/engine-types';
+import { ok, type SamplerAsset, type TextureAsset } from '@forgeax/engine-types';
 import { assert, expect, it, vi } from 'vitest';
+import { samplerContribution } from '../../assets/asset-decoders';
 import { GpuResidencyCache } from '../../device/gpu-residency';
-import type { PublishedRenderResources } from '../../publication/resource-scope';
+import { worldRenderResources } from '../../publication/resource-scope';
 import { prepareSurfaceMaterialTextures } from '../../raytracing/material-residency';
 import { defaultMaterialSnapshot } from '../../render-system-extract';
 
 it('fences exact texture and sampler payloads, fingerprints sampling changes and releases cold candidates', async () => {
   const device = (await (await rhi.requestAdapter()).unwrap().requestDevice()).unwrap();
-  const world = new World();
+  const assets = new AssetRegistry();
+  assets.installDecoder(samplerContribution.kind, samplerContribution.decoder);
+  const world = new World({ assets });
   const texture: TextureAsset = {
     kind: 'texture',
     shape: { viewDimension: '2d', extent: { width: 4, height: 4 } },
@@ -27,37 +23,11 @@ it('fences exact texture and sampler payloads, fingerprints sampling changes and
     data: new Uint8Array(64).fill(255),
   };
   const sampler: SamplerAsset = { kind: 'sampler', minFilter: 'nearest', magFilter: 'nearest' };
-  const textureHandle = world.allocSharedRef('TextureAsset', texture),
-    samplerHandle = world.allocSharedRef('SamplerAsset', sampler);
-  const values = new Map<number, Asset>([
-    [Number(textureHandle), texture],
-    [Number(samplerHandle), sampler],
-  ]);
-  const source: AssetReader = {
-    identity: 'accepted-resource-fixture',
-    resolveAsset<T extends Asset>(handle: Parameters<AssetReader['resolveAsset']>[0]) {
-      const value = values.get(Number(handle));
-      return value
-        ? ok(value as T)
-        : err(
-            new AssetError({
-              code: 'asset-not-found',
-              expected: 'fixture source',
-              hint: 'repair fixture',
-            }),
-          );
-    },
-  };
-  const scope = source as PublishedRenderResources;
+  const textureHandle = assets.create(texture).unwrap();
+  const samplerHandle = assets.create(sampler).unwrap();
+  const scope = worldRenderResources(world);
   const store = new GpuResidencyCache();
-  store.configureGpuDevice(
-    device,
-    undefined,
-    () => {
-      throw new Error('no cube');
-    },
-    device.caps,
-  );
+  store.configureGpuDevice(device, undefined, device.caps);
   const defaultSampler = device.createSampler({}).unwrap();
   const snapshot = {
     ...defaultMaterialSnapshot(),
@@ -75,7 +45,7 @@ it('fences exact texture and sampler payloads, fingerprints sampling changes and
   expect(first.current()).toBe(true);
   expect(store.getTextureGpuView(textureHandle, scope)).toBeUndefined();
   expect(submit).not.toHaveBeenCalled();
-  values.set(Number(samplerHandle), { ...sampler, minFilter: 'linear', magFilter: 'linear' });
+  assets.update(samplerHandle, { minFilter: 'linear', magFilter: 'linear' }).unwrap();
   expect(first.current()).toBe(false);
   const second = prepareSurfaceMaterialTextures(
     store,
@@ -90,7 +60,7 @@ it('fences exact texture and sampler payloads, fingerprints sampling changes and
     first.textures.get('baseColorTexture')?.sampler,
   );
   expect(second.contentKey).not.toBe(first.contentKey);
-  values.set(Number(textureHandle), { ...texture, data: new Uint8Array(64) });
+  assets.update(textureHandle, { data: new Uint8Array(64) }).unwrap();
   expect(second.current()).toBe(false);
   await first.release();
   await second.release();
@@ -100,7 +70,7 @@ it('fences exact texture and sampler payloads, fingerprints sampling changes and
     shape: { viewDimension: '2d-array', extent: { width: 4, height: 4, layers: 1 } },
     mips: { kind: 'none' },
   };
-  values.set(Number(textureHandle), array);
+  assets.replace(textureHandle, array).unwrap();
   const arrayTexture = store.prepareTextureResidencyForGraph(textureHandle, array, scope).unwrap();
   const rejected = prepareSurfaceMaterialTextures(
     store,
@@ -119,4 +89,5 @@ it('fences exact texture and sampler payloads, fingerprints sampling changes and
   );
   assert(submit.mock.calls.length === 0);
   store.destroyAll();
+  assets.dispose();
 });

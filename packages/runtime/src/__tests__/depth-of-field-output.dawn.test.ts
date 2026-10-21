@@ -1,5 +1,5 @@
-import { HANDLE_CUBE } from '@forgeax/engine-assets-runtime';
 import { World } from '@forgeax/engine-ecs';
+import { createPrimitiveMesh } from '@forgeax/engine-geometry';
 import {
   ANTIALIAS_NONE,
   Camera,
@@ -20,6 +20,7 @@ import {
   readBarrelPixels,
 } from './barrel-distortion-gpu-fixture';
 import { drawPublished } from './draw-published';
+import { testAssets } from './helpers/runtime-assets';
 
 it('preserves color through DoF attachment topology changes and component removal', async () => {
   const width = 129;
@@ -28,11 +29,18 @@ it('preserves color through DoF attachment topology changes and component remova
   const world = new World();
   const releaseTransforms = registerPropagateTransforms(world);
   try {
-    const material = world.allocSharedRef('MaterialAsset', Materials.unlit([0.8, 0.2, 0.1, 1]));
+    const material = testAssets(world)
+      .create(Materials.unlit([0.8, 0.2, 0.1, 1]))
+      .unwrap();
     world
       .spawn(
         { component: Transform, data: { pos: [0, 0, 0], scale: [100, 100, 1] } },
-        { component: MeshFilter, data: { assetHandle: HANDLE_CUBE } },
+        {
+          component: MeshFilter,
+          data: {
+            assetHandle: testAssets(world).create(createPrimitiveMesh('cube').unwrap()).unwrap(),
+          },
+        },
         { component: MeshRenderer, data: { materials: [material] } },
       )
       .unwrap();
@@ -105,11 +113,18 @@ it('spreads a defocused far silhouette over the cleared background', async () =>
   const world = new World();
   const releaseTransforms = registerPropagateTransforms(world);
   try {
-    const material = world.allocSharedRef('MaterialAsset', Materials.unlit([0.8, 0.2, 0.1, 1]));
+    const material = testAssets(world)
+      .create(Materials.unlit([0.8, 0.2, 0.1, 1]))
+      .unwrap();
     world
       .spawn(
         { component: Transform, data: { pos: [0, 0, -6], scale: [4, 4, 1] } },
-        { component: MeshFilter, data: { assetHandle: HANDLE_CUBE } },
+        {
+          component: MeshFilter,
+          data: {
+            assetHandle: testAssets(world).create(createPrimitiveMesh('cube').unwrap()).unwrap(),
+          },
+        },
         { component: MeshRenderer, data: { materials: [material] } },
         { component: ShadowParticipation, data: { cast: false } },
       )

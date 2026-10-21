@@ -1,5 +1,5 @@
 import { quat } from '@forgeax/engine/math';
-import { definePack } from '@forgeax/engine/pack/source';
+import { definePack, definePackageId } from '@forgeax/engine/pack/source';
 import {
   CharacterController,
   Collider,
@@ -196,11 +196,10 @@ function showcaseScene(): SceneAsset {
           Name: { value: 'Sun' },
           DirectionalLight: {
             direction: SUN_OUTGOING_DIRECTION,
-            // Template art direction; projection and CSM inherit engine defaults.
-            color: [1, 0.98, 0.93],
-            intensity: 3.2,
             // Bare lights default off; this game explicitly requests sun shadows.
             castShadow: true,
+            // Keep centimeter-scale shadow texels across the 28 m showcase.
+            shadowDistance: 56,
           },
         },
       }),
@@ -291,8 +290,30 @@ function showcaseScene(): SceneAsset {
 
 export default definePack({
   schemaVersion: '2.0.0',
-  packageId: PACKAGE_IDS.scene,
+  packageId: definePackageId('019fb7ce-3400-7000-8000-000000000000'),
   name: 'Game 3D / Scene',
+  parameters: [
+    {
+      name: 'sunColor',
+      type: 'vec3',
+      default: [1, 0.98, 0.93],
+      apply: {
+        asset: 'scene/showcase',
+        path: ['entities', 'sun', 'components', 'DirectionalLight', 'color'],
+      },
+    },
+    {
+      name: 'sunIntensity',
+      type: 'f32',
+      default: 3.2,
+      minimum: 0,
+      maximum: 10,
+      apply: {
+        asset: 'scene/showcase',
+        path: ['entities', 'sun', 'components', 'DirectionalLight', 'intensity'],
+      },
+    },
+  ],
   sceneComponents: [
     Camera,
     CharacterController,

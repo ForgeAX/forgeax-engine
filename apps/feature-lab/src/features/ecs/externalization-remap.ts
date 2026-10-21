@@ -22,7 +22,7 @@ export default defineFeature({
       hp: 'f32',
       cache: { type: 'f32', transient: true },
     });
-    const Mesh = defineComponent('FLExtMesh', { mesh: 'shared<MeshAsset>' });
+    const Mesh = defineComponent('FLExtMesh', { mesh: 'asset<mesh>' });
     const Scratch = defineComponent('FLExtScratch', { t: 'f32' }, { transient: true });
     const remap = createEntityRemap([100, 101, 102, 103]);
     const out = projectComponentData(Link, { target: 2, group: [1, 3], hp: 7, cache: 9 }, remap);
@@ -44,8 +44,8 @@ export default defineFeature({
     }
     checks.equal('missing mapping error mode', missing, 'thrown');
     checks.ok('f32 portable', isFieldPortable('f32'));
-    checks.ok('shared<> not portable', !isFieldPortable('shared<MeshAsset>'));
-    checks.ok('array<shared<>> not portable', !isFieldPortable('array<shared<MeshAsset>>'));
+    checks.ok('shared<> not portable', !isFieldPortable('asset<mesh>'));
+    checks.ok('array<shared<>> not portable', !isFieldPortable('array<asset<mesh>>'));
     const verdict = validateProfileComponents([Link, Mesh, Scratch]);
     checks.ok('profile invalid', !verdict.valid);
     checks.equal(

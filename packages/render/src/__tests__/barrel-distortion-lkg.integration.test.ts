@@ -1,5 +1,5 @@
-import { HANDLE_CUBE } from '@forgeax/engine-assets-runtime';
 import { World } from '@forgeax/engine-ecs';
+import { createBoxGeometry } from '@forgeax/engine-geometry';
 import { mat4 } from '@forgeax/engine-math';
 import { RenderGraphBuilder } from '@forgeax/engine-render-graph';
 import { RhiNullQueue, rhi } from '@forgeax/engine-rhi-null';
@@ -149,7 +149,8 @@ describe('barrel distortion retained graph frame authority', () => {
       const initialized = await renderer.initialization;
       expect(initialized.ok).toBe(true);
       if (!initialized.ok) return;
-      const world = new World();
+      const world = new World({ assets: renderer.assetRegistry });
+      const cube = renderer.assetRegistry.create(createBoxGeometry(1, 1, 1).unwrap()).unwrap();
       const attached = renderer.attach(world);
       expect(attached.ok).toBe(true);
       if (!attached.ok) return;
@@ -174,7 +175,7 @@ describe('barrel distortion retained graph frame authority', () => {
       world
         .spawn(
           { component: Transform, data: { pos: [0, 0, -4] } },
-          { component: MeshFilter, data: { assetHandle: HANDLE_CUBE } },
+          { component: MeshFilter, data: { assetHandle: cube } },
           { component: MeshRenderer, data: {} },
         )
         .unwrap();
@@ -278,7 +279,7 @@ describe('barrel distortion retained graph frame authority', () => {
       const initialized = await renderer.initialization;
       expect(initialized.ok).toBe(true);
       if (!initialized.ok) return;
-      const world = new World();
+      const world = new World({ assets: renderer.assetRegistry });
       const attached = renderer.attach(world);
       expect(attached.ok).toBe(true);
       if (!attached.ok) return;

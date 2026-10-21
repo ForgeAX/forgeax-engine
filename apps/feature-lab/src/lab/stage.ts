@@ -1,5 +1,6 @@
-import { HANDLE_CUBE, HANDLE_QUAD, HANDLE_SPHERE } from '@forgeax/engine/assets-runtime';
+import { AssetRegistry } from '@forgeax/engine/assets-runtime';
 import type { EntityHandle, World } from '@forgeax/engine/ecs';
+import { createPrimitiveMesh } from '@forgeax/engine/geometry';
 import { quat } from '@forgeax/engine/math';
 import {
   Camera,
@@ -10,14 +11,12 @@ import {
   perspective,
 } from '@forgeax/engine/render';
 import { Transform } from '@forgeax/engine/scene';
-import type { MaterialAsset } from '@forgeax/engine/types';
+import type { AssetHandle, MaterialAsset } from '@forgeax/engine/types';
 
 export type Vec3 = readonly [number, number, number];
 
-export const MESH = { cube: HANDLE_CUBE, sphere: HANDLE_SPHERE, quad: HANDLE_QUAD } as const;
-
-type MeshHandle = (typeof MESH)[keyof typeof MESH];
-type MaterialHandle = ReturnType<World['allocSharedRef']>;
+type MeshHandle = AssetHandle<'mesh'>;
+type MaterialHandle = AssetHandle<'material'>;
 type CameraData = Readonly<Record<string, unknown>>;
 
 export function lookRotation(eye: Vec3, target: Vec3): Float32Array {
@@ -25,7 +24,9 @@ export function lookRotation(eye: Vec3, target: Vec3): Float32Array {
 }
 
 export function material(world: World, asset: MaterialAsset): MaterialHandle {
-  return world.allocSharedRef<'MaterialAsset', MaterialAsset>('MaterialAsset', asset);
+  const assets = world.assets;
+  if (!(assets instanceof AssetRegistry)) throw new Error('Stage requires its runtime asset owner');
+  return assets.create(asset).unwrap();
 }
 
 export function standard(
@@ -97,7 +98,7 @@ export interface MeshOptions {
 
 export function spawnMesh(
   world: World,
-  mesh: MeshHandle | MaterialHandle,
+  mesh: MeshHandle,
   mat: MaterialHandle,
   options: MeshOptions = {},
   ...extra: readonly { readonly component: unknown; readonly data?: unknown }[]
@@ -124,7 +125,10 @@ export function spawnGround(
   world: World,
   color: readonly [number, number, number, number] = [0.55, 0.55, 0.58, 1],
 ): EntityHandle {
-  return spawnMesh(world, MESH.cube, standard(world, { baseColor: color, roughness: 0.9 }), {
+  const assets = world.assets;
+  if (!(assets instanceof AssetRegistry)) throw new Error('Stage requires its runtime asset owner');
+  const cube = assets.create(createPrimitiveMesh('cube').unwrap()).unwrap();
+  return spawnMesh(world, cube, standard(world, { baseColor: color, roughness: 0.9 }), {
     pos: [0, -0.05, 0],
     scale: [12, 0.1, 12],
   });

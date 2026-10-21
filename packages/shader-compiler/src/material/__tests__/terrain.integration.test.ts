@@ -1,5 +1,5 @@
 import type { CookedMaterialRecord } from '@forgeax/engine-pack/material-cook';
-import { type MaterialAsset, standardSurfaceParameters } from '@forgeax/engine-types';
+import { type MaterialAsset, TERRAIN_MATERIAL_PARAMETERS } from '@forgeax/engine-types';
 import { expect, it } from 'vitest';
 import { createMaterialPackCooker } from '../pack-cooker.js';
 
@@ -13,21 +13,7 @@ it.each([
   async (inherited, surface) => {
     const source: MaterialAsset = {
       kind: 'material',
-      parameters: standardSurfaceParameters([
-        { name: 'terrainHeightTexture', type: 'texture' },
-        { name: 'terrainWeightTexture', type: 'texture' },
-        ...[
-          'terrainColorLayers',
-          'terrainNormalHeightLayers',
-          'terrainOrmLayers',
-          'terrainEmissionLayers',
-        ].map((name) => ({ name, type: 'texture_2d_array' as const })),
-        { name: 'terrainLayerModes', type: 'vec4', default: [0, 3, 3, 3] },
-        { name: 'terrainSection', type: 'vec4', default: [0, 0, 31, 32] },
-        { name: 'terrainLod', type: 'vec4', default: [0, 0, 0, 1] },
-        { name: 'terrainNeighbors', type: 'vec4', default: [0, 0, 0, 0] },
-        { name: 'terrainShadowFamily', type: 'f32', default: 0 },
-      ]),
+      parameters: TERRAIN_MATERIAL_PARAMETERS,
       passes: [
         {
           name: 'forward',

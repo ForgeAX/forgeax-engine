@@ -120,10 +120,8 @@ export async function colorStageFixture() {
     const currentBinding = binding(currentLayout);
     addStandardColorLutPass(graph, input, output, {
       view: importedView,
-      sampler,
       strength: options.strength ?? 0.35,
-      bindGroupLayout: currentLayout,
-      bindGroup: currentBinding,
+      bind: () => ({ bindGroupLayout: currentLayout, bindGroup: currentBinding }),
     }).unwrap();
     const compiled = graph
       .compile({ device: currentDevice, surfaceSize: { width: options.width ?? 8, height: 8 } })

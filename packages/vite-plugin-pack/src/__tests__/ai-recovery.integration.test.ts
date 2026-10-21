@@ -1,5 +1,4 @@
-import { createCatalogSource } from '@forgeax/engine-assets-runtime';
-import { CatalogSession } from '@forgeax/engine-assets-runtime/internal';
+import { AssetRegistry, createCatalogSource } from '@forgeax/engine-assets-runtime';
 import { createAcceptedPublicationStore } from '@forgeax/engine-ddc';
 import { sourcePackageError } from '@forgeax/engine-import';
 import { validateProducerOutputs } from '@forgeax/engine-pack/build';
@@ -109,10 +108,10 @@ describe('public AI recovery path', () => {
         };
       },
     });
-    const session = new CatalogSession(source);
-    const observed: Array<ReturnType<CatalogSession['snapshot']>> = [];
-    await session.start();
-    const stop = session.subscribe((snapshot) => observed.push(snapshot));
+    const assets = new AssetRegistry({ catalog: source });
+    const observed: Array<ReturnType<AssetRegistry['catalogSnapshot']>> = [];
+    (await assets.enumerateCatalog()).unwrap();
+    const stop = assets.subscribeCatalog(() => observed.push(assets.catalogSnapshot()));
 
     emit?.({ added: [catalogEntry()], changed: [], removed: [], scopeId: 'other', generation: 2 });
     await new Promise((resolve) => setTimeout(resolve, 0));
@@ -121,12 +120,12 @@ describe('public AI recovery path', () => {
       stale: true,
       diagnostics: [{ code: 'catalog-scope-mismatch' }],
     });
-    expect(session.snapshot().stale).toBe(true);
-    const recovered = await session.reconcile();
+    expect(assets.catalogSnapshot()?.stale).toBe(true);
+    const recovered = await assets.reconcileCatalog();
     expect(recovered.ok).toBe(true);
-    expect(session.snapshot()).toMatchObject({ stale: false, entries: [catalogEntry()] });
+    expect(assets.catalogSnapshot()).toMatchObject({ stale: false, entries: [catalogEntry()] });
     stop();
-    session.dispose();
+    assets.dispose();
   });
 
   it('does not promote a failed candidate and atomically restores it on retry', async () => {

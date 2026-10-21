@@ -1,4 +1,6 @@
 #!/usr/bin/env node
+import { constructRuntimeRendererHost } from '@forgeax/engine-runtime/internal/renderer-host';
+let smokeAssets;
 import { createSmokeRenderer, drawSmokeFrame, rendererBackend, subscribeSmokeErrors } from "../../scripts/renderer-smoke.mjs";
 // bevy-delayed-commands headless dawn smoke (structural-only).
 // Verify: backend=webgpu, 60 frames no crash, 0 RhiError
@@ -51,13 +53,15 @@ const { perspective } = await import('@forgeax/engine-render');
 const { Transform } = await import('@forgeax/engine-scene');
 const { createBoxGeometry } = await import('@forgeax/engine-geometry');
 
-const world = new World();
 const here = dirname(fileURLToPath(import.meta.url));
 const MANIFEST = `data:application/json,${encodeURIComponent(readFileSync(resolve(here, '..', 'dist', 'shaders', 'manifest.json'), 'utf8'))}`;
 
 let renderer;
-try { renderer = await createSmokeRenderer(createRenderer, mockCanvas, {}, { shaderManifestUrl: MANIFEST }); }
+try { const hostResult = await constructRuntimeRendererHost(mockCanvas, {}, { shaderManifestUrl: MANIFEST });
+if (!hostResult.ok) throw hostResult.error;
+({ renderer, assets: smokeAssets } = hostResult.value); }
 finally { globalThis.navigator.gpu.requestAdapter = origReqAdapter; }
+const world = new World({ assets: smokeAssets });
 const worldAttachment1 = renderer.attach(world);
 if (!worldAttachment1.ok) throw worldAttachment1.error;
 
@@ -68,8 +72,8 @@ subscribeSmokeErrors(renderer, (err) => errors.push(err));
 
 const boxGeom = createBoxGeometry(0.5, 0.5, 0.5, 1, 1, 1);
 if (!boxGeom.ok) { console.error('FAIL: box'); process.exit(1); }
-const boxHandle = world.allocSharedRef('MeshAsset', boxGeom.value);
-const mat = world.allocSharedRef('MaterialAsset', Materials.standard({ baseColor: [0.8, 0.3, 0.3, 1] }));
+const boxHandle = world.assets.create(boxGeom.value).unwrap();
+const mat = world.assets.create(Materials.standard({ baseColor: [0.8, 0.3, 0.3, 1] })).unwrap();
 
 for (let i = 0; i < 5; i++) {
   world.spawn(

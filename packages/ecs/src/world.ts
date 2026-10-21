@@ -1,4 +1,4 @@
-import { publishComponentRange } from './storage/change-detection';
+import { ChangeIndex } from './storage/change-index';
 // @forgeax/engine-ecs — World: top-level ECS container.
 //
 // World owns entities, archetypes (via ArchetypeGraph), and component registry.
@@ -10,16 +10,14 @@ import { publishComponentRange } from './storage/change-detection';
 // Construction errors (EntityIndexOverflowError) still throw — they are
 // build-time / infrastructure failures.
 
-import type { Handle, Result } from '@forgeax/engine-types';
+import type { AssetError, AssetReferenceOwner, Handle, Result } from '@forgeax/engine-types';
+import { err, isRetiredSlot, ok, toShared, toUnique, unwrapHandle } from '@forgeax/engine-types';
 import {
-  BUILTIN_BASE,
-  err,
-  isRetiredSlot,
-  ok,
-  toShared,
-  toUnique,
-  unwrapHandle,
-} from '@forgeax/engine-types';
+  holdAssetFields,
+  invalidAssetBinding,
+  releaseAssetReference,
+  visitAssetFields,
+} from './asset-reference-fields';
 import { BufferPool } from './buffer-pool';
 import {
   type ArrayMeta,
@@ -56,6 +54,7 @@ import type {
   ComponentNotDefinedError,
   ComponentNumericValueInvalidError,
   DerivedRangeOutOfBoundsError,
+  DerivedWriteActiveError,
   ManagedArrayErrorEnvelope,
   ManagedArrayInvalidValueError,
   ManagedBufferShrinkNotSupportedError,
@@ -130,10 +129,8 @@ import {
 import { ArrayRangeLog, type ArrayRangesChange } from './storage/array-range-log';
 import {
   type ChangeTicks,
-  copyComponentEpoch,
-  markComponentChanged,
   markComponentsAdded,
-  readComponentChange,
+  readComponentAdded,
   removeSparseTag,
 } from './storage/change-detection';
 import { type Column, type FieldView, normalizeBufferWrite } from './storage/column';
@@ -184,6 +181,7 @@ import {
  * AI users: switch on `.code` for programmatic branching.
  */
 export type EcsError =
+  | AssetError
   | ArrayRangeOutOfBoundsError
   | CommandFailedError
   | StaleEntityError
@@ -213,6 +211,7 @@ export type EcsError =
   | SharedKernelEligibilityError
   | SharedKernelFailureError
   | DerivedRangeOutOfBoundsError
+  | DerivedWriteActiveError
   | ChangeEpochExhaustedError
   | WorldPoisonedError;
 
@@ -365,6 +364,18 @@ export interface EntityRecord {
  */
 export class World {
   readonly [worldRead]: WorldRead = {
+    hasRelationshipEdge: (component, source, target) => {
+      const role = relationshipRole(component);
+      if (role?.kind !== 'source') return false;
+      const index = this.relationshipIndexes.get(componentId(component));
+      const slot = index?.slotOf(source);
+      return (
+        slot !== undefined &&
+        index?.targetOf(source) === target &&
+        this.internalgetFieldValue(source, component, role.sourceField) === target &&
+        this.internalgetArrayElement(target, role.target, role.targetField, slot) === source
+      );
+    },
     getRelationshipEpoch: (component) =>
       this.relationshipIndexes.get(componentId(component))?.epoch ?? 0,
     getFieldValue: this.internalgetFieldValue.bind(this),
@@ -389,6 +400,9 @@ export class World {
   /** Per-World shared-ref store; public read-only for direct handle operations. */
   readonly sharedRefs: SharedRefStore = new SharedRefStoreImpl();
   private readonly componentMutationEpochs: number[] = [];
+  private derivedWriteActive = false;
+  private readonly componentChangeIndices = new Map<number, ChangeIndex>();
+  private readonly structuralChangeIndex = new ChangeIndex();
   /** Bounded history of in-place `setArrayRange` writes. */
   private readonly arrayRangeLog = new ArrayRangeLog();
   /** One packed reverse index per relationship source component. */
@@ -411,6 +425,20 @@ export class World {
   private readonly clock: ReturnType<typeof createWorldClock>;
   /** Remainder carried between fixed-step runs. */
   private fixedAccumulator = 0;
+  private assetOwner: AssetReferenceOwner | undefined;
+  get assets(): AssetReferenceOwner | undefined {
+    return this.assetOwner;
+  }
+
+  /** One owner is attached for the World lifetime; replacement would invalidate live bindings. */
+  bindAssets(owner: AssetReferenceOwner): Result<void, AssetError> {
+    if (this.assetOwner !== undefined && this.assetOwner !== owner)
+      return err(invalidAssetBinding('the asset owner already attached to this World'));
+    const attached = owner.attach(this);
+    if (!attached.ok) return attached;
+    this.assetOwner = owner;
+    return ok(undefined);
+  }
   constructor(options: WorldOptions = {}) {
     this.graph = createArchetypeGraph(options.storage === 'shared');
     this.clock = createWorldClock({ ...DEFAULT_TIME_POLICY, ...options.time });
@@ -433,6 +461,17 @@ export class World {
       getClockWriter: () => this.clock.writer,
       getComponentChange: this.internalgetComponentChange.bind(this),
       getComponentMutationEpochs: () => this.componentMutationEpochs,
+      beginDerivedWrite: () => {
+        if (this.derivedWriteActive) return false;
+        this.derivedWriteActive = true;
+        return true;
+      },
+      endDerivedWrite: () => {
+        this.derivedWriteActive = false;
+      },
+      isDerivedWriteActive: () => this.derivedWriteActive,
+      getComponentChangeIndex: (id) => this.componentChangeIndices.get(id),
+      getStructuralChangeIndex: () => this.structuralChangeIndex,
       getEntityArchetype: this.internalgetEntityArchetype.bind(this),
       getFixedAccumulator: () => this.fixedAccumulator,
       getGraph: () => this.graph,
@@ -465,6 +504,7 @@ export class World {
       },
       setQueryRow: this.internalsetQueryRow.bind(this),
     };
+    if (options.assets !== undefined) this.bindAssets(options.assets).unwrap();
   }
 
   /** Immutable integrity state for execution coordinators and headless callers. */
@@ -530,7 +570,13 @@ export class World {
   ): ChangeTicks | undefined {
     const record = this.records[entityIndex(entity)];
     if (!this.recordIsLive(record, entityGeneration(entity))) return undefined;
-    return readComponentChange(this.graph, record, entity, componentId);
+    const added = readComponentAdded(this.graph, record, entity, componentId);
+    return added === undefined
+      ? undefined
+      : {
+          added,
+          changed: this.componentChangeIndices.get(componentId)?.get(entityIndex(entity)) ?? 0,
+        };
   }
 
   /** Allocate one epoch after a mutation has succeeded. */
@@ -553,17 +599,59 @@ export class World {
     rowCount: number,
     epoch: number,
   ): void {
-    const epochs = table.storage.get(componentId)?.epochs;
-    if (epochs === undefined) {
+    if (!table.storage.has(componentId)) {
       throw new Error(`Derived component ${componentId} is not in the table.`);
     }
-    publishComponentRange(epochs, rowStart, rowCount, epoch);
     this.componentMutationEpochs[componentId] = epoch;
+    this.publishRangeChangeIndex(table, componentId, rowStart, rowCount, epoch);
   }
 
   /** Record one successful structural mutation. */
-  private advanceStructureEpoch(): void {
+  private advanceStructureEpoch(entity: EntityHandle): void {
+    this.recordStructuralChange(entity, this.mutationEpoch);
     this.structureEpoch += 1;
+  }
+
+  private recordStructuralChange(entity: EntityHandle, epoch: number): void {
+    try {
+      this.structuralChangeIndex.set(entityIndex(entity), epoch);
+    } catch (cause) {
+      this.poisonAfterEntityMutation('World.publishStructureChange', cause);
+      throw cause;
+    }
+  }
+
+  private publishComponentChangeIndex(entity: EntityHandle, id: number, epoch: number): void {
+    try {
+      let index = this.componentChangeIndices.get(id);
+      if (index === undefined) {
+        index = new ChangeIndex();
+        this.componentChangeIndices.set(id, index);
+      }
+      index.set(entityIndex(entity), epoch);
+    } catch (cause) {
+      this.poisonAfterEntityMutation('World.publishComponentChange', cause);
+      throw cause;
+    }
+  }
+
+  private forgetComponentChangeIndex(entity: EntityHandle, id: number): void {
+    const index = this.componentChangeIndices.get(id);
+    index?.delete(entityIndex(entity));
+    if (index?.size === 0) this.componentChangeIndices.delete(id);
+  }
+
+  private publishRangeChangeIndex(
+    table: Table,
+    id: number,
+    start: number,
+    count: number,
+    epoch: number,
+  ): void {
+    const entities = table.storage.get(componentId(EntityComponent))?.fields.get('self')?.view;
+    if (entities === undefined) throw new Error('Changed table has no entity column.');
+    for (let row = start; row < start + count; row++)
+      this.publishComponentChangeIndex(entities[row] as EntityHandle, id, epoch);
   }
 
   /** Current structural revision for mounted World projections. */
@@ -579,6 +667,7 @@ export class World {
     markComponentsAdded(this.graph, record, entity, componentIds, epoch);
     for (const componentId of componentIds) {
       this.componentMutationEpochs[componentId] = epoch;
+      this.publishComponentChangeIndex(entity, componentId, epoch);
     }
   }
 
@@ -586,14 +675,10 @@ export class World {
   private internalmarkComponentChanged(entity: EntityHandle, componentId: number): void {
     const record = this.records[entityIndex(entity)];
     if (!this.recordIsLive(record, entityGeneration(entity))) return;
-    let epoch: number | undefined;
-    markComponentChanged(this.graph, record, entity, componentId, () => {
-      epoch = this.internalnextMutationEpoch();
-      return epoch;
-    });
-    if (epoch !== undefined) {
-      this.componentMutationEpochs[componentId] = epoch;
-    }
+    if (readComponentAdded(this.graph, record, entity, componentId) === undefined) return;
+    const epoch = this.internalnextMutationEpoch();
+    this.componentMutationEpochs[componentId] = epoch;
+    this.publishComponentChangeIndex(entity, componentId, epoch);
   }
 
   /** Mark one contiguous component range with a single epoch. */
@@ -603,11 +688,10 @@ export class World {
     rowStart: number,
     rowCount: number,
   ): void {
-    const epochs = table.storage.get(componentId)?.epochs;
-    if (epochs === undefined || rowCount === 0) return;
+    if (!table.storage.has(componentId) || rowCount === 0) return;
     const epoch = this.internalnextMutationEpoch();
-    publishComponentRange(epochs, rowStart, rowCount, epoch);
     this.componentMutationEpochs[componentId] = epoch;
+    this.publishRangeChangeIndex(table, componentId, rowStart, rowCount, epoch);
   }
 
   /** Query facade write after the facade has already marked evidence. */
@@ -908,8 +992,8 @@ export class World {
    * {@link SharedRefStore}; payload disposal remains with the
    * renderer/assets/plugin owner and is not a user callback.
    *
-   * Intended for asset-registry-style producers — anything whose lifecycle
-   * is shared across multiple holders (ECS components + external systems).
+   * Stores non-asset resources shared across ECS and external systems.
+   * Runtime assets use AssetRegistry and asset<kind> columns.
    * The single-holder one-shot release pattern stays on
    * {@link World.allocUniqueRef} (`Handle<T, 'unique'>`).
    *
@@ -922,12 +1006,9 @@ export class World {
    * @example
    * ```ts
    * const world = new World();
-   * const handle = world.allocSharedRef<'MaterialAsset', MaterialPayload>(
-   *   'MaterialAsset',
-   *   payload,
-   * );
-   * const M = defineComponent('M', { asset: 'shared<MaterialAsset>' });
-   * world.spawn({ component: M, data: { asset: handle } });
+   * const handle = world.allocSharedRef('RenderTarget', renderTarget);
+   * const M = defineComponent('M', { target: 'shared<RenderTarget>' });
+   * world.spawn({ component: M, data: { target: handle } });
    * // The write-barrier dispatch retains/releases automatically on spawn / despawn.
    * ```
    */
@@ -990,7 +1071,14 @@ export class World {
   }
 
   private markComponentChanged(entity: EntityHandle, component: Component): void {
-    this.internalmarkComponentChanged(entity, componentId(component));
+    // These callers already changed owned payload. Query mutable borrows use
+    // the internal pre-write entry directly and may still fail without mutation.
+    try {
+      this.internalmarkComponentChanged(entity, componentId(component));
+    } catch (cause) {
+      this.poisonAfterEntityMutation('World.publishComponentChange', cause);
+      throw cause;
+    }
   }
 
   private relationshipIndex(component: Component): RelationshipIndex | undefined {
@@ -1051,6 +1139,14 @@ export class World {
     componentData: ComponentData,
   ): Result<void, EcsError> {
     const data = componentData.data as Record<string, unknown>;
+    const assets = visitAssetFields(
+      componentData.component,
+      data,
+      (handle, target) =>
+        this.assets?.validate(handle, target) ??
+        err(invalidAssetBinding('an asset owner attached to the World')),
+    );
+    if (!assets.ok) return assets;
     const arrayError = validateManagedArrayValues(componentData.component, data);
     if (arrayError !== null) return err(arrayError as unknown as EcsError);
     const sharedError = validateSharedFieldValues(componentData.component, data);
@@ -1080,7 +1176,11 @@ export class World {
     const data = componentData.data as Record<string, unknown>;
     const keyError = validateComponentDataKeys(componentData.component, data);
     if (keyError !== null) return err(keyError as unknown as EcsError);
-    const valuePreflight = this.preflightComponentFieldValues(holder, componentData);
+    const filled = fillComponentDefaults(componentData.component, data);
+    const valuePreflight = this.preflightComponentFieldValues(holder, {
+      component: componentData.component,
+      data: filled as ComponentData['data'],
+    });
     if (!valuePreflight.ok) return valuePreflight;
     if (
       isRelationshipTarget(componentData.component) &&
@@ -1089,7 +1189,6 @@ export class World {
       return err(new RelationshipTargetReadonlyError(componentData.component.name, 'command'));
     }
 
-    const filled = fillComponentDefaults(componentData.component, data);
     const enumError = validateEnumFieldValues(
       componentData.component,
       filled,
@@ -1298,12 +1397,22 @@ export class World {
       }
     }
 
-    const fieldCols = this.table(arch).storage.get(componentId(component))?.fields;
-    const sourceColumn = fieldCols?.get(role.sourceField);
-    if (sourceColumn === undefined) {
-      return err(new ComponentNotPresentError(entity as number, component.name));
+    // Mirror admission/removal may migrate a table neighbor and swap this
+    // source into another row. Resolve the live location after that work.
+    const currentArchetype = this.internalgetEntityArchetype(entity);
+    const currentRow = this.tableRow(record);
+    const sourceColumn =
+      currentArchetype === undefined
+        ? undefined
+        : this.table(currentArchetype)
+            .storage.get(componentId(component))
+            ?.fields.get(role.sourceField);
+    if (sourceColumn === undefined || currentRow < 0) {
+      const error = new ComponentNotPresentError(entity as number, component.name);
+      this.poisonAfterEntityMutation('World.set', error);
+      return err(error);
     }
-    sourceColumn.view[row] =
+    sourceColumn.view[currentRow] =
       nextRelationshipTarget === null ? ENTITY_NULL_RAW : (nextRelationshipTarget as number);
     if (markChanged) this.markComponentChanged(entity, component);
     return ok(undefined);
@@ -1419,8 +1528,13 @@ export class World {
     if (!mirrored.ok) return mirrored;
     this.relationshipIndex(component)?.attach(holder, target, slot);
     if (mirrorAdded) {
-      this.internalmarkComponentsAdded(target, [mirrorLocalId]);
-      this.advanceStructureEpoch();
+      try {
+        this.internalmarkComponentsAdded(target, [mirrorLocalId]);
+        this.advanceStructureEpoch(target);
+      } catch (cause) {
+        this.poisonAfterEntityMutation('World.relationshipOnInsert', cause);
+        throw cause;
+      }
     }
     return ok(undefined);
   }
@@ -1631,7 +1745,10 @@ export class World {
     }
     const elementType = componentDefinition(component).fields[fieldName]?.arrayMeta?.elementType;
     const numeric =
-      elementType !== undefined && elementType !== 'entity' && !elementType.startsWith('shared<');
+      elementType !== undefined &&
+      elementType !== 'entity' &&
+      !elementType.startsWith('shared<') &&
+      !elementType.startsWith('asset<');
     const view =
       numeric && component.storage !== 'sparse'
         ? this.readArrayView(arch, component, this.tableRow(record.value), fieldName)
@@ -1655,17 +1772,22 @@ export class World {
     if (values.length === 0) return ok(undefined);
     const previous = this.internalgetComponentChange(entity, localId)?.changed ?? 0;
     (view as Float32Array).set(values, offset);
-    this.internalmarkComponentChanged(entity, localId);
-    const epoch = this.internalgetComponentChange(entity, localId)?.changed ?? previous;
-    this.arrayRangeLog.record(
-      entity as number,
-      localId,
-      fieldName,
-      previous,
-      epoch,
-      offset,
-      offset + values.length,
-    );
+    try {
+      this.internalmarkComponentChanged(entity, localId);
+      const epoch = this.internalgetComponentChange(entity, localId)?.changed ?? previous;
+      this.arrayRangeLog.record(
+        entity as number,
+        localId,
+        fieldName,
+        previous,
+        epoch,
+        offset,
+        offset + values.length,
+      );
+    } catch (cause) {
+      this.poisonAfterEntityMutation('World.setArrayRange', cause);
+      throw cause;
+    }
     return ok(undefined);
   }
 
@@ -1761,130 +1883,178 @@ export class World {
     if (enumError !== null) return err(enumError as unknown as EcsError);
 
     if (component.storage === 'sparse') {
-      if (markChanged) this.markComponentChanged(entity, component);
+      if (markChanged) this.internalmarkComponentChanged(entity, localId);
       return ok(undefined);
     }
     const fieldCols = this.table(arch).storage.get(localId)?.fields;
     if (fieldCols === undefined) {
       throw new Error(`Table storage for ${component.name} does not exist.`);
     }
-    let changed = false;
-    const definition = componentDefinition(component);
-    for (const fieldName of Object.keys(value)) {
-      const col = fieldCols.get(fieldName);
-      if (!col) {
-        continue;
-      }
-      const fieldType = (componentSchema(component) as Record<string, string>)[fieldName] ?? '';
-      const arrayMeta = definition.fields[fieldName]?.arrayMeta;
-      const managed = isManagedField(fieldType);
-      const previous = col.view[row];
-      // Payload writes remain explicit publications: aliases may already have
-      // changed, and managed allocation/release paths own lifecycle effects.
-      changed ||= managed || arrayMeta !== undefined || isManagedBufferField(fieldType);
-      // M1/M2 release loop (set path): release the prior managed value
-      // BEFORE writing the new one. Single SSOT helper `releaseManagedFieldOnRow`
-      // (feat-20260614 D-2) covers every managed-field family (`ref<T>` /
-      // `string` / `buffer` / variable `array<T>`); it self-skips fields that
-      // do not match `isManagedField` here, but for set-ref/string we already
-      // gated on it so the call is hot. Zeroes the column when applicable.
-      if (managed) {
-        this.releaseManagedFieldOnRow(arch, component, row, fieldName);
-      }
-      const raw = (value as Record<string, unknown>)[fieldName];
-      if (fieldType === 'bool') {
-        col.view[row] = raw ? 1 : 0;
-      } else if (isEntityField(fieldType)) {
-        // M3 entity field overwrite: encode null as ENTITY_NULL_RAW;
-        // otherwise store the Entity bit pattern (slot+gen).
-        col.view[row] = raw === null || raw === undefined ? ENTITY_NULL_RAW : (raw as number);
-      } else if (isManagedBufferField(fieldType)) {
-        // M2 set path: collapsed-vocab keyword family `'buffer'` (variable) +
-        // `'buffer<N>'` (fixed). The two shapes diverge here:
-        //   - `buffer<N>` — schema-declared byteLength is fixed; raw must be a
-        //     `Uint8Array` whose `byteLength === N`. Mismatched payloads route
-        //     `FixedSizeMismatchError` via Result.err so AI users observe an
-        //     explicit failure instead of silent truncation (verify round 1
-        //     B1 fix; charter P3 — explicit failure > silent acceptance).
-        //   - `'buffer'`  — variable capacity; release the prior slot then
-        //     alloc a fresh one sized to the new payload's byteLength (mirrors
-        //     the `array<T>` set path's release-then-alloc D-5 ordering).
-        //   raw is normalized from any AllowSharedBufferSource view to a
-        //   Uint8Array over its bytes (feat-20260621 V2 / AC-A4). Non-buffer
-        //   raw (a forced cast feeding e.g. a number) normalizes to null and
-        //   is treated as a no-op (column slot stays unchanged).
-        const isFixedBuffer = fieldType !== 'buffer';
+    const heldAssets = holdAssetFields(this.assets, component, value);
+    if (!heldAssets.ok) return heldAssets;
+    try {
+      let changed = false;
+      const definition = componentDefinition(component);
+      const fieldNames = Object.keys(value);
+      // Capture only inputs whose storage this patch overwrites. In particular,
+      // releasing a variable field lets alloc() reuse and clear its borrowed
+      // bytes. Capture before ANY writes so swaps across fields also work.
+      // Ordinary scalar writes and unaliased payloads never copy content.
+      let overwritten: Map<ArrayBufferLike, string | null> | undefined;
+      let captured: Record<string, unknown> | undefined;
+      for (const fieldName of fieldNames) {
+        const raw = (value as Record<string, unknown>)[fieldName];
         const bytes = normalizeBufferWrite(raw);
-        if (bytes !== null) {
-          if (isFixedBuffer) {
-            // feat-20260602: fixed `buffer<N>` lives inline as a stride-N u8
-            // column (arity = N bytes). Write the payload straight into the
-            // row window -- no BufferPool slot.
-            const expected = bufferFieldByteLength(fieldType);
-            if (bytes.byteLength !== expected) {
-              return err(new FixedSizeMismatchError(fieldName, expected, bytes.byteLength));
+        if (bytes === null) continue;
+        if (overwritten === undefined) {
+          overwritten = new Map();
+          for (const key of fieldNames) {
+            const col = fieldCols.get(key);
+            const field = definition.fields[key];
+            if (col === undefined || field === undefined) continue;
+            const elementType = field.arrayMeta?.elementType;
+            const clearsInline =
+              elementType?.startsWith('asset<') || elementType?.startsWith('shared<');
+            overwritten.set(col.view.buffer, clearsInline ? null : key);
+            if (
+              field.type === 'buffer' ||
+              (field.arrayMeta !== undefined && field.arrayMeta.length === undefined)
+            ) {
+              const slot = col.view[row];
+              if (slot) overwritten.set(this.bufferPool.view(slot).buffer, null);
             }
-            const arity = col.arity;
-            (col.view as Uint8Array).set(bytes.subarray(0, arity), row * arity);
-          } else {
-            // Variable `'buffer'` set: release prior slot via SSOT helper
-            // (feat-20260614 D-2) then alloc fresh sized to the new payload
-            // (verify round 1 B2 fix path). The helper zeroes the column on
-            // release; sentinel slot id 0 is a no-op.
-            this.releaseManagedFieldOnRow(arch, component, row, fieldName);
-            const allocR = this.bufferPool.alloc(bytes.byteLength);
-            if (!allocR.ok) {
-              const ctx: ErrorContext = {
-                systemName: `World.set (${component.name}.${fieldName})`,
-              };
-              this.routeError(allocR.error as EcsError, ctx);
-              col.view[row] = 0;
-              continue;
-            }
-            const slot = allocR.value;
-            slot.view.set(bytes);
-            col.view[row] = slot.id;
           }
         }
-      } else if (fieldType === 'string') {
-        // M1 string-field set path (AC-05 path 3): the prior handle was
-        // already released by the unified `isManagedField` pre-write block
-        // above (D-R3) -- here we just alloc the new handle and store the
-        // u32. Mirrors the array<T> release-then-alloc pattern (D-5) so AI
-        // users observe the UniqueRefStore _liveCount net-zero invariant
-        // on field overwrite. Missing / non-string raw -> '' fallback
-        // (AC-06).
-        const text = typeof raw === 'string' ? raw : '';
-        const handle = this.uniqueRefs.alloc<'String'>('String', text);
-        col.view[row] = unwrapHandle(handle);
-      } else {
-        if (arrayMeta !== undefined) {
-          // M1 set path for array<T> / array<T,N> fields (feat-20260614 D-3
-          // calling convention). The set semantics mirror spawn: release the
-          // prior slot via the SSOT helper, then alloc a fresh one sized to
-          // the new value, copy bytes verbatim, store slot id (+ count for
-          // variable). Fixed `array<T,N>` is inline — the helper short-
-          // circuits and writeArrayField writes directly into the row's
-          // stride window with no pool traffic.
-          this.releaseManagedFieldOnRow(arch, component, row, fieldName);
-          this.writeArrayField(arch, component, row, fieldName, fieldType, arrayMeta, raw);
-        } else {
-          // The pre-write `releaseManagedFieldOnRow` block above already
-          // released the prior `'shared<T>'` rc via SharedRefStore.release;
-          // here we retain the new value so net rc delta is +1 / 0 / -1 per
-          // M4 invariant (set: -1+1=0; spawn: 0+1=+1; despawn: -1).
-          col.view[row] = raw as number;
-          if (fieldType.startsWith('shared<') && (raw as number) !== 0) {
-            this.retainSharedScalarHandle(raw as number, component.name, fieldName);
-          }
-        }
+        const destination = overwritten.get(bytes.buffer);
+        // Inline TypedArray.set handles its own overlap without a temporary.
+        if (destination === undefined || destination === fieldName) continue;
+        captured ??= {};
+        captured[fieldName] =
+          definition.fields[fieldName]?.arrayMeta !== undefined
+            ? (raw as FieldView).slice()
+            : bytes.slice();
       }
-      // Scalars are owned column values: compare the stored representation,
-      // including f32 rounding and integer conversion.
-      changed ||= !Object.is(previous, col.view[row]);
+      for (const fieldName of fieldNames) {
+        const col = fieldCols.get(fieldName);
+        if (!col) {
+          continue;
+        }
+        const fieldType = (componentSchema(component) as Record<string, string>)[fieldName] ?? '';
+        const arrayMeta = definition.fields[fieldName]?.arrayMeta;
+        const managed = isManagedField(fieldType);
+        const previous = col.view[row];
+        // Payload writes remain explicit publications: aliases may already have
+        // changed, and managed allocation/release paths own lifecycle effects.
+        changed ||= managed || arrayMeta !== undefined || isManagedBufferField(fieldType);
+        // M1/M2 release loop (set path): release the prior managed value
+        // BEFORE writing the new one. Single SSOT helper `releaseManagedFieldOnRow`
+        // (feat-20260614 D-2) covers every managed-field family (`ref<T>` /
+        // `string` / `buffer` / variable `array<T>`); it self-skips fields that
+        // do not match `isManagedField` here, but for set-ref/string we already
+        // gated on it so the call is hot. Zeroes the column when applicable.
+        if (managed) {
+          this.releaseManagedFieldOnRow(arch, component, row, fieldName);
+        }
+        const raw = captured?.[fieldName] ?? (value as Record<string, unknown>)[fieldName];
+        if (fieldType === 'bool') {
+          col.view[row] = raw ? 1 : 0;
+        } else if (isEntityField(fieldType)) {
+          // M3 entity field overwrite: encode null as ENTITY_NULL_RAW;
+          // otherwise store the Entity bit pattern (slot+gen).
+          col.view[row] = raw === null || raw === undefined ? ENTITY_NULL_RAW : (raw as number);
+        } else if (isManagedBufferField(fieldType)) {
+          // M2 set path: collapsed-vocab keyword family `'buffer'` (variable) +
+          // `'buffer<N>'` (fixed). The two shapes diverge here:
+          //   - `buffer<N>` — schema-declared byteLength is fixed; raw must be a
+          //     `Uint8Array` whose `byteLength === N`. Mismatched payloads route
+          //     `FixedSizeMismatchError` via Result.err so AI users observe an
+          //     explicit failure instead of silent truncation (verify round 1
+          //     B1 fix; charter P3 — explicit failure > silent acceptance).
+          //   - `'buffer'`  — variable capacity; release the prior slot then
+          //     alloc a fresh one sized to the new payload's byteLength (mirrors
+          //     the `array<T>` set path's release-then-alloc D-5 ordering).
+          //   raw is normalized from any AllowSharedBufferSource view to a
+          //   Uint8Array over its bytes (feat-20260621 V2 / AC-A4). Non-buffer
+          //   raw (a forced cast feeding e.g. a number) normalizes to null and
+          //   is treated as a no-op (column slot stays unchanged).
+          const isFixedBuffer = fieldType !== 'buffer';
+          const bytes = normalizeBufferWrite(raw);
+          if (bytes !== null) {
+            if (isFixedBuffer) {
+              // feat-20260602: fixed `buffer<N>` lives inline as a stride-N u8
+              // column (arity = N bytes). Write the payload straight into the
+              // row window -- no BufferPool slot.
+              const expected = bufferFieldByteLength(fieldType);
+              if (bytes.byteLength !== expected) {
+                return err(new FixedSizeMismatchError(fieldName, expected, bytes.byteLength));
+              }
+              const arity = col.arity;
+              (col.view as Uint8Array).set(bytes.subarray(0, arity), row * arity);
+            } else {
+              // Variable `'buffer'` set: release prior slot via SSOT helper
+              // (feat-20260614 D-2) then alloc fresh sized to the new payload
+              // (verify round 1 B2 fix path). The helper zeroes the column on
+              // release; sentinel slot id 0 is a no-op.
+              this.releaseManagedFieldOnRow(arch, component, row, fieldName);
+              const allocR = this.bufferPool.alloc(bytes.byteLength);
+              if (!allocR.ok) {
+                const ctx: ErrorContext = {
+                  systemName: `World.set (${component.name}.${fieldName})`,
+                };
+                this.routeError(allocR.error as EcsError, ctx);
+                col.view[row] = 0;
+                continue;
+              }
+              const slot = allocR.value;
+              slot.view.set(bytes);
+              col.view[row] = slot.id;
+            }
+          }
+        } else if (fieldType === 'string') {
+          // M1 string-field set path (AC-05 path 3): the prior handle was
+          // already released by the unified `isManagedField` pre-write block
+          // above (D-R3) -- here we just alloc the new handle and store the
+          // u32. Mirrors the array<T> release-then-alloc pattern (D-5) so AI
+          // users observe the UniqueRefStore _liveCount net-zero invariant
+          // on field overwrite. Missing / non-string raw -> '' fallback
+          // (AC-06).
+          const text = typeof raw === 'string' ? raw : '';
+          const handle = this.uniqueRefs.alloc<'String'>('String', text);
+          col.view[row] = unwrapHandle(handle);
+        } else {
+          if (arrayMeta !== undefined) {
+            // M1 set path for array<T> / array<T,N> fields (feat-20260614 D-3
+            // calling convention). The set semantics mirror spawn: release the
+            // prior slot via the SSOT helper, then alloc a fresh one sized to
+            // the new value, copy bytes verbatim, store slot id (+ count for
+            // variable). Fixed `array<T,N>` is inline — the helper short-
+            // circuits and writeArrayField writes directly into the row's
+            // stride window with no pool traffic.
+            this.releaseManagedFieldOnRow(arch, component, row, fieldName);
+            this.writeArrayField(arch, component, row, fieldName, fieldType, arrayMeta, raw);
+          } else {
+            // The pre-write `releaseManagedFieldOnRow` block above already
+            // released the prior `'shared<T>'` rc via SharedRefStore.release;
+            // here we retain the new value so net rc delta is +1 / 0 / -1 per
+            // M4 invariant (set: -1+1=0; spawn: 0+1=+1; despawn: -1).
+            col.view[row] = raw as number;
+            if (fieldType.startsWith('asset<') && raw != null && raw !== 0) {
+              this.assets?.retain(raw as number, fieldType.slice(6, -1)).unwrap();
+            }
+            if (fieldType.startsWith('shared<') && (raw as number) !== 0) {
+              this.retainSharedScalarHandle(raw as number, component.name, fieldName);
+            }
+          }
+        }
+        // Scalars are owned column values: compare the stored representation,
+        // including f32 rounding and integer conversion.
+        changed ||= !Object.is(previous, col.view[row]);
+      }
+      if (markChanged && changed) this.markComponentChanged(entity, component);
+      return ok(undefined);
+    } finally {
+      heldAssets.value?.();
     }
-    if (markChanged && changed) this.markComponentChanged(entity, component);
-    return ok(undefined);
   }
 
   // ──────────────────────────────────────────────────────────────────────────
@@ -2296,8 +2466,13 @@ export class World {
       // Relationship insertion is part of the same publication boundary. A
       // target-side storage failure poisons the World; it must not leave a
       // components-added epoch/evidence record that claims the edge exists.
-      this.internalmarkComponentsAdded(entity, [componentId(componentData.component)]);
-      this.advanceStructureEpoch();
+      try {
+        this.internalmarkComponentsAdded(entity, [componentId(componentData.component)]);
+        this.advanceStructureEpoch(entity);
+      } catch (cause) {
+        this.poisonAfterEntityMutation('World.addComponent', cause);
+        throw cause;
+      }
     }
     return ok(undefined);
   }
@@ -2410,8 +2585,14 @@ export class World {
       this.migrateEntity(rec, srcArch, targetArch);
     }
     if (!internal) {
-      this.internalnextMutationEpoch();
-      this.advanceStructureEpoch();
+      try {
+        this.internalnextMutationEpoch();
+        this.advanceStructureEpoch(entity);
+        this.forgetComponentChangeIndex(entity, localId);
+      } catch (cause) {
+        this.poisonAfterEntityMutation('World.removeComponent', cause);
+        throw cause;
+      }
     }
     return ok(undefined);
   }
@@ -2512,7 +2693,7 @@ export class World {
         componentId(EntityComponent),
         ...componentDatas.map((cd) => componentId(cd.component)),
       ]);
-      this.advanceStructureEpoch();
+      this.advanceStructureEpoch(entity);
       return ok(undefined);
     } catch (error) {
       if (storageTouched) this.poisonAfterEntityMutation('World.materializeEntity', error);
@@ -2808,9 +2989,10 @@ export class World {
           // Relationship target arrays are a read-only projection. Keep the
           // public component snapshot detached so mutating the returned view
           // cannot bypass the World-owned mirror/index path.
-          (out as Record<string, unknown>)[fieldName] = isRelationshipTarget(component)
-            ? materialized.slice()
-            : materialized;
+          (out as Record<string, unknown>)[fieldName] =
+            isRelationshipTarget(component) || arrayMeta.elementType.startsWith('asset<')
+              ? materialized.slice()
+              : materialized;
         } else {
           (out as Record<string, unknown>)[fieldName] = raw;
         }
@@ -2926,6 +3108,9 @@ export class World {
           // alloc-grant rc=1 stays held by the producer (e.g. AssetRegistry);
           // each ECS holder bumps rc via this retain so despawn / overwrite
           // releases bring rc back symmetrically. Sentinel slot 0 is a no-op.
+          if (fieldType.startsWith('asset<') && raw != null && raw !== 0) {
+            this.assets?.retain(raw as number, fieldType.slice(6, -1)).unwrap();
+          }
           if (fieldType.startsWith('shared<') && (raw as number) !== 0) {
             this.retainSharedScalarHandle(raw as number, component.name, fieldName);
           }
@@ -2973,6 +3158,10 @@ export class World {
       // the store, not a separate top-level branch (architecture-principles
       // §1 SSOT — meta key = release semantics).
       const handleU32 = col.view[row] as number;
+      if (fieldType.startsWith('asset<')) {
+        releaseAssetReference(this.assets, handleU32);
+        return;
+      }
       if (fieldType.startsWith('shared<')) {
         this.releaseSharedRefHandle(handleU32, component.name, fieldName);
         return;
@@ -2996,6 +3185,7 @@ export class World {
       const arrayMeta = componentDefinition(component).fields[fieldName]?.arrayMeta;
       if (arrayMeta === undefined) return;
       const isSharedElement = arrayMeta.elementType.startsWith('shared<');
+      const isAssetElement = arrayMeta.elementType.startsWith('asset<');
       if (arrayMeta.length === undefined) {
         // Variable `array<T>`: BufferPool slot id in primary column + live
         // count in `<fieldName>:count` sidecar. For `array<shared<T>>`,
@@ -3004,11 +3194,12 @@ export class World {
         // are only valid until the slot is recycled).
         const slotId = col.view[row] as number;
         const countCol = col?.countField === undefined ? undefined : fieldCols.get(col.countField);
-        if (isSharedElement && slotId !== 0) {
+        if ((isSharedElement || isAssetElement) && slotId !== 0) {
           const liveCount = countCol !== undefined ? (countCol.view[row] as number) : 0;
           const slotView = liveCount > 0 ? this.bufferPool.view(slotId) : null;
           if (slotView !== null && slotView.byteLength > 0) {
-            this.releaseSharedArrayElements(slotView, liveCount);
+            if (isAssetElement) this.releaseAssetArrayElements(slotView, liveCount);
+            else this.releaseSharedArrayElements(slotView, liveCount);
           }
         }
         this.releaseManagedBufferSlot(slotId);
@@ -3020,12 +3211,13 @@ export class World {
       // BufferPool slot to release. For `array<shared<T>,N>`, walk the N
       // inline elements and release each shared handle. Zero the row
       // window so subsequent writes do not double-release.
-      if (isSharedElement) {
+      if (isSharedElement || isAssetElement) {
         const arity = col.arity;
         const elementBytes = col.view.BYTES_PER_ELEMENT;
         const rowByteOffset = col.view.byteOffset + row * arity * elementBytes;
         const rowBytes = new Uint8Array(col.view.buffer, rowByteOffset, arity * elementBytes);
-        this.releaseSharedArrayElements(rowBytes, arity);
+        if (isAssetElement) this.releaseAssetArrayElements(rowBytes, arity);
+        else this.releaseSharedArrayElements(rowBytes, arity);
         rowBytes.fill(0);
       }
     }
@@ -3050,17 +3242,13 @@ export class World {
     this.routeError(r.error, ctx);
   }
 
-  /** Release one shared-ref handle, preserving builtin slots and refcounts. */
+  /** Release one shared-ref handle; only the empty sentinel is ignored. */
   private releaseSharedRefHandle(
     handleU32: number,
     componentName: string,
     fieldName: string,
   ): void {
-    // feat-20260614 M6 D-15 / R-14: builtin slots (< BUILTIN_BASE, including the
-    // sentinel 0) are process-static and never reference-counted -> short-circuit
-    // before touching SharedRefStore. This single guard is the SSOT for both the
-    // scalar arm (here) and the array-element arm (releaseSharedArrayElements).
-    if (handleU32 < BUILTIN_BASE) return;
+    if (handleU32 === 0) return;
     const r = this.sharedRefs.release(toShared<string>(handleU32));
     if (r.ok) return;
     const ctx: ErrorContext = {
@@ -3075,10 +3263,7 @@ export class World {
     componentName: string,
     fieldName: string,
   ): void {
-    // feat-20260614 M6 D-15 / R-14: builtin slots (< BUILTIN_BASE, including the
-    // sentinel 0) short-circuit — process-static, never reference-counted. SSOT
-    // guard shared with the array-element arm (retainSharedArrayElements).
-    if (handleU32 < BUILTIN_BASE) return;
+    if (handleU32 === 0) return;
     const r = this.sharedRefs.retain(toShared<string>(handleU32));
     if (r.ok) return;
     const ctx: ErrorContext = {
@@ -3150,6 +3335,7 @@ export class World {
     if (
       !isVariable &&
       metaKey !== 'shared' &&
+      metaKey !== 'asset' &&
       col.view instanceof meta.viewCtor &&
       (raw == null || Array.isArray(raw) || raw instanceof meta.viewCtor)
     ) {
@@ -3237,6 +3423,8 @@ export class World {
       // element. Caller releases priors via `releaseManagedFieldOnRow` on
       // the set path (D-3 calling convention); the spawn path's fresh row
       // is zero-initialised so no priors exist.
+      if (metaKey === 'asset' && copyLen > 0)
+        this.retainAssetArrayElements(rowBytes, copyLen >>> 2);
       if (metaKey === 'shared' && copyLen > 0) {
         this.retainSharedArrayElements(rowBytes, copyLen >>> 2);
       }
@@ -3282,6 +3470,8 @@ export class World {
     // retain each non-sentinel handle. Prior elements were released by the
     // caller via `releaseManagedFieldOnRow` on the set path (D-3 calling
     // convention); the spawn path has no priors.
+    if (metaKey === 'asset' && effectiveCount > 0)
+      this.retainAssetArrayElements(slot.view, effectiveCount);
     if (metaKey === 'shared' && effectiveCount > 0) {
       this.retainSharedArrayElements(slot.view, effectiveCount);
     }
@@ -3296,13 +3486,22 @@ export class World {
    *
    * Helper-internal -- only called from `writeArrayField`'s `'shared'` arm.
    */
+  private retainAssetArrayElements(bytes: Uint8Array, count: number): void {
+    const view = new Uint32Array(bytes.buffer, bytes.byteOffset, count);
+    for (const handle of view) if (handle !== 0) this.assets?.retain(handle).unwrap();
+  }
+
+  private releaseAssetArrayElements(bytes: Uint8Array, count: number): void {
+    const view = new Uint32Array(bytes.buffer, bytes.byteOffset, count);
+    for (const handle of view) releaseAssetReference(this.assets, handle);
+  }
+
   private retainSharedArrayElements(bytes: Uint8Array, count: number): void {
     const view = new Uint32Array(bytes.buffer, bytes.byteOffset, count);
     for (let i = 0; i < count; i++) {
       const raw = view[i];
       if (raw === undefined) continue;
-      // R-14: route through the scalar SSOT helper so the `< BUILTIN_BASE`
-      // short-circuit (builtin slots + sentinel 0) lives in exactly one place.
+      // Scalar and array fields share the same lifetime checks.
       this.retainSharedScalarHandle(raw, 'array<shared<T>>', 'element');
     }
   }
@@ -3319,8 +3518,7 @@ export class World {
     for (let i = 0; i < count; i++) {
       const raw = view[i];
       if (raw === undefined) continue;
-      // R-14: route through the scalar SSOT helper so the `< BUILTIN_BASE`
-      // short-circuit (builtin slots + sentinel 0) lives in exactly one place.
+      // Scalar and array fields share the same lifetime checks.
       this.releaseSharedRefHandle(raw, 'array<shared<T>>', 'element');
     }
   }
@@ -3430,12 +3628,7 @@ export class World {
         );
       }
       if (targetComponentStorage !== undefined) {
-        copyComponentEpoch(
-          srcComponentStorage.epochs,
-          oldTableRow,
-          targetComponentStorage.epochs,
-          newTableRow,
-        );
+        targetComponentStorage.added[newTableRow] = srcComponentStorage.added[oldTableRow] ?? 0;
       }
     }
 
@@ -3509,6 +3702,12 @@ export class World {
         this.removeArchetypeMembership(archetype, archetypeRow);
         this.removeTableMembership(table, tableRow);
       }
+      // Publish only an accepted mutation, before this slot can be reused or
+      // recursive child retirement advances the World's epoch again.
+      this.internalnextMutationEpoch();
+      this.advanceStructureEpoch(entity);
+      for (const component of archetype?.components ?? [])
+        this.forgetComponentChangeIndex(entity, componentId(component));
       record.archetypeId = -1;
       record.archetypeRow = -1;
       record.generation += 1;
@@ -3517,8 +3716,6 @@ export class World {
         const childResult = this.despawnEntity(child, true);
         if (!childResult.ok) return childResult;
       }
-      this.internalnextMutationEpoch();
-      this.advanceStructureEpoch();
       return ok(undefined);
     } catch (error) {
       if (mutationStarted) this.poisonAfterEntityMutation('World.despawn', error);

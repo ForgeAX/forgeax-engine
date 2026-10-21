@@ -6,18 +6,13 @@
 // (charter proposition 5 consistent abstraction + proposition 3 machine-
 // readable union > prose).
 //
-// feat-20260517-merge-mesh-renderer-material-renderer M2 / w3:
-//   MeshRenderer collapses to a single `material` field with brand
-//   `Handle<'MaterialAsset','shared'>` (twoParam phantom). The
-//   schema is upgraded to `'shared<MaterialAsset>'`; the legacy
-//   material-binding component (token / file / data alias) is
-//   physically gone. AC-04 / AC-05 literals follow plan-strategy
-//   decision §2.6.
+// Asset schema fields infer AssetHandle<kind>; MeshRenderer owns the
+// `array<asset<material>>` binding list without a second component.
 
 import type { InputShapeOf, SchemaOf, ShapeOf } from '@forgeax/engine-ecs';
 import type { Camera, DirectionalLight, MeshFilter, MeshRenderer } from '@forgeax/engine-render';
 import type { ChildOf, GlobalTransform, Transform } from '@forgeax/engine-scene';
-import type { Handle } from '@forgeax/engine-types';
+import type { AssetHandle, Handle } from '@forgeax/engine-types';
 import { describe, expectTypeOf, it } from 'vitest';
 
 describe('w7 type-level - 5 component schemas yield exact data shapes via ShapeOf', () => {
@@ -42,10 +37,10 @@ describe('w7 type-level - 5 component schemas yield exact data shapes via ShapeO
     expectTypeOf<Input['shear']>().toEqualTypeOf<Float32Array | readonly number[]>();
   });
 
-  it("MeshFilter data shape has 1 Handle<'MeshAsset','shared'> field (assetHandle; M5 / w19)", () => {
+  it("MeshFilter data shape has 1 AssetHandle<'mesh'> field (assetHandle; M5 / w19)", () => {
     type Data = ShapeOf<SchemaOf<typeof MeshFilter>>;
     expectTypeOf<keyof Data>().toEqualTypeOf<'assetHandle'>();
-    expectTypeOf<Data['assetHandle']>().toEqualTypeOf<Handle<'MeshAsset', 'shared'>>();
+    expectTypeOf<Data['assetHandle']>().toEqualTypeOf<AssetHandle<'mesh'>>();
   });
 
   it('MeshRenderer data shape carries materials, lighting, bounds and pipeline preparation', () => {
@@ -53,7 +48,7 @@ describe('w7 type-level - 5 component schemas yield exact data shapes via ShapeO
     expectTypeOf<keyof Data>().toEqualTypeOf<
       'materials' | 'lightingChannels' | 'conservativeSkinBounds' | 'preparePipelines'
     >();
-    expectTypeOf<Data['materials']>().toEqualTypeOf<readonly Handle<'MaterialAsset', 'shared'>[]>();
+    expectTypeOf<Data['materials']>().toEqualTypeOf<readonly AssetHandle<'material'>[]>();
     expectTypeOf<Data['lightingChannels']>().toEqualTypeOf<number>();
     expectTypeOf<Data['conservativeSkinBounds']>().toEqualTypeOf<boolean>();
     expectTypeOf<Data['preparePipelines']>().toEqualTypeOf<boolean>();
@@ -68,7 +63,7 @@ describe('w7 type-level - 5 component schemas yield exact data shapes via ShapeO
     type SpawnData = Partial<ShapeOf<SchemaOf<typeof MeshRenderer>>>;
     // AC-04 application point: brand-undefined union surfaces at the call site.
     expectTypeOf<SpawnData['materials']>().toEqualTypeOf<
-      readonly Handle<'MaterialAsset', 'shared'>[] | undefined
+      readonly AssetHandle<'material'>[] | undefined
     >();
     // empty payload is a valid SpawnData (case B).
     const empty: SpawnData = {};
@@ -132,7 +127,7 @@ describe('w7 type-level - 5 component schemas yield exact data shapes via ShapeO
     expectTypeOf<Data['whitePoint']>().toEqualTypeOf<number>();
     expectTypeOf<Data['temperature']>().toEqualTypeOf<number>();
     expectTypeOf<Data['tint']>().toEqualTypeOf<number>();
-    expectTypeOf<Data['colorLut']>().toEqualTypeOf<Handle<'TextureAsset', 'shared'>>();
+    expectTypeOf<Data['colorLut']>().toEqualTypeOf<AssetHandle<'texture'>>();
     expectTypeOf<Data['colorLutStrength']>().toEqualTypeOf<number>();
     expectTypeOf<Data['transparency']>().toEqualTypeOf<number>();
     expectTypeOf<Data['historyVersion']>().toEqualTypeOf<number>();
@@ -168,6 +163,16 @@ describe('w7 type-level - 5 component schemas yield exact data shapes via ShapeO
       | 'maxPenumbraTexels'
       | 'staggerCascades'
       | 'contactShadowLength'
+      | 'shadowMapAspect'
+      | 'shadowCasterChannels'
+      | 'shadowAutoUpdate'
+      | 'shadowRevision'
+      | 'shadowProjection'
+      | 'shadowViewProjection'
+      | 'shadowBiasMode'
+      | 'shadowRadius'
+      | 'shadowIntensity'
+      | 'shadowBlurSamples'
     >();
     expectTypeOf<Data['direction']>().toEqualTypeOf<Float32Array>();
     expectTypeOf<Data['color']>().toEqualTypeOf<Float32Array>();

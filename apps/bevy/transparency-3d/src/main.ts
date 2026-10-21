@@ -22,7 +22,9 @@ async function bootstrap(target: HTMLCanvasElement): Promise<void> {
     return;
   }
   const app = result.value;
-  const scene = buildTransparencyWorld(app.world, target.width / Math.max(target.height, 1));
+  const assets = app.assets;
+  if (assets === undefined) throw new Error('asset owner unavailable');
+  const scene = buildTransparencyWorld(app.world, assets, target.width / Math.max(target.height, 1));
   app.world.addSystem(Update, {
     name: 'fade-transparency',
     queries: [],
@@ -30,7 +32,7 @@ async function bootstrap(target: HTMLCanvasElement): Promise<void> {
       const elapsed = world.hasResource('Time')
         ? world.getResource<{ dt: number; elapsed: number }>(Time).elapsed
         : 0;
-      stepTransparencyAlpha(world, scene, elapsed);
+      stepTransparencyAlpha(assets, scene, elapsed);
     },
   });
   app.onError((error) => console.error('[bevy-transparency-3d] app error:', error.code, error.hint));

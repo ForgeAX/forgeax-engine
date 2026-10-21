@@ -81,7 +81,7 @@ describe('RenderGraph fixed temporal regressions', () => {
       writes: [],
       encode: ({ pass }) => pass.dispatchWorkgroups(1),
     });
-    expect(graph.compile({ backendKind: 'null', caps: device.caps, device }).ok).toBe(true);
+    expect(graph.compile({ caps: device.caps, device }).ok).toBe(true);
     const encoder = device.createCommandEncoder({ label: 'facade-compute' }).unwrap();
     graph.execute({ encoder, external: device.createBuffer({ size: 16, usage: 0x40 }).unwrap() });
     expect(encoder.finish().ok).toBe(true);
@@ -101,7 +101,7 @@ describe('RenderGraph fixed temporal regressions', () => {
       },
       after: () => events.push('after'),
     });
-    expect(graph.compile({ backendKind: 'null', caps: device.caps, device }).ok).toBe(true);
+    expect(graph.compile({ caps: device.caps, device }).ok).toBe(true);
     const rawEncoder = device.createCommandEncoder({ label: 'timed-compute' }).unwrap();
     const encoder = {
       beginComputePass: (...args: Parameters<RhiCommandEncoder['beginComputePass']>) => {

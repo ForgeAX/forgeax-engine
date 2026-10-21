@@ -1,4 +1,6 @@
 #!/usr/bin/env node
+import { constructRuntimeRendererHost } from '@forgeax/engine-runtime/internal/renderer-host';
+let smokeAssets;
 import testQuality from '../../../../scripts/test/render-quality.json' with { type: 'json' };
 import { createSmokeRenderer, drawSmokeFrame, rendererBackend, subscribeSmokeErrors } from "../../scripts/renderer-smoke.mjs";
 // Headless Dawn smoke for the component_hooks reproduction.
@@ -62,13 +64,15 @@ const { createRenderer } = await import('@forgeax/engine-runtime');
 const { buildComponentHooksWorld, readComponentHooksState } = await import(resolve(here, '..', 'src', 'component-hooks.ts'));
 let renderer;
 try {
-  renderer = await createSmokeRenderer(createRenderer, canvas, {}, { shaderManifestUrl: manifestUrl });
+  const hostResult = await constructRuntimeRendererHost(canvas, {}, { shaderManifestUrl: manifestUrl });
+if (!hostResult.ok) throw hostResult.error;
+({ renderer, assets: smokeAssets } = hostResult.value);
 } finally {
   globalThis.navigator.gpu.requestAdapter = originalRequestAdapter;
 }
 const errors = [];
 subscribeSmokeErrors(renderer, (error) => errors.push(error.code));
-const world = new World();
+const world = new World({ assets: smokeAssets });
 const worldAttachment1 = renderer.attach(world);
 if (!worldAttachment1.ok) throw worldAttachment1.error;
 const state = buildComponentHooksWorld(world);

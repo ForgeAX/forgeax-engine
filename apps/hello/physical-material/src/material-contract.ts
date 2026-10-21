@@ -28,7 +28,7 @@ export function physicalMaterialChild(material: MaterialAsset, module: string): 
   if (root === undefined) throw new Error(`Unknown physical material contract: ${module}`);
   return {
     kind: 'material',
-    parent: root.parent,
+    parent: root.guid,
     values: Object.fromEntries(
       Object.entries(material.values ?? {}).filter(([name]) =>
         root.material.parameters?.some((parameter) => parameter.name === name),
@@ -55,7 +55,7 @@ export function withPhysicalMaterialModule(material: MaterialAsset, module: stri
     ...material,
     parameters: contract.parameters ?? [],
     values: Object.fromEntries(
-      Object.entries(material.values ?? {}).filter(([name]) =>
+      Object.entries({ ...contract.values, ...material.values }).filter(([name]) =>
         contract.parameters?.some((parameter) => parameter.name === name),
       ),
     ),

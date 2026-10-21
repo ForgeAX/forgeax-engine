@@ -165,7 +165,6 @@ const recorder=performanceRun?undefined:unwrap(attachRecorder(webgpu));
 const rhi=recorder===undefined?webgpu.rhi:Object.assign(Object.create(recorder.backend.rhi),{
   createShaderModule:recorder.backend.createShaderModule,createShaderModuleImmediate:recorder.backend.createShaderModuleImmediate,
 });
-const world=new World();
 const host=createVfxRuntimeHost({camera:fieldCamera});
 if(performanceRun){
   const extract=host.feature.extract.bind(host.feature);
@@ -182,6 +181,7 @@ const assembly=unwrap(await constructRuntimeRendererHost(shim.mockCanvas,{
   ...(recorder?{rhiInstrumentation:{resolveSurfaceDevice:recorder.backend.unwrapDeviceForSurface}}:{gpuPassTiming:{}}),
 },{shaderManifestUrl:`data:application/json,${encodeURIComponent(JSON.stringify(manifest))}`}));
 const {renderer,assets}=assembly;
+const world=new World({assets});
 const device=shim.sharedDevice;
 const coldRendererMs=performance.now()-constructionStart;
 const app=unwrap(await createApp({ platform: createSmokePlatform({ width: 1, height: 1 }, { manual: true }), renderer,world,assets,plugins:[scenePlugin()],...(profiler?{profiler}:{})}));
@@ -228,7 +228,7 @@ try{
     assert(receipt,'App step must produce a FrameReceipt');
     const updated=updateFinished;
     const recorded=performance.now();unwrap(await receipt.completed);const completed=performance.now();
-    frames.push({frame,simulationTicks,...(performanceRun?{}:{simulationUpdates:simulationUpdates-priorUpdates,expectedUpdates:sceneEffectEmitterCount()*ticks}),rendererSubmissions:queueSubmissions-priorSubmissions,...(performanceRun?{}:{feature:host.feature.inspect(),views:renderer.inspect().views})});
+    frames.push({frame,simulationTicks,fieldUpload:{calls:fieldUploads-priorFieldUploads,bytes:fieldUploadBytes-priorFieldBytes},...(performanceRun?{}:{simulationUpdates:simulationUpdates-priorUpdates,expectedUpdates:sceneEffectEmitterCount()*ticks}),rendererSubmissions:queueSubmissions-priorSubmissions,...(performanceRun?{}:{feature:host.feature.inspect(),views:renderer.inspect().views})});
     if(performanceRun){
       const timing=unwrap(await renderer.observe(receipt,{include:['timings']})).timings;
       samples.push({frame,fieldUpload:{calls:fieldUploads-priorFieldUploads,bytes:fieldUploadBytes-priorFieldBytes,cpuEnqueueMs:fieldUploadCpuMs-priorFieldUploadCpuMs},vfxExtractionCpuMs:vfxExtractCpuMs-priorExtractCpuMs,startMicros:Math.floor(start*1000),cpu:{updateMs:updated-start,prepareRecordMs:recorded-updated,completionWaitMs:completed-recorded,frameMs:completed-start},timing,intervals:timing?.status==='complete'?gpuIntervals(timing.frame):null,hostLoad:{loadavg:loadavg(),freeMemory:freemem()}});
@@ -245,7 +245,7 @@ try{
     const profileModel=unwrap(buildProfileModel(profile));
     writeFileSync(resolve(output,'cpu-profile.json'),JSON.stringify(profile,null,2));
     report.profile=profileModel;
-    assert.equal(profileModel.completeness.status,'complete');
+    assert.equal(profileModel.summary.completeness.status,'complete');
     const phaseSamples=new Map();
     for(const record of profile.records)if(record.kind==='phase'&&record.startMicros>=samples[30].startMicros){
       const name=`${record.source}/${record.parentPhase??''}/${record.phase}`;
@@ -356,7 +356,10 @@ try{
       assert(maxError<=2e-4,`independent oracle error ${maxError}`);
       assert(beforeError<=2e-4,`independent pre-update oracle error ${beforeError}`);
       assert(replayPixelError<=.05,`fresh-device replay pixels ${replayPixelError}`);
-      assert.equal(fieldUploads,key==='off'?0:key==='shared'?2:1,'unchanged field uploads once per emitter generation');
+      const preparedFields=[...fieldBuffers.values()].filter(info=>!info.name.includes('.upload.'));
+      assert.equal(preparedFields.length,key==='off'?0:key==='shared'?2:1,'one retained field buffer per emitter generation');
+      assert.equal(fieldUploadBytes,preparedFields.reduce((bytes,info)=>bytes+info.size,0),'metadata and sample slices upload the field bytes exactly once');
+      assert(frames.slice(1).every(frame=>frame.fieldUpload.calls===0&&frame.fieldUpload.bytes===0),'unchanged fields upload zero bytes after first presentation');
     }finally{
       try{if(replay!==undefined)unwrap(await replay.dispose());}
       finally{nativeReplayDevice.destroy();}

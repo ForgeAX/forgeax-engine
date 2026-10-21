@@ -1,3 +1,4 @@
+import type { AssetRegistry } from '@forgeax/engine-assets-runtime';
 import type { World } from '@forgeax/engine-ecs';
 import { createPrimitiveMesh } from '@forgeax/engine-geometry';
 import {
@@ -10,14 +11,16 @@ import {
 } from '@forgeax/engine-preview';
 import { Camera, MeshFilter, MeshRenderer, TONEMAP_NONE } from '@forgeax/engine-render';
 import { Transform } from '@forgeax/engine-scene';
-import type { EquirectAsset, TextureAsset } from '@forgeax/engine-types';
+import type { AssetHandle } from '@forgeax/engine-types';
 
 /** A normal material/mesh consumer; residency, mip generation and submission stay with Renderer. */
 export function createTextureWorkspacePreview(
   world: World,
-  asset: TextureAsset | EquirectAsset,
+  assets: AssetRegistry,
+  assetHandle: AssetHandle<'texture' | 'equirect'>,
   options: Partial<TextureViewOptions> = {},
 ) {
+  const asset = assets.read(assetHandle).unwrap();
   let info = describeTextureView(asset);
   info = { ...info, options: validateTextureViewOptions(info, options) };
   const material = createTextureViewMaterial(info.dimension);
@@ -37,10 +40,15 @@ export function createTextureWorkspacePreview(
     if (failures.length) throw new AggregateError(failures, 'Texture preview cleanup failed');
   };
   try {
-    const textureHandle = world.allocSharedRef('TextureAsset', textureViewSource(asset));
-    disposers.push(() => world.sharedRefs.release(textureHandle).unwrap());
-    const meshHandle = world.allocSharedRef('MeshAsset', createPrimitiveMesh('quad').unwrap());
-    disposers.push(() => world.sharedRefs.release(meshHandle).unwrap());
+    assets.retain(assetHandle).unwrap();
+    disposers.push(() => assets.release(assetHandle).unwrap());
+    const textureHandle =
+      asset.kind === 'texture'
+        ? (assetHandle as AssetHandle<'texture'>)
+        : assets.create(textureViewSource(asset)).unwrap();
+    if (textureHandle !== assetHandle) disposers.push(() => assets.release(textureHandle).unwrap());
+    const meshHandle = assets.create(createPrimitiveMesh('quad').unwrap()).unwrap();
+    disposers.push(() => assets.release(meshHandle).unwrap());
     const values = (options: TextureViewOptions) => ({
       ...material.values,
       sourceTexture: textureHandle,
@@ -65,11 +73,13 @@ export function createTextureWorkspacePreview(
         0,
       ],
     });
-    let materialHandle = world.allocSharedRef('MaterialAsset', {
-      ...material,
-      values: values(info.options),
-    });
-    disposers.push(() => world.sharedRefs.release(materialHandle).unwrap());
+    const materialHandle = assets
+      .create({
+        ...material,
+        values: values(info.options),
+      })
+      .unwrap();
+    disposers.push(() => assets.release(materialHandle).unwrap());
     const entity = world
       .spawn(
         { component: Transform, data: {} },
@@ -107,17 +117,7 @@ export function createTextureWorkspacePreview(
       set(patch) {
         assertOpen();
         const options = validateTextureViewOptions(info, patch);
-        const next = world.allocSharedRef('MaterialAsset', {
-          ...material,
-          values: values(options),
-        });
-        const changed = world.set(entity, MeshRenderer, { materials: [next] });
-        if (!changed.ok) {
-          world.sharedRefs.release(next).unwrap();
-          throw changed.error;
-        }
-        world.sharedRefs.release(materialHandle).unwrap();
-        materialHandle = next;
+        assets.update(materialHandle, { values: values(options) }).unwrap();
         info = { ...info, options };
         return structuredClone(info);
       },

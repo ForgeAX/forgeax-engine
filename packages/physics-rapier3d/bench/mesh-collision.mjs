@@ -1,3 +1,5 @@
+import { AssetRegistry } from '@forgeax/engine-assets-runtime';
+import { runtimeAssetRegistry } from '@forgeax/engine-assets-runtime/internal';
 import { performance } from 'node:perf_hooks';
 import { arch, cpus, platform } from 'node:os';
 import { World } from '@forgeax/engine-ecs';
@@ -58,15 +60,15 @@ for (const workload of [
   'active-world-ticks',
 ])
   for (const kind of ['cuboid', 'convexHull']) {
-    const world = new World();
+    const world = new World({ assets: new AssetRegistry() });
     world.components.register(Transform).unwrap();
     world.components.register(GlobalTransform).unwrap();
     registerPhysicsComponents(world);
     const meshSource = createBoxGeometry(1, 1, 1).unwrap();
-    const mesh = world.sharedRefs.alloc('MeshAsset', {
+    const mesh = runtimeAssetRegistry(world.assets).create({
       ...meshSource,
       collision: buildMeshCollision(meshSource).unwrap(),
-    });
+    }).unwrap();
     const count = 256;
     if (workload !== 'isolated')
       world

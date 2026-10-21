@@ -1,3 +1,4 @@
+import { AssetRegistry } from '@forgeax/engine-assets-runtime';
 import { World } from '@forgeax/engine-ecs';
 import { createBoxGeometry } from '@forgeax/engine-geometry';
 import {
@@ -27,9 +28,10 @@ function deferred<T>() {
   return { promise, resolve };
 }
 function sourceFixture() {
-  const world = new World();
+  const assets = new AssetRegistry();
+  const world = new World({ assets });
   const mesh = createBoxGeometry(1, 1, 1).unwrap();
-  const meshHandle = world.allocSharedRef('MeshAsset', mesh);
+  const meshHandle = assets.create(mesh).unwrap();
   const messages: MeshResidencyRequest[] = [];
   let session: { source: string; epoch: number; generation: number } | undefined = {
     ...identity,
@@ -53,12 +55,13 @@ function sourceFixture() {
     });
   return {
     world,
+    assets,
     mesh,
     meshHandle,
     messages,
     source,
     respond,
-    input: { world, entity: 42, meshHandle, mesh },
+    input: { world, entity: 42, meshHandle, mesh, assetRevision: 1 },
     session: (value: typeof session) => {
       session = value;
     },
@@ -311,7 +314,7 @@ it('preserves receiver refusal details and escalates unknown throws without a re
     identity,
     post,
   );
-  const input = { ...identity, meshHandle: f.meshHandle, mesh: f.mesh };
+  const input = { ...identity, meshHandle: f.meshHandle, mesh: f.mesh, revision: 1 };
   await receiver.receive({ kind: 'mesh-prepare', requestId: 1, input });
   expect(prepare).toHaveBeenCalledWith(input, 'received', { signal: expect.any(AbortSignal) });
   expect(post).toHaveBeenCalledWith(
@@ -434,7 +437,7 @@ it('bounds receiver preparations independently from source admission', async () 
     identity,
     post,
   );
-  const input = { ...identity, meshHandle: f.meshHandle, mesh: f.mesh };
+  const input = { ...identity, meshHandle: f.meshHandle, mesh: f.mesh, revision: 1 };
   const pending = Array.from({ length: 32 }, (_, index) =>
     receiver.receive({ kind: 'mesh-prepare', requestId: index + 1, input }),
   );
@@ -491,7 +494,7 @@ it.each([
     identity,
     post,
   );
-  const input = { ...identity, meshHandle: f.meshHandle, mesh: f.mesh };
+  const input = { ...identity, meshHandle: f.meshHandle, mesh: f.mesh, revision: 1 };
   const firstLease = ok({
     deviceGeneration: 7,
     release: () => fence.promise,
@@ -556,7 +559,7 @@ it.each([
         kind: 'mesh-prepare',
         requestId,
         entity: requestId,
-        input: { ...identity, meshHandle: f.meshHandle, mesh: f.mesh },
+        input: { ...identity, meshHandle: f.meshHandle, mesh: f.mesh, revision: 1 },
       });
     } else {
       const pending = f.source.prepare({ ...f.input, entity: requestId });
@@ -619,7 +622,7 @@ it.each([true, false])('drains preparation cancelled before ready with evict=%s'
     kind: 'mesh-prepare',
     requestId: 1,
     entity: 42,
-    input: { ...identity, meshHandle: f.meshHandle, mesh: f.mesh },
+    input: { ...identity, meshHandle: f.meshHandle, mesh: f.mesh, revision: 1 },
   });
   const released = receiver.receive({ kind: 'mesh-release', requestId: 1, identity, evict });
   upload.resolve(ok({ deviceGeneration: 7, release } as unknown as PreparedPublishedMeshResidency));
@@ -694,7 +697,7 @@ it.each([
 
 it('refuses a batch member when every credit is a held standalone lease', async () => {
   const f = sourceFixture(),
-    input = { world: f.world, meshHandle: f.meshHandle, mesh: f.mesh };
+    input = { world: f.world, meshHandle: f.meshHandle, mesh: f.mesh, assetRevision: 1 };
   const pending = Array.from({ length: 32 }, () => f.source.prepare(input));
   for (let requestId = 1; requestId <= 32; requestId++)
     f.source.receive({
@@ -811,7 +814,7 @@ it('keeps exact entity and mesh evidence across duplicate leases and release fen
   f.source.complete(proof);
   expect(f.source.recordStageLane({ ...candidate, world: new World() })).toBeUndefined();
   expect(f.source.recordStageLane({ ...candidate, entity: 43 })).toBeUndefined();
-  const otherMesh = f.world.allocSharedRef('MeshAsset', createBoxGeometry(2, 1, 1).unwrap());
+  const otherMesh = f.assets.create(createBoxGeometry(2, 1, 1).unwrap()).unwrap();
   expect(f.source.recordStageLane({ ...candidate, meshHandle: otherMesh })).toBeUndefined();
   const first = firstLease.release(true);
   expect(f.source.recordStageLane(candidate)).toBe('gpu');
@@ -859,7 +862,7 @@ it('seals transferable mesh evidence without truncating safe-integer request ide
     kind: 'mesh-prepare',
     requestId: Number.MAX_SAFE_INTEGER,
     entity: 42,
-    input: { ...identity, meshHandle: f.meshHandle, mesh: f.mesh },
+    input: { ...identity, meshHandle: f.meshHandle, mesh: f.mesh, revision: 1 },
   });
   const frame = { frameId: 1, deviceGeneration: 7 } as FrameReceipt;
   const first = receiver.consumed(frame, 1);
@@ -899,7 +902,7 @@ it('reads mesh release generation after its fence without constructing diagnosti
   await receiver.receive({
     kind: 'mesh-prepare',
     requestId: 1,
-    input: { ...identity, meshHandle: f.meshHandle, mesh: f.mesh },
+    input: { ...identity, meshHandle: f.meshHandle, mesh: f.mesh, revision: 1 },
   });
   post.mockClear();
   const releasing = receiver.receive({ kind: 'mesh-release', requestId: 1, identity, evict: true });
@@ -942,7 +945,7 @@ it('skips stale physical evidence without retiring its owner and rechecks recove
       kind: 'mesh-prepare',
       requestId,
       entity: 42,
-      input: { ...identity, meshHandle: f.meshHandle, mesh: f.mesh },
+      input: { ...identity, meshHandle: f.meshHandle, mesh: f.mesh, revision: 1 },
     });
   const frame = { frameId: 1, deviceGeneration: 7 } as FrameReceipt;
   await prepare(1);
@@ -990,7 +993,7 @@ it('retains current-frame rejection and unexpected physical failures after curre
     kind: 'mesh-prepare',
     requestId: 1,
     entity: 42,
-    input: { ...identity, meshHandle: f.meshHandle, mesh: f.mesh },
+    input: { ...identity, meshHandle: f.meshHandle, mesh: f.mesh, revision: 1 },
   });
   expect(
     receiver.consumed({ frameId: 1, deviceGeneration: 7 } as FrameReceipt, 1).bindings,

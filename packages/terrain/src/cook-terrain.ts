@@ -2,30 +2,25 @@ import {
   numMipLevels,
   ok,
   type Result,
+  type TerrainAsset,
   type TerrainError,
   type TerrainMaterialEncoding,
+  type TerrainSection,
   type TerrainSource,
   type TextureAsset,
 } from '@forgeax/engine-types';
+import { terrainHeightAtlas, terrainHeightMipOffset } from './height-atlas.js';
 import { terrainSourceHeightRange } from './height-bounds.js';
-import { terrainHeightRange, terrainHeightTexel, terrainWeightTexel } from './height-packing.js';
+import { terrainHeightTexel, terrainWeightTexel } from './height-packing.js';
 import { cookTerrainIds } from './material-id.js';
 import { terrainFailure, validateTerrain } from './validation.js';
 
-export interface CookedTerrainSection {
-  readonly x: number;
-  readonly z: number;
-  readonly minHeight: number;
-  readonly maxHeight: number;
-  readonly activeLayers: readonly number[];
-  readonly height: TextureAsset;
+export interface CookedTerrainSection
+  extends Pick<TerrainSection, 'x' | 'z' | 'minHeight' | 'maxHeight' | 'activeLayers'> {
   readonly weights: TextureAsset;
 }
-export interface CookedTerrain {
-  readonly source: TerrainSource;
-  readonly materialEncoding: TerrainMaterialEncoding;
-  readonly heightRange: readonly [number, number];
-  readonly heightError: number;
+export interface CookedTerrain extends Pick<TerrainAsset, 'heightRange'> {
+  readonly height: TextureAsset;
   readonly sections: readonly CookedTerrainSection[];
 }
 
@@ -43,11 +38,15 @@ export function cookTerrain(
       ? cookTerrainIds(source, materialEncoding.maxWeightError)
       : undefined;
   if (ids && !ids.ok) return ids;
-  const { min, max, span: range } = terrainSourceHeightRange(source.heights);
+  const { min, max } = terrainSourceHeightRange(source.heights);
   const n = source.subsectionVertices,
     quads = n - 1;
   const sections: CookedTerrainSection[] = [];
   const layerCount = source.layers.length;
+  const atlas = terrainHeightAtlas(source);
+  const height = new Uint8Array(
+    terrainHeightMipOffset(atlas.width, atlas.height, numMipLevels({ width: n, height: n })),
+  );
   for (let sz = 0; sz < (source.rows - 1) / quads; sz++)
     for (let sx = 0; sx < (source.columns - 1) / quads; sx++) {
       const active = new Set<number>();
@@ -74,8 +73,7 @@ export function cookTerrain(
         );
       let byteLength = 0;
       for (let size = n; size >= 1; size /= 2) byteLength += size * size * 4;
-      const height = new Uint8Array(byteLength),
-        weights = ids?.ok ? ids.value[sections.length] : new Uint8Array(byteLength);
+      const weights = ids?.ok ? ids.value[sections.length] : new Uint8Array(byteLength);
       if (weights === undefined)
         return terrainFailure(
           'terrain-layer-invalid',
@@ -89,7 +87,15 @@ export function cookTerrain(
             const fx = sx * quads + (size === 1 ? quads / 2 : (x * quads) / (size - 1));
             const fz = sz * quads + (size === 1 ? quads / 2 : (z * quads) / (size - 1));
             const i = offset + (z * size + x) * 4;
-            height.set(terrainHeightTexel(source, fx, fz, min, range), i);
+            const mip = Math.log2(n / size);
+            const section = sections.length;
+            const pixel =
+              terrainHeightMipOffset(atlas.width, atlas.height, mip) +
+              ((Math.floor(section / atlas.tileColumns) * size + z) * atlas.tileColumns * size +
+                (section % atlas.tileColumns) * size +
+                x) *
+                4;
+            height.set(terrainHeightTexel(source, fx, fz), pixel);
             if (!ids) weights.set(terrainWeightTexel(source, activeLayers, fx, fz), i);
           }
         offset += size * size * 4;
@@ -108,15 +114,19 @@ export function cookTerrain(
         minHeight: low,
         maxHeight: high,
         activeLayers,
-        height: texture(height),
         weights: ids ? { ...texture(weights), mips: { kind: 'none' } } : texture(weights),
       });
     }
   return ok({
-    source,
-    materialEncoding,
-    heightRange: terrainHeightRange(min, max),
-    heightError: range / 65535 / 2,
+    heightRange: [min, max],
+    height: {
+      kind: 'texture',
+      shape: { viewDimension: '2d', extent: { width: atlas.width, height: atlas.height } },
+      format: 'rgba8unorm',
+      data: height,
+      colorSpace: 'linear',
+      mips: { kind: 'packed', levelCount: numMipLevels({ width: n, height: n }) },
+    },
     sections,
   });
 }

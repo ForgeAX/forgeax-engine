@@ -9,10 +9,13 @@ export default defineConfig({
   entry: {
     index: 'src/index.ts',
     materials: 'src/generated/materials.mjs',
+    physical: 'src/generated/physical.mjs',
+    'build/index': 'src/build/materials.ts',
     'addons/controls/OrbitControls': 'src/addons/controls/OrbitControls.ts',
     'addons/loaders/GLTFLoader': 'src/addons/loaders/GLTFLoader.ts',
   },
   splitting: true,
+  external: [/^@forgeax\/engine-/],
   noExternal: [/^three(?:\/|$)/],
   esbuildPlugins: [
     {

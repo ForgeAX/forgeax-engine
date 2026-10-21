@@ -1,5 +1,5 @@
-import { HANDLE_CUBE } from '@forgeax/engine/assets-runtime';
 import { Update } from '@forgeax/engine/ecs';
+import { createBoxGeometry } from '@forgeax/engine/geometry';
 import { Camera, MeshFilter, MeshRenderer, perspective } from '@forgeax/engine/render';
 import { Transform } from '@forgeax/engine/scene';
 
@@ -9,7 +9,7 @@ export default function bootstrap() {
     plugins: [
       {
         name: 'host-runtime-fault-fixture',
-        inject: ['world', 'executionBootstrapHost'],
+        inject: ['world', 'assets', 'executionBootstrapHost'],
         apply(ctx) {
           const world = ctx.world;
           world
@@ -21,13 +21,15 @@ export default function bootstrap() {
               },
             )
             .unwrap();
+          const mesh = ctx.assets.create(createBoxGeometry(1, 1, 1).unwrap()).unwrap();
           world
             .spawn(
               { component: Transform, data: {} },
-              { component: MeshFilter, data: { assetHandle: HANDLE_CUBE } },
+              { component: MeshFilter, data: { assetHandle: mesh } },
               { component: MeshRenderer, data: {} },
             )
             .unwrap();
+          ctx.assets.release(mesh).unwrap();
           let fail = false;
           const port = ctx.executionBootstrapHost.port;
           const receive = ({ data }) => {

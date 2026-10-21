@@ -1,6 +1,6 @@
 import { AssetRegistry } from '@forgeax/engine/assets-runtime';
 import { parseKtx2 } from '@forgeax/engine/codec';
-import { deriveTextureLayout, type TextureAsset } from '@forgeax/engine/types';
+import { deriveTextureLayout } from '@forgeax/engine/types';
 import { errorCode, installMemoryPack } from '../../features/asset-formats/fixtures/memory-pack';
 import { defineFeature } from '../../lab/feature';
 import { CHECKER_PNG, importImage, TEXTURE_SUB, texturePayload } from './support/image-import';
@@ -40,9 +40,9 @@ export default defineFeature({
 
     const asset = compressed.ok ? compressed.assets[0] : undefined;
     if (asset !== undefined && body !== undefined) {
-      const registry = new AssetRegistry({} as never);
+      const registry = new AssetRegistry({ shaderRegistry: {} as never });
       registry.transcodeCaps = { bc: true, etc2: false, astc: false };
-      installMemoryPack(registry, [
+      await installMemoryPack(registry, [
         {
           guid: asset.guid,
           kind: 'texture',
@@ -57,7 +57,8 @@ export default defineFeature({
           },
         },
       ]);
-      const loaded = await registry.loadByGuid<TextureAsset>(registry.parseGuid(asset.guid));
+      const handle = await registry.load(asset.guid, 'texture');
+      const loaded = handle.ok ? registry.read(handle.value) : handle;
       checks.ok(
         'runtime loads the compressed texture',
         loaded.ok,

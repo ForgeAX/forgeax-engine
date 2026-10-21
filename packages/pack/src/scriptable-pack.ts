@@ -8,6 +8,7 @@ import type { PackOutput } from './pack-authoring.js';
  */
 export * from './guid.js';
 export * from './pack-authoring.js';
+export * from './pack-parameter-bindings.js';
 export * from './plugin-asset.js';
 
 /** Closed ordinary kind vocabulary shared by Pack discovery and producers. */
@@ -98,3 +99,4 @@ export interface ScriptablePackReadError {
   readonly hint: string;
   readonly detail?: unknown;
 }
+export * from './pack-authoring-draft.js';

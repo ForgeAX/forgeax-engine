@@ -1,3 +1,4 @@
+import { AssetRegistry } from '@forgeax/engine/assets-runtime';
 import type { EntityHandle, World } from '@forgeax/engine/ecs';
 import {
   admitPointsLines,
@@ -56,6 +57,10 @@ function spawnPath(
   positions: readonly number[],
   color: (typeof COLORS)[number],
 ): EntityHandle {
+  const sceneAssets = world.assets;
+  if (!(sceneAssets instanceof AssetRegistry))
+    throw new Error('Scene requires its runtime asset owner');
+
   const material = Materials.unlit(color);
   return world
     .spawn(
@@ -63,12 +68,12 @@ function spawnPath(
       {
         component: MeshFilter,
         data: {
-          assetHandle: world.allocSharedRef('MeshAsset', mesh(positions, 'line-strip')),
+          assetHandle: sceneAssets.create(mesh(positions, 'line-strip')).unwrap(),
         } as never,
       },
       {
         component: MeshRenderer,
-        data: { materials: [world.allocSharedRef('MaterialAsset', material)] } as never,
+        data: { materials: [sceneAssets.create(material).unwrap()] } as never,
       },
       { component: Lines, data: DASHED },
     )
@@ -81,8 +86,8 @@ function admissionChecks(c: CheckList): void {
   const code = (r: ReturnType<typeof admitPointsLines>): string => (r.ok ? 'ok' : r.error.code);
 
   const admitted = admitPointsLines({ entity: 1, lines: DASHED, mesh: strip, material: unlit });
-  c.ok('dashed strip admits', admitted.ok, code(admitted));
-  if (admitted.ok) {
+  c.ok('dashed strip admits', admitted.ok && admitted.value.component === 'Lines', code(admitted));
+  if (admitted.ok && admitted.value.component === 'Lines') {
     c.equal('strip of 11 vertices has 10 segments', admitted.value.segmentCount, 10);
     c.equal(
       'admission keeps the dash style',

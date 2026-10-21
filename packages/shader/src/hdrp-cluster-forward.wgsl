@@ -118,6 +118,7 @@ fn evaluate_cluster_light(
   metallic   : f32,
   alpha_sq   : f32,
   f0         : vec3<f32>,
+  pixel: vec2<f32>,
   useDirectDfgLut: bool,
 #ifdef DIRECT_DFG_LUT_AVAILABLE
   directDfgLut: texture_2d<f32>, directDfgSampler: sampler,
@@ -135,7 +136,7 @@ fn evaluate_cluster_light(
         layer,
         bitcast<f32>(light.kind_and_shadow.z),
         bitcast<f32>(light.kind_and_shadow.w),
-        0.005, 0.05,
+        0.08, 0.6 * 2.0 / 512.0, vec4<f32>(3.0, 0.0, 1.0, 6.0), light.position.xyz, pixel,
     useDirectDfgLut,
 #ifdef DIRECT_DFG_LUT_AVAILABLE
     directDfgLut, directDfgSampler,
@@ -162,14 +163,9 @@ fn evaluate_cluster_light(
         // keep the evaluator's named cone order intact at the decode boundary.
         light.color.w, light.direction.w, light.position.w,
         world_pos, normal, view_dir, base_color, metallic, alpha_sq, f0, vec3<f32>(0.0),
-        view.spotLightViewProj[tile], tile, 0.005, 0.05,
-        clamp(
-          round(select(3.0, bitcast<f32>(light.kind_and_shadow.w),
-            bitcast<f32>(light.kind_and_shadow.w) > 0.5)),
-          1.0,
-          5.0,
-        ),
-        clamp(bitcast<f32>(light.kind_and_shadow.z), 0.0, 1.0),
+        view.spotLightViewProj[tile], tile, 0.00001, 0.05,
+        vec4<f32>(max(1.0, bitcast<f32>(light.kind_and_shadow.w)), 0.0, 6.0, 1.0),
+        clamp(bitcast<f32>(light.kind_and_shadow.z), 0.0, 1.0), pixel,
     useDirectDfgLut,
 #ifdef DIRECT_DFG_LUT_AVAILABLE
     directDfgLut, directDfgSampler,
@@ -234,6 +230,7 @@ fn evaluate_cluster_lights(
     let light = light_data[light_index_list[list_offset + i]];
     total_radiance += evaluate_cluster_light(
       light, world_pos, normal, view_dir, base_color, metallic, alpha_sq, f0,
+      (ndc.xy * vec2<f32>(0.5, -0.5) + 0.5) * vec2<f32>(view.viewportWidth, view.viewportHeight),
     useDirectDfgLut,
 #ifdef DIRECT_DFG_LUT_AVAILABLE
     directDfgLut, directDfgSampler,

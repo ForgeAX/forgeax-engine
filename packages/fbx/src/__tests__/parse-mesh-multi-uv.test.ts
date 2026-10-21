@@ -1,3 +1,4 @@
+import { importedMesh } from '../../../import/src/__tests__/fixtures/runtime-import';
 // parse-mesh-multi-uv.test.ts (feat-20260629-multi-uv-set-support m1-w4).
 //
 // TDD red-green: byte-level tests for FBX multi-layer UV import. Mock
@@ -32,9 +33,9 @@ function mockQuadRaw(uvSets: Record<string, number[]>): FbxRawMesh {
 }
 
 /** Extract MeshAsset payload from an ImportedAsset (guards kind='mesh'). */
-function meshFromAsset(asset: ImportedAsset): MeshAsset {
+function meshFromAsset(asset: ImportedAsset<unknown>): MeshAsset {
   if (asset.kind !== 'mesh') throw new TypeError(`expected mesh, got ${asset.kind}`);
-  return asset.payload as MeshAsset;
+  return importedMesh(asset);
 }
 
 /** Computed interleaved FLOATS_PER_VERTEX: 12 base + 2*(uvSetCount-1) for non-skinned. */
@@ -57,8 +58,8 @@ describe('parse-mesh-multi-uv.test.ts', () => {
       }));
       const asset = buildMeshAsset(pod, 'guid-skin-sparse', influences);
       const mesh = meshFromAsset(asset);
-      expect(mesh.attributes.uv1).toBeUndefined();
-      expect(mesh.attributes.uv2).toBeUndefined();
+      expect(mesh.attributes.uv1).toEqual(new Float32Array(8));
+      expect(mesh.attributes.uv2).toEqual(new Float32Array(8));
       expect(mesh.vertices.byteLength).toBe(4 * 96);
       const bytes = new DataView(mesh.vertices.buffer, mesh.vertices.byteOffset);
       expect([0, 1, 2, 3].map((lane) => bytes.getUint16(48 + lane * 2, true))).toEqual([
@@ -198,7 +199,9 @@ describe('parse-mesh-multi-uv.test.ts', () => {
       expect(uvAttr.length).toBe(8);
       for (let i = 0; i < 8; i++) expect(uvAttr[i]).toBeCloseTo(atF32(uv0, i), 6);
 
-      expect(mesh.attributes.uv1, 'uv1 should be undefined for sparse sets').toBeUndefined();
+      expect(mesh.attributes.uv1, 'portable UV layout fills the absent set with zeros').toEqual(
+        new Float32Array(8),
+      );
 
       expect(mesh.attributes.uv2, 'uv2 should exist for sparse set').toBeDefined();
       const uv2Attr = mesh.attributes.uv2 as Float32Array | undefined;
@@ -218,5 +221,48 @@ describe('parse-mesh-multi-uv.test.ts', () => {
         expect(mesh.vertices[d + 15]).toBeCloseTo(atF32(uv2, v * 2 + 1), 6);
       }
     });
+  });
+});
+
+describe('FBX corner-domain expansion', () => {
+  it('gathers control-point channels and preserves corner channels with morph tangent width', () => {
+    const indices = [2, 0, 1, 2, 1, 3];
+    const raw = {
+      ...mockQuadRaw({
+        TEXCOORD_0: [0, 0, 1, 0, 0, 1, 1, 1, 0.5, 0.5, 0.25, 0.75],
+        TEXCOORD_2: [2, 3, 4, 5, 6, 7, 8, 9],
+      }),
+      indices,
+      morphTargets: [
+        {
+          position: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12],
+          normal: [12, 11, 10, 9, 8, 7, 6, 5, 4, 3, 2, 1],
+          tangent: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15],
+        },
+      ],
+      morphWeights: [0.75],
+    };
+    const pod = parseMesh(raw, 19);
+    expect(pod.indices).toEqual(new Uint32Array([0, 1, 2, 3, 4, 5]));
+    expect(pod.vertices).toEqual(
+      new Float32Array([0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 1, 0, 1, 0, 0, 1, 1, 0]),
+    );
+    expect(pod.attributes.TEXCOORD_0).toEqual(
+      new Float32Array([0, 0, 1, 0, 0, 1, 1, 1, 0.5, 0.5, 0.25, 0.75]),
+    );
+    expect(pod.attributes.TEXCOORD_2).toEqual(
+      new Float32Array([6, 7, 2, 3, 4, 5, 6, 7, 4, 5, 8, 9]),
+    );
+    expect(pod.morphTargets?.[0]?.tangent).toEqual(
+      new Float32Array([
+        8, 9, 10, 11, 0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 4, 5, 6, 7, 12, 13, 14, 15,
+      ]),
+    );
+    expect(pod.morphTargets?.[0]?.position).toEqual(
+      new Float32Array([7, 8, 9, 1, 2, 3, 4, 5, 6, 7, 8, 9, 4, 5, 6, 10, 11, 12]),
+    );
+    expect(pod.morphWeights).toEqual(new Float32Array([0.75]));
+    expect(pod.sourceIndex).toBe(19);
+    expect(pod.submeshes[0]).toMatchObject({ vertexCount: 6, indexCount: 6, materialIndex: null });
   });
 });

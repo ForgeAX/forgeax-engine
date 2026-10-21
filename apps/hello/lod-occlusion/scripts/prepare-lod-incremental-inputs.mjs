@@ -5,6 +5,7 @@ import { createHash } from 'node:crypto';
 import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
+import { decodeMeshBinary, packMeshBin } from '@forgeax/engine-geometry';
 import { gltfImporter } from '@forgeax/engine-gltf';
 import { ImporterRegistry, normaliseForPack, produceSourcePackage } from '@forgeax/engine-import';
 import { AssetGuid } from '@forgeax/engine-pack/guid';
@@ -84,10 +85,10 @@ export async function prepareLodIncrementalInputs(options) {
   }
   const root = assets.find((asset) => asset.guid === roles.root);
   /** @type {import('@forgeax/engine-types').MeshAsset} */
-  const rootPayload = /** @type {import('@forgeax/engine-types').MeshAsset} */ (root?.payload);
+  const rootPayload = root?.artifacts.body === undefined ? undefined : decodeMeshBinary(root.artifacts.body.bytes, root.refs.map(ref => ref.guid));
   if (
     !root ||
-    rootPayload.lods?.length !== 2 ||
+    rootPayload?.lods?.length !== 2 ||
     AssetGuid.format(rootPayload.lods[0].mesh) !== roles.middle ||
     AssetGuid.format(rootPayload.lods[1].mesh) !== roles.lowest ||
     ![roles.material, roles.middle, roles.lowest].every((guid) =>
@@ -177,8 +178,16 @@ export async function prepareLodIncrementalInputs(options) {
       artifacts,
     });
   }
+  const initialRefs = root.refs.filter(ref => ref.guid !== roles.lowest);
+  const initialBytes = packMeshBin({ ...rootPayload, lods: rootPayload.lods.slice(0, 1) }, 'e03-initial-root', initialRefs.map(ref => ref.guid)).unwrap();
+  const initialBody = { ...rows.find(row => row.guid === roles.root).artifacts.body, path: `artifacts/${roles.root}-initial-body.bin`, byteLength: initialBytes.byteLength, integrity: { algorithm: 'sha256', digest: sha256(initialBytes) } };
+  await writeFile(resolve(output, initialBody.path), initialBytes);
+  const initialPath = `assets/${roles.root}-initial.json`;
+  const initialDocument = jsonBytes({ guid: roles.root, kind: 'mesh', payload: { kind: 'mesh' }, refs: initialRefs, artifacts: { body: initialBody } });
+  await writeFile(resolve(output, initialPath), initialDocument);
+  const initialRoot = { guid: roles.root, kind: 'mesh', refs: initialRefs, path: initialPath, sha256: sha256(initialDocument), byteLength: Buffer.byteLength(initialDocument), artifacts: { body: initialBody } };
   const manifest = {
-    schemaVersion: 'e03-incremental-inputs/1',
+    schemaVersion: 'e03-incremental-inputs/2',
     provenance: {
       baseline,
       producerHead: head,
@@ -193,9 +202,10 @@ export async function prepareLodIncrementalInputs(options) {
       initial: [roles.material, roles.middle, roles.root],
       later: [roles.lowest],
       excluded: [roles.scene],
-      route: 'public loaders -> AssetRegistry.catalog(original guid, payload, refs)',
+      route: 'complete Catalog publication -> load / reload original root',
     },
     assets: rows,
+    initialRoot,
     shaderClosure,
   };
   // Manifest is the final publication. No manifest is returned on a partial write.

@@ -4,6 +4,7 @@ import { attachRecorder, buildFrameModel, decodeTape } from '@forgeax/engine-rhi
 import * as webgpu from '@forgeax/engine-rhi-webgpu';
 import { Transform } from '@forgeax/engine-scene';
 import { expect, it } from 'vitest';
+import { testAssets } from './helpers/runtime-assets';
 import { downsample, error, json, save, scene } from './taa-maturity.fixture';
 
 it.skipIf(process.env.TAA_MATURITY !== 'texture')(
@@ -21,34 +22,34 @@ it.skipIf(process.env.TAA_MATURITY !== 'texture')(
             ? 230
             : 40,
       );
-      const texture = carrier.world.allocSharedRef('TextureAsset', {
-        kind: 'texture',
-        shape: { viewDimension: '2d', extent: { width: 192, height: 144 } },
-        format: 'rgba8unorm',
-        data: pixels,
-        colorSpace: 'linear',
-        mips: { kind: 'none' },
-      });
+      const texture = testAssets(carrier.world)
+        .create({
+          kind: 'texture',
+          shape: { viewDimension: '2d', extent: { width: 192, height: 144 } },
+          format: 'rgba8unorm',
+          data: pixels,
+          colorSpace: 'linear',
+          mips: { kind: 'none' },
+        })
+        .unwrap();
       carrier.world
         .spawn(
           { component: Transform, data: { pos: [0, 0, 0] } },
           {
             component: MeshFilter,
             data: {
-              assetHandle: carrier.world.allocSharedRef(
-                'MeshAsset',
-                createPlaneGeometry(3.8, 2.8).unwrap(),
-              ),
+              assetHandle: testAssets(carrier.world)
+                .create(createPlaneGeometry(3.8, 2.8).unwrap())
+                .unwrap(),
             },
           },
           {
             component: MeshRenderer,
             data: {
               materials: [
-                carrier.world.allocSharedRef(
-                  'MaterialAsset',
-                  Materials.unlit([2, 2, 2, 1], { baseColorTexture: texture }),
-                ),
+                testAssets(carrier.world)
+                  .create(Materials.unlit([2, 2, 2, 1], { baseColorTexture: texture }))
+                  .unwrap(),
               ],
             },
           },

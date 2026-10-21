@@ -58,6 +58,7 @@ export interface PhysicsSyncDescriptor {
     readonly angularDamping: number;
     readonly gravityScale: number;
     readonly ccdEnabled: number;
+    readonly lockRotation?: boolean;
     readonly additionalSolverIterations?: number;
   };
   readonly collider: ColliderSnapshot | undefined;
@@ -167,6 +168,7 @@ export function readPhysicsSyncDescriptor(
             readonly angularDamping: number;
             readonly gravityScale: number;
             readonly ccdEnabled: number | boolean;
+            readonly lockRotation?: boolean;
             readonly additionalSolverIterations?: number;
           }
         | undefined)
@@ -204,6 +206,7 @@ export function readPhysicsSyncDescriptor(
             angularDamping: 0,
             gravityScale: 1,
             ccdEnabled: 0,
+            lockRotation: false,
           }
         : {
             type: rigidBodyData.type,
@@ -212,6 +215,7 @@ export function readPhysicsSyncDescriptor(
             angularDamping: rigidBodyData.angularDamping,
             gravityScale: rigidBodyData.gravityScale,
             ccdEnabled: Number(rigidBodyData.ccdEnabled),
+            lockRotation: Boolean(rigidBodyData.lockRotation),
             additionalSolverIterations: rigidBodyData.additionalSolverIterations ?? 0,
           },
     collider: colliderData === undefined ? undefined : snapshotCollider(colliderData),

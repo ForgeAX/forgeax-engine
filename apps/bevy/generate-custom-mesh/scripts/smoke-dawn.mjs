@@ -1,5 +1,7 @@
 #!/usr/bin/env node
 import { encodePng } from '@forgeax/engine-image/png';
+import { constructRuntimeRendererHost } from '@forgeax/engine-runtime/internal/renderer-host';
+let smokeAssets;
 import { createSmokeRenderer, drawSmokeFrame, rendererBackend, subscribeSmokeErrors } from "../../scripts/renderer-smoke.mjs";
 // bevy-generate-custom-mesh headless dawn smoke.
 // Browser and smoke share src/generate-custom-mesh.ts.
@@ -78,15 +80,19 @@ async function capture() {
 }
 
 const { World } = await import('@forgeax/engine-ecs');
+const { AssetRegistry } = await import('@forgeax/engine-assets-runtime');
+const { registerPropagateTransforms } = await import('@forgeax/engine-scene');
 const { createRenderer } = await import('@forgeax/engine-runtime');
-const { unwrapHandle } = await import('@forgeax/engine-types');
+
 
 const here = dirname(fileURLToPath(import.meta.url));
 const MANIFEST_URL = `data:application/json,${encodeURIComponent(readFileSync(resolve(here, '..', 'dist', 'shaders', 'manifest.json'), 'utf8'))}`;
 
 let renderer;
 try {
-  renderer = await createSmokeRenderer(createRenderer, mockCanvas, {}, { shaderManifestUrl: MANIFEST_URL });
+  const hostResult = await constructRuntimeRendererHost(mockCanvas, {}, { shaderManifestUrl: MANIFEST_URL });
+if (!hostResult.ok) throw hostResult.error;
+({ renderer, assets: smokeAssets } = hostResult.value);
 } catch (err) {
   console.error(`[smoke] FAIL - createRenderer: ${err instanceof Error ? err.message : String(err)}`);
   process.exit(1);
@@ -95,18 +101,20 @@ const errors = [];
 subscribeSmokeErrors(renderer, (err) => errors.push({ code: err.code, hint: err.hint }));
 
 const { buildCustomMeshWorld, makeCustomMeshTexture, toggleCustomMesh } = await import(resolve(here, '..', 'src', 'generate-custom-mesh.ts'));
-const world = new World();
+const assets = smokeAssets;
+const world = new World({ assets });
+registerPropagateTransforms(world);
 const worldAttachment1 = renderer.attach(world);
 if (!worldAttachment1.ok) throw worldAttachment1.error;
 const texture = makeCustomMeshTexture();
-const textureHandle = world.allocSharedRef('TextureAsset', texture);
-const meshState = buildCustomMeshWorld(world, unwrapHandle(textureHandle));
+const textureHandle = assets.create(texture).unwrap();
+const meshState = buildCustomMeshWorld(world, assets, textureHandle);
 
 world.update().unwrap();
 await drawSmokeFrame(renderer, world);
 await delay(50);
 const beforePixels = await capture();
-toggleCustomMesh(world, meshState);
+if (process.env.FALSIFY !== 'freeze-uv') toggleCustomMesh(assets, meshState);
 world.update().unwrap();
 await drawSmokeFrame(renderer, world);
 await delay(50);
@@ -116,7 +124,7 @@ for (let i = 2; i < SMOKE_MIN_FRAMES; i++) {
   await drawSmokeFrame(renderer, world);
 }
 const pixels = afterPixels;
-const refPath = resolve(here, '..', 'artifacts', 'generate-custom-mesh-ref.png');
+const refPath = resolve(here, '..', 'artifacts', `generate-custom-mesh${process.env.FALSIFY ? `-${process.env.FALSIFY}` : ''}-ref.png`);
 mkdirSync(dirname(refPath), { recursive: true });
 writeFileSync(refPath, encodePng(WIDTH, HEIGHT, pixels));
 

@@ -300,6 +300,8 @@ function assertCsmLayerSamplerFormula(shaderCode) {
   }
   const pcss = compact.slice(pcssStart, sampleStart);
   const sample = compact.slice(sampleStart, sampleEnd);
+  const planeGradient = pcss.match(/let(\w+)=_directionalReceiverPlaneGradient[^;]*;/)?.[1];
+  if (planeGradient === undefined) throw new Error('PCSS receiver-plane gradient is missing');
   // Naga alpha-renames locals and parameters in the composed receiver shader
   // (`layer` -> `layer_7`); the contract is the operands, not the suffixes.
   const required = [
@@ -311,7 +313,8 @@ function assertCsmLayerSamplerFormula(shaderCode) {
     [/letoffsetUv(?:_\d+)?=clamp\([^;]*,tileLo(?:_\d+)?,tileHi(?:_\d+)?\);/, sample],
     [/textureSampleCompareLevel\([^;]*,shadowLayer(?:_\d+)?,adjustedDepth(?:_\d+)?\)/, sample],
     [/shadow_load_raw_depth[^;]*,i32\(layer(?:_\d+)?\)\);/, pcss],
-    [/shadow_sample_compare[^;]*,i32\(layer(?:_\d+)?\),compareDepth(?:_\d+)?\);/, pcss],
+    [new RegExp(`lettapDepth(?:_\\d+)?=\\(compareDepth(?:_\\d+)?\\+dot\\(${planeGradient},[^;]*\\);`), pcss],
+    [/shadow_sample_compare[^;]*,i32\(layer(?:_\d+)?\),tapDepth(?:_\d+)?\);/, pcss],
   ];
   const missing = required.findIndex(([pattern, source]) => !pattern.test(source));
   if (missing >= 0) {

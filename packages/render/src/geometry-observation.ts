@@ -5,6 +5,11 @@ export interface GeometrySourceIdentity {
   readonly primitiveSlot: number;
   readonly slotGeneration: number;
   readonly meshHandle: number;
+  /** Selected submesh snapshot, not a later registry/GUID lookup. Missing is unknown. */
+  readonly materialHandle?: number;
+  readonly materialPublication?: import('./render-contract').MaterialDrawObservation['publication'];
+  /** Exact observation-local table entry when repeated metadata exceeds the inline budget. */
+  readonly materialPublicationId?: number;
   readonly meshGuid?: string;
   readonly sourceKey?: string;
   /** Accepted publication revision, or local RenderScene slot generation; not a content hash. */
@@ -14,6 +19,25 @@ export interface GeometrySourceIdentity {
   readonly materialSlot: number;
   readonly instanceOrdinal: number;
 }
+/** Selected GBuffer artifact and pipeline; not a native shader-module capture or per-draw GPU cost. */
+export interface GeometryGBufferProgram {
+  readonly scope: 'selected-gpu-driven-gbuffer-artifact';
+  readonly material: string;
+  readonly pass: string;
+  /** Existing composer identity, not a cryptographic byte witness. */
+  readonly programIdentity: string;
+  /** SHA-256 of the selected artifact source, before backend transforms/constants. */
+  readonly artifactSourceSha256: string;
+  readonly specializationKey: string | null;
+  readonly layoutIdentity: string;
+  readonly receiptIdentity: string | null;
+  readonly receiptGeneration: number | null;
+  readonly vertexEntry: string | null;
+  readonly fragmentEntry: string;
+  /** Opaque RHI resource identity, scoped by the enclosing Renderer device generation. */
+  readonly pipelineIdentity: number;
+  readonly nativeShader: 'unobserved';
+}
 export interface GeometryCommandObservation {
   readonly pass: string;
   readonly phase: 'all' | 'early' | 'late';
@@ -22,6 +46,10 @@ export interface GeometryCommandObservation {
   readonly indirectOffset: number;
   readonly kind: 'indexed' | 'non-indexed';
   readonly topology: string;
+  /** Absent outside the explicitly captured GBuffer encode; never inferred from the label. */
+  readonly gbufferProgram?: GeometryGBufferProgram;
+  /** Exact observation-local table entry; mutually exclusive with the inline field. */
+  readonly gbufferProgramId?: number;
   readonly count: number;
   readonly instanceCount: number;
   readonly first: number;
@@ -58,6 +86,26 @@ export type GeometryObservation = {
   readonly graphGeneration?: number;
   readonly viewKey?: string;
   readonly viewConstants?: GeometryViewObservation;
+  /** Lossless optional encoding. Legacy small observations retain their inline fields. */
+  readonly identityTables?: {
+    readonly version: 1;
+    readonly gbufferPrograms: readonly GeometryGBufferProgram[];
+    readonly materialPublications: readonly NonNullable<
+      GeometrySourceIdentity['materialPublication']
+    >[];
+  };
+  /** Requested decode facts even on budget failure; unavailable command fields are not zero work. */
+  readonly metadataEncoding?: {
+    readonly format: 'identity-tables-v1';
+    /** Serialized payload sizes exclude this small summary field. */
+    readonly inlineBytes: number;
+    readonly tableBytes: number;
+    readonly limitBytes: number;
+    readonly attemptedCommandCount: number;
+    readonly attemptedMemberCount: number;
+    readonly programIdentityCount: number;
+    readonly materialPublicationIdentityCount: number;
+  };
   readonly commands: readonly GeometryCommandObservation[];
   readonly commandCount: number;
   readonly indexOrVertexWork: number;
@@ -114,6 +162,62 @@ export function decodeGeometryView(
 export const GEOMETRY_OBSERVATION_MAX_BYTES = 1024 * 1024;
 export const GEOMETRY_OBSERVATION_MAX_COMMANDS = 4096;
 export const GEOMETRY_OBSERVATION_MAX_MEMBERS = 16384;
+/** Requested observations only; no global cache, resolver call or extra GPU operation. */
+export function boundGeometryObservationMetadata(result: GeometryObservation): GeometryObservation {
+  const bytes = (value: GeometryObservation) =>
+    new TextEncoder().encode(JSON.stringify(value)).byteLength;
+  const inlineBytes = bytes(result);
+  if (inlineBytes <= GEOMETRY_OBSERVATION_MAX_BYTES) return result;
+  const programs: GeometryGBufferProgram[] = [],
+    publications: NonNullable<GeometrySourceIdentity['materialPublication']>[] = [],
+    programIds = new Map<string, number>(),
+    publicationIds = new Map<string, number>();
+  const intern = <T>(value: T, rows: T[], ids: Map<string, number>) => {
+    // Compare complete owned data, including pipeline and ABI identities; no lossy hash key.
+    const key = JSON.stringify(value);
+    let id = ids.get(key);
+    if (id === undefined) {
+      id = rows.length;
+      rows.push(value);
+      ids.set(key, id);
+    }
+    return id;
+  };
+  const commands = result.commands.map(({ gbufferProgram, ...command }) => ({
+    ...command,
+    ...(gbufferProgram === undefined
+      ? {}
+      : { gbufferProgramId: intern(gbufferProgram, programs, programIds) }),
+    members: command.members.map(({ materialPublication, ...member }) => ({
+      ...member,
+      ...(materialPublication === undefined
+        ? {}
+        : { materialPublicationId: intern(materialPublication, publications, publicationIds) }),
+    })),
+  }));
+  const compact: GeometryObservation = {
+    ...result,
+    commands,
+    identityTables: { version: 1, gbufferPrograms: programs, materialPublications: publications },
+  };
+  const metadataEncoding: NonNullable<GeometryObservation['metadataEncoding']> = {
+    format: 'identity-tables-v1',
+    inlineBytes,
+    tableBytes: bytes(compact),
+    limitBytes: GEOMETRY_OBSERVATION_MAX_BYTES,
+    attemptedCommandCount: commands.length,
+    attemptedMemberCount: commands.reduce((sum, row) => sum + row.members.length, 0),
+    programIdentityCount: programs.length,
+    materialPublicationIdentityCount: publications.length,
+  };
+  const encoded = { ...compact, metadataEncoding };
+  if (bytes(encoded) > GEOMETRY_OBSERVATION_MAX_BYTES)
+    return {
+      ...unavailableGeometry('metadata-budget', result.frameId, result.deviceGeneration),
+      metadataEncoding,
+    };
+  return encoded;
+}
 export function unavailableGeometry(
   reason: string,
   frameId = -1,
@@ -145,6 +249,8 @@ export interface GeometryCommandCapture {
   readonly bufferIdentity: number;
   readonly kind: 'indexed' | 'non-indexed';
   readonly topology: string;
+  /** Absent outside the explicitly captured GBuffer encode; never inferred from the label. */
+  readonly gbufferProgram?: GeometryGBufferProgram;
   readonly sources: ReadonlyMap<number, GeometrySourceIdentity>;
 }
 /** A visible GPU row may not disambiguate two source submeshes folded into one batch. */
@@ -162,6 +268,13 @@ export function captureGeometrySource(
       previous.meshHandle !== source.meshHandle ||
       previous.drawItemIndex !== source.drawItemIndex ||
       previous.materialSlot !== source.materialSlot ||
+      previous.materialHandle !== source.materialHandle ||
+      previous.materialPublication?.materialGuid !== source.materialPublication?.materialGuid ||
+      previous.materialPublication?.publicationGeneration !==
+        source.materialPublication?.publicationGeneration ||
+      previous.materialPublication?.specializationKey !==
+        source.materialPublication?.specializationKey ||
+      previous.materialPublication?.artifactHash !== source.materialPublication?.artifactHash ||
       previous.instanceOrdinal !== source.instanceOrdinal ||
       previous.sourceRevision !== source.sourceRevision)
   )
@@ -224,6 +337,7 @@ export function decodeGeometryCommands(input: {
       indirectOffset: p,
       kind: command.kind,
       topology: command.topology,
+      ...(command.gbufferProgram === undefined ? {} : { gbufferProgram: command.gbufferProgram }),
       count,
       instanceCount,
       first,

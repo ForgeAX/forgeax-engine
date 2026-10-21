@@ -1,11 +1,13 @@
 import {
+  MUSIC_LIMITS,
   type MusicCommand,
   type MusicFailureCode,
   type MusicPreparation,
   type MusicReceipt,
   type MusicState,
   musicFailure,
-  validMusicTiming,
+  validMusicBpm,
+  validMusicScore,
 } from '@forgeax/engine-audio';
 
 interface Stem {
@@ -27,8 +29,6 @@ export interface MusicOutput {
   readonly output: AudioNode;
 }
 const LEAD = 0.02;
-const MAX_PENDING = 128;
-const MAX_RECEIPTS = 256;
 
 /** Native automation owns execution; polling only observes and retires bounded metadata. */
 export class MusicTransport {
@@ -36,10 +36,17 @@ export class MusicTransport {
   private phase: MusicState['phase'] = 'empty';
   private score:
     | (Pick<MusicPreparation, 'bpm' | 'beatsPerBar' | 'loopBeats'> & {
-        readonly stems: readonly { readonly sourceKey: string; readonly offsetSeconds: number }[];
+        readonly stems: readonly { readonly offsetSeconds: number }[];
       })
     | undefined;
   private stems: readonly Stem[] = [];
+  private releaseBuffers: (() => void) | undefined;
+
+  private clearStems(): void {
+    this.stems = [];
+    this.releaseBuffers?.();
+    this.releaseBuffers = undefined;
+  }
   private voices: Voice[] = [];
   private events: Mix[] = [];
   private receipts: MusicReceipt[] = [];
@@ -58,7 +65,7 @@ export class MusicTransport {
     if (previous >= 0) this.receipts[previous] = receipt;
     else {
       this.receipts.push(receipt);
-      if (this.receipts.length > MAX_RECEIPTS) this.receipts.shift();
+      if (this.receipts.length > MUSIC_LIMITS.receipts) this.receipts.shift();
     }
   }
   reject(requestId: number, code: MusicFailureCode, reason: string): void {
@@ -105,7 +112,7 @@ export class MusicTransport {
       this.retire();
       this.epoch++;
       this.phase = 'empty';
-      this.stems = [];
+      this.clearStems();
       this.reject(command.requestId, 'native-failed', String(cause));
       return undefined;
     }
@@ -113,14 +120,7 @@ export class MusicTransport {
   private prepare(command: Extract<MusicCommand, { kind: 'prepare' }>): number | undefined {
     if (!this.admit(command)) return undefined;
     const score = command.score;
-    if (
-      !validMusicTiming(score) ||
-      score.stems.length < 1 ||
-      score.stems.length > 16 ||
-      score.stems.some(
-        (stem) => !Number.isFinite(stem.offsetSeconds ?? 0) || (stem.offsetSeconds ?? 0) < 0,
-      )
-    ) {
+    if (!validMusicScore(score)) {
       this.reject(
         command.requestId,
         'invalid-score',
@@ -128,27 +128,18 @@ export class MusicTransport {
       );
       return undefined;
     }
-    if (score.stems.some((stem) => stem.clip.stream)) {
-      this.reject(
-        command.requestId,
-        'unsupported-stream',
-        'synchronized music requires buffered clips',
-      );
-      return undefined;
-    }
     this.retire();
     this.epoch++;
     this.phase = 'preparing';
-    this.stems = [];
+    this.clearStems();
     this.gains = [];
     this.anchorBeat = 0;
-    // Retain only timing and source identity; the consumer owns encoded and decoded caches.
+    // The transport retains fixed native buffers and timing; assets stay with their owner.
     this.score = {
       bpm: score.bpm,
       beatsPerBar: score.beatsPerBar,
       loopBeats: score.loopBeats,
       stems: score.stems.map((stem) => ({
-        sourceKey: stem.clip.sourceKey,
         offsetSeconds: stem.offsetSeconds ?? 0,
       })),
     };
@@ -156,12 +147,17 @@ export class MusicTransport {
     this.receipt({ requestId: command.requestId, epoch: this.epoch, status: 'preparing' });
     return this.epoch;
   }
-  finishPrepare(requestId: number, epoch: number, buffers: readonly AudioBuffer[]): void {
-    if (epoch !== this.epoch || this.phase !== 'preparing' || !this.score) return;
+  finishPrepare(
+    requestId: number,
+    epoch: number,
+    buffers: readonly AudioBuffer[],
+    releaseBuffers: () => void,
+  ): boolean {
+    if (epoch !== this.epoch || this.phase !== 'preparing' || !this.score) return false;
     const context = this.output()?.context;
     if (!context || context.state === 'closed') {
       this.failPrepare(requestId, epoch, 'Context closed while decoding');
-      return;
+      return false;
     }
     const loopFrames = Math.round(((this.score.loopBeats * 60) / this.bpm) * context.sampleRate);
     if (
@@ -180,7 +176,7 @@ export class MusicTransport {
         'invalid-score',
         `resampled buffer must enclose the declared offset and loop interval; nativeRate=${context.sampleRate}Hz, loopFrames=${loopFrames}, decoded=[${buffers.map((buffer) => `${buffer.sampleRate}Hz/${buffer.length}frames`).join(', ')}]`,
       );
-      return;
+      return false;
     }
     this.stems = buffers.map((buffer, index) => ({
       buffer,
@@ -191,24 +187,21 @@ export class MusicTransport {
     this.gains = buffers.map(() => 0);
     this.anchorBeat = 0;
     this.anchorTime = this.round(context.currentTime + LEAD);
+    this.releaseBuffers = releaseBuffers;
     this.phase = 'ready';
     this.receipt({ requestId, epoch, status: 'ready', targetTime: this.anchorTime, targetBeat: 0 });
+    return true;
   }
-  failPrepare(requestId: number, epoch: number, reason: string): void {
+  failPrepare(
+    requestId: number,
+    epoch: number,
+    reason: string,
+    code: MusicFailureCode = 'decode-failed',
+  ): void {
     if (epoch !== this.epoch || this.phase !== 'preparing') return;
+    this.clearStems();
     this.phase = 'empty';
-    this.reject(requestId, 'decode-failed', reason);
-  }
-  invalidate(sourceKey: string): void {
-    if (
-      this.phase !== 'preparing' &&
-      this.score?.stems.some((stem) => stem.sourceKey === sourceKey)
-    ) {
-      this.retire();
-      this.epoch++;
-      this.phase = 'empty';
-      this.stems = [];
-    }
+    this.reject(requestId, code, reason);
   }
   private round(time: number): number {
     const rate = this.output()?.context.sampleRate ?? 48000;
@@ -331,7 +324,7 @@ export class MusicTransport {
       this.retire();
       this.epoch++;
       this.phase = 'empty';
-      this.stems = [];
+      this.clearStems();
       this.reject(command.requestId, 'native-failed', String(cause));
     }
   }
@@ -364,7 +357,7 @@ export class MusicTransport {
         );
         return;
       }
-      if (this.events.length >= MAX_PENDING) {
+      if (this.events.length >= MUSIC_LIMITS.pending) {
         this.reject(command.requestId, 'capacity', '128 future commands already admitted');
         return;
       }
@@ -469,10 +462,7 @@ export class MusicTransport {
       this.receipt({ requestId: command.requestId, epoch: this.epoch, status: 'applied' });
       return;
     }
-    if (
-      command.kind === 'tempo' &&
-      (!Number.isFinite(command.bpm) || command.bpm < 20 || command.bpm > 400)
-    ) {
+    if (command.kind === 'tempo' && !validMusicBpm(command.bpm)) {
       this.reject(command.requestId, 'invalid-command', 'BPM must be in [20,400]');
       return;
     }
@@ -526,7 +516,7 @@ export class MusicTransport {
     this.retire();
     this.epoch++;
     this.phase = 'closed';
-    this.stems = [];
+    this.clearStems();
     this.score = undefined;
     this.gains = [];
   }

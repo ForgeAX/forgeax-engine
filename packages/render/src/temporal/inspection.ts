@@ -2,6 +2,7 @@ import type { Antialias } from '../components/camera';
 import { createTemporalCoverage } from './coverage';
 import type { TemporalGpuState } from './gpu';
 import type { TemporalHistory } from './history';
+import type { TemporalAttemptState } from './taa-history-store';
 import type { TemporalView } from './view';
 
 export interface TemporalResourceInspection {
@@ -17,7 +18,7 @@ export interface TemporalInspection {
   readonly mode: Antialias;
   /** Compatibility projection for temporal carriers; derived from this snapshot. */
   readonly status: 'off' | 'first-frame' | 'stable' | 'reset' | 'aborted';
-  readonly historyAttempt: 'none' | 'active' | 'committed' | 'aborted';
+  readonly historyAttempt: TemporalAttemptState;
   readonly epoch: number;
   readonly viewIdentity: string;
   readonly historyValid: boolean;

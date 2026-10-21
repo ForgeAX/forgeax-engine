@@ -1,10 +1,7 @@
-import { HANDLE_CUBE } from '@forgeax/engine-assets-runtime';
+import { AssetRegistry } from '@forgeax/engine-assets-runtime';
 import { World } from '@forgeax/engine-ecs';
-import {
-  createMaterialArtifactDigest,
-  createMaterialProgramSetDigest,
-  serializeCookedMaterialRecord,
-} from '@forgeax/engine-pack';
+import { createPrimitiveMesh } from '@forgeax/engine-geometry';
+import { createMaterialArtifactDigest, createMaterialProgramSetDigest } from '@forgeax/engine-pack';
 import { attachRecorder, buildFrameModel, decodeTape } from '@forgeax/engine-rhi-debug';
 import {
   createShaderModule,
@@ -15,7 +12,6 @@ import {
 } from '@forgeax/engine-rhi-null';
 import { registerPropagateTransforms, Transform } from '@forgeax/engine-scene';
 import { ShaderRegistry } from '@forgeax/engine-shader';
-import type { Handle, MaterialAsset } from '@forgeax/engine-types';
 import { ok } from '@forgeax/engine-types';
 import { describe, expect, it, vi } from 'vitest';
 import {
@@ -24,6 +20,7 @@ import {
   createRhiInstrumentation,
 } from '../../../app/src/internal/rhi-capture';
 import { materialRecordFixture } from '../../../assets-runtime/src/__tests__/fixtures/material-publication';
+import { loadMaterialFixture } from '../../../assets-runtime/src/__tests__/fixtures/runtime-material';
 import { createRenderer } from '../assembly/factory';
 import { ANTIALIAS_NONE, Camera } from '../components/camera';
 import { CameraView } from '../components/camera-view';
@@ -115,41 +112,11 @@ async function fixture() {
       receipt: { ...original.receipt, identity: { ...original.receipt.identity, artifactDigest } },
     };
   });
-  const originalFetch = globalThis.fetch;
-  vi.stubGlobal('fetch', async (input: RequestInfo | URL, init?: RequestInit) => {
-    const url = String(input);
-    if (url.endsWith('/lineage-index.json'))
-      return new Response(
-        JSON.stringify(
-          records.map((record) => ({
-            guid: record.guid,
-            kind: 'material',
-            packageUrl: '/lineage.pack.json',
-          })),
-        ),
-      );
-    if (url.endsWith('/lineage.pack.json'))
-      return new Response(
-        JSON.stringify({
-          schemaVersion: '2.0.0',
-          kind: 'internal-text-package',
-          assets: records.map((record) => ({
-            guid: record.guid,
-            kind: 'material',
-            execution: 'cooked',
-            payload: {
-              kind: 'material',
-              ...record.resolved,
-              cooked: JSON.parse(serializeCookedMaterialRecord(record)),
-            },
-            refs: [],
-          })),
-        }),
-      );
-    return originalFetch(input, init);
-  });
-  renderer.assetRegistry.configurePackIndex('/lineage-index.json');
-  const worlds = [new World(), new World()] as const;
+  const owners = [
+    new AssetRegistry({ shaderRegistry: renderer.assetRegistry.shaderRegistry }),
+    new AssetRegistry({ shaderRegistry: renderer.assetRegistry.shaderRegistry }),
+  ] as const;
+  const worlds = [new World({ assets: owners[0] }), new World({ assets: owners[1] })] as const;
   const leases = worlds.map((world) => {
     registerPropagateTransforms(world);
     const lease = renderer.attach(world);
@@ -187,21 +154,21 @@ async function fixture() {
       { component: CameraView, data: {} },
     )
     .unwrap();
-  const grants: { readonly world: World; readonly grant: Handle<'MaterialAsset', 'shared'> }[] = [];
   for (const [index, record] of records.entries()) {
-    const loaded = await renderer.assetRegistry.loadByGuid<MaterialAsset>(
-      renderer.assetRegistry.parseGuid(record.guid),
-    );
-    if (!loaded.ok) throw loaded.error;
-    expect(renderer.assetRegistry.getMaterialReadiness(record.guid)?.status).toBe('Ready');
+    const assets = owners[index];
     const world = worlds[index];
-    if (world === undefined) throw new Error('missing fixture World');
-    const grant = world.allocSharedRef('MaterialAsset', loaded.value);
-    grants.push({ world, grant });
+    if (assets === undefined || world === undefined) throw new Error('missing fixture World');
+    const loaded = (await loadMaterialFixture(assets, record)).unwrap();
+    const grant = loaded.handle;
+    expect(loaded.projection?.materialGuid).toBe(record.guid);
+    expect(loaded.projection?.artifactHash).toBe(record.artifactDigest);
     world
       .spawn(
         { component: Transform, data: { pos: [index - 0.5, 0, 0] } },
-        { component: MeshFilter, data: { assetHandle: HANDLE_CUBE } },
+        {
+          component: MeshFilter,
+          data: { assetHandle: assets.create(createPrimitiveMesh('cube').unwrap()).unwrap() },
+        },
         { component: MeshRenderer, data: { materials: [grant] } },
       )
       .unwrap();
@@ -239,13 +206,12 @@ async function fixture() {
     const recorderDisposed = await attachment.dispose();
     if (!recorderDisposed.ok) failures.push(recorderDisposed.error);
     worlds[0].sharedRefs.release(targetGrant);
-    for (const { world, grant } of grants) world.sharedRefs.release(grant);
     for (const world of worlds) {
       const cleared = world.despawnAll();
       if (!cleared.ok) failures.push(cleared.error);
     }
+    for (const assets of owners) assets.dispose();
     vi.restoreAllMocks();
-    vi.unstubAllGlobals();
     if (failures.length > 0) throw new AggregateError(failures, 'fixture cleanup failed');
   };
   // Bounded CPU initialization of actual resource/pipeline adoption.

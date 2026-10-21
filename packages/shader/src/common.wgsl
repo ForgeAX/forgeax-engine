@@ -155,7 +155,7 @@ struct View {
 };
 
 // Mesh contains only independent transform and temporal facts. Direct draws
-// bind aligned 256-byte slots; GPU scene arrays pack the 160-byte storage row.
+// bind aligned 256-byte slots; storage draws expose the 176-byte row.
 struct Mesh {
   worldFromLocal : mat4x4<f32>,
 #if STORAGE_BUFFER_AVAILABLE == true
@@ -167,21 +167,22 @@ struct Mesh {
 #endif
   // x/y: visible-surface row/count; z: lossless surface direct-light mask.
   surface : vec4<u32>,
+  // Instance-local atlas rectangle; surface.w selects it independently of material values.
+  spriteRegion : vec4<f32>,
 };
 
 // GPU Scene rows read directly by scene-index vertex entries. Render derives
 // the host layout from gpu-scene-schema.ts; a parity test pins these structs
-// to that schema. A visible item is (instance row, material row, skin palette
-// base, bitcast signed LOD fade); instance.primitiveIndex names the primitive.
+// to that schema. A visible item is (instance row, material row, candidate row,
+// bitcast signed LOD fade); the Instance row also owns the skin palette base.
 struct GpuScenePrimitive {
   generation: u32,
   flags: u32,
   transformIndex: u32,
   materialIndex: u32,
-  drawTemplateIndex: u32,
   instanceStart: u32,
   instanceCount: u32,
-  assetHandle: u32,
+  sourceIndex: u32,
   localBoundsMin: vec3<f32>,
   lightingChannels: u32,
   localBoundsMax: vec4<f32>,
@@ -281,6 +282,14 @@ struct DirectLightSlot {
 };
 
 @group(0) @binding(0) var<uniform> view : View;
+
+fn viewDirectionToCamera(worldPosition : vec3<f32>) -> vec3<f32> {
+  // Reverse-Z orthographic rays are parallel. The inverse projection's depth
+  // column points toward the camera, including rotated and off-axis views.
+  return normalize(select(view.cameraPos - worldPosition,
+    view.inverseViewProj[2].xyz, view.temporalProjection.z > 0.5));
+}
+
 // feat-20260520-directional-light-shadow-mapping M3 / w16 (D-1 / plan-strategy §8.1):
 // shadowMap + shadowSampler consume @group(0) bindings 3/4 (smallest unused
 // slots adjacent to view UBO at 0). M3 uses 3x3 PCF with textureLoad on
@@ -319,7 +328,7 @@ struct DirectLightSlot {
 //   Standard consumers share this exact binding and authored bias payload.
 #ifdef POINT_SHADOW_AVAILABLE
 @group(0) @binding(5) var shadowAtlas : texture_depth_cube_array;
-@group(0) @binding(6) var<uniform> shadowParams : array<vec4<f32>, 4>;
+@group(0) @binding(6) var<uniform> shadowParams : array<vec4<f32>, 16>;
 #endif
 
 // feat-20260613-csm-cascaded-shadow-maps M5 / w28: shadowCasterCascade is
@@ -393,6 +402,7 @@ struct ShadowCasterCascade {
 // these declarations behind the same axis prevents a no-extension variant
 // from consuming texture budget or requiring absent bindings.
 #ifdef EXTENDED_LIGHTING_AVAILABLE
+@group(0) @binding(24) var shadowMoments : texture_2d_array<f32>;
 @group(0) @binding(9) var spotModifierSampler : sampler;
 @group(0) @binding(11) var iesProfileTexture : texture_2d_array<f32>;
 @group(0) @binding(12) var cookieTexture : texture_2d_array<f32>;
@@ -521,7 +531,7 @@ fn sceneIndexDraw(instanceRow : u32) -> SceneIndexDraw {
     select(0.0, 1.0, (primitive.flags & GPU_SCENE_PRIMITIVE_REACTIVE) != 0u),
     select(1.0, 0.0, (primitive.flags & GPU_SCENE_PRIMITIVE_MOTION_INVALID) != 0u),
   );
-  draw.probe = vec2<u32>(instance.primitiveIndex + 1u, primitive.generation);
+  draw.probe = vec2<u32>(primitive.sourceIndex + 1u, primitive.generation);
   draw.lightingChannels = primitive.lightingChannels;
   draw.receivesShadows = (primitive.flags & GPU_SCENE_PRIMITIVE_NO_SHADOW_RECEIVE) == 0u;
   return draw;

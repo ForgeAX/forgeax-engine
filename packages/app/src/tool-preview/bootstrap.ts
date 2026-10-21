@@ -715,8 +715,6 @@ export async function createToolPreviewHost(
   const detach = runtime.attachRenderer(app.renderer);
   const trace: ToolPreviewTrace = {
     events: ['canvas-created', 'rhi-debug-armed', 'renderer-created'],
-    backend: 'webgpu',
-    adapter: 'webgpu-adapter',
     presentation: recipe.presentation,
   };
   let disposed = false;

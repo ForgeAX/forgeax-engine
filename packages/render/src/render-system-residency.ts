@@ -1,10 +1,8 @@
-import { resolveAssetHandle } from '@forgeax/engine-assets-runtime';
+import type { AssetHandle } from '@forgeax/engine-types';
 import {
-  type Handle,
   type MaterialAsset,
   type SamplerAsset,
   type TextureAsset,
-  toShared,
   validateTextureLayout,
 } from '@forgeax/engine-types';
 import {
@@ -24,12 +22,12 @@ import type { MaterialSnapshot } from './render-system-extract';
  * result.
  */
 export function materialTextureHandlesForResidency(
-  candidates: Iterable<Handle<'TextureAsset', 'shared'> | undefined>,
-): readonly Handle<'TextureAsset', 'shared'>[] {
+  candidates: Iterable<AssetHandle<'texture'> | undefined>,
+): readonly AssetHandle<'texture'>[] {
   let occupied = false;
   let firstKey = 0;
-  let firstValue = 0 as Handle<'TextureAsset', 'shared'>;
-  let overflow: Map<number, Handle<'TextureAsset', 'shared'>> | undefined;
+  let firstValue = 0 as AssetHandle<'texture'>;
+  let overflow: Map<number, AssetHandle<'texture'>> | undefined;
   for (const handle of candidates) {
     if (handle === undefined || Number(handle) === 0) continue;
     const key = Number(handle);
@@ -48,12 +46,12 @@ export function materialTextureHandlesForResidency(
   return overflow === undefined ? (occupied ? [firstValue] : []) : [...overflow.values()];
 }
 
-const EMPTY_TEXTURE_HANDLES: readonly Handle<'TextureAsset', 'shared'>[] = Object.freeze([]);
-const EMPTY_SAMPLER_HANDLES: readonly Handle<'SamplerAsset', 'shared'>[] = Object.freeze([]);
+const EMPTY_TEXTURE_HANDLES: readonly AssetHandle<'texture'>[] = Object.freeze([]);
+const EMPTY_SAMPLER_HANDLES: readonly AssetHandle<'sampler'>[] = Object.freeze([]);
 
 export function materialTextureHandles(
   material: MaterialSnapshot,
-): readonly Handle<'TextureAsset', 'shared'>[] {
+): readonly AssetHandle<'texture'>[] {
   const textureHandles = material.textureHandles;
   if (textureHandles === undefined || textureHandles.size === 0) {
     const baseColor = material.baseColorTexture;
@@ -89,11 +87,11 @@ export function materialTextureHandles(
 
 export function materialSamplerHandles(
   material: MaterialSnapshot,
-): readonly Handle<'SamplerAsset', 'shared'>[] {
+): readonly AssetHandle<'sampler'>[] {
   const candidates = material.samplerHandles;
   if (candidates === undefined || candidates.size === 0) return EMPTY_SAMPLER_HANDLES;
   if (candidates.size === 1) return [...candidates.values()];
-  const handles = new Map<number, Handle<'SamplerAsset', 'shared'>>();
+  const handles = new Map<number, AssetHandle<'sampler'>>();
   for (const handle of candidates.values()) {
     handles.set(Number(handle), handle);
   }
@@ -165,33 +163,17 @@ export function observeMaterialResidency(
   } else {
     const materialHandle = material.materialHandle;
     if (materialHandle !== undefined && materialHandle !== 0) {
-      const materialResult = resolveAssetHandle<MaterialAsset>(
-        world,
-        toShared<'MaterialAsset'>(materialHandle),
+      const materialResult = world.resolveAsset<MaterialAsset>(
+        materialHandle as AssetHandle<'material'>,
       );
       if (!materialResult.ok) {
         const error = materialResult.error;
         failure ??= preparationFailureFrom(error);
-      } else {
-        // A values-only child renders its accepted root publication. Its own
-        // uncooked GUID is not a second program owner.
-        const guid =
-          material.materialPublication?.identity.materialGuid ??
-          internals.assets.guidOf(materialResult.value);
-        if (guid !== undefined) {
-          const readiness = internals.assets.getMaterialReadiness(guid);
-          if (readiness?.status === 'Error') {
-            const error = readiness.error;
-            failure ??= preparationFailureFrom(error);
-          }
-          const load = internals.assets.loadState.get(guid);
-          if (load?.status === 'provisional') pending = true;
-        }
       }
     }
 
     for (const handle of materialTextureHandles(material)) {
-      const pod = resolveAssetHandle<TextureAsset>(world, handle);
+      const pod = world.resolveAsset<TextureAsset>(handle);
       if (!pod.ok) {
         const error = pod.error;
         failure ??= preparationFailureFrom(error);
@@ -199,6 +181,10 @@ export function observeMaterialResidency(
       }
       const prepared = internals.gpuStore.ensureResident(handle, pod.value, world);
       if (!prepared.ok) {
+        if (prepared.error.code === 'asset-not-ready') {
+          pending = true;
+          continue;
+        }
         const error = prepared.error;
         failure ??= preparationFailureFrom(error);
         continue;
@@ -230,7 +216,7 @@ export function observeMaterialResidency(
     }
 
     for (const handle of materialSamplerHandles(material)) {
-      const pod = resolveAssetHandle<SamplerAsset>(world, handle);
+      const pod = world.resolveAsset<SamplerAsset>(handle);
       if (!pod.ok) {
         const error = pod.error;
         failure ??= preparationFailureFrom(error);

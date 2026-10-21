@@ -4,6 +4,8 @@ Build-time compiler for code-first GPU particle effects. It turns source metadat
 
 ## Cook pipeline
 
+`ParticleCodeEffectPayload` extends the runtime `ParticleEffectAssetV3` contract. Compilation returns that same payload shape; executable reflection adds compiler facts to the source metadata and records required defaults explicitly.
+
 ```mermaid
 flowchart LR
     source["Particle source v3"] --> validate["Closed source validation"]

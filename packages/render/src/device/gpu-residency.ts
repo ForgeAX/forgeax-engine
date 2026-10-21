@@ -1,8 +1,15 @@
+import type { AssetChange } from '@forgeax/engine-assets-runtime/internal';
+import type { AssetHandle } from '@forgeax/engine-types';
+import { compareBufferBytes } from '../buffer-bytes';
 import type { IblPrecomputeOutput } from '../ibl/IblPipelineCache';
 import type { RenderResourceScope } from '../publication/resource-scope';
+import { renderAssetRevision } from '../publication/resource-scope';
 import { type RecordProfileRunner, runRecordProfilePhase } from '../record/render-context';
+import { ImagePages } from './image-pages';
+import { MeshChanges, type MeshChangeToken } from './mesh-changes';
 import { type ResidencyLease, ResidencyLifetime } from './residency-lifetime';
 import { type GpuResourceNamespace, ScopedGpuResources } from './scoped-gpu-resources';
+import { TextureDerivations } from './texture-derivation';
 // @forgeax/engine-runtime - GpuResidencyCache
 // (feat-20260601-device/gpu-residency-extraction M1; M2 added the deriveRenderData
 // projection seam — see render-data.ts).
@@ -35,21 +42,28 @@ import { type GpuResourceNamespace, ScopedGpuResources } from './scoped-gpu-reso
 // lazily awaited (that would break the sync draw contract).
 
 import {
-  blitMipmapsSync,
+  encodeMipmaps,
   getOrCreateMipmapPipeline,
   type MipmapEncoderWork,
   type MipmapShaderModuleFactory,
+  type MipmapTextureDescriptor,
   prepareMipmaps,
 } from '@forgeax/engine-assets-runtime';
-import { deriveVertexCount, type VertexLayoutProjection } from '@forgeax/engine-geometry';
+import {
+  createPrimitiveMesh,
+  deriveVertexCount,
+  type VertexLayoutProjection,
+} from '@forgeax/engine-geometry';
 import { halfFloat } from '@forgeax/engine-math';
 import {
   type Buffer,
   type BufferDescriptor,
+  type CommandBuffer,
   err,
   ok,
   type Result,
   type RhiCaps,
+  type RhiCommandEncoder,
   type RhiDevice,
   RhiError,
   type RhiQueue,
@@ -65,14 +79,11 @@ import {
   type DecodedImage,
   deriveTextureLayout,
   type EquirectAsset,
-  type Handle,
   type ImageError,
   type ImageErrorDetailFor,
   imageError,
-  mipDimension,
   type PrimitiveTopology,
   type SamplerAsset,
-  type Submesh,
   type TextureAsset,
   type TextureShape,
   type MeshAsset as TypesMeshAsset,
@@ -85,7 +96,6 @@ import {
 } from '../gpu-texture-usage';
 import {
   GPU_BUFFER_USAGE_COPY_DST,
-  GPU_BUFFER_USAGE_INDEX,
   GPU_BUFFER_USAGE_UNIFORM,
   GPU_BUFFER_USAGE_VERTEX,
 } from '../gpu-usage';
@@ -95,11 +105,11 @@ import {
   createIblPipelines,
   IBL_UNIFORM_SLOT_STRIDE,
   type IblShaderModuleFactory,
-  PREFILTER_MIP_LEVELS,
   PREFILTER_SIZE,
   prefilterSubpassIndex,
   runIblPrecompute,
 } from '../ibl/IblPipelineCache';
+import { pmremLevelCount } from '../ibl/pmrem';
 import type { RhiErrorListenerRegistry } from '../lifecycle';
 import {
   type CubeRenderData,
@@ -112,7 +122,6 @@ import {
 import type { DeviceScope, LifecycleResourceSpec } from './device-scope';
 
 const FACE_COUNT = 6;
-const PREFILTER_SUBPASS_COUNT = PREFILTER_MIP_LEVELS * FACE_COUNT;
 
 export type FaceUniformsDevice = Pick<RhiDevice, 'createBuffer'> & {
   readonly queue: Pick<RhiQueue, 'writeBuffer'>;
@@ -134,10 +143,11 @@ export function createFaceUniformsBuffer(device: FaceUniformsDevice): Result<Buf
 
 export function createPrefilterUniformsBuffer(
   device: FaceUniformsDevice,
+  size = PREFILTER_SIZE,
 ): Result<Buffer, RhiError> {
   const descriptor: BufferDescriptor = {
     label: 'ibl-prefilter-uniforms',
-    size: PREFILTER_SUBPASS_COUNT * IBL_UNIFORM_SLOT_STRIDE,
+    size: pmremLevelCount(size) * FACE_COUNT * IBL_UNIFORM_SLOT_STRIDE,
     usage: GPU_BUFFER_USAGE_UNIFORM | GPU_BUFFER_USAGE_COPY_DST,
     mappedAtCreation: false,
   };
@@ -178,56 +188,26 @@ export function writeAllFaceUniforms(
   return ok(undefined);
 }
 
-export function writePrefilterUniforms(
-  device: FaceUniformsDevice,
-  buffer: Buffer,
-  subPassIdx: number,
-  roughness: number,
-  mipFaceSize: number,
-  sourceMipLevelCount = 1,
-  sourceSpace: 'image' | 'camera' = 'image',
-): Result<void, RhiError> {
-  if (subPassIdx < 0 || subPassIdx >= PREFILTER_SUBPASS_COUNT) {
-    return invalidUniformInput(
-      `subPassIdx is an integer in the inclusive range [0, ${PREFILTER_SUBPASS_COUNT - 1}]`,
-      `writePrefilterUniforms received subPassIdx=${subPassIdx}`,
-    );
-  }
-  if (!Number.isInteger(sourceMipLevelCount) || sourceMipLevelCount < 1) {
-    return invalidUniformInput(
-      'sourceMipLevelCount is a positive integer matching the bound source cube mip levels',
-      `writePrefilterUniforms received sourceMipLevelCount=${sourceMipLevelCount}`,
-    );
-  }
-  const payload = new Float32Array([
-    roughness,
-    mipFaceSize,
-    sourceMipLevelCount,
-    sourceSpace === 'camera' ? 1 : 0,
-  ]);
-  return device.queue.writeBuffer(buffer, subPassIdx * IBL_UNIFORM_SLOT_STRIDE, payload);
-}
-
 export function writeAllPrefilterUniforms(
   device: FaceUniformsDevice,
   buffer: Buffer,
-  sourceMipLevelCount = 1,
+  size = PREFILTER_SIZE,
   sourceSpace: 'image' | 'camera' = 'image',
 ): Result<void, RhiError> {
-  for (let mip = 0; mip < PREFILTER_MIP_LEVELS; mip++) {
-    const roughness = mip / (PREFILTER_MIP_LEVELS - 1);
-    const mipFaceSize = mipDimension(PREFILTER_SIZE, mip);
+  if (size < 16 || !Number.isInteger(Math.log2(size))) {
+    return invalidUniformInput(
+      'a power-of-two PMREM face size of at least 16',
+      `writeAllPrefilterUniforms received size=${size}`,
+    );
+  }
+  for (let level = 0; level < pmremLevelCount(size); level++) {
     for (let face = 0; face < FACE_COUNT; face++) {
-      const result = writePrefilterUniforms(
-        device,
+      const written = device.queue.writeBuffer(
         buffer,
-        prefilterSubpassIndex(mip, face),
-        roughness,
-        mipFaceSize,
-        sourceMipLevelCount,
-        sourceSpace,
+        prefilterSubpassIndex(level, face) * IBL_UNIFORM_SLOT_STRIDE,
+        new Float32Array([level, face, Number(sourceSpace === 'camera'), 0]),
       );
-      if (!result.ok) return result;
+      if (!written.ok) return written;
     }
   }
   return ok(undefined);
@@ -273,13 +253,6 @@ export function writePackedTextureLevels(
   return ok(undefined);
 }
 
-/** Cube-POD register-relay injected by the wire layer (D-3). */
-type RegisterCube = (
-  world: RenderResourceScope,
-  pod: EquirectAsset,
-  source: Handle<'EquirectAsset', 'shared'>,
-) => Result<Handle<'EquirectAsset', 'shared'>, AssetError>;
-
 // feat-20260612-rhi-destroy-renderer-dispose-gpu-lifecycle / M-3 / w11:
 // the three handle map value types now hold GpuTexture / GpuBuffer wrappers
 // (plan-strategy D-9). Views (TextureView) stay raw RHI handles -- they are
@@ -299,6 +272,8 @@ export interface TextureResidencyReceipt {
   readonly view: '2d' | '2d-array' | '3d';
   readonly generation: number;
   readonly deviceEpoch: number;
+  /** Accepted source bytes represented by this physical allocation, when owner-backed. */
+  readonly sourceRevision?: number;
 }
 
 const EMPTY_LOD_MESHES: readonly (TypesMeshAsset | undefined)[] = Object.freeze([]);
@@ -349,6 +324,8 @@ export interface RecoveryResidencyPreparation {
 // no GPU resources (`texture:null` / `view:undefined`): it exists only to mark
 // the source as terminally failed so the record arm stops retrying (R-2).
 interface CubemapGpuEntry {
+  readonly revision: number | undefined;
+  scope?: DeviceScope;
   status: 'pending' | 'ready' | 'failed';
   texture: GpuTexture | null;
   view: TextureView | undefined;
@@ -508,9 +485,19 @@ function packMeshLodGeometry(
   return ok({ vertices, indices, lodRanges: ranges });
 }
 
+/** Fixed physical candidate; commit publishes it, release retires its exact allocation. */
+export interface PreparedMeshResidency {
+  readonly entry: MeshGpuHandles;
+  readonly lease: ResidencyLease;
+  current(): boolean;
+  commit(): boolean;
+}
+
 export interface MeshGpuHandles {
   /** Residency sequence when this mesh's buffer contents last changed. */
   readonly contentEpoch: number;
+  /** Native physical generation; manual/custom handles cannot certify cache reuse. */
+  readonly changeToken?: MeshChangeToken;
   readonly vertexBuffer: GpuBuffer;
   /**
    * Index buffer wrapper, or `null` for a vertex-only mesh
@@ -521,7 +508,7 @@ export interface MeshGpuHandles {
   readonly indexBuffer: GpuBuffer | null;
   /**
    * Allocation byte sizes for the vbo / ibo (mirrors GPUBuffer.size). Used
-   * by `updateMeshById` to decide reuse vs reallocation; tracked here so
+   * to validate managed range reuse versus reallocation; tracked here so
    * the runtime never reads `.size` off the opaque RHI handle (which is
    * not on the spec-aligned RHI Buffer interface; charter §RHI form rules).
    */
@@ -567,6 +554,8 @@ export interface MeshGpuRange {
  * primitives that build them. Constructed once per renderer; wired with the
  * GPU device via `configureGpuDevice` after `Renderer.initialization` resolves.
  */
+const EMPTY_MESH_COMPARISON_WORDS = new Uint32Array(0);
+
 type SharedMeshAllocation = {
   buffer: GpuBuffer;
   bytes: Uint32Array;
@@ -574,11 +563,80 @@ type SharedMeshAllocation = {
   key: string;
 };
 
+interface TextureProjection {
+  encode(encoder: () => RhiCommandEncoder): { complete(submitted: boolean): void } | undefined;
+}
+const NO_TEXTURE_WORK = ok(undefined);
+const DERIVED_GEOMETRY = Symbol();
+
 export class GpuResidencyCache {
-  /** Monotonic token for mesh GPU residency or contents changes. */
-  meshResidencyEpoch = 0;
-  /** Monotonic token for texture/sampler identities used by material bind groups. */
-  materialResourceEpoch = 0;
+  private readonly textureDerivations = new TextureDerivations();
+  private readonly pendingImageAdoptions = new ScopedGpuResources<AssetChange>();
+  /** Actual consumers can request RGBA for CPU image pages; ordinary GPU uploads select device caps. */
+  prepareTextureData(
+    handle: number,
+    source: TextureAsset,
+    world: RenderResourceScope | number = 0,
+    target?: GPUTextureFormat,
+  ): Result<TextureAsset, AssetError> {
+    return this.textureDerivations.prepare(
+      handle,
+      typeof world === 'number' ? 0 : (renderAssetRevision(world, handle) ?? 0),
+      source,
+      this.caps,
+      target,
+      this.worldNamespace(world),
+    );
+  }
+  async waitTextureData(handle: number, world: RenderResourceScope | number = 0): Promise<void> {
+    await this.textureDerivations.settled(handle, this.worldNamespace(world));
+  }
+  isTexturePreparing(handle: number, world: RenderResourceScope | number = 0): boolean {
+    return this.textureDerivations.preparing(handle, this.worldNamespace(world));
+  }
+
+  readonly imagePages = new ImagePages();
+  private readonly imagePageScopes = new WeakMap<RenderResourceScope, Set<number>>();
+  private readonly pendingTextureProjections = new Set<TextureProjection>();
+  queueTextureProjection(projection: TextureProjection, device: RhiDevice): void {
+    if (device === this.gpuDevice) this.pendingTextureProjections.add(projection);
+  }
+  cancelTextureProjection(projection: TextureProjection): void {
+    this.pendingTextureProjections.delete(projection);
+  }
+  ensureImagePage(
+    handle: number,
+    texture: TextureAsset,
+    world: RenderResourceScope | number = 0,
+  ): number {
+    if (typeof world !== 'number') {
+      let handles = this.imagePageScopes.get(world);
+      if (handles === undefined) {
+        handles = new Set();
+        this.imagePageScopes.set(world, handles);
+      }
+      handles.add(handle);
+    }
+    const native = this.prepareTextureData(
+      handle,
+      texture,
+      world,
+      texture.colorSpace === 'srgb' ? 'rgba8unorm-srgb' : 'rgba8unorm',
+    ).unwrap();
+    return this.imagePages.ensure(handle, native, this.worldNamespace(world));
+  }
+
+  releaseImagePages(world: RenderResourceScope): void {
+    for (const handle of this.imagePageScopes.get(world) ?? [])
+      this.imagePages.remove(handle, this.worldNamespace(world));
+    this.imagePageScopes.delete(world);
+  }
+  private readonly meshSourceRevisions = new WeakMap<MeshGpuHandles, number>();
+  readonly meshChanges = new MeshChanges();
+  /** Monotonic within the native Mesh owner generation; no second publication clock. */
+  get meshResidencyEpoch(): number {
+    return this.meshChanges.epoch;
+  }
   private gpuDevice: RhiDevice | undefined = undefined;
   /** RHI-only owner for IBL projection; never populated with a raw GPUDevice. */
   private iblDevice: RhiDevice | undefined = undefined;
@@ -588,9 +646,6 @@ export class GpuResidencyCache {
   // Shader-module factory injected at `configureGpuDevice`; threaded into the
   // mipmap-pipeline prewarm + the IBL precompute path. `undefined` until wired.
   private asyncCreateShaderModule: MipmapShaderModuleFactory | undefined = undefined;
-  // Cube-POD register relay injected at `configureGpuDevice` (D-3); the store
-  // never imports AssetRegistry, so CPU cataloguing flows through this fn.
-  private registerCube: RegisterCube | undefined = undefined;
   // Error registry injected by createRenderer; evict / releaseUnreferenced
   // fire structured errors through this channel (feat-20260619 D-1/D-6).
   private errorRegistry: RhiErrorListenerRegistry | undefined = undefined;
@@ -601,17 +656,110 @@ export class GpuResidencyCache {
   private textureGeneration = 0;
 
   private readonly textureGpuHandles = new ScopedGpuResources<TextureGpuEntry>();
+  private readonly textureUploads = new ScopedGpuResources<{ dispose(): void }>();
+
+  private cancelTextureUpload(key: string | number, namespace: GpuResourceNamespace): void {
+    const pending = this.textureUploads.get(key, namespace);
+    if (pending === undefined) return;
+    this.textureUploads.delete(key, namespace);
+    pending.dispose();
+  }
+  private readonly pendingTextureMips = new Map<Texture, MipmapTextureDescriptor>();
+
+  /** Lazy texture uploads discovered while recording execute before that frame's draws. */
+  prepareTextureMips(): Result<
+    | {
+        readonly buffer: CommandBuffer | undefined;
+        complete(submitted: boolean): void;
+      }
+    | undefined,
+    RhiError
+  > {
+    if (this.pendingTextureMips.size === 0 && this.pendingTextureProjections.size === 0)
+      return NO_TEXTURE_WORK;
+    const device = this.gpuDevice;
+    if (device === undefined) return NO_TEXTURE_WORK;
+    const epoch = this.deviceEpoch;
+    // Source pages must precede every derived bake even if a retained Terrain
+    // binding entered the queue before another view authored new image work.
+    const projections = this.pendingTextureProjections.delete(this.imagePages)
+      ? [this.imagePages, ...this.pendingTextureProjections]
+      : [...this.pendingTextureProjections];
+    this.pendingTextureProjections.clear();
+    let encoder: RhiCommandEncoder | undefined;
+    const commands = () => {
+      encoder ??= device.createCommandEncoder({ label: 'texture-mips' }).unwrap();
+      return encoder;
+    };
+    const entries = [...this.pendingTextureMips];
+    const releases: (() => void)[] = [];
+    const projected: { complete(submitted: boolean): void }[] = [];
+    let finished = false;
+    let completed = false;
+    const complete = (submitted: boolean) => {
+      if (completed) return;
+      completed = true;
+      let failures: unknown[] | undefined;
+      const settle = (action: () => void) => {
+        try {
+          action();
+        } catch (cause) {
+          failures ??= [];
+          failures.push(cause);
+        }
+      };
+      if (submitted) {
+        for (const [texture, descriptor] of entries)
+          if (this.pendingTextureMips.get(texture) === descriptor)
+            this.pendingTextureMips.delete(texture);
+      } else if (this.deviceEpoch === epoch) {
+        for (const projection of projections) this.pendingTextureProjections.add(projection);
+      }
+      for (const work of projected) settle(() => work.complete(submitted));
+      if (!finished && encoder !== undefined) {
+        finished = true;
+        const unfinished = encoder;
+        settle(() => unfinished.finish().unwrap());
+      }
+      for (const release of releases) settle(release);
+      if (failures?.length === 1) throw failures[0];
+      if (failures !== undefined)
+        throw new AggregateError(failures, 'texture projection completion failed');
+    };
+    try {
+      for (const projection of projections) {
+        const work = projection.encode(commands);
+        if (work !== undefined) projected.push(work);
+      }
+      for (const [texture, descriptor] of entries) {
+        const encoded = encodeMipmaps(device, commands(), texture, descriptor);
+        if (!encoded.ok) throw encoded.error;
+        releases.push(encoded.value);
+      }
+      if (encoder === undefined && projected.length === 0) return NO_TEXTURE_WORK;
+      finished = true;
+      const result = encoder?.finish();
+      if (result !== undefined && !result.ok) throw result.error;
+      return ok({ buffer: result?.value, complete });
+    } catch (cause) {
+      try {
+        complete(false);
+      } catch (cleanup) {
+        throw new AggregateError([cause, cleanup], 'texture projection preparation failed');
+      }
+      if (cause instanceof RhiError) return err(cause);
+      throw cause;
+    }
+  }
   private readonly samplerGpuHandles = new ScopedGpuResources<{
     readonly source: SamplerAsset;
+    readonly revision: number | undefined;
     readonly sampler: Sampler;
     readonly result: Result<Sampler, never>;
   }>();
   private readonly cubemapGpuHandles = new ScopedGpuResources<CubemapGpuEntry>();
-  // Maps source EquirectAsset handle id -> minted cubemap handle so the same
-  // equirect source always resolves to the same cubemap (idempotent, A2).
-  private readonly cubemapIdempotentMap = new ScopedGpuResources<
-    Handle<'EquirectAsset', 'shared'>
-  >();
+  // Completed projections retain the source asset identity within its resource scope.
+  private readonly cubemapIdempotentMap = new ScopedGpuResources<AssetHandle<'equirect'>>();
   private readonly meshGpuHandles = new ScopedGpuResources<MeshGpuHandles>();
   /**
    * Lower-detail POD identities packed into each resident mesh entry. The
@@ -626,6 +774,7 @@ export class GpuResidencyCache {
     MeshGpuHandles,
     PublishedResidency<MeshGpuHandles>
   >();
+  private meshSubmissions = new Set<Promise<unknown>>();
   private readonly retiredMeshes = new Set<MeshGpuHandles>();
   // Immutable vertex and index uploads share physical allocations by their exact bytes.
   // Mesh residency still fences each owner; the last retired owner frees the allocation.
@@ -663,6 +812,16 @@ export class GpuResidencyCache {
     // Hashes only select candidates; byte equality is the sharing contract.
     if (cached === undefined || cached.buffer.isDestroyed || cached.bytes.length !== words.length)
       return undefined;
+    if (words.byteLength >= 65_536) {
+      const compared = compareBufferBytes(
+        cached.bytes.buffer,
+        cached.bytes.byteOffset,
+        words.buffer,
+        words.byteOffset,
+        words.byteLength,
+      );
+      if (compared !== undefined) return compared ? cached : undefined;
+    }
     for (let index = 0; index < words.length; index++)
       if (cached.bytes[index] !== words[index]) return undefined;
     return cached;
@@ -675,16 +834,16 @@ export class GpuResidencyCache {
   }
   private unshareMeshBuffer(buffer: GpuBuffer): void {
     const record = this.meshBufferOwners.get(buffer);
-    if (record !== undefined && this.sharedMeshBuffers.get(record.key) === record)
+    if (record === undefined) return;
+    if (this.sharedMeshBuffers.get(record.key) === record)
       this.sharedMeshBuffers.delete(record.key);
-    // Submitted/cached draw records can outlive the physical buffer. Their
-    // wrapper must not keep an obsolete full CPU comparison copy alive.
-    this.meshBufferOwners.delete(buffer);
+    record.bytes = EMPTY_MESH_COMPARISON_WORDS;
   }
   private releaseMeshBuffer(buffer: GpuBuffer): void {
     const record = this.meshBufferOwners.get(buffer);
     if (record !== undefined && --record.owners > 0) return;
     this.unshareMeshBuffer(buffer);
+    this.meshBufferOwners.delete(buffer);
     if (!buffer.isDestroyed) buffer.destroy();
   }
 
@@ -698,6 +857,7 @@ export class GpuResidencyCache {
     let lifetime = this.textureLifetimes.get(entry);
     if (lifetime === undefined) {
       lifetime = new PublishedResidency(entry, () => {
+        this.pendingTextureMips.delete(entry.texture.handle);
         if (!entry.texture.isDestroyed) {
           const result = entry.texture.destroy();
           if (!result.ok) this.errorRegistry?.fire(result.error);
@@ -710,13 +870,12 @@ export class GpuResidencyCache {
   }
 
   private retireTextureEntry(
-    key: number,
+    key: string | number,
     entry: TextureGpuEntry,
     namespace: GpuResourceNamespace,
   ): void {
     if (this.textureGpuHandles.get(key, namespace) === entry) {
       this.textureGpuHandles.delete(key, namespace);
-      this.materialResourceEpoch += 1;
     }
     this.retiredTextures.add(entry);
     this.textureLifetime(entry).retire();
@@ -735,30 +894,71 @@ export class GpuResidencyCache {
     return lifetime;
   }
 
-  /** All resident entries conservatively cover main, shadow and cached GPU-driven draws. */
+  /** Unchanged frames record queue work once; mesh retirement captures its pending fences. */
   trackMeshSubmission(completed: Promise<unknown>): void {
-    for (const entry of this.meshGpuHandles.values()) this.meshLifetime(entry).track(completed);
+    const submissions = this.meshSubmissions;
+    if (!submissions.has(completed)) {
+      submissions.add(completed);
+      const finish = () => {
+        submissions.delete(completed);
+      };
+      void completed.then(finish, finish);
+    }
+    for (const [key, entry] of this.pendingGeneratedRetirement) {
+      this.retireMeshEntry(key, entry, DERIVED_GEOMETRY);
+    }
+    this.pendingGeneratedRetirement.clear();
+  }
+
+  private retainMeshEntry(entry: MeshGpuHandles, evict: () => void): ResidencyLease {
+    const lifetime = this.meshLifetime(entry);
+    const submissions = this.meshSubmissions;
+    const epoch = this.deviceEpoch;
+    const retained = lifetime.retain(() => {
+      if (this.deviceEpoch === epoch) evict();
+      else lifetime.retire();
+    });
+    let released = false;
+    return {
+      track: (completed) => retained.track(completed),
+      release: (evict) => {
+        if (!released) {
+          released = true;
+          // This caller waits only for work submitted before its release.
+          if (!this.retiredMeshes.has(entry))
+            for (const completed of submissions) lifetime.track(completed);
+        }
+        return retained.release(evict);
+      },
+    };
   }
 
   private retireMeshEntry(
-    key: number,
+    key: string | number,
     entry: MeshGpuHandles,
     namespace: GpuResourceNamespace,
   ): void {
-    if (this.meshGpuHandles.get(key, namespace) === entry) {
-      this.meshGpuHandles.delete(key, namespace);
-      this.meshResidencyEpoch += 1;
+    this.meshChanges.assertIdle();
+    try {
+      // Retirement belongs to the old physical generation even after key->B publication.
+      if (entry.changeToken !== undefined) this.meshChanges.retire(entry.changeToken);
+    } finally {
+      if (this.meshGpuHandles.get(key, namespace) === entry) {
+        this.meshGpuHandles.delete(key, namespace);
+      }
+      // Immutable buffers remain shareable until their final physical release.
+      // Another live mesh or a pending submission may still own this allocation.
+      const lifetime = this.meshLifetime(entry);
+      if (!this.retiredMeshes.has(entry)) {
+        this.retiredMeshes.add(entry);
+        for (const completed of this.meshSubmissions) lifetime.track(completed);
+      }
+      lifetime.retire();
     }
-    // Immutable buffers remain shareable until their final physical release.
-    // Another live mesh or a pending submission may still own this allocation.
-    this.retiredMeshes.add(entry);
-    this.meshLifetime(entry).retire();
   }
 
-  // Frame world indices are not asset identities. Tokens isolate complete
-  // handles without string construction or strong references to source Worlds.
+  // Frame indices are not resource identities. Stable tokens retain no source World.
   private readonly worldNamespaces = new WeakMap<RenderResourceScope, symbol>();
-
   private worldNamespace(world: RenderResourceScope | number): GpuResourceNamespace {
     if (typeof world === 'number') return world;
     let namespace = this.worldNamespaces.get(world);
@@ -770,7 +970,7 @@ export class GpuResidencyCache {
   }
 
   /**
-   * Wire the GPU device, shader-module factory, and cube-POD register relay.
+   * Wire the GPU device and shader-module factory.
    * Called once by createRenderer after `Renderer.initialization` resolves. Unlike the
    * pre-extraction AssetRegistry.configureGpuDevice, this performs NO replay:
    * the pull model builds resources lazily at first `ensureResident` access.
@@ -778,20 +978,30 @@ export class GpuResidencyCache {
   configureGpuDevice(
     device: RhiDevice,
     asyncCreateShaderModule: MipmapShaderModuleFactory | undefined,
-    registerCube: RegisterCube,
     caps: RhiCaps,
   ): void {
+    this.meshChanges.assertIdle();
     for (const entry of [...this.textureGpuHandles.values(), ...this.retiredTextures]) {
       if (!entry.texture.isDestroyed) entry.texture.destroy();
     }
-    if (this.textureGpuHandles.size > 0) this.materialResourceEpoch += 1;
     this.textureGpuHandles.clear();
+    this.pendingTextureMips.clear();
+    for (const pending of this.textureUploads.values()) pending.dispose();
+    this.textureUploads.clear();
     this.retiredTextures.clear();
+    for (const entry of this.cubemapGpuHandles.values()) this.retireCubemap(entry);
+    this.cubemapGpuHandles.clear();
+    this.cubemapIdempotentMap.clear();
     this.deviceEpoch += 1;
-    this.meshResidencyEpoch += 1;
+    this.meshSubmissions = new Set();
+    this.meshChanges.reset();
     this.gpuDevice = device;
+    this.pendingTextureProjections.clear();
+    const epoch = this.deviceEpoch;
+    this.imagePages.configure(device, () => {
+      if (this.deviceEpoch === epoch) this.queueTextureProjection(this.imagePages, device);
+    });
     this.asyncCreateShaderModule = asyncCreateShaderModule;
-    this.registerCube = registerCube;
     this.caps = caps;
   }
 
@@ -860,15 +1070,17 @@ export class GpuResidencyCache {
    * make progress (plan-strategy D-3 / D-8).
    */
   destroyAll(): void {
+    this.meshChanges.assertIdle();
+    this.textureDerivations.clear();
+    this.pendingImageAdoptions.clear();
+    this.imagePages.dispose();
+    this.pendingTextureProjections.clear();
+    for (const entry of this.cubemapGpuHandles.values()) this.retireCubemap(entry);
     // Also invalidate unpublished graph candidates, which are caller-owned.
     this.deviceEpoch += 1;
-    if (this.meshGpuHandles.size > 0) this.meshResidencyEpoch += 1;
+    this.meshSubmissions = new Set();
+    this.meshChanges.reset();
     const scopeOwnsResources = this.deviceScope !== undefined;
-    // The cubemap path registers two entries (sourceId + cubeId) sharing one
-    // GpuTexture wrapper, so destroyAll must dedupe on the wrapper identity
-    // before forwarding `.destroy()` -- otherwise the second call surfaces
-    // `'destroy-after-destroy'` from the RHI shim. The `isDestroyed` getter
-    // on the wrapper is the dedupe gate (architecture-principles §6).
     const destroyTex = (gpuTex: GpuTexture): void => {
       if (!scopeOwnsResources && !gpuTex.isDestroyed) gpuTex.destroy();
     };
@@ -879,10 +1091,10 @@ export class GpuResidencyCache {
     for (const entry of [...this.textureGpuHandles.values(), ...this.retiredTextures]) {
       destroyTex(entry.texture);
     }
-    if (this.textureGpuHandles.size > 0 || this.samplerGpuHandles.size > 0) {
-      this.materialResourceEpoch += 1;
-    }
     this.textureGpuHandles.clear();
+    this.pendingTextureMips.clear();
+    for (const pending of this.textureUploads.values()) pending.dispose();
+    this.textureUploads.clear();
     this.retiredTextures.clear();
     this.samplerGpuHandles.clear();
 
@@ -892,15 +1104,23 @@ export class GpuResidencyCache {
     this.cubemapGpuHandles.clear();
     this.cubemapIdempotentMap.clear();
 
-    for (const entry of [...this.meshGpuHandles.values(), ...this.retiredMeshes]) {
+    for (const entry of [
+      ...this.meshGpuHandles.values(),
+      ...this.retiredMeshes,
+      ...this.pendingGeneratedRetirement.values(),
+    ]) {
       this.unshareMeshBuffer(entry.vertexBuffer);
+      this.meshBufferOwners.delete(entry.vertexBuffer);
       destroyBuf(entry.vertexBuffer);
       if (entry.indexBuffer !== null) {
         this.unshareMeshBuffer(entry.indexBuffer);
+        this.meshBufferOwners.delete(entry.indexBuffer);
         destroyBuf(entry.indexBuffer);
       }
     }
     this.meshGpuHandles.clear();
+    this.generatedMeshes.clear();
+    this.pendingGeneratedRetirement.clear();
     this.retiredMeshes.clear();
     this.sharedMeshBuffers.clear();
   }
@@ -958,7 +1178,7 @@ export class GpuResidencyCache {
    * returning {freed:0, errors:[]}.
    */
   evictTexture(
-    handle: Handle<'TextureAsset', 'shared'>,
+    handle: AssetHandle<'texture'>,
     worldId: RenderResourceScope | number = 0,
   ): { freed: number; errors: RhiError[] } {
     const id = Number(handle);
@@ -981,12 +1201,11 @@ export class GpuResidencyCache {
     }
 
     this.textureGpuHandles.delete(id, namespace);
-    this.materialResourceEpoch += 1;
     return { freed, errors };
   }
 
   evictMesh(
-    handle: Handle<'MeshAsset', 'shared'>,
+    handle: AssetHandle<'mesh'>,
     worldId: RenderResourceScope | number = 0,
   ): { freed: number; errors: RhiError[] } {
     const id = Number(handle);
@@ -1003,6 +1222,30 @@ export class GpuResidencyCache {
     };
   }
 
+  /** Retire one derivative without walking its users or other asset records. */
+  adoptCubemapChange(change: AssetChange, world: RenderResourceScope | number = 0): void {
+    const entry = this.cubemapGpuHandles.get(change.handle, this.worldNamespace(world));
+    if (entry === undefined || (!change.removed && entry.revision === change.revision)) return;
+    this.evictCubemap(change.handle, world);
+  }
+
+  private retireCubemap(entry: CubemapGpuEntry): void {
+    const scope = entry.scope;
+    if (scope === undefined || !scope.isAlive()) return;
+    // Stop subsequent precompute batches before fencing already submitted work.
+    scope.beginRetire();
+    const lifetime = new ResidencyLifetime(() => scope.retire());
+    for (const completed of this.meshSubmissions) lifetime.track(completed);
+    if (entry.status === 'pending' && this.iblDevice !== undefined) {
+      try {
+        lifetime.track(this.iblDevice.queue.onSubmittedWorkDone());
+      } catch {
+        // A lost queue cannot retain resources from its retired device.
+      }
+    }
+    lifetime.retire();
+  }
+
   evictCubemap(
     id: number,
     worldId: RenderResourceScope | number = 0,
@@ -1010,27 +1253,10 @@ export class GpuResidencyCache {
     const namespace = this.worldNamespace(worldId);
     const entry = this.cubemapGpuHandles.get(id, namespace);
     if (entry === undefined) return { freed: 0, errors: [] };
-
-    let freed = 0;
-    const errors: RhiError[] = [];
-
-    // cubemap wrapper shared-dedup (D-1): sourceId and cubeId may share one
-    // GpuTexture wrapper. The isDestroyed gate ensures the underlying RHI
-    // texture is destroyed at most once, even when both entries are evicted.
-    // A 'failed' entry holds no GPU texture (texture:null) — nothing to free.
-    if (entry.texture !== null && !entry.texture.isDestroyed) {
-      const r = entry.texture.destroy();
-      if (r.ok) {
-        freed = 1;
-      } else {
-        errors.push(r.error);
-        if (this.errorRegistry) this.errorRegistry.fire(r.error);
-      }
-    }
-
     this.cubemapGpuHandles.delete(id, namespace);
     this.cubemapIdempotentMap.delete(id, namespace);
-    return { freed, errors };
+    this.retireCubemap(entry);
+    return { freed: Number(entry.texture?.isDestroyed ?? false), errors: [] };
   }
 
   /**
@@ -1045,10 +1271,9 @@ export class GpuResidencyCache {
   releaseUnreferenced(liveSet: Set<number>): { freed: number; errors: RhiError[] } {
     let freed = 0;
     const errors: RhiError[] = [];
-    let materialResidencyChanged = false;
     for (const [namespace, resources] of this.textureGpuHandles.entries()) {
       for (const key of resources.keys()) {
-        if (!liveSet.has(key)) {
+        if (typeof key !== 'number' || !liveSet.has(key)) {
           const entry = this.textureGpuHandles.get(key, namespace);
           if (entry !== undefined && !this.textureLifetimes.get(entry)?.inUse) {
             if (!entry.texture.isDestroyed) {
@@ -1061,38 +1286,34 @@ export class GpuResidencyCache {
               }
             }
             this.textureGpuHandles.delete(key, namespace);
-            materialResidencyChanged = true;
           }
         }
       }
     }
     for (const [namespace, resources] of this.samplerGpuHandles.entries()) {
       for (const key of resources.keys()) {
-        if (!liveSet.has(key)) {
+        if (typeof key !== 'number' || !liveSet.has(key)) {
           this.samplerGpuHandles.delete(key, namespace);
-          materialResidencyChanged = true;
         }
       }
     }
     for (const [namespace, resources] of this.cubemapGpuHandles.entries()) {
       for (const [key, entry] of resources) {
-        if (liveSet.has(key)) continue;
-        if (entry.texture !== null && !entry.texture.isDestroyed) {
-          const result = entry.texture.destroy();
-          if (result.ok) freed += 1;
-          else {
-            errors.push(result.error);
-            this.errorRegistry?.fire(result.error);
-          }
-        }
+        if (typeof key === 'number' && liveSet.has(key)) continue;
         this.cubemapGpuHandles.delete(key, namespace);
         this.cubemapIdempotentMap.delete(key, namespace);
+        this.retireCubemap(entry);
+        freed += Number(entry.texture?.isDestroyed ?? false);
       }
     }
 
     for (const [namespace, resources] of this.meshGpuHandles.entries()) {
       for (const [key, entry] of resources) {
-        if (!liveSet.has(key) && this.meshLifetime(entry).owners === 0) {
+        if (
+          namespace !== DERIVED_GEOMETRY &&
+          (typeof key !== 'number' || !liveSet.has(key)) &&
+          this.meshLifetime(entry).owners === 0
+        ) {
           this.retireMeshEntry(key, entry, namespace);
           freed +=
             Number(entry.vertexBuffer.isDestroyed) +
@@ -1100,7 +1321,6 @@ export class GpuResidencyCache {
         }
       }
     }
-    if (materialResidencyChanged) this.materialResourceEpoch += 1;
 
     return { freed, errors };
   }
@@ -1124,7 +1344,7 @@ export class GpuResidencyCache {
         new RhiError({
           code: 'rhi-not-available',
           expected: 'asyncCreateShaderModule wired by configureGpuDevice before prewarm',
-          hint: 'call gpuStore.configureGpuDevice(device, packShaderFactory, registerCube) before prewarmMipmapPipeline',
+          hint: 'call gpuStore.configureGpuDevice(device, packShaderFactory, caps) before prewarmMipmapPipeline',
         }),
       );
     }
@@ -1151,7 +1371,7 @@ export class GpuResidencyCache {
    * part of the engine's public API surface.
    */
   _getTextureGpuTexture(
-    handle: Handle<'TextureAsset', 'shared'>,
+    handle: AssetHandle<'texture'>,
     worldId: RenderResourceScope | number = 0,
   ): GpuTexture | undefined {
     return this.textureGpuHandles.get(Number(handle), this.worldNamespace(worldId))?.texture;
@@ -1162,7 +1382,7 @@ export class GpuResidencyCache {
    * made resident, else `undefined`.
    */
   getTextureGpuView(
-    handle: Handle<'TextureAsset', 'shared'>,
+    handle: AssetHandle<'texture'>,
     worldId: RenderResourceScope | number = 0,
   ): TextureView | undefined {
     return this.textureGpuHandles.get(Number(handle), this.worldNamespace(worldId))?.view;
@@ -1174,14 +1394,15 @@ export class GpuResidencyCache {
    * this store's cache and lets the device own their lifetime.
    */
   ensureSamplerResident(
-    handle: Handle<'SamplerAsset', 'shared'>,
+    handle: AssetHandle<'sampler'>,
     pod: SamplerAsset,
     worldId: RenderResourceScope | number = 0,
   ): Result<Sampler, RhiError> {
     const key = Number(handle);
     const namespace = this.worldNamespace(worldId);
     const existing = this.samplerGpuHandles.get(key, namespace);
-    if (existing?.source === pod) return existing.result;
+    const revision = typeof worldId === 'number' ? undefined : renderAssetRevision(worldId, handle);
+    if (existing?.source === pod && existing.revision === revision) return existing.result;
     const device = this.gpuDevice;
     if (device === undefined) {
       return err(
@@ -1198,10 +1419,14 @@ export class GpuResidencyCache {
     const sampler = created.value;
     this.samplerGpuHandles.set(
       key,
-      { source: pod, sampler, result: Object.freeze(ok(sampler)) },
+      {
+        source: pod,
+        revision,
+        sampler,
+        result: Object.freeze(ok(sampler)),
+      },
       namespace,
     );
-    this.materialResourceEpoch += 1;
     return created;
   }
 
@@ -1212,7 +1437,7 @@ export class GpuResidencyCache {
    * `.destroy()` routes through the destroy chain (M-3 / w11).
    */
   getCubemapGpuTexture(
-    handle: Handle<'EquirectAsset', 'shared'>,
+    handle: AssetHandle<'equirect'>,
     worldId: RenderResourceScope | number = 0,
   ): GpuTexture | undefined {
     // A 'failed' entry has texture:null; normalise to undefined (not resident).
@@ -1223,7 +1448,7 @@ export class GpuResidencyCache {
 
   /** Return the full-cube texture view, or `undefined` if not uploaded yet. */
   getCubemapGpuView(
-    handle: Handle<'EquirectAsset', 'shared'>,
+    handle: AssetHandle<'equirect'>,
     worldId: RenderResourceScope | number = 0,
   ): TextureView | undefined {
     return this.cubemapGpuHandles.get(Number(handle), this.worldNamespace(worldId))?.view;
@@ -1231,7 +1456,7 @@ export class GpuResidencyCache {
 
   /** Return per-face 2D views (6 faces), or `undefined` if not uploaded yet. */
   getCubemapFaceViews(
-    handle: Handle<'EquirectAsset', 'shared'>,
+    handle: AssetHandle<'equirect'>,
     worldId: RenderResourceScope | number = 0,
   ): readonly TextureView[] | undefined {
     return this.cubemapGpuHandles.get(Number(handle), this.worldNamespace(worldId))?.faceViews;
@@ -1248,7 +1473,7 @@ export class GpuResidencyCache {
    *   - 'failed'  -> projection errored: bind white fallback, do NOT retry (R-2)
    */
   getCubemapStatus(
-    handle: Handle<'EquirectAsset', 'shared'>,
+    handle: AssetHandle<'equirect'>,
     worldId: RenderResourceScope | number = 0,
   ): 'pending' | 'ready' | 'failed' | undefined {
     return this.cubemapGpuHandles.get(Number(handle), this.worldNamespace(worldId))?.status;
@@ -1256,7 +1481,7 @@ export class GpuResidencyCache {
 
   /** The structured failure recorded with a `'failed'` projection status. */
   getCubemapFailure(
-    handle: Handle<'EquirectAsset', 'shared'>,
+    handle: AssetHandle<'equirect'>,
     worldId: RenderResourceScope | number = 0,
   ): AssetError | RhiError | undefined {
     return this.cubemapGpuHandles.get(Number(handle), this.worldNamespace(worldId))?.failure;
@@ -1276,15 +1501,85 @@ export class GpuResidencyCache {
    * as the canonical "mesh asset has GPU residency" probe.
    */
   getMeshGpuHandles(
-    handle: Handle<'MeshAsset', 'shared'>,
+    handle: AssetHandle<'mesh'>,
     worldId: RenderResourceScope | number = 0,
   ): MeshGpuHandles | undefined {
     return this.meshGpuHandles.get(Number(handle), this.worldNamespace(worldId));
   }
 
+  private nineSliceMesh: TypesMeshAsset | undefined;
+
+  /** Renderer-owned sprite tessellation; this is derived geometry, not an asset identity. */
+  ensureNineSliceGeometry(): Result<MeshGpuHandles, RhiError | AssetError> {
+    const namespace = DERIVED_GEOMETRY;
+    const key = 'derived:nine-slice';
+    const existing = this.meshGpuHandles.get(key, namespace);
+    if (existing !== undefined) return this.meshLifetime(existing).result;
+    this.nineSliceMesh ??= createPrimitiveMesh('nine-slice-quad').unwrap();
+    const mesh = this.nineSliceMesh;
+    const projected = deriveRenderDataMesh(mesh);
+    return projected.ok
+      ? this.uploadMeshById(key, mesh, projected.value, EMPTY_LOD_MESHES, undefined, namespace)
+      : projected;
+  }
+
+  private readonly generatedMeshes = new Map<TypesMeshAsset, string>();
+  private readonly pendingGeneratedRetirement = new Map<string, MeshGpuHandles>();
+  private nextGeneratedMesh = 0;
+
+  getGeneratedMesh(mesh: TypesMeshAsset): MeshGpuHandles | undefined {
+    const namespace = DERIVED_GEOMETRY;
+    const key = this.generatedMeshes.get(mesh);
+    return key === undefined ? undefined : this.meshGpuHandles.get(key, namespace);
+  }
+
+  /** Immutable view-derived geometry uses native residency without minting an AssetHandle. */
+  ensureGeneratedMesh(mesh: TypesMeshAsset): Result<MeshGpuHandles, RhiError | AssetError> {
+    this.meshChanges.assertIdle();
+    const namespace = DERIVED_GEOMETRY;
+    let key = this.generatedMeshes.get(mesh);
+    const entry = key === undefined ? undefined : this.meshGpuHandles.get(key, namespace);
+    if (entry !== undefined && key !== undefined) {
+      this.generatedMeshes.delete(mesh);
+      this.generatedMeshes.set(mesh, key);
+      return this.meshLifetime(entry).result;
+    }
+    const projected = deriveRenderDataMesh(mesh);
+    if (!projected.ok) return projected;
+    key = `derived:layout:${++this.nextGeneratedMesh}`;
+    const result = this.uploadMeshById(
+      key,
+      mesh,
+      projected.value,
+      EMPTY_LOD_MESHES,
+      undefined,
+      namespace,
+    );
+    if (!result.ok) return result;
+    this.generatedMeshes.set(mesh, key);
+    // Bounded current cache. A draw already encoded in this submission keeps
+    // its allocation until that submission's fence, even after LRU eviction.
+    if (this.generatedMeshes.size > 256) {
+      const oldest = this.generatedMeshes.entries().next().value;
+      if (oldest !== undefined) {
+        this.generatedMeshes.delete(oldest[0]);
+        const retired = this.meshGpuHandles.get(oldest[1], namespace);
+        if (retired !== undefined) {
+          try {
+            if (retired.changeToken !== undefined) this.meshChanges.retire(retired.changeToken);
+          } finally {
+            this.meshGpuHandles.delete(oldest[1], namespace);
+            this.pendingGeneratedRetirement.set(oldest[1], retired);
+          }
+        }
+      }
+    }
+    return result;
+  }
+
   /** Candidate leases retain the concrete allocation even after cache invalidation. */
   retainMeshResidency(
-    handle: Handle<'MeshAsset', 'shared'>,
+    handle: AssetHandle<'mesh'>,
     worldId: RenderResourceScope | number = 0,
   ): ResidencyLease | undefined {
     const key = Number(handle);
@@ -1292,16 +1587,16 @@ export class GpuResidencyCache {
     const entry = this.meshGpuHandles.get(key, namespace);
     return entry === undefined
       ? undefined
-      : this.meshLifetime(entry).retain(() => {
+      : this.retainMeshEntry(entry, () => {
           if (this.meshGpuHandles.get(key, namespace) === entry)
-            this.retireMeshEntry(key, entry, namespace);
+            this.invalidateMesh(handle, worldId);
           else this.meshLifetime(entry).retire();
         });
   }
 
   /** Retain the concrete texture allocation across async preparation and GPU submission. */
   retainTextureResidency(
-    handle: Handle<'TextureAsset', 'shared'>,
+    handle: AssetHandle<'texture'>,
     worldId: RenderResourceScope | number = 0,
   ): ResidencyLease | undefined {
     const key = Number(handle);
@@ -1320,13 +1615,324 @@ export class GpuResidencyCache {
     if (entry !== undefined) this.retireMeshEntry(key, entry, namespace);
   }
 
+  /** A fixed candidate is physically prepared without replacing the currently drawn mesh. */
+  prepareMeshResidency(
+    handle: AssetHandle<'mesh'>,
+    mesh: TypesMeshAsset,
+    revision: number,
+    scope: RenderResourceScope | number = 0,
+    profilePhase?: RecordProfileRunner,
+    capture?: (prepared: PreparedMeshResidency) => void,
+  ): Result<PreparedMeshResidency, RhiError | AssetError> {
+    const key = handle;
+    const namespace = this.worldNamespace(scope);
+    const candidateKey = `mesh-candidate:${key}:${revision}`;
+    const current = this.meshGpuHandles.get(key, namespace);
+    let entry =
+      current !== undefined && this.meshSourceRevisions.get(current) === revision
+        ? current
+        : this.meshGpuHandles.get(candidateKey, namespace);
+    if (entry === undefined) {
+      const projected = runRecordProfilePhase(
+        profilePhase,
+        'record/validation/residency/project',
+        () => deriveRenderDataMesh(mesh),
+      );
+      if (!projected.ok) return projected;
+      const prepared = this.uploadMeshById(
+        candidateKey,
+        mesh,
+        projected.value,
+        EMPTY_LOD_MESHES,
+        profilePhase,
+        namespace,
+      );
+      if (!prepared.ok) return prepared;
+      entry = this.meshGpuHandles.get(candidateKey, namespace);
+      if (entry === undefined) throw new Error('prepared mesh has no GPU allocation');
+      this.meshSourceRevisions.set(entry, revision);
+    }
+    const captured = entry;
+    const epoch = this.deviceEpoch;
+    let released = false;
+    const valid = () => {
+      const accepted = this.meshGpuHandles.get(key, namespace);
+      return (
+        !released &&
+        this.deviceEpoch === epoch &&
+        this.meshChanges.owns(captured.changeToken) &&
+        (accepted === undefined ? 0 : (this.meshSourceRevisions.get(accepted) ?? 0)) <= revision &&
+        (this.meshGpuHandles.get(candidateKey, namespace) === captured || accepted === captured)
+      );
+    };
+    const retained = this.retainMeshEntry(captured, () => {
+      if (this.meshGpuHandles.get(key, namespace) === captured) this.invalidateMesh(handle, scope);
+      else this.retireMeshEntry(candidateKey, captured, namespace);
+    });
+    const prepared: PreparedMeshResidency = {
+      entry: captured,
+      current: valid,
+      commit: () => {
+        if (!valid()) return false;
+        if (this.meshGpuHandles.get(key, namespace) !== captured) {
+          const previous = this.meshGpuHandles.get(key, namespace);
+          if (previous !== undefined) this.meshChanges.preflight();
+          this.meshGpuHandles.set(key, captured, namespace);
+          this.meshGpuHandles.delete(candidateKey, namespace);
+          if (previous !== undefined) this.retireMeshEntry(key, previous, namespace);
+        }
+        return true;
+      },
+      lease: {
+        track: (completed) => retained.track(completed),
+        release: (evict) => {
+          released = true;
+          return retained.release(evict || this.meshGpuHandles.get(key, namespace) !== captured);
+        },
+      },
+    };
+    // Transfer exact cleanup ownership before a wrapper can fail to return its result.
+    capture?.(prepared);
+    return ok(prepared);
+  }
+
+  /** Adopt only this asset's explicit ranges; no mesh users participate in invalidation. */
+  adoptMeshChange(
+    change: AssetChange,
+    mesh: TypesMeshAsset | undefined,
+    world: RenderResourceScope | number = 0,
+  ): Result<void, RhiError> {
+    const key = change.handle;
+    const namespace = this.worldNamespace(world);
+    const entry = this.meshGpuHandles.get(key, namespace);
+    if (entry === undefined) return ok(undefined);
+    if (!change.removed && this.meshSourceRevisions.get(entry) === change.revision)
+      return ok(undefined);
+    // Full content/layout edits prepare a new allocation on its next actual use.
+    if (
+      change.removed ||
+      mesh === undefined ||
+      change.fields.some(
+        (field) =>
+          field !== 'aabb' &&
+          field !== 'collision' &&
+          field !== 'distanceField' &&
+          field !== 'cardLayout',
+      )
+    ) {
+      this.retireMeshEntry(key, entry, namespace);
+      return ok(undefined);
+    }
+    const ranges = change.ranges.filter(
+      (range) =>
+        range.path.length === 1 && (range.path[0] === 'vertices' || range.path[0] === 'indices'),
+    );
+    if (ranges.length === 0) return ok(undefined);
+    const device = this.gpuDevice;
+    if (
+      device === undefined ||
+      this.meshLifetime(entry).owners !== 0 ||
+      (entry.lodRanges?.length ?? 0) > 1 ||
+      entry.vboBytes !== mesh.vertices.byteLength
+    ) {
+      this.retireMeshEntry(key, entry, namespace);
+      return ok(undefined);
+    }
+    // Validate every touched physical allocation before writing any of them.
+    const writes = [];
+    for (const range of ranges) {
+      const vertex = range.path[0] === 'vertices';
+      const buffer = vertex ? entry.vertexBuffer : entry.indexBuffer;
+      const source = vertex ? mesh.vertices : mesh.indices;
+      const allocation = buffer == null ? undefined : this.meshBufferOwners.get(buffer);
+      if (
+        buffer == null ||
+        source === undefined ||
+        allocation === undefined ||
+        allocation.owners !== 1
+      ) {
+        this.retireMeshEntry(key, entry, namespace);
+        return ok(undefined);
+      }
+      writes.push({ range, buffer, source });
+    }
+    this.meshChanges.preflight();
+    try {
+      for (const { range, buffer, source } of writes) {
+        this.unshareMeshBuffer(buffer);
+        // WebGPU requires four-byte writes, including uint16 indices at an odd offset.
+        const first = Math.floor(range.byteOffset / 4) * 4;
+        const end = Math.ceil((range.byteOffset + range.byteLength) / 4) * 4;
+        const available = new Uint8Array(
+          source.buffer,
+          source.byteOffset + first,
+          Math.min(end, source.byteLength) - first,
+        );
+        const bytes =
+          available.byteLength === end - first ? available : new Uint8Array(end - first);
+        if (bytes !== available) bytes.set(available);
+        const written = device.queue.writeBuffer(buffer.handle, first, bytes);
+        if (!written.ok) {
+          this.retireMeshEntry(key, entry, namespace);
+          return written;
+        }
+      }
+      // Already submitted work precedes these queue writes. Only unsubmitted leases require COW.
+      const token = entry.changeToken;
+      if (!this.meshChanges.owns(token)) throw new Error('Mesh range write lost its generation');
+      Object.assign(entry, { contentEpoch: this.meshChanges.publish(token) });
+      this.meshSourceRevisions.set(entry, change.revision);
+      return ok(undefined);
+    } catch (cause) {
+      this.retireMeshEntry(key, entry, namespace);
+      throw cause;
+    }
+  }
+
+  /** Region evidence keeps narrow uploads independent of the full image width. */
+  adoptTextureChange(
+    change: AssetChange,
+    texture: TextureAsset | undefined,
+    world: RenderResourceScope | number = 0,
+  ): Result<void, RhiError> {
+    const key = change.handle;
+    const namespace = this.worldNamespace(world);
+    const entry = this.textureGpuHandles.get(key, namespace);
+    const adopted =
+      !change.removed &&
+      entry?.receipt.sourceRevision !== undefined &&
+      entry.receipt.sourceRevision >= change.revision;
+    this.textureDerivations.remove(key, change.removed ? undefined : change.revision, namespace);
+    if (texture?.encoding !== undefined && !change.removed && this.imagePages.has(key, namespace)) {
+      this.pendingImageAdoptions.set(key, change, namespace);
+      const target = texture.colorSpace === 'srgb' ? 'rgba8unorm-srgb' : 'rgba8unorm';
+      this.prepareTextureData(change.handle, texture, world, target);
+      void this.waitTextureData(change.handle, world).then(() => {
+        if (this.pendingImageAdoptions.get(key, namespace) !== change) return;
+        this.pendingImageAdoptions.delete(key, namespace);
+        if (
+          typeof world !== 'number' &&
+          renderAssetRevision(world, change.handle) !== change.revision
+        )
+          return;
+        const native = this.prepareTextureData(change.handle, texture, world, target);
+        if (native.ok)
+          this.imagePages.adopt(key, { ...change, fields: ['data'] }, native.value, namespace);
+        else this.imagePages.fail(key, native.error, namespace);
+      });
+    } else {
+      this.pendingImageAdoptions.delete(key, namespace);
+      this.imagePages.adopt(key, change, texture, namespace);
+    }
+    // Image pages have their own accepted revision; current raster residency
+    // must not hide a source update from that independent CPU projection.
+    if (adopted) return ok(undefined);
+    this.cancelTextureUpload(key, namespace);
+    if (entry === undefined) return ok(undefined);
+    if (
+      change.removed ||
+      texture === undefined ||
+      change.fields.length !== 0 ||
+      this.textureLifetime(entry).owners !== 0 ||
+      this.gpuDevice === undefined
+    ) {
+      this.retireTextureEntry(key, entry, namespace);
+      return ok(undefined);
+    }
+    const device = this.gpuDevice;
+    const layout = deriveTextureLayout(texture);
+    if (!layout.ok) {
+      this.retireTextureEntry(key, entry, namespace);
+      return err(
+        new RhiError({
+          code: 'webgpu-runtime-error',
+          expected: layout.error.expected,
+          hint: layout.error.hint,
+        }),
+      );
+    }
+    const block = textureFormatBlock(texture.format);
+    for (const range of change.ranges) {
+      const level = layout.value.levels.find(
+        (level) =>
+          range.byteOffset >= level.byteOffset &&
+          range.byteOffset + range.byteLength <= level.byteOffset + level.byteLength,
+      );
+      if (
+        range.path.length !== 1 ||
+        range.path[0] !== 'data' ||
+        level === undefined ||
+        range.rowBytes === undefined ||
+        range.byteStride !== level.bytesPerRow
+      ) {
+        this.retireTextureEntry(key, entry, namespace);
+        return ok(undefined);
+      }
+      const local = range.byteOffset - level.byteOffset;
+      const image = Math.floor(local / (level.bytesPerRow * level.rowsPerImage));
+      const row = Math.floor(
+        (local % (level.bytesPerRow * level.rowsPerImage)) / level.bytesPerRow,
+      );
+      const column = (local % level.bytesPerRow) / block.bytesPerBlock;
+      const rows = (range.byteLength - range.rowBytes) / range.byteStride + 1;
+      const rowBytes = range.rowBytes;
+      const source = texture.data.subarray(range.byteOffset, range.byteOffset + range.byteLength);
+      const packed =
+        rowBytes === range.byteStride || rows === 1 ? source : new Uint8Array(rowBytes * rows);
+      if (packed !== source)
+        for (let row = 0; row < rows; row++)
+          packed.set(
+            source.subarray(row * range.byteStride, row * range.byteStride + rowBytes),
+            row * rowBytes,
+          );
+      const result = device.queue.writeTexture(
+        {
+          texture: entry.texture.handle,
+          mipLevel: level.level,
+          origin: { x: column * block.blockWidth, y: row * block.blockHeight, z: image },
+        },
+        packed,
+        { offset: 0, bytesPerRow: rowBytes, rowsPerImage: rows },
+        {
+          width: (rowBytes / block.bytesPerBlock) * block.blockWidth,
+          height: rows * block.blockHeight,
+          depthOrArrayLayers: 1,
+        },
+      );
+      if (!result.ok) {
+        this.retireTextureEntry(key, entry, namespace);
+        return result;
+      }
+    }
+    if (texture.mips.kind === 'generate' && layout.value.levels.length > 1) {
+      this.pendingTextureMips.set(entry.texture.handle, {
+        format: texture.format,
+        width: texture.shape.extent.width,
+        height: texture.shape.extent.height,
+        arrayLayerCount: layout.value.levels[0]?.imagesPerMip ?? 1,
+        levels: layout.value.levels.length,
+      });
+    }
+    Object.assign(entry, {
+      receipt: {
+        ...entry.receipt,
+        generation: ++this.textureGeneration,
+        sourceRevision: change.revision,
+      },
+    });
+    return ok(undefined);
+  }
+
+  /** Sampler creation stays lazy; invalidate only this logical sampler's device entry. */
+  invalidateSampler(handle: number, world: RenderResourceScope | number = 0): void {
+    this.samplerGpuHandles.delete(handle, this.worldNamespace(world));
+  }
+
   /** Remove the current mapping immediately; borrowed/submitted allocations drain separately. */
-  invalidateTexture(
-    handle: Handle<'TextureAsset', 'shared'>,
-    worldId: RenderResourceScope | number = 0,
-  ): void {
-    const key = Number(handle);
+  invalidateTexture(handle: number, worldId: RenderResourceScope | number = 0): void {
+    const key = handle;
     const namespace = this.worldNamespace(worldId);
+    this.cancelTextureUpload(key, namespace);
     const entry = this.textureGpuHandles.get(key, namespace);
     if (entry !== undefined) this.retireTextureEntry(key, entry, namespace);
   }
@@ -1335,7 +1941,7 @@ export class GpuResidencyCache {
    * submission, rechecks all source fences, then commits the unique preparation
    * for each scope/handle. Releasing an unpublished candidate cancels it. */
   prepareTextureResidencyForGraph(
-    handle: Handle<'TextureAsset', 'shared'>,
+    handle: AssetHandle<'texture'>,
     pod: TextureAsset,
     worldId: RenderResourceScope | number = 0,
   ): Result<GraphTextureResidencyPreparation, RhiError | AssetError | ImageError> {
@@ -1354,6 +1960,10 @@ export class GpuResidencyCache {
     let entry = existing;
     let needsMipmaps = false;
     if (entry === undefined) {
+      const sourceRevision = this.textureSourceRevision(handle, pod, worldId);
+      const native = this.prepareTextureData(Number(handle), pod, worldId);
+      if (!native.ok) return native;
+      pod = native.value;
       const projected = deriveRenderDataTexture(pod);
       if (!projected.ok) return projected;
       const uploaded = this.prepareTextureUpload(
@@ -1376,7 +1986,7 @@ export class GpuResidencyCache {
       entry = {
         texture: this.wrapTex(raw),
         view: view.value,
-        receipt: this.textureReceipt(pod, projected.value),
+        receipt: this.textureReceipt(pod, projected.value, sourceRevision),
       };
       needsMipmaps =
         !projected.value.compressed && pod.mips.kind === 'generate' && uploaded.value.levels > 1;
@@ -1400,8 +2010,8 @@ export class GpuResidencyCache {
       commit: () => {
         if (!current()) return false;
         if (!published) {
+          this.cancelTextureUpload(key, namespace);
           this.textureGpuHandles.set(key, captured, namespace);
-          this.materialResourceEpoch += 1;
           published = true;
         }
         return true;
@@ -1432,19 +2042,19 @@ export class GpuResidencyCache {
    * (createRenderer step-3 owns them; D-1).
    */
   ensureResident(
-    handle: Handle<'MeshAsset', 'shared'>,
+    handle: AssetHandle<'mesh'>,
     pod: TypesMeshAsset,
     worldId?: RenderResourceScope | number,
     lodMeshes?: readonly (TypesMeshAsset | undefined)[],
     profilePhase?: RecordProfileRunner,
   ): Result<MeshGpuHandles, RhiError | AssetError | ImageError>;
   ensureResident(
-    handle: Handle<'TextureAsset', 'shared'>,
+    handle: AssetHandle<'texture'>,
     pod: TextureAsset,
     worldId?: RenderResourceScope | number,
   ): Result<TextureGpuEntry, RhiError | AssetError | ImageError>;
   ensureResident(
-    handle: Handle<'MeshAsset', 'shared'> | Handle<'TextureAsset', 'shared'>,
+    handle: AssetHandle<'mesh'> | AssetHandle<'texture'>,
     pod: TypesMeshAsset | TextureAsset,
     worldId: RenderResourceScope | number = 0,
     lodMeshes: readonly (TypesMeshAsset | undefined)[] = EMPTY_LOD_MESHES,
@@ -1511,15 +2121,20 @@ export class GpuResidencyCache {
         const namespace = this.worldNamespace(worldId);
         const existing = this.textureGpuHandles.get(texKey, namespace);
         if (existing !== undefined) return this.textureLifetime(existing).result;
-        const projected = deriveRenderDataTexture(pod);
+        const sourceRevision = this.textureSourceRevision(handle, pod, worldId);
+        const native = this.prepareTextureData(Number(handle), pod, worldId);
+        if (!native.ok) return native;
+        const texture = native.value;
+        const projected = deriveRenderDataTexture(texture);
         if (!projected.ok) return projected;
-        const decoded: DecodedImage = decodedFromTexture(pod);
+        const decoded: DecodedImage = decodedFromTexture(texture);
         return this.uploadTextureSync(
-          handle as Handle<'TextureAsset', 'shared'>,
-          pod,
+          handle as AssetHandle<'texture'>,
+          texture,
           decoded,
           projected.value,
           worldId,
+          sourceRevision,
         );
       }
     }
@@ -1532,17 +2147,17 @@ export class GpuResidencyCache {
    * explicit finish/submit before publication.
    */
   prepareResidentForRecovery(
-    handle: Handle<'MeshAsset', 'shared'>,
+    handle: AssetHandle<'mesh'>,
     pod: TypesMeshAsset,
     worldId?: RenderResourceScope | number,
   ): Result<RecoveryResidencyPreparation, RhiError | AssetError | ImageError>;
   prepareResidentForRecovery(
-    handle: Handle<'TextureAsset', 'shared'>,
+    handle: AssetHandle<'texture'>,
     pod: TextureAsset,
     worldId?: RenderResourceScope | number,
   ): Result<RecoveryResidencyPreparation, RhiError | AssetError | ImageError>;
   prepareResidentForRecovery(
-    handle: Handle<'MeshAsset', 'shared'> | Handle<'TextureAsset', 'shared'>,
+    handle: AssetHandle<'mesh'> | AssetHandle<'texture'>,
     pod: TypesMeshAsset | TextureAsset,
     worldId: RenderResourceScope | number = 0,
   ): Result<RecoveryResidencyPreparation, RhiError | AssetError | ImageError> {
@@ -1567,11 +2182,15 @@ export class GpuResidencyCache {
     const cacheKey = id;
     const namespace = this.worldNamespace(worldId);
     if (this.textureGpuHandles.has(cacheKey, namespace)) return ok({});
+    const sourceRevision = this.textureSourceRevision(handle, pod, worldId);
+    const native = this.prepareTextureData(Number(handle), pod, worldId);
+    if (!native.ok) return native;
+    pod = native.value;
     const projected = deriveRenderDataTexture(pod);
     if (!projected.ok) return projected;
     const decoded = decodedFromTexture(pod);
     const prepared = this.prepareTextureUpload(
-      handle as Handle<'TextureAsset', 'shared'>,
+      handle as AssetHandle<'texture'>,
       pod,
       decoded,
       projected.value,
@@ -1609,6 +2228,7 @@ export class GpuResidencyCache {
       dimension: projected.value.shape.viewDimension,
     });
     if (!viewRes.ok) {
+      mipmapWork?.discard();
       new GpuTexture(device, gpuTexture).destroy();
       return viewRes;
     }
@@ -1616,101 +2236,144 @@ export class GpuResidencyCache {
     const entry: TextureGpuEntry = {
       texture: this.wrapTex(gpuTexture),
       view: viewRes.value,
-      receipt: this.textureReceipt(pod, projected.value),
+      receipt: this.textureReceipt(pod, projected.value, sourceRevision),
     };
+    this.cancelTextureUpload(cacheKey, namespace);
     this.textureGpuHandles.set(cacheKey, entry, namespace);
-    this.materialResourceEpoch += 1;
     if (previous !== undefined && previous.texture !== entry.texture)
       this.retireTextureEntry(cacheKey, previous, namespace);
     return ok(mipmapWork === undefined ? {} : { mipmapWork });
   }
 
   /**
-   * Eager public surface: upload decoded image bytes into a GPU texture and
-   * cache (texture + view) under the handle. The TextureAsset POD supplies the
-   * GPU format (D-2: caller provides POD, store never reaches a registry); the
-   * DecodedImage supplies the pixel bytes + colorSpace. Retains the async
-   * signature so callers that have not prewarmed can drive a mipmap build here
-   * (the one async source).
+   * Upload one complete TextureAsset and cache its GPU texture and view.
+   * Pixel bytes, shape and color space are derived from that same source.
+   * Async preparation permits codecs and mipmap pipeline construction.
    */
   async uploadTexture(
-    handle: Handle<'TextureAsset', 'shared'>,
+    handle: AssetHandle<'texture'>,
     pod: TextureAsset,
-    decoded: DecodedImage,
     worldId: RenderResourceScope | number = 0,
   ): Promise<Result<void, AssetError | ImageError | RhiError>> {
     const device = this.gpuDevice;
+    if (device === undefined)
+      return err(
+        new RhiError({
+          code: 'rhi-not-available',
+          expected: 'a configured texture upload device',
+          hint: 'configure the Renderer before preparing textures',
+        }),
+      );
+    const sourceRevision = this.textureSourceRevision(handle, pod, worldId);
+    let native = this.prepareTextureData(Number(handle), pod, worldId);
+    if (!native.ok && native.error.code === 'asset-not-ready') {
+      await this.waitTextureData(Number(handle), worldId);
+      native = this.prepareTextureData(Number(handle), pod, worldId);
+    }
+    if (!native.ok) return native;
+    pod = native.value;
+    const decoded = decodedFromTexture(pod);
     const projected = deriveRenderDataTexture(pod);
     if (!projected.ok) return projected;
     const prepared = this.prepareTextureUpload(handle, pod, decoded, projected.value);
     if (!prepared.ok) return prepared;
-    if (device === undefined) return ok(undefined);
-    const { tex, levels, gpuTexture } = prepared.value;
+    const { levels, gpuTexture } = prepared.value;
+    if (gpuTexture === undefined) throw new Error('configured texture upload lost its device');
     const cacheKey = Number(handle);
     const namespace = this.worldNamespace(worldId);
-    if (gpuTexture === undefined) return ok(undefined);
-
-    if (!projected.value.compressed && tex.mips.kind === 'generate' && levels > 1) {
-      const factory = this.asyncCreateShaderModule;
-      if (factory === undefined) {
-        return err(
-          new RhiError({
-            code: 'rhi-not-available',
-            expected: 'asyncCreateShaderModule wired by configureGpuDevice',
-            hint: 'GpuResidencyCache.uploadTexture mipmap branch needs a shader-module factory; rhi-webgpu / rhi-wgpu shims expose it via pack.createShaderModule. Explicit-rhi instances must surface the factory on the RhiInstance.',
-          }),
-        );
-      }
-      const pipelineRes = await getOrCreateMipmapPipeline(device, tex.format, factory);
-      if (!pipelineRes.ok) {
-        return err(
-          new RhiError({
-            code: 'rhi-not-available',
-            expected: `mipmap pipeline for format ${tex.format} builds`,
-            hint: 'GpuResidencyCache.uploadTexture could not build the mipmap pipeline',
-          }),
-        );
-      }
-      const blitRes = blitMipmapsSync(device, gpuTexture, {
-        format: tex.format,
-        width: tex.shape.extent.width,
-        height: tex.shape.extent.height,
-        arrayLayerCount: projected.value.depthOrArrayLayers,
-        levels,
-      });
-      if (!blitRes.ok) return blitRes as Result<void, RhiError>;
-    }
-
-    const viewRes = device.createTextureView(gpuTexture, {
-      label: `texture-view-${cacheKey}`,
-      dimension: projected.value.shape.viewDimension,
-    });
-    if (!viewRes.ok) return viewRes;
-    const previous = this.textureGpuHandles.get(cacheKey, namespace);
-    const next: TextureGpuEntry = {
-      texture: this.wrapTex(gpuTexture),
-      view: viewRes.value,
-      receipt: this.textureReceipt(pod, projected.value),
+    const receipt = this.textureReceipt(pod, projected.value, sourceRevision);
+    const mipmaps =
+      !projected.value.compressed && pod.mips.kind === 'generate' && levels > 1
+        ? {
+            format: projected.value.format,
+            width: pod.shape.extent.width,
+            height: pod.shape.extent.height,
+            arrayLayerCount: projected.value.depthOrArrayLayers,
+            levels,
+          }
+        : undefined;
+    let disposed = false;
+    const token = {
+      dispose: () => {
+        if (disposed) return;
+        disposed = true;
+        device.destroyTexture(gpuTexture);
+      },
     };
-    this.textureGpuHandles.set(cacheKey, next, namespace);
-    this.materialResourceEpoch += 1;
-    if (previous !== undefined && previous.texture !== next.texture)
-      this.retireTextureEntry(cacheKey, previous, namespace);
-    return ok(undefined);
+    this.cancelTextureUpload(cacheKey, namespace);
+    this.textureUploads.set(cacheKey, token, namespace);
+    const current = () =>
+      this.gpuDevice === device &&
+      receipt.deviceEpoch === this.deviceEpoch &&
+      this.textureUploads.get(cacheKey, namespace) === token;
+    let published = false;
+    try {
+      if (mipmaps !== undefined) {
+        const factory = this.asyncCreateShaderModule;
+        if (factory === undefined)
+          return err(
+            new RhiError({
+              code: 'rhi-not-available',
+              expected: 'a mipmap shader-module factory',
+              hint: 'configure the Renderer mipmap factory before preparing generated mips',
+            }),
+          );
+        const pipeline = await getOrCreateMipmapPipeline(device, mipmaps.format, factory);
+        if (current() && !pipeline.ok)
+          return err(
+            pipeline.error instanceof RhiError
+              ? pipeline.error
+              : new RhiError({
+                  code: 'rhi-not-available',
+                  expected: `mipmap pipeline for ${mipmaps.format} builds`,
+                  hint: 'repair the reported shader pipeline failure before retrying texture preparation',
+                }),
+          );
+      }
+      if (!current())
+        return err(
+          new AssetError({
+            code: 'asset-invalidated',
+            expected: 'the same texture preparation and device remain current',
+            hint: 'discard this superseded upload and use the current asset revision',
+          }),
+        );
+      const view = device.createTextureView(gpuTexture, {
+        label: `texture-view-${cacheKey}`,
+        dimension: projected.value.shape.viewDimension,
+      });
+      if (!view.ok) return view;
+      const previous = this.textureGpuHandles.get(cacheKey, namespace);
+      const next: TextureGpuEntry = {
+        texture: this.wrapTex(gpuTexture),
+        view: view.value,
+        receipt,
+      };
+      if (mipmaps !== undefined) this.pendingTextureMips.set(gpuTexture, mipmaps);
+      this.textureGpuHandles.set(cacheKey, next, namespace);
+      published = true;
+      if (previous !== undefined) this.retireTextureEntry(cacheKey, previous, namespace);
+      return ok(undefined);
+    } finally {
+      if (this.textureUploads.get(cacheKey, namespace) === token)
+        this.textureUploads.delete(cacheKey, namespace);
+      if (!published) token.dispose();
+    }
   }
 
   /**
    * Synchronous texture upload used by `ensureResident` (D-9). Identical to
    * `uploadTexture` except the mipmap pipeline is read from the prewarmed
-   * cache via the synchronous `blitMipmapsSync` -- an un-prewarmed format
+   * cache when the Renderer records pending mip work -- an un-prewarmed format
    * returns a structured RhiError instead of awaiting a build.
    */
   private uploadTextureSync(
-    handle: Handle<'TextureAsset', 'shared'>,
+    handle: AssetHandle<'texture'>,
     pod: TextureAsset,
     decoded: DecodedImage,
     renderData: TextureRenderData,
     worldId: RenderResourceScope | number = 0,
+    sourceRevision?: number,
   ): Result<TextureGpuEntry, AssetError | ImageError | RhiError> {
     const device = this.gpuDevice;
     const prepared = this.prepareTextureUpload(handle, pod, decoded, renderData);
@@ -1729,40 +2392,55 @@ export class GpuResidencyCache {
     const namespace = this.worldNamespace(worldId);
 
     if (!renderData.compressed && tex.mips.kind === 'generate' && levels > 1) {
-      const blitRes = blitMipmapsSync(device, gpuTexture, {
+      this.pendingTextureMips.set(gpuTexture, {
         format: tex.format,
         width: tex.shape.extent.width,
         height: tex.shape.extent.height,
         arrayLayerCount: renderData.depthOrArrayLayers,
         levels,
       });
-      if (!blitRes.ok) return blitRes as Result<TextureGpuEntry, RhiError>;
     }
 
     const viewRes = device.createTextureView(gpuTexture, {
       label: `texture-view-${cacheKey}`,
       dimension: renderData.shape.viewDimension,
     });
-    if (!viewRes.ok) return viewRes;
+    if (!viewRes.ok) {
+      this.pendingTextureMips.delete(gpuTexture);
+      device.destroyTexture(gpuTexture);
+      return viewRes;
+    }
     const entry: TextureGpuEntry = {
       texture: this.wrapTex(gpuTexture),
       view: viewRes.value,
-      receipt: this.textureReceipt(pod, renderData),
+      receipt: this.textureReceipt(pod, renderData, sourceRevision),
     };
     const previous = this.textureGpuHandles.get(cacheKey, namespace);
+    this.cancelTextureUpload(cacheKey, namespace);
     this.textureGpuHandles.set(cacheKey, entry, namespace);
-    this.materialResourceEpoch += 1;
     if (previous !== undefined && previous.texture !== entry.texture)
       this.retireTextureEntry(cacheKey, previous, namespace);
     return this.textureLifetime(entry).result;
   }
 
+  private textureSourceRevision(
+    handle: number,
+    source: TextureAsset,
+    scope: RenderResourceScope | number,
+  ): number | undefined {
+    if (typeof scope === 'number') return undefined;
+    const current = scope.resolveAsset<TextureAsset>(handle);
+    return current.ok && current.value === source ? renderAssetRevision(scope, handle) : undefined;
+  }
+
   private textureReceipt(
     pod: TextureAsset,
     renderData: TextureRenderData,
+    sourceRevision?: number,
   ): TextureResidencyReceipt {
     return {
-      shape: pod.shape,
+      ...(sourceRevision === undefined ? {} : { sourceRevision }),
+      shape: structuredClone(pod.shape),
       format: renderData.format,
       mipLevelCount: renderData.mipLevelCount,
       extent: {
@@ -1783,7 +2461,7 @@ export class GpuResidencyCache {
    * (with ok) when no device is wired (deferred path).
    */
   private prepareTextureUpload(
-    handle: Handle<'TextureAsset', 'shared'>,
+    handle: AssetHandle<'texture'>,
     pod: TextureAsset,
     decoded: DecodedImage,
     renderData: TextureRenderData,
@@ -1864,63 +2542,70 @@ export class GpuResidencyCache {
     });
     if (!createTexRes.ok) return createTexRes;
     const gpuTexture = createTexRes.value;
-    const queue = device.queue;
+    let uploaded = false;
+    try {
+      const queue = device.queue;
 
-    if (renderData.compressed || tex.mips.kind === 'packed') {
-      // feat-20260707 M5 / w36 (AC-08): block-compressed textures carry their
-      // mip chain in `data` (offline-baked -- the GPU cannot generate compressed
-      // mips). Upload each level with its own block-padded bytesPerRow /
-      // rowsPerImage and mip-major byte offset (deriveTextureLayout, SSOT
-      // block math). Full-subresource copies retain their logical size, including
-      // non-block-aligned dimensions. queue.writeTexture avoids the 256 B
-      // copyBufferToTexture alignment trap.
-      const written = writePackedTextureLevels(
-        device,
-        gpuTexture,
-        tex,
-        renderData.format,
+      if (renderData.compressed || tex.mips.kind === 'packed') {
+        // feat-20260707 M5 / w36 (AC-08): block-compressed textures carry their
+        // mip chain in `data` (offline-baked -- the GPU cannot generate compressed
+        // mips). Upload each level with its own block-padded bytesPerRow /
+        // rowsPerImage and mip-major byte offset (deriveTextureLayout, SSOT
+        // block math). Full-subresource copies retain their logical size, including
+        // non-block-aligned dimensions. queue.writeTexture avoids the 256 B
+        // copyBufferToTexture alignment trap.
+        const written = writePackedTextureLevels(
+          device,
+          gpuTexture,
+          tex,
+          renderData.format,
+          decoded.bytes,
+        );
+        if (!written.ok) return written;
+        uploaded = true;
+        return ok({ id, tex, levels, gpuTexture });
+      }
+
+      // Uncompressed base-mip write; higher mips (when mipmap) are GPU-generated by
+      // the caller's blit pass. rowsPerImage is the pixel height for linear RGBA.
+      const textureLayout = deriveTextureLayout({
+        shape: tex.shape,
+        format: renderData.format,
+        mips: tex.mips,
+      });
+      if (!textureLayout.ok) {
+        return err(
+          new AssetError({
+            code: 'invalid-source-format',
+            expected: textureLayout.error.expected,
+            hint: textureLayout.error.hint,
+          }),
+        );
+      }
+      const baseLevel = textureLayout.value.levels[0];
+      if (baseLevel === undefined) {
+        return err(
+          new AssetError({
+            code: 'invalid-source-format',
+            expected: 'texture layout contains a base mip level',
+            hint: ASSET_ERROR_HINTS['invalid-source-format'],
+          }),
+        );
+      }
+      const bytesPerRow = baseLevel.bytesPerRow;
+      const writeTextureRes = queue.writeTexture(
+        { texture: gpuTexture, mipLevel: 0, origin: { x: 0, y: 0, z: 0 } },
         decoded.bytes,
+        { offset: 0, bytesPerRow, rowsPerImage: height },
+        { width, height, depthOrArrayLayers: renderData.depthOrArrayLayers },
       );
-      if (!written.ok) return written;
+      if (!writeTextureRes.ok) return writeTextureRes;
+
+      uploaded = true;
       return ok({ id, tex, levels, gpuTexture });
+    } finally {
+      if (!uploaded) device.destroyTexture(gpuTexture);
     }
-
-    // Uncompressed base-mip write; higher mips (when mipmap) are GPU-generated by
-    // the caller's blit pass. rowsPerImage is the pixel height for linear RGBA.
-    const textureLayout = deriveTextureLayout({
-      shape: tex.shape,
-      format: renderData.format,
-      mips: tex.mips,
-    });
-    if (!textureLayout.ok) {
-      return err(
-        new AssetError({
-          code: 'invalid-source-format',
-          expected: textureLayout.error.expected,
-          hint: textureLayout.error.hint,
-        }),
-      );
-    }
-    const baseLevel = textureLayout.value.levels[0];
-    if (baseLevel === undefined) {
-      return err(
-        new AssetError({
-          code: 'invalid-source-format',
-          expected: 'texture layout contains a base mip level',
-          hint: ASSET_ERROR_HINTS['invalid-source-format'],
-        }),
-      );
-    }
-    const bytesPerRow = baseLevel.bytesPerRow;
-    const writeTextureRes = queue.writeTexture(
-      { texture: gpuTexture, mipLevel: 0, origin: { x: 0, y: 0, z: 0 } },
-      decoded.bytes,
-      { offset: 0, bytesPerRow, rowsPerImage: height },
-      { width, height, depthOrArrayLayers: renderData.depthOrArrayLayers },
-    );
-    if (!writeTextureRes.ok) return writeTextureRes;
-
-    return ok({ id, tex, levels, gpuTexture });
   }
 
   /**
@@ -1935,9 +2620,8 @@ export class GpuResidencyCache {
    * reachable by the record arm; package-internal is the correct visibility.)
    *
    * Idempotent: a second call with the same source handle returns the cached
-   * cubemap handle (no second GPU texture). The minted cubemap handle is an
-   * `EquirectAsset` shared ref catalogued via the injected `registerCube` relay
-   * (D-3); the store never imports AssetRegistry.
+   * cubemap allocation (no second GPU texture). Projection retains the source
+   * asset identity; derived device resources do not create runtime assets.
    *
    * Status (D-3): every entry written carries `status`. A failed projection
    * records `status:'failed'` EXPLICITLY (R-2 / AC-09) so the caller never
@@ -1945,9 +2629,9 @@ export class GpuResidencyCache {
    */
   async _uploadCubemapFromEquirect(
     world: RenderResourceScope,
-    sourceHandle: Handle<'EquirectAsset', 'shared'>,
+    sourceHandle: AssetHandle<'equirect'>,
     sourcePod: EquirectAsset,
-  ): Promise<Result<Handle<'EquirectAsset', 'shared'>, AssetError | RhiError>> {
+  ): Promise<Result<AssetHandle<'equirect'>, AssetError | RhiError>> {
     const sourceId = Number(sourceHandle);
     const namespace = this.worldNamespace(world);
 
@@ -1980,13 +2664,38 @@ export class GpuResidencyCache {
       return ok(sourceHandle);
     }
 
-    // Record a failed projection explicitly so a re-query short-circuits and the
-    // record arm never retries every frame (R-2 / AC-09). The placeholder
-    // texture wrapper is never bound (a 'failed' entry has no live GPU view).
-    const recordFailed = <E extends AssetError | RhiError>(error: E): Result<never, E> => {
+    const revision = renderAssetRevision(world, sourceHandle);
+    const epoch = this.deviceEpoch;
+    const entry: CubemapGpuEntry = {
+      revision,
+      status: 'pending',
+      texture: null,
+      view: undefined,
+      faceViews: [],
+    };
+    this.cubemapGpuHandles.set(sourceId, entry, namespace);
+    const current = () =>
+      this.cubemapGpuHandles.get(sourceId, namespace) === entry &&
+      this.deviceEpoch === epoch &&
+      renderAssetRevision(world, sourceHandle) === revision &&
+      (entry.scope?.isAlive() ?? true);
+    const superseded = () => {
+      if (this.cubemapGpuHandles.get(sourceId, namespace) === entry) {
+        this.cubemapGpuHandles.delete(sourceId, namespace);
+        this.cubemapIdempotentMap.delete(sourceId, namespace);
+      }
+      this.retireCubemap(entry);
+      return ok(sourceHandle);
+    };
+    const recordFailed = <E extends AssetError | RhiError>(
+      error: E,
+    ): Result<AssetHandle<'equirect'>, E> => {
+      if (!current()) return superseded();
+      this.retireCubemap(entry);
       this.cubemapGpuHandles.set(
         sourceId,
         {
+          revision,
           status: 'failed',
           texture: null,
           view: undefined,
@@ -1998,17 +2707,6 @@ export class GpuResidencyCache {
       return err(error);
     };
 
-    const registerCube = this.registerCube;
-    if (registerCube === undefined) {
-      return recordFailed(
-        new AssetError({
-          code: 'asset-not-found',
-          expected: 'GpuResidencyCache.configureGpuDevice wired with registerCube',
-          hint: 'call gpuStore.configureGpuDevice(device, factory, registerCube) before _uploadCubemapFromEquirect',
-        }),
-      );
-    }
-
     if (sourcePod.kind !== 'equirect') {
       return recordFailed(
         new AssetError({
@@ -2018,27 +2716,6 @@ export class GpuResidencyCache {
         }),
       );
     }
-
-    // feat-20260630 M3 / w18: mark the source 'pending' SYNCHRONOUSLY (this runs
-    // before the first `await` below, so the fire-and-forget record arm that
-    // never awaits still observes the pending entry on the next frame's
-    // getCubemapStatus). All sync fail-fast gates (idempotent / failed / pending
-    // / registerCube / caps / kind) have passed, so the projection is committed;
-    // a re-entry while async work is in flight short-circuits on the 'pending'
-    // guard above. The entry holds no live GPU resources yet (record binds the
-    // white fallback while pending); the texture/views are filled in below when
-    // the projection completes (status flips to 'ready'), or replaced by a
-    // 'failed' entry via recordFailed if a later step errors.
-    this.cubemapGpuHandles.set(
-      sourceId,
-      {
-        status: 'pending',
-        texture: null,
-        view: undefined,
-        faceViews: [],
-      },
-      namespace,
-    );
 
     // The cubemap projection + IBL precompute consume a 2D-image view of the
     // source. EquirectAsset mirrors the TextureAsset 2D surface (width / height
@@ -2107,8 +2784,13 @@ export class GpuResidencyCache {
     // fallback.
     const device = this.iblDevice;
     const shaderModuleFactory = this.iblShaderModuleFactory;
-    const scope = this.deviceScope;
-    if (device === undefined || shaderModuleFactory === undefined || scope === undefined) {
+    const pipelineScope = this.deviceScope;
+    if (
+      device === undefined ||
+      shaderModuleFactory === undefined ||
+      pipelineScope === undefined ||
+      !pipelineScope.isAlive()
+    ) {
       return recordFailed(
         new RhiError({
           code: 'rhi-not-available',
@@ -2118,6 +2800,9 @@ export class GpuResidencyCache {
         }),
       );
     }
+
+    const scope = pipelineScope.createChild(`equirect-${sourceId}-${revision ?? 0}`);
+    entry.scope = scope;
 
     // Usage flags for the small equirect helper texture (sampled source for the
     // IBL precompute pass); the cube texture's usage comes from the projection.
@@ -2134,6 +2819,7 @@ export class GpuResidencyCache {
     });
     if (!gpuTextureResult.ok) return recordFailed(gpuTextureResult.error);
     const gpuTexture = gpuTextureResult.value;
+    const gpuTextureWrapper = new GpuTexture(device, gpuTexture, scope);
 
     const cubeViewResult = device.createTextureView(gpuTexture, {
       label: `cubemap-view-${sourceId}`,
@@ -2153,42 +2839,6 @@ export class GpuResidencyCache {
       });
       if (!faceViewResult.ok) return recordFailed(faceViewResult.error);
       faceViews.push(faceViewResult.value);
-    }
-
-    // M-3 / w11: a single GpuTexture wrapper is shared between sourceId
-    // and cubeId entries (the underlying RHI handle is the same physical
-    // texture). destroyAll() walks each entry, so attempting to destroy
-    // twice via two wrappers would surface 'destroy-after-destroy' on
-    // the second pass; sharing one wrapper keeps the destroy chain
-    // surfacing exactly one destroy call per physical resource.
-    const gpuTextureWrapper = this.wrapTex(gpuTexture);
-
-    // The minted cubemap handle is a synthetic shared ref (identity token for
-    // the GPU cube residency); its POD is an EquirectAsset placeholder matching
-    // the projected dimensions/format (D-3: the retired cube-texture asset kind
-    // is gone; the relay mints an EquirectAsset shared ref instead).
-    const cubeAsset: EquirectAsset = {
-      kind: 'equirect',
-      width: cubeFaceSize,
-      height: cubeFaceSize,
-      format: tex.format,
-      data: tex.data,
-      colorSpace: 'linear',
-    };
-    const pipelinesResult = await createIblPipelines(
-      scope,
-      device,
-      shaderModuleFactory,
-      outputFormat,
-    );
-    if (!pipelinesResult.ok) {
-      return recordFailed(
-        new AssetError({
-          code: 'ibl-precompute-not-dispatched',
-          expected: pipelinesResult.error.expected,
-          hint: pipelinesResult.error.hint,
-        }),
-      );
     }
 
     const equirectTextureResult = device.createTexture({
@@ -2264,21 +2914,39 @@ export class GpuResidencyCache {
     if (!cubeVertexWriteResult.ok) return recordFailed(cubeVertexWriteResult.error);
     const faceUniformsResult = writeAllFaceUniforms(device, faceBuf);
     if (!faceUniformsResult.ok) return recordFailed(faceUniformsResult.error);
-    const prefilterUniformsResult = writeAllPrefilterUniforms(device, prefBuf, sourceMipLevelCount);
+    const prefilterUniformsResult = writeAllPrefilterUniforms(device, prefBuf);
     if (!prefilterUniformsResult.ok) return recordFailed(prefilterUniformsResult.error);
+
+    const pipelinesResult = await createIblPipelines(
+      pipelineScope,
+      device,
+      shaderModuleFactory,
+      outputFormat,
+    );
+    if (!pipelinesResult.ok) {
+      return recordFailed(
+        new AssetError({
+          code: 'ibl-precompute-not-dispatched',
+          expected: pipelinesResult.error.expected,
+          hint: pipelinesResult.error.hint,
+        }),
+      );
+    }
+
+    if (!current()) return superseded();
 
     const runResult = await runIblPrecompute({
       scope,
+      pipelineScope,
       device,
-      equirectGpuTex,
       equirectView,
-      cubeGpuTex: gpuTexture,
       cubeView,
       cubeFaceViews: faceViews,
       faceUniformsBuffer: faceBuf,
       prefilterUniformsBuffer: prefBuf,
       cubeVertexBuffer: cubeVertex,
     });
+    if (!current()) return superseded();
     if (!runResult.ok) {
       return recordFailed(
         new AssetError({
@@ -2289,13 +2957,13 @@ export class GpuResidencyCache {
       );
     }
 
-    // A source becomes visible to the record arm only after all four passes
-    // completed their queue fence. Registration and the idempotent map are
-    // publication, not allocation, so a failed precompute cannot expose a
-    // ready cube or a loadable handle.
+    // Publish the source's cube and IBL together after their queue fence.
+    // Derived device resources never register a second runtime asset.
     this.cubemapGpuHandles.set(
       sourceId,
       {
+        revision,
+        scope,
         status: 'ready',
         ibl: runResult.value,
         texture: gpuTextureWrapper,
@@ -2304,21 +2972,7 @@ export class GpuResidencyCache {
       },
       namespace,
     );
-    const regResult = registerCube(world, cubeAsset, sourceHandle);
-    if (!regResult.ok) return recordFailed(regResult.error);
-    const cubeHandle = regResult.value;
-    const cubeId = Number(cubeHandle);
-    this.cubemapGpuHandles.set(
-      cubeId,
-      {
-        status: 'ready',
-        ibl: runResult.value,
-        texture: gpuTextureWrapper,
-        view: cubeView,
-        faceViews,
-      },
-      namespace,
-    );
+    const cubeHandle = sourceHandle;
     this.cubemapIdempotentMap.set(sourceId, cubeHandle, namespace);
 
     return ok(cubeHandle);
@@ -2330,12 +2984,12 @@ export class GpuResidencyCache {
    * `uploadMeshById` byte-for-byte. Returns the cached entry on success.
    */
   private uploadMeshById(
-    id: number,
+    id: string | number,
     mesh: TypesMeshAsset,
     renderData: MeshRenderData,
-    lodMeshes: readonly (TypesMeshAsset | undefined)[],
-    profilePhase: RecordProfileRunner | undefined,
-    namespace: GpuResourceNamespace,
+    lodMeshes: readonly (TypesMeshAsset | undefined)[] = EMPTY_LOD_MESHES,
+    profilePhase: RecordProfileRunner | undefined = undefined,
+    namespace: GpuResourceNamespace = 0,
   ): Result<MeshGpuHandles, RhiError> {
     const device = this.gpuDevice;
     if (device === undefined) {
@@ -2363,6 +3017,7 @@ export class GpuResidencyCache {
     );
     if (!packed.ok) return packed;
     const { vertices, indices, lodRanges } = packed.value;
+    this.meshChanges.preflight();
     const indexBytesUnpadded = indices === undefined ? 0 : indices.byteLength;
     const indexBytes = ((indexBytesUnpadded + 3) >> 2) << 2;
     const vertexWords = new Uint32Array(vertices.buffer, vertices.byteOffset, vertices.length);
@@ -2501,175 +3156,65 @@ export class GpuResidencyCache {
               key: indexKey,
             },
           );
-    const entry: MeshGpuHandles = {
-      contentEpoch: this.meshResidencyEpoch + 1,
-      vertexBuffer,
-      indexBuffer,
-      vboBytes: vertices.byteLength,
-      iboBytes: indices === undefined ? 0 : indexBytes,
-      indexCount: mesh.indices === undefined ? 0 : mesh.indices.length,
-      indexFormat: indices instanceof Uint32Array ? 'uint32' : 'uint16',
-      layoutProjection: renderData.layoutProjection,
-      uvSetCount: 1 + extraUvSets,
-      vertexCount,
-      indexed: mesh.indices !== undefined,
-      topology: renderData.submeshes[0]?.topology ?? 'triangle-list',
-      submeshes: renderData.submeshes,
-      ...(lodRanges === undefined ? {} : { lodRanges }),
-    };
-    this.meshGpuHandles.set(id, entry, namespace);
-    this.meshLodAssets.set(entry, lodMeshes);
-    this.meshResidencyEpoch += 1;
-    return this.meshLifetime(entry).result;
-  }
-
-  /**
-   * Update an existing mesh's GPU buffer data in-place (or expand). The handle
-   * must already be resident. Mirrors the pre-extraction `updateMeshById`.
-   */
-  private updateMeshById(
-    id: number,
-    newVertices: Float32Array,
-    newIndices: Uint16Array,
-    submeshes: readonly Submesh[] | undefined,
-    namespace: GpuResourceNamespace,
-  ): void {
-    const device = this.gpuDevice;
-    if (device === undefined) return;
-    const entry = this.meshGpuHandles.get(id, namespace);
-    if (entry === undefined) return;
-
-    const newVertexBytes = newVertices.byteLength;
-    const newVertexCount = deriveVertexCount(newVertices, entry.layoutProjection);
-    if (newVertexCount === undefined) return;
-    const indexBytesUnpadded = newIndices.byteLength;
-    const newIndexBytes = ((indexBytesUnpadded + 3) >> 2) << 2;
-
-    // M-3 / w11: read allocation bytes from the entry's vboBytes / iboBytes
-    // (tracked at upload time) instead of reaching into the opaque RHI Buffer
-    // for a `.size` property -- the RHI Buffer interface is spec-aligned and
-    // does NOT expose `.size`; allocation bytes remain derived cache facts.
-    const existingIbo = entry.indexBuffer;
-    const nextSubmeshes = submeshes ?? entry.submeshes;
-    if (
-      !this.meshLifetime(entry).inUse &&
-      (this.meshBufferOwners.get(entry.vertexBuffer)?.owners ?? 1) === 1 &&
-      existingIbo !== null &&
-      (this.meshBufferOwners.get(existingIbo)?.owners ?? 1) === 1 &&
-      newVertexBytes <= entry.vboBytes &&
-      newIndexBytes <= entry.iboBytes
-    ) {
-      this.unshareMeshBuffer(entry.vertexBuffer);
-      this.unshareMeshBuffer(existingIbo);
-      const vboWriteRet = device.queue.writeBuffer(entry.vertexBuffer.handle, 0, newVertices);
-      if (!vboWriteRet.ok) return;
-
-      const indexSrc = new Uint8Array(newIndexBytes);
-      indexSrc.set(new Uint8Array(newIndices.buffer, newIndices.byteOffset, indexBytesUnpadded));
-      const iboWriteRet = device.queue.writeBuffer(existingIbo.handle, 0, indexSrc);
-      if (!iboWriteRet.ok) return;
-
-      Object.assign(entry, {
-        contentEpoch: this.meshResidencyEpoch + 1,
-        vertexBuffer: entry.vertexBuffer,
-        indexBuffer: existingIbo,
-        vboBytes: entry.vboBytes,
-        iboBytes: entry.iboBytes,
-        indexCount: newIndices.length,
-        indexFormat: 'uint16',
-        layoutProjection: entry.layoutProjection,
-        uvSetCount: entry.uvSetCount,
-        vertexCount: newVertexCount,
-        indexed: true,
-        topology: entry.topology,
-        submeshes: nextSubmeshes,
+    let changeToken: MeshChangeToken | undefined;
+    let entry: MeshGpuHandles | undefined;
+    const previous = this.meshGpuHandles.get(id, namespace);
+    try {
+      changeToken = this.meshChanges.create();
+      entry = {
+        contentEpoch: changeToken.epoch,
+        changeToken,
+        vertexBuffer,
+        indexBuffer,
+        vboBytes: vertices.byteLength,
+        iboBytes: indices === undefined ? 0 : indexBytes,
+        indexCount: mesh.indices === undefined ? 0 : mesh.indices.length,
+        indexFormat: indices instanceof Uint32Array ? 'uint32' : 'uint16',
+        layoutProjection: renderData.layoutProjection,
+        uvSetCount: 1 + extraUvSets,
+        vertexCount,
+        indexed: mesh.indices !== undefined,
+        topology: renderData.submeshes[0]?.topology ?? 'triangle-list',
+        submeshes: renderData.submeshes,
+        ...(lodRanges === undefined ? {} : { lodRanges }),
+      };
+      const result = this.meshLifetime(entry).result;
+      this.meshLodAssets.set(entry, lodMeshes);
+      this.meshGpuHandles.set(id, entry, namespace);
+      return result;
+    } catch (cause) {
+      const failures: unknown[] = [];
+      const cleanup = (action: () => void) => {
+        try {
+          action();
+        } catch (failure) {
+          failures.push(failure);
+        }
+      };
+      cleanup(() => {
+        if (entry !== undefined && this.meshGpuHandles.get(id, namespace) === entry) {
+          this.meshGpuHandles.delete(id, namespace);
+          if (previous !== undefined) {
+            try {
+              this.meshGpuHandles.set(id, previous, namespace);
+            } catch (failure) {
+              this.retireMeshEntry(id, previous, namespace);
+              throw failure;
+            }
+          }
+        }
       });
-      this.meshResidencyEpoch += 1;
-      return;
+      cleanup(() => {
+        if (changeToken !== undefined) this.meshChanges.retire(changeToken);
+      });
+      cleanup(() => this.releaseMeshBuffer(vertexBuffer));
+      cleanup(() => {
+        if (indexBuffer !== null) this.releaseMeshBuffer(indexBuffer);
+      });
+      if (failures.length !== 0)
+        throw new AggregateError([cause, ...failures], 'Mesh admission and cleanup failed');
+      throw cause;
     }
-
-    const vboResult = device.createBuffer({
-      label: `mesh-${id}-vbo`,
-      size: newVertexBytes,
-      usage: GPU_BUFFER_USAGE_VERTEX | GPU_BUFFER_USAGE_COPY_DST,
-      mappedAtCreation: false,
-    });
-    if (!vboResult.ok) return;
-    const vbo = vboResult.value;
-    const iboResult = device.createBuffer({
-      label: `mesh-${id}-ibo`,
-      size: newIndexBytes,
-      usage: GPU_BUFFER_USAGE_INDEX | GPU_BUFFER_USAGE_COPY_DST,
-      mappedAtCreation: false,
-    });
-    if (!iboResult.ok) {
-      device.destroyBuffer(vbo);
-      return;
-    }
-    const ibo = iboResult.value;
-
-    const vboWriteResult = device.queue.writeBuffer(vbo, 0, newVertices);
-    if (!vboWriteResult.ok) {
-      device.destroyBuffer(vbo);
-      device.destroyBuffer(ibo);
-      return;
-    }
-
-    const indexSrc = new Uint8Array(newIndexBytes);
-    indexSrc.set(new Uint8Array(newIndices.buffer, newIndices.byteOffset, indexBytesUnpadded));
-    const iboWriteResult = device.queue.writeBuffer(ibo, 0, indexSrc);
-    if (!iboWriteResult.ok) {
-      device.destroyBuffer(vbo);
-      device.destroyBuffer(ibo);
-      return;
-    }
-
-    this.meshGpuHandles.set(
-      id,
-      {
-        contentEpoch: this.meshResidencyEpoch + 1,
-        vertexBuffer: this.wrapBuf(vbo),
-        indexBuffer: this.wrapBuf(ibo),
-        vboBytes: newVertexBytes,
-        iboBytes: newIndexBytes,
-        indexCount: newIndices.length,
-        indexFormat: 'uint16',
-        layoutProjection: entry.layoutProjection,
-        uvSetCount: entry.uvSetCount,
-        vertexCount: newVertexCount,
-        indexed: true,
-        topology: entry.topology,
-        submeshes: nextSubmeshes,
-      },
-      namespace,
-    );
-    this.meshResidencyEpoch += 1;
-
-    // M-3 / w11: release the replaced buffers through their structured
-    // GpuBuffer owner rather than reaching into opaque handles with a
-    // backend-specific property.
-    // `GpuBuffer.destroy()` routes through
-    // `device.destroyBuffer(handle)` (RHI shim is the lifecycle SSOT;
-    // architecture-principles §1 / charter §F1). Errors are swallowed here:
-    // updateMeshById is the in-place reallocation path; the structured fail
-    // surfaces on subsequent buffer use rather than blocking the resize.
-    this.retireMeshEntry(id, entry, namespace);
-  }
-
-  /**
-   * Public surface for updating an existing unmanaged mesh handle's GPU buffer
-   * data in-place. The handle must have been made resident.
-   */
-  updateMesh(
-    handle: Handle<'MeshAsset', 'shared'>,
-    newVertices: Float32Array,
-    newIndices: Uint16Array,
-    worldId: RenderResourceScope | number = 0,
-    submeshes?: readonly Submesh[],
-  ): void {
-    const id = Number(handle);
-    const namespace = this.worldNamespace(worldId);
-    this.updateMeshById(id, newVertices, newIndices, submeshes, namespace);
   }
 }
 

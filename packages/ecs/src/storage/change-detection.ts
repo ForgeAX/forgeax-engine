@@ -10,51 +10,11 @@ export const PROJECTION_BLOCK_SIZE = 256;
 
 const INITIAL_SPARSE_CAPACITY = 64;
 
-export interface ComponentEpochColumns {
-  added: Float64Array;
-  changed: Float64Array;
-  blocks: Float64Array;
-}
-
-export function createComponentEpochColumns(capacity: number): ComponentEpochColumns {
-  return {
-    added: new Float64Array(capacity),
-    changed: new Float64Array(capacity),
-    blocks: new Float64Array(Math.ceil(capacity / PROJECTION_BLOCK_SIZE)),
-  };
-}
-
-export function growComponentEpochColumns(
-  columns: ComponentEpochColumns,
-  capacity: number,
-): ComponentEpochColumns {
-  const added = new Float64Array(capacity);
-  const changed = new Float64Array(capacity);
-  added.set(columns.added);
-  changed.set(columns.changed);
-  const blocks = new Float64Array(Math.ceil(capacity / PROJECTION_BLOCK_SIZE));
-  blocks.set(columns.blocks);
-  return { added, changed, blocks };
-}
-
-export function copyComponentEpoch(
-  source: ComponentEpochColumns,
-  sourceRow: number,
-  target: ComponentEpochColumns,
-  targetRow: number,
-): void {
-  target.added[targetRow] = source.added[sourceRow] ?? 0;
-  target.changed[targetRow] = source.changed[sourceRow] ?? 0;
-  const block = Math.floor(targetRow / PROJECTION_BLOCK_SIZE);
-  target.blocks[block] = Math.max(target.blocks[block] ?? 0, target.changed[targetRow] ?? 0);
-}
-
 export interface SparseTagSet {
   readonly component: Component;
   sparse: Int32Array;
   dense: Uint32Array;
   added: Float64Array;
-  changed: Float64Array;
   size: number;
 }
 
@@ -66,7 +26,6 @@ function createSparseTagSet(component: Component): SparseTagSet {
     sparse,
     dense: new Uint32Array(INITIAL_SPARSE_CAPACITY),
     added: new Float64Array(INITIAL_SPARSE_CAPACITY),
-    changed: new Float64Array(INITIAL_SPARSE_CAPACITY),
     size: 0,
   };
 }
@@ -83,7 +42,6 @@ export function sparseTagHas(set: SparseTagSet, entity: EntityHandle): boolean {
 function insertSparseTag(set: SparseTagSet, entity: EntityHandle, epoch: number): number {
   const present = sparseTagIndex(set, entity);
   if (present >= 0) {
-    set.changed[present] = epoch;
     return present;
   }
   growSparseSlots(set, entityIndex(entity) + 1);
@@ -91,7 +49,6 @@ function insertSparseTag(set: SparseTagSet, entity: EntityHandle, epoch: number)
   const denseIndex = set.size;
   set.dense[denseIndex] = entity as number;
   set.added[denseIndex] = epoch;
-  set.changed[denseIndex] = epoch;
   set.sparse[entityIndex(entity)] = denseIndex;
   set.size += 1;
   return denseIndex;
@@ -106,7 +63,6 @@ export function removeSparseTag(set: SparseTagSet, entity: EntityHandle): boolea
     const movedEntity = set.dense[lastIndex] as EntityHandle;
     set.dense[denseIndex] = movedEntity as number;
     set.added[denseIndex] = set.added[lastIndex] ?? 0;
-    set.changed[denseIndex] = set.changed[lastIndex] ?? 0;
     set.sparse[entityIndex(movedEntity)] = denseIndex;
   }
   set.size = lastIndex;
@@ -132,9 +88,6 @@ function growSparseDense(set: SparseTagSet, targetCapacity: number): void {
   const added = new Float64Array(capacity);
   added.set(set.added);
   set.added = added;
-  const changed = new Float64Array(capacity);
-  changed.set(set.changed);
-  set.changed = changed;
 }
 
 export interface ChangeTicks {
@@ -147,30 +100,24 @@ interface EntityLocation {
   readonly archetypeRow: number;
 }
 
-export function readComponentChange(
+export function readComponentAdded(
   graph: ArchetypeGraph,
   location: EntityLocation,
   entity: EntityHandle,
   componentId: number,
-): ChangeTicks | undefined {
+): number | undefined {
   const sparseSet = graph.sparseTags.get(componentId);
   if (sparseSet !== undefined) {
     const denseIndex = sparseTagIndex(sparseSet, entity);
     if (denseIndex < 0) return undefined;
-    return {
-      added: sparseSet.added[denseIndex] ?? 0,
-      changed: sparseSet.changed[denseIndex] ?? 0,
-    };
+    return sparseSet.added[denseIndex] ?? 0;
   }
   const archetype = graph.archetypes[location.archetypeId];
   if (archetype === undefined) return undefined;
-  const epochs = graph.tables[archetype.tableId]?.storage.get(componentId)?.epochs;
-  if (epochs === undefined) return undefined;
+  const added = graph.tables[archetype.tableId]?.storage.get(componentId)?.added;
+  if (added === undefined) return undefined;
   const tableRow = archetype.rows[location.archetypeRow] ?? -1;
-  return {
-    added: epochs.added[tableRow] ?? 0,
-    changed: epochs.changed[tableRow] ?? 0,
-  };
+  return added[tableRow] ?? 0;
 }
 
 export function markComponentsAdded(
@@ -191,53 +138,9 @@ export function markComponentsAdded(
       insertSparseTag(getOrCreateSparseTagSet(graph, component), entity, epoch);
       continue;
     }
-    const epochs = table?.storage.get(componentId)?.epochs;
-    if (epochs === undefined) continue;
-    epochs.added[tableRow] = epoch;
-    publishComponentRange(epochs, tableRow, 1, epoch);
+    const added = table?.storage.get(componentId)?.added;
+    if (added !== undefined) added[tableRow] = epoch;
   }
-}
-
-export function markComponentChanged(
-  graph: ArchetypeGraph,
-  location: EntityLocation,
-  entity: EntityHandle,
-  componentId: number,
-  epoch: () => number,
-): void {
-  const sparseSet = graph.sparseTags.get(componentId);
-  if (sparseSet !== undefined) {
-    const denseIndex = sparseTagIndex(sparseSet, entity);
-    if (denseIndex >= 0) sparseSet.changed[denseIndex] = epoch();
-    return;
-  }
-  const archetype = graph.archetypes[location.archetypeId];
-  if (archetype === undefined) return;
-  const epochs = graph.tables[archetype.tableId]?.storage.get(componentId)?.epochs;
-  if (epochs === undefined) return;
-  const tableRow = archetype.rows[location.archetypeRow] ?? -1;
-  publishComponentRange(epochs, tableRow, 1, epoch());
-}
-
-/** Row evidence and its conservative block summary share the World epoch. */
-export function publishComponentRange(
-  columns: ComponentEpochColumns,
-  start: number,
-  count: number,
-  epoch: number,
-): void {
-  if (count === 0) return;
-  if (count === 1) {
-    columns.changed[start] = epoch;
-    columns.blocks[Math.floor(start / PROJECTION_BLOCK_SIZE)] = epoch;
-    return;
-  }
-  columns.changed.fill(epoch, start, start + count);
-  columns.blocks.fill(
-    epoch,
-    Math.floor(start / PROJECTION_BLOCK_SIZE),
-    Math.ceil((start + count) / PROJECTION_BLOCK_SIZE),
-  );
 }
 
 function getOrCreateSparseTagSet(graph: ArchetypeGraph, component: Component): SparseTagSet {

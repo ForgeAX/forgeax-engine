@@ -24,8 +24,8 @@ import { perspective } from '@forgeax/engine-render';
 import { Materials, PointLightShadow } from '@forgeax/engine-render';
 import { PointLight } from '@forgeax/engine-render';
 
-import type { MaterialAsset, TextureAsset } from '@forgeax/engine-types';
-import { unwrapHandle } from '@forgeax/engine-types';
+
+
 import { forgeaxBundlerAdapter } from 'virtual:forgeax/bundler';
 import { addFirstPersonSystem } from '../../../../shared/src/learn-render-first-person';
 import { createSceneCubeMesh } from './scene-mesh';
@@ -151,7 +151,7 @@ async function bootstrap(target: HTMLCanvasElement): Promise<void> {
     console.error('[learn-render 5.3.2 point-shadows] wood GUID parse failed');
     return;
   }
-  const woodTextureRes = await assets.loadByGuid<TextureAsset>(woodGuidRes.value);
+  const woodTextureRes = await assets.load(woodGuidRes.value, 'texture');
   if (!woodTextureRes.ok) {
     const bus = (globalThis as unknown as { __learnRenderErrors?: Array<{ code: string; hint?: string }> }).__learnRenderErrors;
     if (bus !== undefined) bus.push({ code: woodTextureRes.error.code, hint: woodTextureRes.error.hint });
@@ -162,15 +162,13 @@ async function bootstrap(target: HTMLCanvasElement): Promise<void> {
     );
     return;
   }
-  const woodTextureHandle = unwrapHandle(
-    world.allocSharedRef('TextureAsset', woodTextureRes.value),
+  const woodTextureHandle = Number(
+    woodTextureRes.value,
   );
 
   // The original explicitly reverses room normals. Author that geometry once
   // so ordinary back-face culling and depth writes work in every render pass.
-  const roomMat = world.allocSharedRef<'MaterialAsset', MaterialAsset>(
-    'MaterialAsset',
-    Materials.standard({
+  const roomMat = assets.create(Materials.standard({
       baseColor: [1, 1, 1, 1],
       baseColorTexture: woodTextureHandle,
       metallic: 0,
@@ -182,11 +180,10 @@ async function bootstrap(target: HTMLCanvasElement): Promise<void> {
       // implicit ambient term.
       emissiveIntensity: 0.09,
       emissiveTexture: woodTextureHandle,
-    }),
-  );
+    })).unwrap();
 
-  const roomMesh = world.allocSharedRef('MeshAsset', createSceneCubeMesh(true));
-  const cubeMesh = world.allocSharedRef('MeshAsset', createSceneCubeMesh(false));
+  const roomMesh = assets.create(createSceneCubeMesh(true)).unwrap();
+  const cubeMesh = assets.create(createSceneCubeMesh(false)).unwrap();
   // Inward-facing geometry at positive scale preserves the source room bounds.
   world.spawn(
     {

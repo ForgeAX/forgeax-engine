@@ -44,8 +44,8 @@ const sourceResult = renderer.createRenderTargetTextureSource(target, {
 if (!sourceResult.ok) throw sourceResult.error;
 const source = sourceResult.value;
 const targetHandle = world.allocSharedRef('RenderTarget', target);
-const sourceHandle = world.allocSharedRef('RenderTargetTextureSource', source);
-const material = world.allocSharedRef('MaterialAsset', {
+const sourceHandle = { source };
+const material = assets.create({
   kind: 'material',
   passes: [{ name: 'Forward', program: {
     module: 'learn_render::6_4_cube_reflection',
@@ -56,7 +56,7 @@ const material = world.allocSharedRef('MaterialAsset', {
     { name: 'cubeTexture', type: 'texture_cube' },
   ],
   values: { baseColor: [1, 1, 1, 1], cubeTexture: sourceHandle },
-});
+}).unwrap();
 world.spawn({
   component: CubeCamera,
   data: { target: targetHandle, near: 0.1, far: 20, updateIntent: 0, requestVersion: 0, faceBudget: 6 },

@@ -27,7 +27,6 @@ import { ChildOf, GlobalTransform, propagateTransforms, Transform } from '@forge
 import { describe, expect, it } from 'vitest';
 import { componentId } from '../../../ecs/src/component';
 import { worldInternal } from '../../../ecs/src/world-internal';
-import { TileLayer, Tilemap } from '../../../render/src/components';
 
 function identityTransformData() {
   return {
@@ -153,77 +152,22 @@ describe('propagate-transforms.dawn - root-down DFS + stale ChildOf fail-fast (A
     expect(wl[12]).toBeCloseTo(7, 5);
   });
 
-  // AC-07 (tweak-20260714-tilemap-layer-childed-render-entities M5): TileLayer
-  // as an identity middle node must be transparent to propagateTransforms -- the
-  // layer's GlobalTransform.world (16 f32) must equal its Tilemap parent's world mat4
-  // byte-for-byte. This proves M1's coAttach injection produces a genuinely
-  // identity TRS (pos=[0,0,0], quat=[0,0,0,1], scale=[1,1,1]) and the compose
-  // (parent.world x identity) is a no-op in mat4 form.
-  //
-  // FALSIFY note (kept out of the test body per OOS-1 -- non-identity TileLayer
-  // Transform is out of scope for this tweak): if the layer's Transform were
-  // mutated to a non-identity value, propagateTransforms would compose it into
-  // TileLayer.world and the byte-identity assertion below would fail. Not
-  // asserted here because the M1 contract is precisely "identity default,
-  // callers may override" -- the interesting invariant is transparency in the
-  // default case.
-  it('AC-07: identity TileLayer middle node -> GlobalTransform.world byte-identical to Tilemap parent', () => {
+  it('identity scene layer inherits a transformed parent byte-for-byte', () => {
     const world = new World();
-    for (const component of [ChildOf, TileLayer, Tilemap, Transform]) {
-      world.components.register(component).unwrap();
-    }
-    // Parent Tilemap carries a non-identity translation so that the identity /
-    // non-identity distinction is observable in the low three translation
-    // slots of the 16-float world mat4.
-    const tilemap = world
-      .spawn(
-        {
-          component: Tilemap,
-          data: { cols: 1, rows: 1, tileSize: [1, 1], chunkSize: 16, tileset: 'test/tileset' },
-        },
-        {
-          component: Transform,
-          data: {
-            pos: [7, -3, 11],
-            quat: [0, 0, 0, 1],
-            scale: [2, 2, 2],
-          },
-        },
-      )
+    const parent = world
+      .spawn({ component: Transform, data: { pos: [7, -3, 11], scale: [2, 2, 2] } })
       .unwrap();
-    // TileLayer carries an identity Transform; the generic Transform requirement
-    // materializes its GlobalTransform world column at the structural boundary.
     const layer = world
       .spawn(
-        {
-          component: TileLayer,
-          data: {
-            tiles: new Uint32Array([0]),
-            layerOrder: 0,
-            dirty: 1,
-            sortScope: 0,
-          },
-        },
-        { component: ChildOf, data: { parent: tilemap } },
         { component: Transform, data: identityTransformData() },
+        { component: ChildOf, data: { parent } },
       )
       .unwrap();
-    const r = propagateTransforms(world);
-    expect(r.ok).toBe(true);
-    const wTilemap = worldOf(world, tilemap);
-    const wLayer = worldOf(world, layer);
-    expect(wTilemap.length).toBe(16);
-    expect(wLayer.length).toBe(16);
-    // Byte-identical: identity middle node composes as a no-op. Direct index
-    // comparison (not toBeCloseTo) is the tight assertion -- any floating-point
-    // drift on identity compose would signal a real regression.
-    for (let i = 0; i < 16; i++) {
-      expect(wLayer[i]).toBe(wTilemap[i]);
-    }
-    // Sanity: translation column (m[12..14]) really carries the parent's pos.
-    expect(wLayer[12]).toBeCloseTo(7, 5);
-    expect(wLayer[13]).toBeCloseTo(-3, 5);
-    expect(wLayer[14]).toBeCloseTo(11, 5);
+    propagateTransforms(world).unwrap();
+    expect(worldOf(world, layer)).toEqual(worldOf(world, parent));
+    world.set(layer, Transform, { pos: [1, 0, 0] }).unwrap();
+    propagateTransforms(world).unwrap();
+    expect(worldOf(world, layer)[12]).toBe(9);
   });
 
   it('stale ChildOf ref: Result.err(RhiError({ code: "hierarchy-broken" }))', () => {

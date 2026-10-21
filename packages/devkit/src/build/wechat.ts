@@ -499,11 +499,11 @@ async function boot(identity, reload) {
 
 function wechatGameSource(physics: readonly ('2' | '3')[], facts: ProjectFacts): string {
   return `import { activateExecutionRoot, gameHostPlugin } from '@forgeax/engine/app';
-import { createAssetRegistry } from '@forgeax/engine/assets-runtime';
+import { AssetRegistry } from '@forgeax/engine/assets-runtime';
 import { scenePlugin } from '@forgeax/engine/scene';
 import { skinningPlugin } from '@forgeax/engine/skinning';
 import { renderComponentsPlugin } from '@forgeax/engine/render';
-import { animationRuntimePlugin, animationPayloadsPlugin } from '@forgeax/engine/animation';
+import { animationPlugin } from '@forgeax/engine/animation';
 import { statePlugin } from '@forgeax/engine/state';
 import { root as engineRoot } from 'virtual:forgeax/plugin-programs/engine';
 import { createPrograms as frontendPrograms, root as frontendRoot } from 'virtual:forgeax/plugin-programs/frontend';
@@ -531,7 +531,7 @@ export async function activate({ app, graphics, ui, canvas, gameProjection, gene
     if (failures.length) throw new AggregateError(failures, 'WeChat game cleanup failed');
   };
   try {
-  for (const plugin of [renderComponentsPlugin(), scenePlugin(), skinningPlugin(), animationPayloadsPlugin(guid => assets.lookup(guid)), animationRuntimePlugin(), statePlugin(), gameHostPlugin({ app, assets, canvas,
+  for (const plugin of [renderComponentsPlugin(), scenePlugin(), skinningPlugin(), animationPlugin(), statePlugin(), gameHostPlugin({ app, assets, canvas,
     drawingBufferSize: () => ({ width: canvas.width, height: canvas.height }),
     renderer: app.renderer, port: channel.port1, uiRoot: ui.document.querySelector('#game-ui'), gameProjection,
     startupTimeoutMs: ${JSON.stringify(facts.startupTimeoutMs)},
@@ -546,7 +546,7 @@ export async function activate({ app, graphics, ui, canvas, gameProjection, gene
     const frontend = app.pluginContext.isolate('assets').isolate('gameHost').isolate('pluginPrograms');
     const provider = frontend.plugin({ name: 'wechat-frontend', provide: ['assets', 'gameHost', 'pluginPrograms'], apply(ctx) {
       const runtime = app.pluginContext.runtimePacks;
-      const reader = createAssetRegistry({ catalog: runtime.catalog, fetcher: runtime.fetcher, scopeId: runtimeBinding.scopeId });
+      const reader = new AssetRegistry({ catalog: runtime.catalog, fetcher: runtime.fetcher, scopeId: runtimeBinding.scopeId });
       ctx.provide('assets', reader); ctx.effect(() => () => reader.dispose());
       ctx.provide('gameHost', { ...app.pluginContext.gameHost, port: channel.port2 });
       ctx.provide('pluginPrograms', frontendPrograms('wechat-' + generation, 'frontend', generation));

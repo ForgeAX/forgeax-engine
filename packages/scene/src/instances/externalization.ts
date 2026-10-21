@@ -65,18 +65,18 @@ function externalizeFields(
       fields[fieldName] = bytes === undefined ? value : Array.from(bytes);
       continue;
     }
-    const shared = type?.startsWith('shared<');
+    const asset = type?.startsWith('asset<');
     const array = type === undefined ? null : parseManagedArraySchema(type);
     const elements =
       array && ArrayBuffer.isView(value) && 'length' in value
         ? Array.from(value as unknown as ArrayLike<unknown>)
         : value;
-    if (shared && value === 0) {
+    if (asset && value === 0) {
       // Null distinguishes an empty shared handle from refs[0] on the wire.
       fields[fieldName] = null;
-    } else if (shared && typeof value === 'string') {
+    } else if (asset && typeof value === 'string') {
       fields[fieldName] = addRef(context, value, { componentName, fieldName }, sceneEntityKey);
-    } else if (array?.elementType.startsWith('shared<') && Array.isArray(elements)) {
+    } else if (array?.elementType.startsWith('asset<') && Array.isArray(elements)) {
       fields[fieldName] = elements.map((item, arrayIndex) =>
         typeof item === 'string'
           ? addRef(context, item, { componentName, fieldName, arrayIndex }, sceneEntityKey)
@@ -135,6 +135,8 @@ export function externalizeSceneAsset(
       );
     }
     const instance = entity.instance;
+    if (instance !== undefined && typeof instance.source !== 'string')
+      return err({ field: `entities.${key}.instance.source`, value: instance.source });
     entities[key] = {
       components,
       ...(instance === undefined
@@ -143,7 +145,7 @@ export function externalizeSceneAsset(
             instance: {
               source: addRef(
                 context,
-                instance.source,
+                instance.source as string,
                 { componentName: 'SceneInstance', fieldName: 'source' },
                 key,
               ),

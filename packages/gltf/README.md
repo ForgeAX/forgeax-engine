@@ -59,7 +59,7 @@ reflection, Pack refs, Catalog/load, and runtime sampling.
 > structured `material-tangent-required` error. The importer persists generated
 > tangents in `MeshAsset.attributes.tangent` and never writes an identity guess.
 
-> Runtime glTF 2.0 importer (Tier-C subset). Pure-function pipeline `parseGlb` / `parseGltf` / `toAssetPack` is selected by the unified `forgeax asset import` producer, which writes `<source>.meta.json` (external-asset-package; dispatch on top-level `importer: 'gltf'`); runtime spawn happens via the existing `loadByGuid<SceneAsset>` plus `world.instantiateScene` 4-step recipe (no `loadGltf(url)` parallel API).
+> Runtime glTF 2.0 importer (Tier-C subset). Pure-function pipeline `parseGlb` / `parseGltf` / `toAssetPack` is selected by the unified `forgeax asset import` producer, which writes `<source>.meta.json` (external-asset-package; dispatch on top-level `importer: 'gltf'`); runtime spawn happens via `assets.load(guid, 'scene')` followed by `assets.instantiate(handle, world)` (no `loadGltf(url)` parallel API).
 
 > [!IMPORTANT]
 > `toAssetPack` and `reimportReuseMeta` return `Result` values. The producer derives semantic `sourceKey` values before GUID reuse; duplicate or ambiguous identities return `duplicate-source-key` / `ambiguous-source-key` and the CLI leaves the previous sidecar untouched. `sourceIndex` is a locator only, never a generated identity.
@@ -67,6 +67,11 @@ reflection, Pack refs, Catalog/load, and runtime sampling.
 ## Evidence and recovery
 
 glTF remains a producer boundary: the `.meta.json` source declaration and importer settings are joined with the producer `CookReceipt`, the catalog `packageUrl`/`cookReceiptUrl`, and the Pack v2 descriptors as `AssetEvidence`. The runtime loader consumes packaged bytes; it does not mint cook facts.
+
+Production glTF imports obtain image decoding through `ImportContext.decodeImage`;
+the dependency gate rejects direct Image package imports there. Test hosts under
+`src/__tests__` may install `textureContribution.decoder` to verify published
+textures through the runtime asset loader.
 
 Use `notCooked` when the source has no receipt, `ready/current` when the input fingerprint matches, `ready/stale` when it changed, and `unknown` when a capability is absent. Package and artifact verification are independently `notChecked`, `passed`, or `failed`. Recovery is to repair the meta/source or recook, then run `lookup/verify --guid --project --catalog --json`; do not hide an importer failure with a custom mesh.
 
@@ -78,7 +83,7 @@ This package consumes:
 - `meshes` with **multiple primitives** -- each primitive produces an independent `MeshIr` with UUIDv7 GUID; `SceneAsset` nodes reference individual primitive-level mesh sub-assets
 - Vertex attributes: `POSITION` (VEC3, mandatory), `NORMAL` (VEC3; absent on a TRIANGLES primitive, flat normals are synthesized per the spec: indexed corners split by face normal and re-weld when every attribute matches, so the primitive stays indexed), `TEXCOORD_0` (VEC2), `TANGENT` (VEC4, optional), and `COLOR_0` (see the support matrix below) -- decoded via the accessor SoA path; `INDICES` (U8/U16/U32 scalar — U8 widens to U16; U32 preserved, narrowed to U16 by bridge when maxIndex < 65536)
 - `materials` with metallic-roughness and five KHR physical extensions mapped to pass-based `MaterialAsset` (see MaterialIr table below)
-- `textures` / `images` / `samplers` top-level arrays parsed into `GltfDoc` IR; texture index -> image index -> URI two-hop resolution via `externalLoader`
+- `textures` / `images` / `samplers` top-level arrays parsed into `GltfDoc` IR; texture index -> image index -> admitted image source; `parseGltf` owns external loading
 - Source perspective and orthographic cameras; supplied aspect disables auto-aspect, omitted aspect follows the canvas. Omitted perspective far uses the finite Float32 maximum, producing the infinite-far limit through JSON Cook.
 
 ## COLOR_0 importer contract
@@ -165,7 +170,7 @@ configured `standardMaterialGuid`.
 | Array | Element | Notes |
 |:--|:--|:--|
 | `textures` | `TextureIr` | `{ sampler?, source, name? }`; `source` = image index |
-| `images` | `ImageIr` | `{ uri?, mimeType?, name? }`; `uri` resolved via `externalLoader` |
+| `images` | `GltfImageIr` | `{ source, mimeType?, name? }`; source is a buffer-view result, data URI, or external URI with admitted bytes |
 | `samplers` | `SamplerIr` | `{ magFilter?, minFilter?, wrapS?, wrapT?, name? }` |
 
 ### Multi-primitive mesh handling
@@ -178,6 +183,8 @@ empty `MeshRenderer.materials` override vector, so imported defaults remain
 mesh-owned and reimport-safe.
 
 Unsupported required extensions fail; optional unknown extensions remain diagnostics. Morph `COLOR_0` is explicitly rejected. Sparse and interleaved accessors share the decoder across attributes, indices, skin, morph and animation; matrix columns retain glTF four-byte padding. Each accessor is limited to 67,108,864 output components (at most 256 MiB); source ranges are validated before output allocation. Invalid declared attributes fail instead of disappearing. Morph TANGENT uses source VEC3 deltas and canonical VEC4 with zero W delta.
+
+`GltfBridgeContext` accepts `AssetHandle<'mesh'>` and `AssetHandle<'material'>`. Material texture and sampler maps accept source GUIDs or their corresponding `AssetHandle<'texture'>` / `AssetHandle<'sampler'>`; these identities are not interchangeable. The build-time importer uses package reference indices internally, which runtime loading resolves before World admission.
 
 ## Importer sub-asset PODs (7 kinds)
 
@@ -193,7 +200,12 @@ Unsupported required extensions fail; optional unknown extensions remain diagnos
 | `skin` | `SkinAsset` | skeleton GUID |
 | `animation-clip` | `AnimationClip` | -- |
 
-Skinned glTFs (e.g. Khronos `Fox.glb` with 24 joints + 3 clips) flow through the same `loadByGuid<SceneAsset>` + `assets.instantiate` spine as static glTFs. The bridge (`gltfDocToSceneAsset`) auto-emits `Skin { skeleton: <skeleton-guid-string> }` on every node with `NodeIr.skinIndex !== null` when the caller passes `skeletonGuidBySkinIndex`; `AssetRegistry._resolveSceneGuids` resolves the GUID to a runtime Handle at instantiate time, while mesh material dependencies load recursively from `MeshAsset.materialSlots[]`. `postSpawnResolveJoints` (`@forgeax/engine-runtime`) fills `Skin.joints[]` by walking `SkinAsset.jointPaths` against the spawn root's `ChildOf`-descendant subtree, so multiple `instantiate()` calls on the same skinned `SceneAsset` produce independently-posed instances (no cross-spawn joint sharing).
+Skinned glTFs (e.g. Khronos `Fox.glb` with 24 joints + 3 clips) flow through the same `assets.load(guid, 'scene')` + `assets.instantiate` spine as static glTFs. The bridge (`gltfDocToSceneAsset`) auto-emits `Skin { skeleton: <skeleton-guid-string> }` on every node with `NodeIr.skinIndex !== null` when the caller passes `skeletonGuidBySkinIndex`; runtime admission resolves the GUID to a managed asset handle before instantiation, while mesh material dependencies load recursively from `MeshAsset.materialSlots[]`. `postSpawnResolveJoints` (`@forgeax/engine-runtime`) fills `Skin.joints[]` by walking `SkinAsset.jointPaths` against the spawn root's `ChildOf`-descendant subtree, so multiple `instantiate()` calls on the same skinned `SceneAsset` produce independently-posed instances (no cross-spawn joint sharing).
+
+Mesh publications keep geometry in the `mesh-binary/5` body alone; JSON carries
+only the kind and optional distance-field attachment description. Source changes
+are adopted through `assets.reload(handle, { conflict: 'reject' })`, preserving
+the handle and retaining previously captured runtime snapshots.
 
 Sample reference: `apps/hello/skin` -- 3 Khronos Fox foxes side-by-side, each running a different clip (Survey / Walk / Run). Asset source under `forgeax-engine-assets/khronos-gltf-samples/Fox/` (CC BY 4.0; ATTRIBUTION.md alongside).
 
@@ -251,15 +263,11 @@ When `ImporterRegistry` + `runImport` consumes a glTF source, malformed base64 i
 engine.assets.configurePackIndex('/box-pack-index.json');
 
 // 2-4. load mesh / material / scene by GUID, then instantiate scene into world
-const sceneResult = await engine.assets.loadByGuid<SceneAsset>(sceneGuid);
-if (!sceneResult.ok) {
-  // GltfError surfaced upstream from the importer is converted into an AssetError
-  // here; the runtime AssetRegistry uses the existing 4-member AssetErrorCode.
-  return;
-}
-const root = engine.assets.instantiate(sceneResult.value, world);
-// `root` is the synthetic root Entity (carries SceneInstance + identity Transform);
-// equivalent to world.instantiateScene(handle).
+const sceneResult = await engine.assets.load(sceneGuid, 'scene');
+if (!sceneResult.ok) return sceneResult;
+const root = engine.assets.instantiate(sceneResult.value, world).unwrap();
+engine.assets.release(sceneResult.value).unwrap();
+// root is the synthetic SceneInstance root; the World retains its asset references.
 ```
 
 ## Unified asset producer
@@ -446,3 +454,21 @@ Accessor component storage and scalar/vector/matrix shapes live in one layout ow
 The ordinary decoder derives byte widths from those constructors; Draco uses the
 same constructors and vector dimensions for native extraction and output admission.
 Matrix padding and normalized conversion remain with the ordinary accessor decoder.
+
+`deriveGltfSourceKeys` returns validated `items` with their semantic `sourceKey`.
+Reimport consumes those same rows for GUID reuse; it keeps no parallel key array
+and does not derive keys again after validation. Missing keys still take
+precedence over duplicate-key diagnostics.
+
+Sidecar byte serialization uses `serializeMetaJson` from
+`@forgeax/engine/pack`. Asset producer CLI output follows the
+[Pack output contract](../pack/README.md#producer-output).
+
+`parseGltf` resolves image buffer views against its already decoded buffers and
+retains the bytes returned by `externalLoader`. `extractImageBytes(doc.images)`
+is synchronous and performs no I/O; source JSON/GLB and sibling buffers are never
+read again for texture extraction. Data URIs decode at extraction, and invalid
+image buffer views retain per-image failures for the importer diagnostic path.
+
+The CLI dry-run uses Pack’s `SCANNER_BLACKLIST` directly. An explicitly selected
+root remains inspectable even when its directory name is excluded during recursion.

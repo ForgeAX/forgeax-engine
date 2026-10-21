@@ -13,6 +13,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
 import { fileURLToPath } from 'node:url';
+import { BUILTIN_HANDLE_CUBE } from '@forgeax/engine-pack/builtin';
 
 const __dirname = fileURLToPath(new URL('.', import.meta.url));
 const repoRoot = join(__dirname, '..', '..', '..');
@@ -378,6 +379,26 @@ test('repair: projects only roster-declared Pack JSON and body closure from a fr
   }
 });
 
+test('ordinary builtin descriptor references require their Pack closure', () => {
+  const root = fixture([]);
+  writePackFixture(root);
+  const guid = '019e4a26-3c29-7420-af5d-20f2724a16b0';
+  const cube = BUILTIN_HANDLE_CUBE;
+  const packagePath = join(root, 'apps/pbr/dist/assets', `${guid}.pack-fixture.json`);
+  const document = JSON.parse(readFileSync(packagePath, 'utf8'));
+  document.assets[0].refs = [cube];
+  writeFileSync(packagePath, JSON.stringify(document));
+  try {
+    const result = runPlanner(root, ['--shard-count', '1', '--shard-index', '0', '--dry-run']);
+    assert.notEqual(result.exitCode, 0);
+    const failure = JSON.parse(result.stdout);
+    assert.equal(failure.code, 'ci-app-shard-pack-guid-missing');
+    assert.equal(failure.guid, cube);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
 test('repair: inventories a scoped static catalog and rejects degraded authority', () => {
   for (const authority of ['authoritative', 'degraded']) {
     const root = fixture([]);
@@ -496,6 +517,7 @@ test('Boss and SDF smokes receive their complete Pack closures through the actua
           guid,
           packageUrl: '/assets/sdf.pack.json',
         })),
+        { guid: BUILTIN_HANDLE_CUBE, packageUrl: '/assets/builtin-cube.pack.json' },
         { guid: bossEffect, packageUrl: '/assets/boss-effect.pack.json' },
         { guid: bossMaterial, packageUrl: '/assets/boss-material.pack.json' },
         { guid: bossShader, packageUrl: '/assets/boss-shader.pack.json' },
@@ -524,7 +546,7 @@ test('Boss and SDF smokes receive their complete Pack closures through the actua
   const bossAssets = [
     {
       guid: bossEffect,
-      refs: [bossMaterial, bossShader, 'cbe42beb-8975-5096-b3a1-3dda4cb4c077'],
+      refs: [bossMaterial, bossShader, BUILTIN_HANDLE_CUBE],
       artifacts: { program: { path: 'boss/program.json' } },
     },
     { guid: bossMaterial, refs: [], artifacts: {} },
@@ -534,6 +556,21 @@ test('Boss and SDF smokes receive their complete Pack closures through the actua
       artifacts: { shader: { path: 'boss/material.wgsl' } },
     },
   ];
+  writeFileSync(
+    join(dist, 'assets', 'builtin-cube.pack.json'),
+    JSON.stringify({
+      schemaVersion: '2.0.0',
+      assets: [
+        {
+          guid: BUILTIN_HANDLE_CUBE,
+          kind: 'mesh',
+          payload: { kind: 'mesh', geometry: 'procedural-cube' },
+          refs: [],
+          artifacts: {},
+        },
+      ],
+    }),
+  );
   const fieldAssets = [
     {
       guid: fieldEffect,
@@ -585,6 +622,7 @@ test('Boss and SDF smokes receive their complete Pack closures through the actua
     assert.equal(result.exitCode, 0, result.stderr || result.stdout);
     const retained = join(output, 'artifacts', 'apps', app, 'dist');
     assert.equal(existsSync(join(retained, 'pack-index.json')), true);
+    assert.equal(existsSync(join(retained, 'assets', 'builtin-cube.pack.json')), true);
     assert.deepEqual(
       JSON.parse(readFileSync(join(retained, 'assets', 'sdf.pack.json'), 'utf8')).assets,
       assets,
@@ -669,65 +707,67 @@ test('t15: writes only the assigned shard artifact paths to its report output', 
   }
 });
 
-test('t15: compacts shared engine rows before uploading shard artifacts', () => {
-  const root = fixture(['alpha']);
-  const shared = join(root, 'shared-app-inputs');
-  const sharedManifest = join(shared, 'shaders', 'manifest.json');
-  mkdirSync(join(shared, 'shaders'), { recursive: true });
-  writeFileSync(
-    join(shared, 'manifest.json'),
-    JSON.stringify({
-      schemaVersion: 1,
-      producer: 'shared-app-inputs',
-      payload: { engineShaderManifest: 'shared-app-inputs/shaders/manifest.json' },
-    }),
-  );
-  writeFileSync(
-    sharedManifest,
-    JSON.stringify({
-      entries: [{ hash: 'engine', wgsl: 'engine', bindings: '{}', glsl: '' }],
-      materialShaders: [],
-    }),
-  );
-  writeFileSync(
-    join(root, 'apps', 'alpha', 'dist', 'shaders', 'manifest.json'),
-    JSON.stringify({
-      entries: [
-        { hash: 'engine', wgsl: 'engine', bindings: '{}', glsl: '' },
-        { hash: 'custom', wgsl: 'custom', bindings: '{}', glsl: '' },
-      ],
-      materialShaders: [],
-    }),
-  );
-  const output = join(root, 'shard-output');
-  try {
-    const result = runPlanner(root, [
-      '--shard-count',
-      '1',
-      '--shard-index',
-      '0',
-      '--shared-input-manifest',
-      'shared-app-inputs/manifest.json',
-      '--output-dir',
-      output,
-      '--dry-run',
-    ]);
-    assert.equal(result.exitCode, 0, result.stderr || result.stdout);
-    const compact = JSON.parse(
-      readFileSync(
-        join(output, 'artifacts', 'apps', 'alpha', 'dist', 'shaders', 'manifest.json'),
-        'utf8',
-      ),
+for (const producer of ['repo-build-inputs', 'shared-app-inputs']) {
+  test(`t15: compacts ${producer} engine rows before uploading shard artifacts`, () => {
+    const root = fixture(['alpha']);
+    const shared = join(root, 'shared-app-inputs');
+    const sharedManifest = join(shared, 'shaders', 'manifest.json');
+    mkdirSync(join(shared, 'shaders'), { recursive: true });
+    writeFileSync(
+      join(shared, 'manifest.json'),
+      JSON.stringify({
+        schemaVersion: producer === 'repo-build-inputs' ? 2 : 1,
+        producer,
+        payload: { engineShaderManifest: 'shared-app-inputs/shaders/manifest.json' },
+      }),
     );
-    assert.equal(compact.forgeaxTransport, 'forgeax-app-shader-manifest-delta-v1');
-    assert.deepEqual(
-      compact.entries.map((entry) => entry.hash),
-      ['custom'],
+    writeFileSync(
+      sharedManifest,
+      JSON.stringify({
+        entries: [{ hash: 'engine', wgsl: 'engine', bindings: '{}', glsl: '' }],
+        materialShaders: [],
+      }),
     );
-  } finally {
-    rmSync(root, { recursive: true, force: true });
-  }
-});
+    writeFileSync(
+      join(root, 'apps', 'alpha', 'dist', 'shaders', 'manifest.json'),
+      JSON.stringify({
+        entries: [
+          { hash: 'engine', wgsl: 'engine', bindings: '{}', glsl: '' },
+          { hash: 'custom', wgsl: 'custom', bindings: '{}', glsl: '' },
+        ],
+        materialShaders: [],
+      }),
+    );
+    const output = join(root, 'shard-output');
+    try {
+      const result = runPlanner(root, [
+        '--shard-count',
+        '1',
+        '--shard-index',
+        '0',
+        '--shared-input-manifest',
+        'shared-app-inputs/manifest.json',
+        '--output-dir',
+        output,
+        '--dry-run',
+      ]);
+      assert.equal(result.exitCode, 0, result.stderr || result.stdout);
+      const compact = JSON.parse(
+        readFileSync(
+          join(output, 'artifacts', 'apps', 'alpha', 'dist', 'shaders', 'manifest.json'),
+          'utf8',
+        ),
+      );
+      assert.equal(compact.forgeaxTransport, 'forgeax-app-shader-manifest-delta-v1');
+      assert.deepEqual(
+        compact.entries.map((entry) => entry.hash),
+        ['custom'],
+      );
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+}
 
 test('m2: DDC snapshot merge copies complete entries and excludes staging and leases', () => {
   const root = fixture(['alpha']);
@@ -1007,5 +1047,47 @@ test('App and Bevy build owners form a disjoint complete source roster', async (
     (app) => app.manifest.forgeax?.bevyExample?.status === 'partial',
   )) {
     assert.ok(shards.includes(relative(appRoot, app.directory).replaceAll('\\', '/')));
+  }
+});
+
+test('shared material transport retains the declared artifact closure and rejects malformed or escaping bodies', () => {
+  for (const scenario of ['valid', 'invalid-reference', 'escaping-body', 'missing-guid']) {
+    const root = fixture([]);
+    writePackFixture(root);
+    const guid = '019e4a26-3c29-7420-af5d-20f2724a16b0';
+    const path = join(root, 'apps/pbr/dist/assets', `${guid}.pack-fixture.json`);
+    const pack = JSON.parse(readFileSync(path, 'utf8'));
+    pack.assets[0].kind = 'material';
+    pack.assets[0].payload = { schemaVersion: 'material-cook/4', programs: [0, 0] };
+    if (scenario === 'invalid-reference') pack.assets[0].payload.programs[0] = 1;
+    if (scenario === 'escaping-body') pack.assets[0].artifacts.body.path = '../escape.bin';
+    if (scenario === 'missing-guid') pack.assets[0].guid = 'not-the-roster-guid';
+    writeFileSync(
+      path,
+      JSON.stringify({ schemaVersion: 'pack-material-programs/1', pack, programs: [{}] }),
+    );
+    try {
+      const result = runPlanner(root, ['--shard-count', '1', '--shard-index', '0', '--dry-run']);
+      if (scenario === 'valid') {
+        assert.equal(result.exitCode, 0, result.stderr || result.stdout);
+        assert(
+          JSON.parse(result.stdout).artifactInventory.includes(
+            `apps/pbr/dist/assets/${guid}-body.bin`,
+          ),
+        );
+      } else {
+        assert.notEqual(result.exitCode, 0);
+        assert.equal(
+          JSON.parse(result.stdout).code,
+          {
+            'invalid-reference': 'ci-app-shard-pack-package-invalid',
+            'escaping-body': 'ci-app-shard-pack-unsafe-path',
+            'missing-guid': 'ci-app-shard-pack-guid-missing',
+          }[scenario],
+        );
+      }
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
   }
 });

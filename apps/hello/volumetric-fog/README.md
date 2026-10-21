@@ -8,7 +8,7 @@
 
 ```mermaid
 flowchart LR
-  A["author Meta"] --> B["cook Pack v2"] --> C["loadByGuid"]
+  A["author Meta"] --> B["cook Pack v2"] --> C["assets.load"]
   C --> D["allocSharedRef"] --> E["VolumetricFog"] --> F["Browser or Dawn evidence"]
 ```
 
@@ -55,16 +55,14 @@ After the [`volumetric-density` importer](./src/volumetric-density-importer.ts)
 publishes Pack v2, the runtime half is deliberately small:
 
 ```ts
-import type { TextureAsset } from '@forgeax/engine-types';
 import { SpotLight, VolumetricFog } from '@forgeax/engine-render';
 import { Transform } from '@forgeax/engine-scene';
-import { volumetricDensityLoader } from './src/volumetric-density-importer';
 
-assets.loaders.register(volumetricDensityLoader());
+// App has installed the texture decoder and configured the Pack Catalog.
 const guid = assets.parseGuid('019f0000-0000-7000-8000-0000000003f1');
-const result = await assets.loadByGuid<TextureAsset>(guid);
+const result = await assets.load(guid, 'texture');
 if (!result.ok) throw new Error(`density load failed: ${result.error.code}`);
-const density = world.allocSharedRef('TextureAsset', result.value);
+const density = result.value;
 const selectedSpot = world.spawn(
   { component: Transform, data: { pos: [0, 5.6, 0] } },
   {
@@ -111,7 +109,7 @@ sequenceDiagram
   participant Render as Surface + volume render
   Source->>Pack: cook density and projector
   Pack->>Runtime: publish GUID and revision
-  Runtime->>Render: loadByGuid and accepted tuple
+  Runtime->>Render: assets.load and accepted tuple
   Render->>Render: share TemporalFrame across Point + Spot
 ```
 
@@ -189,9 +187,9 @@ Dawn smoke 也在已有双 volume、相机内外、density 重绑定 fixture 中
 
 ## Fox 与透明 subject 合成准备
 
-`?variant=transparent-subject` 会在同一个 App `World` 中通过已配置的 Pack 和 `AssetRegistry.loadByGuid<SceneAsset>/instantiate` 加载固定公开 Fox 场景，同时提交普通透明 `MeshRenderer`。Vite Pack 根使用固定 `forgeax-engine-assets/khronos-gltf-samples/Fox`，并由既有 `gltfImporter` 生产；Skin 组件由 `skinningPlugin()` 注册。
+`?variant=transparent-subject` 会在同一个 App `World` 中通过已配置的 Pack 和 `assets.load(guid, 'scene')/instantiate` 加载固定公开 Fox 场景，同时提交普通透明 `MeshRenderer`。Vite Pack 根使用固定 `forgeax-engine-assets/khronos-gltf-samples/Fox`，并由既有 `gltfImporter` 生产；Skin 组件由 `skinningPlugin()` 注册。
 
-Dawn smoke fixture 直接读取同一固定 `Fox.glb` 与 Meta，复用现有 `parseGlb`、`gltfDocToSceneAsset`、`AssetRegistry.catalog/loadByGuid/instantiate` 和 Skin 路径，并与透明 subject、两个 volume 共用一个 World、一个 Renderer 和一个 attachment。该改动只准备真实 owner 路径；本阶段没有启动 Dawn/GPU/Browser/Host，因此透明与 Fox 的实际像素合成、density 像素差异和 60 个 completed receipt 仍待单独 GPU 窗口执行。
+Dawn smoke fixture 使用同一固定 `Fox.glb` 与 Meta 产生的构建资产，经 `useBuiltAssetSource` 装配 Catalog，再走 `assets.load(sceneGuid, 'scene')` + `assets.instantiate` 和 Skin 路径，并与透明 subject、两个 volume 共用一个 World、一个 Renderer 和一个 attachment。该改动只准备真实 owner 路径；本阶段没有启动 Dawn/GPU/Browser/Host，因此透明与 Fox 的实际像素合成、density 像素差异和 60 个 completed receipt 仍待单独 GPU 窗口执行。
 ## Smoke 失败清理与合成证据
 Dawn smoke 在 finally 中释放已取得的 readback buffer、attachment lease、World 插件 Fiber、Renderer、manifest object URL、canvas target 和临时 Dawn 全局对象。公开 Renderer.dispose() 会清理 renderer resources 与 DeviceScope，但不会销毁 backend 创建的 raw device；smoke 始终负责销毁自己从 requestDevice() 截获的 raw device。清理栈先退休 attachment、Renderer 和 canvas target，再销毁该 raw device，因此 Renderer 构造前后失败都覆盖同一设备所有权路径。World 没有公开 dispose()；销毁 Cordis Fiber 会撤销已安装插件，随后本地 World 可由 GC 回收。清理会继续处理后续资源，并将清理错误与原始 smoke 错误一起报告。CPU fault test 只验证源码清理顺序与错误保留，不证明真实 Dawn/GPU 释放。
 

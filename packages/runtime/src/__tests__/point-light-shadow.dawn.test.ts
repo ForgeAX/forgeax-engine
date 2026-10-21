@@ -1,3 +1,5 @@
+import { createPrimitiveMesh } from '@forgeax/engine-geometry';
+import { testAssets } from './helpers/runtime-assets';
 import { shaderManifestUrl as createShaderManifestUrl } from './shader-manifest-url.fixture';
 // point-light-shadow.dawn.test.ts
 // feat-20260612-point-light-shadows M0 / T-M0-1.
@@ -567,7 +569,6 @@ describe('Round-2 F-3 / Issue 3: createRenderer e2e dawn (T-M5-1)', () => {
       const { PointLight } = componentsModule;
       const { PointLightShadow } = await import('@forgeax/engine-render');
       const { constructRuntimeRendererHost } = await import('../renderer-host');
-      const { HANDLE_CUBE } = await import('@forgeax/engine-assets-runtime');
       const { buildEngineShaderManifest } = await import('@forgeax/engine-vite-plugin-shader');
       // CI's shared app inputs include the point profile, so this check reads
       // the base projection directly: casters rasterize, but nothing samples them.
@@ -695,7 +696,14 @@ describe('Round-2 F-3 / Issue 3: createRenderer e2e dawn (T-M5-1)', () => {
             scale: [1, 1, 1],
           },
         },
-        { component: MeshFilter, data: { assetHandle: HANDLE_CUBE } },
+        {
+          component: MeshFilter,
+          data: {
+            assetHandle: testAssets(worldBaseline)
+              .create(createPrimitiveMesh('cube').unwrap())
+              .unwrap(),
+          },
+        },
         { component: MeshRenderer, data: {} },
       );
       worldBaseline.spawn(
@@ -766,7 +774,14 @@ describe('Round-2 F-3 / Issue 3: createRenderer e2e dawn (T-M5-1)', () => {
             scale: [1, 1, 1],
           },
         },
-        { component: MeshFilter, data: { assetHandle: HANDLE_CUBE } },
+        {
+          component: MeshFilter,
+          data: {
+            assetHandle: testAssets(worldShadow)
+              .create(createPrimitiveMesh('cube').unwrap())
+              .unwrap(),
+          },
+        },
         { component: MeshRenderer, data: {} },
       );
       worldShadow.spawn(

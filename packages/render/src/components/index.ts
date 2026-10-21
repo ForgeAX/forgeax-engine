@@ -69,15 +69,7 @@ export {
 } from './sprite-playback-mode';
 export { SpriteRegionOverride } from './sprite-region-override';
 export * from './stereo-camera';
-export {
-  decodeSortScope,
-  encodeSortScope,
-  markTileLayerDirty,
-  type SortScope,
-  TileLayer,
-  type TileLayerData,
-} from './tile-layer';
-export { Tilemap } from './tilemap';
+export { Tilemap, TilemapSort } from './tilemap';
 export {
   Visibility,
   type VisibilityState,

@@ -9,7 +9,7 @@ import { drawReadyFrame } from '../../../../../scripts/test/ready-render-frame.m
 // distance-based transparent sort (back-to-front per frame).
 //
 // Textures are decoded from the filesystem via `decodeImageFromFile`
-// and registered with `registerWithGuid`.
+// and created with `assets.create`.
 //
 // Falsifiable: set mode=0 (horizontal-z) instead of mode=3 (distance)
 // and the transparent window ordering may change, affecting blend
@@ -25,6 +25,10 @@ import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { existsSync, readFileSync } from 'node:fs';
 import { emitSmokeReceipt } from '../../../../shared/scripts/smoke-receipt.mjs';
+import { AssetRegistry } from '@forgeax/engine-assets-runtime';
+
+import { createPrimitiveMesh } from '@forgeax/engine-geometry';
+
 
 const SMOKE_MIN_FRAMES = Number.parseInt(process.env.SMOKE_MIN_FRAMES ?? '60', 10);
 const SMOKE_PIXEL_THRESHOLD = Number.parseFloat(process.env.SMOKE_PIXEL_THRESHOLD ?? '0.05');
@@ -226,10 +230,7 @@ const { constructRuntimeRendererHost } = await import('@forgeax/engine-runtime/i
 const { TransparentSort } = await import('@forgeax/engine-render/authoring');
 const { Camera, DirectionalLight, MeshFilter, MeshRenderer } = await import('@forgeax/engine-render');
 const { Transform } = await import('@forgeax/engine-scene');
-const {
-  HANDLE_CUBE,
-  HANDLE_QUAD,
-} = await import('@forgeax/engine-assets-runtime');
+
 const MODE_DISTANCE = TransparentSort.distance;
 const { unwrapHandle } = await import('@forgeax/engine-types');
 const { AssetGuid } = await import('@forgeax/engine-pack/guid');
@@ -339,21 +340,28 @@ if (
   process.exit(1);
 }
 
-// World must exist before allocSharedRef mints any column handle.
-const world = new World();
+// Bind the World to the asset registry used by this scene.
+const world = new World({ assets: assets });
+const sceneAssets = world.assets;
+if (!(sceneAssets instanceof AssetRegistry)) throw new Error('Scene requires its runtime asset owner');
+
+const primitiveQuad = sceneAssets.create(createPrimitiveMesh('quad').unwrap()).unwrap();
+
+const primitiveCube = sceneAssets.create(createPrimitiveMesh('cube').unwrap()).unwrap();
+
 const worldAttachment1 = renderer.attach(world);
 if (!worldAttachment1.ok) throw worldAttachment1.error;
 const lease = worldAttachment1.value;
 
-const metalHandle = unwrapHandle(world.allocSharedRef('TextureAsset', makeTexAsset(metalDecoded)));
-const marbleHandle = unwrapHandle(world.allocSharedRef('TextureAsset', makeTexAsset(marbleDecoded)));
-const grassHandle = unwrapHandle(world.allocSharedRef('TextureAsset', makeTexAsset(grassDecoded)));
-const windowHandle = unwrapHandle(world.allocSharedRef('TextureAsset', makeTexAsset(windowDecoded)));
+const metalHandle = unwrapHandle(world.assets.create(makeTexAsset(metalDecoded)).unwrap());
+const marbleHandle = unwrapHandle(world.assets.create(makeTexAsset(marbleDecoded)).unwrap());
+const grassHandle = unwrapHandle(world.assets.create(makeTexAsset(grassDecoded)).unwrap());
+const windowHandle = unwrapHandle(world.assets.create(makeTexAsset(windowDecoded)).unwrap());
 console.log(`[learn-render-3-blending] registered metal handle id=${metalHandle}`);
 
 // Register materials with pass-based MaterialAsset shape.
 // ── Floor material: PBR metal.png ──────────────────────────────────
-const floorMatHandle = world.allocSharedRef('MaterialAsset', {
+const floorMatHandle = world.assets.create({
   kind: 'material',
   passes: [
     {
@@ -368,10 +376,10 @@ const floorMatHandle = world.allocSharedRef('MaterialAsset', {
     roughness: 0.9,
     baseColorTexture: metalHandle,
   },
-});
+}).unwrap();
 
 // ── Cube material: PBR marble.jpg ──────────────────────────────────
-const cubeMatHandle = world.allocSharedRef('MaterialAsset', {
+const cubeMatHandle = world.assets.create({
   kind: 'material',
   passes: [
     {
@@ -386,10 +394,10 @@ const cubeMatHandle = world.allocSharedRef('MaterialAsset', {
     roughness: 0.5,
     baseColorTexture: marbleHandle,
   },
-});
+}).unwrap();
 
 // ── Grass material: alpha-test discard shader, Transparent queue ───
-const grassMatHandle = world.allocSharedRef('MaterialAsset', {
+const grassMatHandle = world.assets.create({
   kind: 'material',
   passes: [
     {
@@ -408,10 +416,10 @@ const grassMatHandle = world.allocSharedRef('MaterialAsset', {
     roughness: 0.5,
     baseColorTexture: grassHandle,
   },
-});
+}).unwrap();
 
 // ── Window material: semi-transparent blend, Transparent queue ─────
-const windowMatHandle = world.allocSharedRef('MaterialAsset', {
+const windowMatHandle = world.assets.create({
   kind: 'material',
   passes: [
     {
@@ -434,7 +442,7 @@ const windowMatHandle = world.allocSharedRef('MaterialAsset', {
     roughness: 0.5,
     baseColorTexture: windowHandle,
   },
-});
+}).unwrap();
 
 // Enable mode=3 distance-based transparent sort.
 const sortCfgRes = TransparentSort.configure(world, {
@@ -456,7 +464,7 @@ world
       data: {
         pos: [0, -0.5, 0], quat: [0, 0, 0, 1], scale: [5, 5, 5],quat: [SIN_NEG_90, 0, 0, COS_NEG_90],},
     },
-    { component: MeshFilter, data: { assetHandle: HANDLE_QUAD } },
+    { component: MeshFilter, data: { assetHandle: primitiveQuad } },
     { component: MeshRenderer, data: { materials: [floorMatHandle] } },
   )
   .unwrap();
@@ -469,7 +477,7 @@ world
       data: {
         pos: [0, 0.5, 0], quat: [0, 0, 0, 1], scale: [1, 1, 1],},
     },
-    { component: MeshFilter, data: { assetHandle: HANDLE_CUBE } },
+    { component: MeshFilter, data: { assetHandle: primitiveCube } },
     { component: MeshRenderer, data: { materials: [cubeMatHandle] } },
   )
   .unwrap();
@@ -491,7 +499,7 @@ for (const p of TRANSPARENT_POSITIONS) {
         component: Transform,
         data: { pos: [p[0], p[1], p[2]], quat: [0, 0, 0, 1], scale: [1, 1, 1]},
       },
-      { component: MeshFilter, data: { assetHandle: HANDLE_QUAD } },
+      { component: MeshFilter, data: { assetHandle: primitiveQuad } },
       { component: MeshRenderer, data: { materials: [grassMatHandle] } },
     )
     .unwrap();
@@ -505,7 +513,7 @@ for (const p of TRANSPARENT_POSITIONS) {
         component: Transform,
         data: { pos: [p[0], p[1], p[2]], quat: [0, 0, 0, 1], scale: [1, 1, 1]},
       },
-      { component: MeshFilter, data: { assetHandle: HANDLE_QUAD } },
+      { component: MeshFilter, data: { assetHandle: primitiveQuad } },
       { component: MeshRenderer, data: { materials: [windowMatHandle] } },
     )
     .unwrap();

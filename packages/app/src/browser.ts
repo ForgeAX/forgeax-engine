@@ -21,7 +21,6 @@ import {
   loadRhiPack,
 } from '@forgeax/engine-runtime/internal/renderer-host';
 import { err, ok, type Result } from '@forgeax/engine-types';
-import { createAnimationPayloadLookup } from './animation-asset-lookup';
 import {
   type BuildAppArgs,
   buildApp,
@@ -187,6 +186,7 @@ export async function createApp(
       ['rhi', opts.rhi],
       ['rhiInstrumentation', opts.rhiInstrumentation],
       ['gpuPassTiming', opts.gpuPassTiming],
+      ['shadowWorkload', opts.shadowWorkload],
       ['ssrIdentity', opts.ssrIdentity],
       ['captureReflectionFallbackReadback', opts.captureReflectionFallbackReadback],
       ['drawSource', opts.drawSource],
@@ -302,6 +302,7 @@ export async function createApp(
     preparedExecutionBootstrap = prepared.value;
     // The same structured diagnostics apply when the selected realm stays local.
     const diagnostics = opts.execution.diagnostics;
+    if (diagnostics?.shadowWorkload === true) opts = { ...opts, shadowWorkload: true };
     if (diagnostics?.profiler === true && opts.profiler === undefined) {
       opts = { ...opts, profiler: createProfiler() };
     }
@@ -355,6 +356,7 @@ export async function createApp(
   if (opts?.rhiInstrumentation !== undefined) {
     Object.assign(rendererOpts, { rhiInstrumentation: opts.rhiInstrumentation });
   }
+  if (opts?.shadowWorkload === true) Object.assign(rendererOpts, { shadowWorkload: true });
   if (opts?.gpuPassTiming !== undefined) {
     Object.assign(rendererOpts, { gpuPassTiming: opts.gpuPassTiming });
   }
@@ -487,7 +489,6 @@ export async function createApp(
         rendererOpts.rhiInstrumentation,
       ),
     });
-    (globalThis as { __forgeax?: typeof rhiDebugGlobal }).__forgeax = rhiDebugGlobal;
     markRendererBootstrapStage('rhi-debug-attached');
   }
 
@@ -592,15 +593,7 @@ export async function createApp(
   // shares this physical canvas with another world supplies its routed view via
   // opts.input; createApp then consumes that one boundary instead of attaching a
   // second listener set. The host owns the supplied backend's lifetime.
-  const inputHandle =
-    opts?.input === undefined
-      ? attachInputAuto(canvas, {
-          ...(opts?.uiRoot ? { uiRoot: opts.uiRoot } : {}),
-          ...(opts?.pointerLockAllowed ? { pointerLockAllowed: opts.pointerLockAllowed } : {}),
-          ...(opts?.virtualJoysticks ? { virtualJoysticks: opts.virtualJoysticks } : {}),
-          ...(opts?.lockProvider ? { lockProvider: opts.lockProvider } : {}),
-        })
-      : undefined;
+  const inputHandle = opts?.input === undefined ? attachInputAuto(canvas, opts) : undefined;
   const inputBackend = opts?.input ?? inputHandle?.backend;
   const userPlugins =
     preparedExecutionBootstrap === undefined
@@ -650,7 +643,6 @@ export async function createApp(
     rendererDebugDrawHost,
     rendererFeatureHost,
     assets,
-    animationPayloads: createAnimationPayloadLookup(assets),
     ...(opts?.animation === undefined ? {} : { animation: opts.animation }),
     ...(inputBackend === undefined ? {} : { input: inputBackend }),
     ...(inputHandle === undefined ? {} : { inputDispose: inputHandle.cleanup }),
@@ -949,6 +941,11 @@ export async function createApp(
       });
     }
   }
+  // The public capture entry must already belong to the App frame driver.
+  // Publishing during renderer initialization would allow a bare recorder
+  // snapshot to overlap the first frame's resource uploads.
+  if (rhiDebugGlobal !== undefined)
+    (globalThis as { __forgeax?: typeof rhiDebugGlobal }).__forgeax = rhiDebugGlobal;
   return built;
 }
 

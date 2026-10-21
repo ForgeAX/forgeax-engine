@@ -1,28 +1,20 @@
+import type { MaterialShaderArtifact } from '@forgeax/engine-shader';
 import type {
-  MaterialShaderArtifact,
-  MaterialShaderArtifactReceipt,
-  MaterialShaderVertexInput,
-} from '@forgeax/engine-shader';
-import type { PrimitiveTopology } from '@forgeax/engine-types';
+  MaterialProgramAbi,
+  MaterialProgramVertexInput,
+  PrimitiveTopology,
+} from '@forgeax/engine-types';
 import {
   GpuDrivenPreparationError,
   type GpuDrivenPreparationErrorDetail,
 } from '../errors/gpu-driven';
-import type { RenderableSnapshot } from '../render-system-extract';
+import type { MaterialSnapshot } from '../render-system-extract';
 
 export interface GpuDrivenGeometryReceipt {
   readonly identity: string;
-  readonly vertexInputs: readonly MaterialShaderVertexInput[];
+  readonly vertexInputs: readonly MaterialProgramVertexInput[];
   readonly topology: PrimitiveTopology;
   readonly indexed: boolean;
-}
-
-export interface GpuDrivenSkinReceipt {
-  readonly identity: string;
-  readonly generation: number;
-  readonly group: number;
-  readonly binding: number;
-  readonly byteOffset: number;
 }
 
 export interface PreparedGpuDrivenDraw {
@@ -36,12 +28,12 @@ export interface PreparedGpuDrivenDraw {
   readonly receiptIdentity?: string;
   readonly directEntry: string;
   readonly sceneIndexEntry: string;
-  readonly materialRow: MaterialShaderArtifactReceipt['materialRow'];
-  readonly resourceSlots: MaterialShaderArtifactReceipt['resourceSlots'];
-  readonly uvSets: MaterialShaderArtifactReceipt['uvSets'];
-  readonly vertexInputs: MaterialShaderArtifactReceipt['vertexInputs'];
-  readonly alphaMask: MaterialShaderArtifactReceipt['alphaMask'];
-  readonly skinPaletteAddress: MaterialShaderArtifactReceipt['skinPaletteAddress'];
+  readonly materialRow: MaterialProgramAbi['materialRow'];
+  readonly resourceSlots: MaterialProgramAbi['resourceSlots'];
+  readonly uvSets: MaterialProgramAbi['uvSets'];
+  readonly vertexInputs: MaterialProgramAbi['vertexInputs'];
+  readonly alphaMask: MaterialProgramAbi['alphaMask'];
+  readonly skinPaletteAddress: MaterialProgramAbi['skinPaletteAddress'];
   readonly topology: PrimitiveTopology;
   readonly indexed: boolean;
   readonly first: number;
@@ -121,13 +113,13 @@ export interface GpuDrivenDrawRange {
 }
 
 export interface PrepareGpuDrivenDrawInput {
-  readonly snapshot: RenderableSnapshot;
+  readonly material: MaterialSnapshot;
+  readonly deformation: 'rigid' | 'skin';
   readonly artifact: MaterialShaderArtifact;
   readonly geometry: GpuDrivenGeometryReceipt;
   readonly generation: number;
   /** The submesh draw currently being prepared; never infer draw zero. */
   readonly draw: GpuDrivenDrawRange;
-  readonly skinReceipt?: GpuDrivenSkinReceipt;
 }
 
 function failure(
@@ -139,17 +131,17 @@ function failure(
 
 // Only scene-owned tables retain admission results. Borrowed inputs remain live.
 const ownedVertexInputs = new WeakMap<
-  readonly MaterialShaderVertexInput[],
+  readonly MaterialProgramVertexInput[],
   {
-    readonly admissions: WeakMap<readonly MaterialShaderVertexInput[], boolean>;
+    readonly admissions: WeakMap<readonly MaterialProgramVertexInput[], boolean>;
     readonly vertexColor: boolean;
   }
 >();
-const immutableVertexInputs = new WeakSet<readonly MaterialShaderVertexInput[]>();
+const immutableVertexInputs = new WeakSet<readonly MaterialProgramVertexInput[]>();
 
 export function ownGpuDrivenVertexInputs(
-  inputs: readonly MaterialShaderVertexInput[],
-): readonly MaterialShaderVertexInput[] {
+  inputs: readonly MaterialProgramVertexInput[],
+): readonly MaterialProgramVertexInput[] {
   if (ownedVertexInputs.has(inputs)) return inputs;
   // Registry receipts already own immutable POD tables. Preserve that sharing
   // across scene receivers; borrowed inputs still get a fresh value snapshot.
@@ -170,13 +162,13 @@ export function ownGpuDrivenVertexInputs(
 }
 
 /** Derived from the existing scene-owned immutable table; borrowed inputs stay live. */
-export function hasGpuDrivenVertexColor(inputs: readonly MaterialShaderVertexInput[]): boolean {
+export function hasGpuDrivenVertexColor(inputs: readonly MaterialProgramVertexInput[]): boolean {
   return (
     ownedVertexInputs.get(inputs)?.vertexColor ?? inputs.some((input) => input.semantic === 'color')
   );
 }
 
-function isImmutableVertexInputs(inputs: readonly MaterialShaderVertexInput[]): boolean {
+function isImmutableVertexInputs(inputs: readonly MaterialProgramVertexInput[]): boolean {
   if (immutableVertexInputs.has(inputs)) return true;
   if (
     !Array.isArray(inputs) ||
@@ -212,8 +204,8 @@ function isImmutableVertexInputs(inputs: readonly MaterialShaderVertexInput[]): 
  * producer-owned extras as an ABI mismatch.
  */
 export function hasRequiredVertexInputs(
-  expected: readonly MaterialShaderVertexInput[],
-  actual: readonly MaterialShaderVertexInput[],
+  expected: readonly MaterialProgramVertexInput[],
+  actual: readonly MaterialProgramVertexInput[],
 ): boolean {
   const admissions = ownedVertexInputs.get(actual)?.admissions;
   const retained = admissions?.get(expected);
@@ -232,23 +224,17 @@ export function hasRequiredVertexInputs(
   return matches;
 }
 
-function hasMaterialResources(
-  snapshot: RenderableSnapshot,
-  receipt: MaterialShaderArtifactReceipt,
-) {
+function hasMaterialResources(material: MaterialSnapshot, receipt: MaterialProgramAbi) {
   // Video frames and renderer-local target sources have no stable
   // scene-index binding in this feature. Extract keeps those draws on the
   // explicit CPU semantic lane; direct contract callers must fail closed too.
-  if (
-    (snapshot.material.textureSources?.size ?? 0) > 0 ||
-    (snapshot.material.videoTextureFields?.size ?? 0) > 0
-  ) {
+  if ((material.textureSources?.size ?? 0) > 0 || (material.videoTextureFields?.size ?? 0) > 0) {
     return false;
   }
-  const textures = snapshot.material.textureHandles;
-  const samplers = snapshot.material.samplerHandles;
-  const authoredTextures = snapshot.material.authoredTextureFields;
-  const authoredSamplers = snapshot.material.authoredSamplerFields;
+  const textures = material.textureHandles;
+  const samplers = material.samplerHandles;
+  const authoredTextures = material.authoredTextureFields;
+  const authoredSamplers = material.authoredSamplerFields;
   // Standard PBR declares optional texture slots whose missing values are
   // supplied by the existing frame material producer (white, flat-normal,
   // black, or the configured IBL defaults). Only an explicitly authored slot
@@ -271,8 +257,8 @@ function hasMaterialResources(
       if (!authoredTextures?.has(slot.parameter)) return true;
       return (
         textures?.has(slot.parameter) === true ||
-        snapshot.material.textureSources?.has(slot.parameter) === true ||
-        snapshot.material.videoTextureFields?.has(slot.parameter) === true
+        material.textureSources?.has(slot.parameter) === true ||
+        material.videoTextureFields?.has(slot.parameter) === true
       );
     }
     if (!authoredSamplers?.has(slot.parameter)) return true;
@@ -336,35 +322,20 @@ export function prepareGpuDrivenDraw(
       expected: 'alphaMask.cutoff and alphaMask.source for a masked Pass',
     });
   }
-  if (!hasMaterialResources(input.snapshot, receipt)) {
+  if (!hasMaterialResources(input.material, receipt)) {
     return failure('resource-not-ready', {
       reason: 'material-resource-missing',
       owner: 'material',
       expected: receipt.resourceSlots.map((slot) => slot.parameter).join(','),
     });
   }
-  const deformation = input.snapshot.skin === undefined ? 'rigid' : 'skin';
-  if (deformation === 'skin') {
-    if (input.skinReceipt === undefined || receipt.skinPaletteAddress === undefined) {
-      return failure('skin-receipt-mismatch', {
-        reason: 'skin-address-missing',
-        owner: 'skin',
-        expected: 'skinPaletteAddress and skinReceipt',
-      });
-    }
-    if (
-      input.skinReceipt.identity !== input.snapshot.skin?.identity ||
-      input.skinReceipt.generation !== input.snapshot.skin?.generation ||
-      input.skinReceipt.group !== receipt.skinPaletteAddress.group ||
-      input.skinReceipt.binding !== receipt.skinPaletteAddress.binding
-    ) {
-      return failure('skin-receipt-mismatch', {
-        reason: 'skin-address-missing',
-        owner: 'skin',
-        expected: `${receipt.skinPaletteAddress.group}:${receipt.skinPaletteAddress.binding}@${input.snapshot.skin?.generation ?? '<missing>'}`,
-        actual: `${input.skinReceipt.group}:${input.skinReceipt.binding}@${input.skinReceipt.generation}`,
-      });
-    }
+  const deformation = input.deformation;
+  if (deformation === 'skin' && receipt.skinPaletteAddress === undefined) {
+    return failure('skin-receipt-mismatch', {
+      reason: 'skin-address-missing',
+      owner: 'skin',
+      expected: 'a material ABI with a storage palette address',
+    });
   }
   return {
     ok: true,

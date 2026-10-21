@@ -1,13 +1,15 @@
 import { createHash } from 'node:crypto';
 import { readdir, readFile, realpath, stat } from 'node:fs/promises';
 import { isBuiltin } from 'node:module';
-import { dirname, extname, isAbsolute, relative, resolve } from 'node:path';
+import { dirname, isAbsolute, relative, resolve } from 'node:path';
 import { err } from '@forgeax/engine-types';
 import ts from 'typescript';
 import { AssetGuid, PackageId } from './guid.js';
 import { type AnyScriptablePackDefinition, resolvePackParameterValues } from './pack-authoring.js';
+import { executePackBuild } from './pack-parameter-bindings.js';
 import { declarationPackageId, type ScanSourceDeclaration, scanInventory } from './scanner.js';
 import { loadScriptablePack } from './scriptable-pack-node.js';
+import { relativeScriptableImportCandidates } from './scriptable-pack-relative-import.js';
 
 export interface AuthorPackFile {
   readonly path: string;
@@ -43,22 +45,13 @@ function inside(root: string, path: string): boolean {
 }
 async function localFile(from: string, specifier: string): Promise<string> {
   const plain = specifier.split('?')[0] ?? specifier;
-  const path = resolve(dirname(from), plain);
-  const extension = extname(path);
-  const alternatives = [
-    path,
-    ...(extension === '.js' ? [`${path.slice(0, -3)}.ts`, `${path.slice(0, -3)}.tsx`] : []),
-    ...(extension
-      ? []
-      : ['.ts', '.tsx', '.mts', '.js', '.mjs', '/index.ts', '/index.js'].map(
-          (suffix) => path + suffix,
-        )),
-  ];
+  const alternatives = relativeScriptableImportCandidates(from, plain);
   for (const candidate of alternatives) {
     try {
       if ((await stat(candidate)).isFile()) return realpath(candidate);
     } catch (cause) {
-      if ((cause as NodeJS.ErrnoException).code !== 'ENOENT') throw cause;
+      const code = (cause as NodeJS.ErrnoException).code;
+      if (code !== 'ENOENT' && code !== 'ENOTDIR') throw cause;
     }
   }
   return invalid(from, `unresolved source edge ${specifier}`);
@@ -125,13 +118,12 @@ export async function collectAuthorPackClosure(
         return err({ code: 'author-transfer-read-blocked' });
       },
     };
-    const result =
-      'parameters' in definition
-        ? await definition.build({
-            ...context,
-            values: resolvePackParameterValues(definition, overrides).unwrap(),
-          })
-        : await definition.build(context);
+    const result = await executePackBuild(definition, {
+      ...context,
+      ...('parameters' in definition
+        ? { values: resolvePackParameterValues(definition, overrides).unwrap() }
+        : {}),
+    });
     if (!result.ok && !reads.length) throw result.error;
     outputs.set(path, result.ok ? result.value : reads);
     outputOrigins.set(path, origin);

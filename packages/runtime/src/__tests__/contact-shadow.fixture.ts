@@ -14,6 +14,7 @@ import type { EncodedTape, RecorderAttachment } from '@forgeax/engine-rhi-debug'
 import { propagateTransforms, Transform } from '@forgeax/engine-scene';
 import { expect } from 'vitest';
 import { drawReadyFrame } from '../../../../scripts/test/ready-render-frame.mjs';
+import { testAssets } from './helpers/runtime-assets';
 
 export const CONTACT_SHADOW_SIZE = 128;
 
@@ -65,17 +66,18 @@ export function luminanceRgba16f(
  * the band must appear on the anti-light (-x, screen-left) side only.
  */
 function buildContactScene(world: World) {
-  const material = world.allocSharedRef(
-    'MaterialAsset',
-    Materials.standard({ baseColor: [0.6, 0.6, 0.6, 1], metallic: 0, roughness: 0.8 }),
-  );
+  const material = testAssets(world)
+    .create(Materials.standard({ baseColor: [0.6, 0.6, 0.6, 1], metallic: 0, roughness: 0.8 }))
+    .unwrap();
   world
     .spawn(
       { component: Transform, data: { pos: [0, -0.1, 0] } },
       {
         component: MeshFilter,
         data: {
-          assetHandle: world.allocSharedRef('MeshAsset', createBoxGeometry(10, 0.2, 10).unwrap()),
+          assetHandle: testAssets(world)
+            .create(createBoxGeometry(10, 0.2, 10).unwrap())
+            .unwrap(),
         },
       },
       { component: MeshRenderer, data: { materials: [material] } },
@@ -87,7 +89,9 @@ function buildContactScene(world: World) {
       {
         component: MeshFilter,
         data: {
-          assetHandle: world.allocSharedRef('MeshAsset', createBoxGeometry(0.4, 0.4, 0.4).unwrap()),
+          assetHandle: testAssets(world)
+            .create(createBoxGeometry(0.4, 0.4, 0.4).unwrap())
+            .unwrap(),
         },
       },
       { component: MeshRenderer, data: { materials: [material] } },

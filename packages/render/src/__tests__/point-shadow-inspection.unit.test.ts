@@ -113,6 +113,7 @@ describe('point-shadow shader lane', () => {
     const manifest = (await readShaderManifestPublication({
       schemaVersion: SHADER_MANIFEST_PUBLICATION_VERSION,
       receipts: [],
+      entryPoints: [],
       fragments: sources,
       sources: Object.fromEntries(digests.map((digest, index) => [digest, [index]])),
       entries: [],
@@ -157,6 +158,7 @@ describe('point-shadow shader lane', () => {
     const manifest = (await readShaderManifestPublication({
       schemaVersion: SHADER_MANIFEST_PUBLICATION_VERSION,
       receipts: [],
+      entryPoints: [],
       fragments,
       sources: { [digest]: [0, 1, 2] },
       entries: [],

@@ -195,7 +195,11 @@ describe('CSM component schema (w1)', () => {
   describe('w2: ShadowInvalidConfigDetail.bound constructor', () => {
     it('cascadeCount=5 bound.max=4 via constructor', () => {
       // TDD red: max param not yet on constructor.
-      const err = new (ShadowInvalidConfigError as any)('cascadeCount', 5, 1, 4);
+      const err = new ShadowInvalidConfigError('cascadeCount', 5, {
+        kind: 'range',
+        min: 1,
+        max: 4,
+      });
       expect(err.code).toBe('shadow-invalid-config');
       expect(err.detail.field).toBe('cascadeCount');
       expect(err.detail.actual).toBe(5);
@@ -204,14 +208,22 @@ describe('CSM component schema (w1)', () => {
     });
 
     it('cascadeBlend=0.6 bound.max=0.5 via constructor', () => {
-      const err = new (ShadowInvalidConfigError as any)('cascadeBlend', 0.6, 0, 0.5);
+      const err = new ShadowInvalidConfigError('cascadeBlend', 0.6, {
+        kind: 'range',
+        min: 0,
+        max: 0.5,
+      });
       expect(err.detail.field).toBe('cascadeBlend');
       expect(err.detail.bound).toEqual({ kind: 'range', min: 0, max: 0.5 });
       expect(err.hint).toContain('[0, 0.5]');
     });
 
     it('splitLambda=1.1 bound.max=1 via constructor', () => {
-      const err = new (ShadowInvalidConfigError as any)('splitLambda', 1.1, 0, 1);
+      const err = new ShadowInvalidConfigError('splitLambda', 1.1, {
+        kind: 'range',
+        min: 0,
+        max: 1,
+      });
       expect(err.detail.field).toBe('splitLambda');
       expect(err.detail.bound).toEqual({ kind: 'range', min: 0, max: 1 });
       expect(err.hint).toContain('[0, 1]');

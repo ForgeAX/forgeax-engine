@@ -5,7 +5,6 @@
 
 import { createApp } from '@forgeax/engine-app/browser';
 import { EngineEnvironmentError } from '@forgeax/engine-runtime';
-import { unwrapHandle } from '@forgeax/engine-types';
 import { forgeaxBundlerAdapter } from 'virtual:forgeax/bundler';
 import { buildSpriteFlippingWorld, SPRITE_SIZE, makeSpritePixels } from './texture';
 
@@ -27,6 +26,8 @@ async function bootstrap(target: HTMLCanvasElement): Promise<void> {
     return;
   }
   const app = appResult.value;
+  const assets = app.assets;
+  if (assets === undefined) throw new Error('App asset service is unavailable');
   console.warn(`[bevy-sprite-flipping] state=${app.renderer.inspect().state}`);
 
   const spritePixels = makeSpritePixels();
@@ -38,8 +39,8 @@ async function bootstrap(target: HTMLCanvasElement): Promise<void> {
     colorSpace: 'srgb' as const,
     mips: { kind: 'none' as const },
   };
-  const texHandle = app.world.allocSharedRef('TextureAsset', texPod);
-  const texId = unwrapHandle(texHandle);
+  const texHandle = assets.create(texPod).unwrap();
+  const texId = texHandle;
 
 
   buildSpriteFlippingWorld(app.world, texId);

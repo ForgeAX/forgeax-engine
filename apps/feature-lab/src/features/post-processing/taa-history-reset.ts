@@ -1,7 +1,9 @@
+import { AssetRegistry } from '@forgeax/engine/assets-runtime';
+import { createPrimitiveMesh } from '@forgeax/engine/geometry';
 import { ANTIALIAS_TAA, Camera } from '@forgeax/engine/render';
 import { Transform } from '@forgeax/engine/scene';
 import { CheckList, defineFeature } from '../../lab/feature';
-import { lookRotation, MESH, spawnMesh, spawnStage, standard } from '../../lab/stage';
+import { lookRotation, spawnMesh, spawnStage, standard } from '../../lab/stage';
 
 export default defineFeature({
   title: 'TAA history reset',
@@ -12,8 +14,14 @@ export default defineFeature({
   expect:
     'All checks pass: moving the camera keeps a stable history with no history-version reset; bumping historyVersion reports resetReason history-version, then history becomes valid again.',
   setup({ app, world, frames }) {
+    const primitiveAssets = world.assets;
+    if (!(primitiveAssets instanceof AssetRegistry))
+      throw new Error('Scene requires its runtime asset owner');
+
+    const stageCube = primitiveAssets.create(createPrimitiveMesh('cube').unwrap()).unwrap();
+
     const { camera } = spawnStage(world, { data: { antialias: ANTIALIAS_TAA } });
-    spawnMesh(world, MESH.cube, standard(world, { baseColor: [0.9, 0.4, 0.1, 1] }), {
+    spawnMesh(world, stageCube, standard(world, { baseColor: [0.9, 0.4, 0.1, 1] }), {
       pos: [0, 0.5, 0],
     });
     const temporal = () => app.renderer.inspect().temporal;

@@ -29,6 +29,7 @@ import * as webgpu from '@forgeax/engine-rhi-webgpu';
 import { propagateTransforms, Transform } from '@forgeax/engine-scene';
 import { expect } from 'vitest';
 import { completeReadyFrame } from '../../../../scripts/test/ready-render-frame.mjs';
+import { testAssets } from './helpers/runtime-assets';
 import { renderValue } from './standard-gbuffer-replay.fixture';
 export async function verifyMultiCamera(
   renderer: Renderer,
@@ -45,20 +46,24 @@ export async function verifyMultiCamera(
   },
   warmupFrames = 60,
 ) {
-  const world = new World();
+  const world = new World(publication === undefined ? {} : { assets: publication.assets });
   const errors: unknown[] = [];
   const off = renderer.subscribe((event) => {
     if (event.kind === 'error') errors.push(event.error);
   });
-  const mesh = world.allocSharedRef('MeshAsset', createBoxGeometry(2, 2, 2).unwrap());
-  const sharedTexture = world.allocSharedRef('TextureAsset', {
-    kind: 'texture',
-    shape: { viewDimension: '2d', extent: { width: 2, height: 2 } },
-    format: 'rgba8unorm',
-    data: new Uint8Array(16).fill(255),
-    colorSpace: 'linear',
-    mips: { kind: 'none' },
-  } satisfies import('@forgeax/engine-types').TextureAsset);
+  const mesh = testAssets(world)
+    .create(createBoxGeometry(2, 2, 2).unwrap())
+    .unwrap();
+  const sharedTexture = testAssets(world)
+    .create({
+      kind: 'texture',
+      shape: { viewDimension: '2d', extent: { width: 2, height: 2 } },
+      format: 'rgba8unorm',
+      data: new Uint8Array(16).fill(255),
+      colorSpace: 'linear',
+      mips: { kind: 'none' },
+    } satisfies import('@forgeax/engine-types').TextureAsset)
+    .unwrap();
   const models = [];
   for (const [x, color] of [
     [-5, [1, 0.02, 0.01, 1]],
@@ -73,10 +78,9 @@ export async function verifyMultiCamera(
             component: MeshRenderer,
             data: {
               materials: [
-                world.allocSharedRef(
-                  'MaterialAsset',
-                  Materials.unlit([...color], { baseColorTexture: sharedTexture }),
-                ),
+                testAssets(world)
+                  .create(Materials.unlit([...color], { baseColorTexture: sharedTexture }))
+                  .unwrap(),
               ],
             },
           },
@@ -126,7 +130,6 @@ export async function verifyMultiCamera(
         );
   const lease = publisher === undefined ? renderValue(renderer.attach(world)) : undefined;
   let time = 0;
-  let invalidateSharedTexture = false;
   const draw = async (observation?: readonly ['final-display']) => {
     world.update(1 / 60).unwrap();
     propagateTransforms(world).unwrap();
@@ -135,18 +138,13 @@ export async function verifyMultiCamera(
       if (observation !== undefined)
         renderValue(required(renderer.requestObservation).call(renderer, observation));
       const candidate = publisher?.prepare(time).unwrap();
-      let packet =
+      const packet =
         candidate === undefined
           ? undefined
           : structuredClone(candidate.packet, {
               transfer: renderPublicationTransfers(candidate.packet),
             });
       candidate?.accept();
-      if (packet !== undefined && invalidateSharedTexture) {
-        // A legal resource invalidation must happen once before all camera records.
-        packet = { ...packet, invalidatedAssets: [...packet.invalidatedAssets, sharedTexture] };
-        invalidateSharedTexture = false;
-      }
       try {
         const result = renderer.draw(
           packet === undefined
@@ -169,7 +167,11 @@ export async function verifyMultiCamera(
   try {
     for (let i = 0; i < warmupFrames; i++) await draw();
     if (publisher !== undefined) {
-      invalidateSharedTexture = true;
+      testAssets(world)
+        .update(sharedTexture, {
+          data: Uint8Array.from({ length: 16 }, (_, index) => (index % 4 === 3 ? 255 : 254)),
+        })
+        .unwrap();
 
       const receipt = await draw(['final-display']);
       const refreshed = required(
@@ -218,10 +220,11 @@ export async function verifyMultiCamera(
           component: MeshRenderer,
           data: {
             materials: [
-              world.allocSharedRef(
-                'MaterialAsset',
-                Materials.standard({ baseColor: [1, 1, 1, 1], metallic: 0, roughness: 0.7 }),
-              ),
+              testAssets(world)
+                .create(
+                  Materials.standard({ baseColor: [1, 1, 1, 1], metallic: 0, roughness: 0.7 }),
+                )
+                .unwrap(),
             ],
           },
         },
@@ -356,10 +359,9 @@ export async function verifyMultiCamera(
     const originalMaterials = models.map((entity) => [
       ...world.get(entity, MeshRenderer).unwrap().materials,
     ]);
-    const reflectiveMaterial = world.allocSharedRef(
-      'MaterialAsset',
-      Materials.standard({ baseColor: [0.7, 0.7, 0.7, 1], roughness: 0.2 }),
-    );
+    const reflectiveMaterial = testAssets(world)
+      .create(Materials.standard({ baseColor: [0.7, 0.7, 0.7, 1], roughness: 0.2 }))
+      .unwrap();
     for (const entity of models)
       world.set(entity, MeshRenderer, { materials: [reflectiveMaterial] }).unwrap();
     for (const camera of cameras)
@@ -584,6 +586,7 @@ export async function verifyMultiCamera(
       return sum / count;
     };
     const initialMap = await observeMap();
+    await save('minimap-before.rgba', initialMap.bytes);
     const before = required(
       required(renderer.inspect().views).find((v) => v.entityKey === Number(minimap)),
     );
@@ -598,12 +601,29 @@ export async function verifyMultiCamera(
     expect(held.renderedFrames).toBe(before.renderedFrames);
     expect([held.width, held.height]).toEqual([size.width / 8, size.height / 8]);
     await draw();
+    const minimapPending = recorder.captureFrame();
+    (await recorder.frameBoundary()).unwrap();
     const caughtUpMap = await observeMap();
+    (await recorder.frameBoundary()).unwrap();
+    const minimapCapture = (await minimapPending).unwrap();
+    await save('minimap-catchup.rhitape', minimapCapture.bytes);
+    await save('minimap-catchup.rgba', caughtUpMap.bytes);
+    await save(
+      'minimap-catchup.json',
+      new TextEncoder().encode(
+        JSON.stringify({
+          views: renderer.inspect().views,
+          bounds: renderer.bounds(publication?.identity ?? world, Number(required(models[0]))),
+          before: redCenter(initialMap),
+          after: redCenter(caughtUpMap),
+          digest: minimapCapture.digest,
+        }),
+      ),
+    );
     expect(redCenter(caughtUpMap) - redCenter(initialMap)).toBeGreaterThan(5);
     expect(
       renderer.bounds(publication?.identity ?? world, Number(required(models[0]))),
     ).toMatchObject({ min: [-1, -1, -6], max: [1, 1, -4] });
-    await save('minimap-catchup.rgba', caughtUpMap.bytes);
     expect(
       required(required(renderer.inspect().views).find((v) => v.entityKey === Number(minimap)))
         .renderedFrames,
@@ -676,11 +696,10 @@ export async function verifyMultiCamera(
         mipLevel: 0,
       }),
     );
-    const sourceRef = world.allocSharedRef('RenderTargetTextureSource', source);
-    const monitorMaterial = world.allocSharedRef(
-      'MaterialAsset',
-      Materials.unlit([1, 1, 1, 1], { baseColorTexture: sourceRef }),
-    );
+    const sourceRef = { source: source };
+    const monitorMaterial = testAssets(world)
+      .create(Materials.unlit([1, 1, 1, 1], { baseColorTexture: sourceRef }))
+      .unwrap();
     world
       .spawn(
         { component: Transform, data: { pos: [5, 0, -3] } },

@@ -2,14 +2,14 @@ import { World } from '@forgeax/engine-ecs';
 import { SceneInstance } from '@forgeax/engine-render';
 import * as SceneOwner from '@forgeax/engine-scene';
 import { ChildOf } from '@forgeax/engine-scene';
-import type { Handle, SceneAsset } from '@forgeax/engine-types';
-import { err, ok } from '@forgeax/engine-types';
+import type { AssetHandle, SceneAsset } from '@forgeax/engine-types';
 import { describe, expect, it } from 'vitest';
 import { registerSceneComponents } from './helpers/register-scene-components';
+import { testAssets } from './helpers/runtime-assets';
 
-function registerSceneAsset(world: World, asset: SceneAsset): Handle<'SceneAsset', 'shared'> {
+function registerSceneAsset(world: World, asset: SceneAsset): AssetHandle<'scene'> {
   registerSceneComponents(world);
-  return world.allocSharedRef('SceneAsset', asset);
+  return testAssets(world).create(asset).unwrap();
 }
 
 describe('keyed nested SceneAsset instances', () => {
@@ -24,7 +24,7 @@ describe('keyed nested SceneAsset instances', () => {
       kind: 'scene',
       entities: {
         'entity-0': { components: { Transform: {} } },
-        child: { components: {}, instance: { source: 'C' } },
+        child: { components: {}, instance: { source: handleC } },
       },
     };
     const handleB = registerSceneAsset(world, assetB);
@@ -32,17 +32,10 @@ describe('keyed nested SceneAsset instances', () => {
       kind: 'scene',
       entities: {
         'entity-0': { components: { Transform: {} } },
-        child: { components: {}, instance: { source: 'B' } },
+        child: { components: {}, instance: { source: handleB } },
       },
     };
     const handleA = registerSceneAsset(world, assetA);
-    SceneOwner.worldSetSceneAssetResolver(world, (source, parentHandle) => {
-      if (typeof source === 'number') return ok(source as Handle<'SceneAsset', 'shared'>);
-      const parent = Number(parentHandle);
-      if (parent === Number(handleA) && source === 'B') return ok(handleB);
-      if (parent === Number(handleB) && source === 'C') return ok(handleC);
-      return err({ code: 'asset-not-found' });
-    });
 
     const result = SceneOwner.worldInstantiateScene(world, handleA);
     if (!result.ok) throw new Error(JSON.stringify(result.error));
@@ -55,28 +48,23 @@ describe('keyed nested SceneAsset instances', () => {
 
   it('five keyed instance layers recurse without stack overflow', () => {
     const world = new World();
-    const handles: Handle<'SceneAsset', 'shared'>[] = [];
+    const handles: AssetHandle<'scene'>[] = [];
     for (let layer = 5; layer >= 0; layer -= 1) {
       const asset: SceneAsset = {
         kind: 'scene',
         entities: {
           'entity-0': { components: { Transform: {} } },
           ...(layer < 5
-            ? { child: { components: {}, instance: { source: `layer-${layer + 1}` } } }
+            ? {
+                child: { components: {}, instance: { source: handles[0] as AssetHandle<'scene'> } },
+              }
             : {}),
         },
       };
       handles.unshift(registerSceneAsset(world, asset));
     }
-    SceneOwner.worldSetSceneAssetResolver(world, (_source, parentHandle) => {
-      const parentIndex = handles.findIndex((handle) => Number(handle) === Number(parentHandle));
-      const next = handles[parentIndex + 1];
-      return next === undefined ? err({ code: 'asset-not-found' }) : ok(next);
-    });
-    const result = SceneOwner.worldInstantiateScene(
-      world,
-      handles[0] as Handle<'SceneAsset', 'shared'>,
-    );
+
+    const result = SceneOwner.worldInstantiateScene(world, handles[0] as AssetHandle<'scene'>);
     if (!result.ok) throw new Error(JSON.stringify(result.error));
   });
 
@@ -90,18 +78,12 @@ describe('keyed nested SceneAsset instances', () => {
     const parent: SceneAsset = {
       kind: 'scene',
       entities: {
-        first: { components: {}, instance: { source: 'child' } },
-        second: { components: {}, instance: { source: 'child' } },
+        first: { components: {}, instance: { source: childHandle } },
+        second: { components: {}, instance: { source: childHandle } },
       },
     };
     const parentHandle = registerSceneAsset(world, parent);
-    SceneOwner.worldSetSceneAssetResolver(world, (source) => {
-      return typeof source === 'number'
-        ? ok(source as Handle<'SceneAsset', 'shared'>)
-        : source === 'child'
-          ? ok(childHandle)
-          : err({ code: 'asset-not-found' });
-    });
+
     const result = SceneOwner.worldInstantiateScene(world, parentHandle);
     if (!result.ok) throw new Error(JSON.stringify(result.error));
     if (!result.ok) return;
@@ -130,17 +112,11 @@ describe('keyed nested SceneAsset instances', () => {
         'entity-1': {
           components: { Transform: {}, ChildOf: { parent: ['child', 'entity-0'] } },
         },
-        child: { components: {}, instance: { source: 'child' } },
+        child: { components: {}, instance: { source: childHandle } },
       },
     };
     const parentHandle = registerSceneAsset(world, parent);
-    SceneOwner.worldSetSceneAssetResolver(world, (source) =>
-      typeof source === 'number'
-        ? ok(source as Handle<'SceneAsset', 'shared'>)
-        : source === 'child'
-          ? ok(childHandle)
-          : err({ code: 'asset-not-found' }),
-    );
+
     const result = SceneOwner.worldInstantiateScene(world, parentHandle);
     expect(result.ok).toBe(true);
     if (!result.ok) return;

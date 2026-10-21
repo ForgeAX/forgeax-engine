@@ -23,13 +23,17 @@ import {
   type EntityHandle,
   type World,
 } from '@forgeax/engine-ecs';
-import { HANDLE_CUBE } from '@forgeax/engine-assets-runtime';
+
 import { GlobalTransform, Transform } from '@forgeax/engine-scene';
 import { Camera, DirectionalLight, MeshFilter, MeshRenderer } from '@forgeax/engine-render';
 import { perspective } from '@forgeax/engine-render';
 import { Materials } from '@forgeax/engine-render';
-import type { MaterialAsset } from '@forgeax/engine-runtime';
+
 import { quat } from '@forgeax/engine-math';
+import { AssetRegistry } from '@forgeax/engine-assets-runtime';
+
+import { createPrimitiveMesh } from '@forgeax/engine-geometry';
+
 
 /** Length of each drawn axis arrow (world units). */
 export const AXIS_LENGTH = 1.5;
@@ -48,10 +52,12 @@ const CUBES: ReadonlyArray<{ pos: [number, number, number]; euler: [number, numb
 
 /** Build the axes World: 3 differently-oriented cubes (each tagged ShowAxes) + light + camera. */
 export function buildAxesWorld(world: World): void {
-  const cubeMat = world.allocSharedRef<'MaterialAsset', MaterialAsset>(
-    'MaterialAsset',
-    Materials.standard({ baseColor: [0.5, 0.5, 0.55, 1] }),
-  );
+const sceneAssets = world.assets;
+if (!(sceneAssets instanceof AssetRegistry)) throw new Error('Scene requires its runtime asset owner');
+
+const primitiveCube = sceneAssets.create(createPrimitiveMesh('cube').unwrap()).unwrap();
+
+  const cubeMat = sceneAssets.create(Materials.standard({ baseColor: [0.5, 0.5, 0.55, 1] })).unwrap();
   for (const { pos, euler } of CUBES) {
     const q = quat.fromEuler(quat.create(), euler[0], euler[1], euler[2], 'XYZ');
     world.spawn(
@@ -59,7 +65,7 @@ export function buildAxesWorld(world: World): void {
         component: Transform,
         data: { pos, quat: [q[0] ?? 0, q[1] ?? 0, q[2] ?? 0, q[3] ?? 1], scale: [0.7, 0.7, 0.7] },
       },
-      { component: MeshFilter, data: { assetHandle: HANDLE_CUBE } },
+      { component: MeshFilter, data: { assetHandle: primitiveCube } },
       { component: MeshRenderer, data: { materials: [cubeMat] } },
       { component: ShowAxes, data: { marker: 1 } },
     );

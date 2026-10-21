@@ -101,6 +101,7 @@ export function gameCapabilityAssetRoots(root: string): string[] {
     'hit-vfx-effect.pack.json',
     'hit-vfx-materials.pack.json',
     'multi-material-target.pack.json',
+    'primitives.pack.json',
     'resonance-forge.pack.ts',
     'scene.pack.json',
     'target-profile.json.meta.json',

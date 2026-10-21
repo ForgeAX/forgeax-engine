@@ -1,5 +1,7 @@
+import { AssetRegistry } from '@forgeax/engine-assets-runtime';
+import { runtimeAssets } from '@forgeax/engine-assets-runtime/internal';
 import { defineComponent, World } from '@forgeax/engine-ecs';
-import { err, ok, type SceneAsset } from '@forgeax/engine-types';
+import type { SceneAsset } from '@forgeax/engine-types';
 import { describe, expect, it, vi } from 'vitest';
 import {
   ChildOf,
@@ -7,13 +9,12 @@ import {
   sceneEntityAddressKey,
   worldDespawnScene,
   worldGetSceneInstanceState,
-  worldInstantiateScenePayload,
-  worldSetSceneAssetResolver,
 } from '../index';
 import { worldSceneEntityRefOf } from '../instances/entity-ref';
+import { instantiateSource } from './managed-scene-fixture';
 
 const SceneInstance = defineComponent('SceneInstance', {
-  source: { type: 'shared<SceneAsset>' },
+  source: { type: 'asset<scene>' },
   mapping: { type: 'array<entity>' },
   state: { type: 'unique<SceneInstanceState>' },
 });
@@ -37,23 +38,25 @@ function scene(): SceneAsset {
 
 describe('scene payload ownership', () => {
   it('retains the payload for the mounted instance and releases it on despawn', () => {
-    const world = new World();
+    const assets = new AssetRegistry();
+    const world = new World({ assets });
     registerSceneWorld(world);
 
-    const result = worldInstantiateScenePayload(world, scene());
+    const result = instantiateSource(assets, world, scene());
 
     expect(result.ok).toBe(true);
-    expect(world.sharedRefs._liveCount()).toBe(1);
+    expect(runtimeAssets(assets).inspect().assets).toBe(1);
     if (!result.ok) return;
     expect(worldDespawnScene(world, result.value.root).ok).toBe(true);
-    expect(world.sharedRefs._liveCount()).toBe(0);
+    expect(runtimeAssets(assets).inspect().assets).toBe(0);
   });
 
   it('allocates the same complete managed state that readers observe', () => {
-    const world = new World();
+    const assets = new AssetRegistry();
+    const world = new World({ assets });
     registerSceneWorld(world);
     const allocated = vi.spyOn(world, 'allocUniqueRef');
-    const root = worldInstantiateScenePayload(world, scene()).unwrap().root;
+    const root = instantiateSource(assets, world, scene()).unwrap().root;
     const state = worldGetSceneInstanceState(world, root).unwrap();
     const handle = world.get(root, SceneInstance).unwrap().state;
     expect(allocated).toHaveBeenCalledTimes(1);
@@ -73,28 +76,27 @@ describe('scene payload ownership', () => {
     });
     expect(worldGetSceneInstanceState(world, root).ok).toBe(false);
     expect(worldSceneEntityRefOf(world, member)).toBeUndefined();
-    expect(world.sharedRefs._liveCount()).toBe(0);
+    expect(runtimeAssets(assets).inspect().assets).toBe(0);
   });
 
   it('releases the temporary producer grant when materialisation fails', () => {
-    const world = new World();
+    const assets = new AssetRegistry();
+    const world = new World({ assets });
     registerSceneWorld(world);
 
-    const result = worldInstantiateScenePayload(world, {
+    const result = instantiateSource(assets, world, {
       kind: 'scene',
-      entities: { missing: { components: { MissingComponent: { value: 1 } } } },
+      entities: { missing: { components: { ScenePayloadMarker: { value: 'invalid' } } } },
     } as SceneAsset);
 
     expect(result.ok).toBe(false);
-    expect(world.sharedRefs._liveCount()).toBe(0);
+    expect(runtimeAssets(assets).inspect().assets).toBe(0);
   });
-  it('binds forward, cyclic and array references after all scene members are live', () => {
-    const world = new World();
+  it('binds forward, cyclic and array references after all scene members are live', async () => {
+    const assets = new AssetRegistry();
+    const world = new World({ assets });
     registerSceneWorld(world);
-    const child = world.allocSharedRef('SceneAsset', scene());
-    worldSetSceneAssetResolver(world, (source) =>
-      source === 'child' || source === Number(child) ? ok(child) : err({ code: 'missing-child' }),
-    );
+    const child = assets.create(scene()).unwrap();
     const source: SceneAsset = {
       kind: 'scene',
       entities: {
@@ -110,12 +112,12 @@ describe('scene payload ownership', () => {
             SceneLinks: { target: 'z', peers: ['z', 'a'] },
             ChildOf: { parent: 'a' },
           },
-          instance: { source: 'child' },
+          instance: { source: child },
         },
       },
     };
-    const first = worldInstantiateScenePayload(world, source).unwrap();
-    const second = worldInstantiateScenePayload(world, source).unwrap();
+    const first = instantiateSource(assets, world, source).unwrap();
+    const second = instantiateSource(assets, world, source).unwrap();
     for (const instance of [first, second]) {
       const state = worldGetSceneInstanceState(world, instance.root).unwrap();
       const a = state.bindings.get(sceneEntityAddressKey('a'));
@@ -134,7 +136,8 @@ describe('scene payload ownership', () => {
     }
     worldDespawnScene(world, first.root).unwrap();
     worldDespawnScene(world, second.root).unwrap();
-    world.sharedRefs.release(child).unwrap();
-    expect(world.sharedRefs._liveCount()).toBe(0);
+    assets.release(child).unwrap();
+    assets.dispose();
+    expect(runtimeAssets(assets).inspect().assets).toBe(0);
   });
 });

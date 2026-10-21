@@ -91,8 +91,61 @@ export async function verifyChannelReplay(
     if (view?.resourceId == null || lightTable?.resourceId == null || receiver?.resourceId == null)
       throw new Error('missing channel carrier binding');
     const viewOffset = (view.bufferOffset ?? 0) + (view.dynamicOffset ?? 0);
+    let primitiveIndex = 0;
+    if (primitive !== undefined) {
+      const visibleItems = geometry.bindings.find(
+        (binding) => binding.groupIndex === 3 && binding.binding === 2,
+      );
+      const instances = geometry.bindings.find(
+        (binding) => binding.groupIndex === 3 && binding.binding === 0,
+      );
+      if (visibleItems?.resourceId == null || instances?.resourceId == null)
+        throw new Error('missing selected draw GPU scene address bindings');
+      const wordAt = async (resourceId: string, offset: number): Promise<number> => {
+        const reads = (
+          await replay.readAtWorks([
+            {
+              resourceId,
+              workIndex: geometry.workIndex,
+              subresource: { offset, size: 4 },
+            },
+          ])
+        ).unwrap();
+        const read = required(reads[0]).unwrap();
+        expect(read.provenance.selectedWorkIndex).toBe(geometry.workIndex);
+        return new DataView(
+          read.bytes.buffer,
+          read.bytes.byteOffset,
+          read.bytes.byteLength,
+        ).getUint32(0, true);
+      };
+      const draw = required(decoded.events[geometry.eventIndex]);
+      let firstInstance: number;
+      if (draw.kind === 'draw' || draw.kind === 'drawIndexed') {
+        firstInstance = draw.firstInstance;
+      } else if (draw.kind === 'drawIndirect' || draw.kind === 'drawIndexedIndirect') {
+        firstInstance = await wordAt(
+          draw.indirectBufferHandleId,
+          draw.indirectOffset + (draw.kind === 'drawIndexedIndirect' ? 16 : 12),
+        );
+      } else {
+        throw new Error(`selected geometry work is not a draw: ${draw.kind}`);
+      }
+      // Follow the submitted draw's visible item to its instance and physical
+      // primitive row. Source slot zero is not a GPU allocation contract.
+      const instanceIndex = await wordAt(
+        visibleItems.resourceId,
+        (visibleItems.bufferOffset ?? 0) + (visibleItems.dynamicOffset ?? 0) + firstInstance * 16,
+      );
+      primitiveIndex = await wordAt(
+        instances.resourceId,
+        (instances.bufferOffset ?? 0) + (instances.dynamicOffset ?? 0) + instanceIndex * 16,
+      );
+    }
     const receiverOffset =
-      (receiver.bufferOffset ?? 0) + (receiver.dynamicOffset ?? 0) + (primitive ? 44 : 152);
+      (receiver.bufferOffset ?? 0) +
+      (receiver.dynamicOffset ?? 0) +
+      (primitive ? primitiveIndex * 64 + 44 : 152);
     const layouts: readonly BufferRecordLayout[] = [
       {
         stride: viewOffset + 80,

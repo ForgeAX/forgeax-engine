@@ -1,9 +1,11 @@
-import { LoaderRegistry, meshLoader } from '@forgeax/engine-assets-runtime';
+import { AssetRegistry } from '@forgeax/engine-assets-runtime';
+import { World } from '@forgeax/engine-ecs';
 import {
   buildMeshDistanceField,
   createBoxGeometry,
   encodeMeshDistanceField,
   MESH_GEOMETRIC_DISTANCE_FIELD_CODEC,
+  meshAssetDecoder,
 } from '@forgeax/engine-geometry';
 import { RenderGraphBuilder } from '@forgeax/engine-render-graph';
 import type { RhiCommandEncoder } from '@forgeax/engine-rhi';
@@ -23,8 +25,11 @@ import {
   createRenderFeatureGraphBufferState,
   importRenderFeatureGraphBuffer,
 } from '../features/render-graph-resources';
+import { worldRenderResources } from '../publication/resource-scope';
 import { GLOBAL_SDF_COMPOSE_WGSL } from '../raytracing/global-sdf';
 import type { RenderSystemInternals } from '../record/render-context';
+import { MaterialFrame } from '../scene/material-dispatch';
+import { MeshFrame } from '../scene/mesh-frame';
 import { readBuffer } from './raytracing/path-tracer.fixture';
 
 /** Production managed producer and collision kernel, ordinary Mesh artifact
@@ -43,32 +48,30 @@ export async function verifySceneSdf(save?: (tape: Uint8Array, report: unknown) 
     new Uint8Array(await crypto.subtle.digest('SHA-256', new Uint8Array(bytes))),
     (b) => b.toString(16).padStart(2, '0'),
   ).join('');
-  const registry = new LoaderRegistry();
-  registry.register(meshLoader);
-  const loaded = await registry.loadPack(
-    {
-      guid: 'collision-cube',
+  const loaded = await meshAssetDecoder.decode({
+    envelope: {
+      guid: '019a4800-0000-7000-8000-000000000001',
       kind: 'mesh',
       payload: {
         ...geometry,
         distanceField: { sectionSidedness: [0] },
-      },
+      } as unknown as MeshAsset,
       refs: [],
       artifacts: {
         'distance-field.bin': {
-          descriptor: {
-            path: 'distance-field.bin',
-            mediaType: 'application/octet-stream',
-            assetCodec: MESH_GEOMETRIC_DISTANCE_FIELD_CODEC,
-            integrity: { algorithm: 'sha256', digest: `sha256:${digest}` },
-          },
-          bytes,
+          path: 'distance-field.bin',
+          contentEncoding: 'identity',
+          byteLength: bytes.byteLength,
+          mediaType: 'application/octet-stream',
+          assetCodec: MESH_GEOMETRIC_DISTANCE_FIELD_CODEC,
+          integrity: { algorithm: 'sha256', digest: `sha256:${digest}` },
         },
       },
     },
-    {} as never,
-  );
-  assert(loaded.ok, loaded.ok ? undefined : String(loaded.error));
+    artifacts: { read: async () => ok(new Uint8Array(bytes)) },
+    signal: new AbortController().signal,
+  });
+  assert(loaded.ok, loaded.ok ? undefined : JSON.stringify(loaded.error));
   const mesh = loaded.value as MeshAsset;
   const recorder = attachRecorder(webgpu).unwrap();
   const device = (
@@ -127,7 +130,10 @@ export async function verifySceneSdf(save?: (tape: Uint8Array, report: unknown) 
   const output = device
     .createBuffer({ label: 'collision.results', size: 7 * 48, usage: 128 | 12 })
     .unwrap();
-  const scope = { identity: 'world-a', resolveAsset: () => ok(mesh) };
+  const assets = new AssetRegistry();
+  const world = new World({ assets });
+  const meshHandle = assets.create(mesh).unwrap();
+  const scope = worldRenderResources(world);
   const slots = [
     {
       worldId: 0,
@@ -135,7 +141,7 @@ export async function verifySceneSdf(save?: (tape: Uint8Array, report: unknown) 
       slot: 0,
       generation: 0,
       snapshot: {
-        assetHandle: 1,
+        assetHandle: meshHandle,
         transform: { world: [1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1] },
         materials: [],
       },
@@ -144,7 +150,7 @@ export async function verifySceneSdf(save?: (tape: Uint8Array, report: unknown) 
   let revision = 0;
   const internals = {
     device,
-    assets: { catalogEpoch: 0 },
+    assets,
     immediateShaderModuleFactory: { createShaderModule: () => ok(module) },
   } as unknown as RenderSystemInternals;
   const source = () => ({
@@ -153,6 +159,8 @@ export async function verifySceneSdf(save?: (tape: Uint8Array, report: unknown) 
       identity: scope,
       revision,
       slots,
+      materials: new MaterialFrame(undefined),
+      meshes: new MeshFrame().with(0, meshHandle, mesh),
       isCurrent: () => true,
       isSourceCurrent: () => true,
     } as never,

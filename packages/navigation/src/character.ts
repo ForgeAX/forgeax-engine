@@ -19,16 +19,17 @@ import {
 } from '@forgeax/engine-physics';
 import type { Plugin } from '@forgeax/engine-plugin';
 import { GlobalTransform, propagateTransforms, Transform } from '@forgeax/engine-scene';
-import { err, type Result } from '@forgeax/engine-types';
+import { type AssetError, type AssetHandle, err, type Result } from '@forgeax/engine-types';
 import { NavigationAgent, NavigationAgentStatus, navigationPlugin } from './agent';
 import { type AvoidanceAgent, type AvoidanceOptions, solveNavigationAvoidance } from './avoidance';
 import { invalidInput, type NavigationError } from './errors';
 import type { NavigationMesh, NavigationPoint } from './navmesh';
+import { NavigationSurface } from './surface-binding';
 
 export const NavigationCharacter = defineComponent(
   'NavigationCharacter',
   {
-    sourceDigest: { type: 'string', default: '' },
+    surfaceVersion: { type: 'string', default: '', transient: true },
     arrivalDistance: { type: 'f32', default: 0.08 },
     stuckSeconds: { type: 'f32', default: 3 },
     stalledFor: { type: 'f32', default: 0, transient: true },
@@ -43,8 +44,13 @@ export const NavigationCharacter = defineComponent(
 const SURFACE = 'NavigationMesh';
 export const NAVIGATION_CHARACTER_SYSTEM = 'navigation/character';
 /** Replace one World's active surface. Existing routes fail closed on the next fixed step. */
-export function setNavigationMesh(world: World, mesh: NavigationMesh): void {
-  world.insertResource(SURFACE, mesh);
+export function setNavigationMesh(
+  world: World,
+  mesh: AssetHandle<'navigation-mesh'>,
+): Result<void, NavigationError | AssetError> {
+  if (!world.hasResource(SURFACE))
+    return err(invalidInput('NavigationMesh', undefined, 'Install navigationCharacterPlugin'));
+  return world.getResource<NavigationSurface>(SURFACE).replace(mesh);
 }
 /** Synchronous query/assignment: no late callback can revive an old entity or route. */
 export function setNavigationTarget(
@@ -52,17 +58,11 @@ export function setNavigationTarget(
   entity: EntityHandle,
   target: NavigationPoint,
   options: { readonly maxProjection: number; readonly maxVisited?: number },
-): Result<void, NavigationError | EcsError> {
+): Result<void, NavigationError | EcsError | AssetError> {
   const character = world.get(entity, NavigationCharacter);
   if (!character.ok) return character;
   if (!world.hasResource(SURFACE))
-    return err(
-      invalidInput(
-        'NavigationMesh',
-        undefined,
-        'Install navigationCharacterPlugin or setNavigationMesh',
-      ),
-    );
+    return err(invalidInput('NavigationMesh', undefined, 'Install navigationCharacterPlugin'));
   const propagated = propagateTransforms(world);
   if (!propagated.ok)
     return err(invalidInput('Transform', propagated.error, 'Valid propagated Scene transforms'));
@@ -70,15 +70,26 @@ export function setNavigationTarget(
   if (!matrix.ok) return matrix;
   const m = matrix.value.world,
     collider = world.get(entity, Collider).unwrap();
+  const radius =
+    collider.radius *
+    Math.max(
+      Math.hypot(m[0] as number, m[1] as number, m[2] as number),
+      Math.hypot(m[8] as number, m[9] as number, m[10] as number),
+    );
   const height =
-    2 *
-    (collider.radius *
-      Math.max(
-        Math.hypot(m[0] as number, m[1] as number, m[2] as number),
-        Math.hypot(m[8] as number, m[9] as number, m[10] as number),
-      ) +
-      collider.halfHeight * Math.hypot(m[4] as number, m[5] as number, m[6] as number));
-  const mesh = world.getResource<NavigationMesh>(SURFACE);
+    2 * (radius + collider.halfHeight * Math.hypot(m[4] as number, m[5] as number, m[6] as number));
+  const binding = world.getResource<NavigationSurface>(SURFACE);
+  const current = binding.current();
+  if (!current.ok) return current;
+  const mesh = current.value;
+  if (!acceptsClearance(mesh, radius, height, world.get(entity, CharacterController).unwrap()))
+    return err(
+      invalidInput(
+        'NavigationCharacter',
+        { entity, radius, height },
+        'Capsule within current navigation clearance and KCC slope/step capability',
+      ),
+    );
   const path = mesh.findPath(
     [m[12] as number, (m[13] as number) - height / 2, m[14] as number],
     target,
@@ -88,7 +99,7 @@ export function setNavigationTarget(
   // Assignment validates the entity before either write; both operations are synchronous.
   world
     .set(entity, NavigationCharacter, {
-      sourceDigest: mesh.sourceDigest,
+      surfaceVersion: binding.version,
       stalledFor: 0,
       bestDistance: 1e20,
       recoveryAttempts: 0,
@@ -102,6 +113,25 @@ export function setNavigationTarget(
     waypoint: 0,
     status: NavigationAgentStatus.following,
   });
+}
+function acceptsClearance(
+  surface: NavigationMesh,
+  radius: number,
+  height: number,
+  controller: {
+    readonly offset: number;
+    readonly maxSlopeClimbDeg: number;
+    readonly autoStepMaxHeight: number;
+  },
+): boolean {
+  return (
+    radius > 0 &&
+    height > 0 &&
+    radius + controller.offset + 0.001 <= surface.settings.radius + 1e-5 &&
+    height <= surface.settings.height + 1e-5 &&
+    controller.maxSlopeClimbDeg + 1e-5 >= surface.settings.maxSlopeDeg &&
+    controller.autoStepMaxHeight + 1e-5 >= surface.settings.maxStep
+  );
 }
 function canTraverse(
   surface: NavigationMesh,
@@ -141,7 +171,7 @@ const DEFAULT_AVOIDANCE: AvoidanceOptions = {
 };
 /** Physics owns position; this companion owns only bounded steering and displacement feedback. */
 export function navigationCharacterPlugin(
-  mesh: NavigationMesh,
+  mesh: AssetHandle<'navigation-mesh'>,
   options: AvoidanceOptions = DEFAULT_AVOIDANCE,
 ): Plugin {
   return {
@@ -156,8 +186,19 @@ export function navigationCharacterPlugin(
         return () => lease.dispose();
       }, 'navigation/character-components');
       ctx.effect(() => {
-        setNavigationMesh(world, mesh);
-        return () => world.removeResource(SURFACE);
+        if (world.hasResource(SURFACE))
+          throw invalidInput(
+            'NavigationMesh',
+            mesh,
+            'One active navigation-character owner per World',
+          );
+        const binding = NavigationSurface.create(world.assets, mesh).unwrap();
+        world.insertResource(SURFACE, binding);
+        return () => {
+          if (world.hasResource(SURFACE) && world.getResource(SURFACE) === binding)
+            world.removeResource(SURFACE);
+          binding.dispose();
+        };
       }, 'navigation/mesh');
       const system = defineSystem({
         name: NAVIGATION_CHARACTER_SYSTEM,
@@ -171,8 +212,9 @@ export function navigationCharacterPlugin(
         ],
         fn(world, [query]) {
           if (!world.hasResource('PhysicsWorld') || !world.hasResource(SURFACE)) return;
+          const binding = world.getResource<NavigationSurface>(SURFACE);
           const physics = world.getResource<PhysicsWorld>('PhysicsWorld'),
-            surface = world.getResource<NavigationMesh>(SURFACE),
+            surface = binding.current().unwrap(),
             dt = world.getResource(FixedTime).delta,
             gravityY = physics.getGravity()[1] as number;
           const agents: AvoidanceAgent[] = [];
@@ -203,6 +245,25 @@ export function navigationCharacterPlugin(
               sz = Math.hypot(m[8] as number, m[9] as number, m[10] as number);
             const radius = c.radius * Math.max(sx, sz),
               height = 2 * (radius + c.halfHeight * sy);
+            let live = agent;
+            if (character.surfaceVersion && character.surfaceVersion !== binding.version) {
+              world
+                .set(entity, NavigationAgent, {
+                  path: new Float32Array(0),
+                  waypoint: 0,
+                  status: NavigationAgentStatus.idle,
+                })
+                .unwrap();
+              world
+                .set(entity, NavigationCharacter, {
+                  surfaceVersion: '',
+                  desired: [0, 0, 0],
+                  actual: [0, 0, 0],
+                  verticalSpeed: 0,
+                })
+                .unwrap();
+              live = world.get(entity, NavigationAgent).unwrap();
+            }
             // Ground agents accept yaw and nonuniform scale; tilted/sheared/singular poses are explicit failures.
             if (
               c.shape !== ColliderShapeValue.capsule ||
@@ -228,35 +289,14 @@ export function navigationCharacterPlugin(
               sy <= 0 ||
               Math.abs((m[0] as number) * (m[8] as number) + (m[2] as number) * (m[10] as number)) >
                 1e-5 * sx * sz ||
-              radius + cc.offset + 0.001 > surface.settings.radius + 1e-5 ||
-              height > surface.settings.height + 1e-5 ||
-              cc.maxSlopeClimbDeg + 1e-5 < surface.settings.maxSlopeDeg ||
-              cc.autoStepMaxHeight + 1e-5 < surface.settings.maxStep
+              (live.status === NavigationAgentStatus.following &&
+                !acceptsClearance(surface, radius, height, cc))
             )
               throw invalidInput(
                 'NavigationCharacter',
                 { entity, radius, height },
                 'Upright kinematic nonsensor capsule within baked clearance and KCC slope/step capability',
               );
-            let live = agent;
-            if (character.sourceDigest && character.sourceDigest !== surface.sourceDigest) {
-              world
-                .set(entity, NavigationAgent, {
-                  path: new Float32Array(0),
-                  waypoint: 0,
-                  status: NavigationAgentStatus.idle,
-                })
-                .unwrap();
-              world
-                .set(entity, NavigationCharacter, {
-                  sourceDigest: '',
-                  desired: [0, 0, 0],
-                  actual: [0, 0, 0],
-                  verticalSpeed: 0,
-                })
-                .unwrap();
-              live = world.get(entity, NavigationAgent).unwrap();
-            }
             const x = m[12] as number,
               y = m[13] as number,
               z = m[14] as number;
@@ -268,7 +308,7 @@ export function navigationCharacterPlugin(
             if (moving) {
               const path = live.path;
               if (
-                !character.sourceDigest ||
+                !character.surfaceVersion ||
                 path.length < 3 ||
                 path.length % 3 !== 0 ||
                 waypoint >= path.length / 3 ||

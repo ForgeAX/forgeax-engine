@@ -56,25 +56,20 @@ The `View` struct layout (784 B std140, `packages/shader/src/common.wgsl:17-52,1
 
 The demo spawns three cubes + a camera + a directional light:
 
-```typescript
-// 1. engine usage — zero UBO code, just engine APIs:
-import { createApp } from '@forgeax/engine-app';
-import { Camera, DirectionalLight, Materials, ... } from '@forgeax/engine-render';
-import { HANDLE_CUBE } from '@forgeax/engine-assets-runtime';
+```ts
+import { createPrimitiveMesh } from '@forgeax/engine-geometry';
 
-// 3. bootstrap — app creation + scene spawn:
-const app = await createApp(canvas, { clearColor, shaderManifestUrl });
-
-// Spawn geometry + material (engine routes this mesh through Forward pass
-// which reads the View UBO @group(0)@binding(0) automatically):
-world.spawn(Transform{}, MeshFilter{ HANDLE_CUBE }, MeshRenderer{ material });
-
-// Spawn light -> engine writes direction/color into View.lightDir/lightColor:
-world.spawn(DirectionalLight{ direction, color, intensity });
-
-// Spawn camera -> engine writes pos into View.cameraPos, viewProj into
-// View.worldViewProj, and inverseViewProj into View.inverseViewProj:
-world.spawn(Transform{}, Camera{ fov, aspect, near, far });
+const { assets, world } = app;
+const cube = assets.create(createPrimitiveMesh('cube').unwrap()).unwrap();
+const material = assets.create(Materials.standard({
+  baseColor: [1, 0, 0, 1], metallic: 0, roughness: 0.5,
+})).unwrap();
+world.spawn(
+  { component: Transform, data: { pos: [0, 0, 0] } },
+  { component: MeshFilter, data: { assetHandle: cube } },
+  { component: MeshRenderer, data: { materials: [material] } },
+).unwrap();
+// The app also spawns Camera and DirectionalLight, then calls app.start().
 ```
 
 That is the entire UBO story. No `layout(std140)`, no `glBindBufferRange`, no `glGetUniformBlockIndex`. The user's interaction with the View UBO is entirely through engine components.

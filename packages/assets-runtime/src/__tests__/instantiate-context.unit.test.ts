@@ -1,38 +1,31 @@
-// @forgeax/engine-assets-runtime -- buildSceneChildContext coverage (fix issue
-// #709). The breadcrumb-provenance resolver walks the recursing scene's
-// envelope.refs edges (prod) or falls back to the entity component walk (dev
-// catalog()) to recover the (entityKey, component.field) path for a sub-asset
-// GUID. Driven through an AssetRegistry with a mock ShaderRegistry.
+// Scene child provenance derives from component schemas and the owning source references.
 
 import { type Component, defineComponent } from '@forgeax/engine-ecs';
 import type { Asset, SceneAsset } from '@forgeax/engine-types';
 import { describe, expect, it, vi } from 'vitest';
 import { AssetRegistry } from '../asset-registry';
+import { createCatalogSource } from '../catalog-source';
 import { buildSceneChildContext, createSceneChildContextLookup } from '../registry/instantiate';
 import * as sceneHandleFields from '../scene-handle-fields';
 
 const T709CtxMeshFilter = defineComponent('T709CtxMeshFilter', {
-  assetHandle: 'shared<MeshAsset>',
+  assetHandle: 'asset<mesh>',
 });
 
 function makeRegistry(includeMaterials = false): AssetRegistry {
-  return new AssetRegistry(
-    {
+  return new AssetRegistry({
+    shaderRegistry: {
       getMaterialShaderManifest: vi.fn().mockReturnValue(undefined),
       findMaterialArtifact: vi.fn().mockReturnValue({ ok: false, error: new Error('mock') }),
       getPipeline: vi.fn().mockReturnValue(undefined),
       installMaterialArtifact: vi.fn(),
       inspect: vi.fn().mockReturnValue({ materialShaders: [] }),
     } as unknown as import('@forgeax/engine-shader').ShaderRegistry,
-    undefined,
-    undefined,
-    undefined,
-    undefined,
-    new Map<string, Component>([
+    components: new Map<string, Component>([
       [T709CtxMeshFilter.name, T709CtxMeshFilter],
       ...(includeMaterials ? [[T709CtxMaterials.name, T709CtxMaterials] as const] : []),
     ]),
-  );
+  });
 }
 
 const SUB_GUID = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
@@ -72,7 +65,7 @@ const OTHER_SCENE_GUID = '22222222-2222-4222-8222-222222222222';
 const ARRAY_GUID = 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb';
 const TEXTURE_GUID = 'cccccccc-cccc-4ccc-8ccc-cccccccccccc';
 const T709CtxMaterials = defineComponent('T709CtxMaterials', {
-  materials: 'array<shared<MaterialAsset>>',
+  materials: 'array<asset<material>>',
 });
 
 describe('per-load scene child context lookup', () => {
@@ -105,64 +98,98 @@ describe('per-load scene child context lookup', () => {
     }
   });
 
-  it('selects own rich envelope before legacy scene without extracting payload fields', () => {
-    const registry = makeRegistry();
-    const scene = sceneWithMeshRef();
-    expect(
-      registry.catalog(OTHER_SCENE_GUID, scene, [
-        {
-          guid: SUB_GUID,
-          sceneEntityKey: 'legacy',
-          sourceField: { componentName: 'Old', fieldName: 'mesh' },
-        },
-      ]).ok,
-    ).toBe(true);
-    const sourceField = { componentName: 'Own', fieldName: 'items', arrayIndex: 4 };
-    expect(
-      registry.catalog(SCENE_GUID, scene, [{ guid: SUB_GUID.toUpperCase(), sourceField }]).ok,
-    ).toBe(true);
-    const extract = vi.spyOn(sceneHandleFields, 'extractSceneEntityHandleGuids');
-    try {
-      const lookup = createSceneChildContextLookup(registry, scene);
-      expect(lookup(SUB_GUID, SCENE_GUID)).toEqual({ componentField: 'Own.items[4]', sourceField });
-      expect(lookup(SUB_GUID)).toEqual({
-        sceneEntityKey: 'legacy',
-        componentField: 'Old.mesh',
-        sourceField: { componentName: 'Old', fieldName: 'mesh' },
-      });
-      expect(extract).not.toHaveBeenCalled();
-    } finally {
-      extract.mockRestore();
-    }
-  });
-
-  it('retains texture empty-defined versus missing undefined and incomplete sourceField', () => {
-    const registry = makeRegistry();
-    const scene = sceneWithMeshRef();
-    const sourceField = { fieldName: 'texture' };
-    expect(
-      registry.catalog(SCENE_GUID, scene, [
-        { guid: TEXTURE_GUID },
-        { guid: ARRAY_GUID, sourceField },
-      ]).ok,
-    ).toBe(true);
-    const lookup = createSceneChildContextLookup(registry, scene);
-    expect(lookup(TEXTURE_GUID, SCENE_GUID)).toEqual({});
-    expect(lookup(ARRAY_GUID, SCENE_GUID)).toEqual({ sourceField });
-    expect(lookup(OTHER_SCENE_GUID, SCENE_GUID)).toBeUndefined();
-    expect(lookup(SUB_GUID, SCENE_GUID)).toEqual(
-      buildSceneChildContext(registry, scene, SUB_GUID, SCENE_GUID),
+  it('decodes the owning Catalog reference indices with exact component provenance', async () => {
+    const registry = makeRegistry(true);
+    registry.setCatalogSource(
+      createCatalogSource({
+        entries: [
+          {
+            guid: SCENE_GUID,
+            kind: 'scene',
+            packageUrl: '/scene.pack.json',
+            refs: [SUB_GUID.toUpperCase(), ARRAY_GUID],
+          },
+          {
+            guid: OTHER_SCENE_GUID,
+            kind: 'scene',
+            packageUrl: '/other.pack.json',
+            refs: [TEXTURE_GUID],
+          },
+        ],
+      }),
     );
+    (await registry.enumerateCatalog()).unwrap();
+    const scene = {
+      kind: 'scene' as const,
+      entities: {
+        object: {
+          components: {
+            T709CtxMeshFilter: { assetHandle: 0 },
+            T709CtxMaterials: { materials: [1] },
+          },
+        },
+      },
+    };
+    const lookup = createSceneChildContextLookup(registry, scene);
+    expect(lookup(SUB_GUID, SCENE_GUID)).toMatchObject({
+      sceneEntityKey: 'object',
+      componentField: 'T709CtxMeshFilter.assetHandle',
+    });
+    expect(lookup(ARRAY_GUID, SCENE_GUID)).toEqual({
+      sceneEntityKey: 'object',
+      componentField: 'T709CtxMaterials.materials[0]',
+      sourceField: {
+        componentName: 'T709CtxMaterials',
+        fieldName: 'materials',
+        arrayIndex: 0,
+      },
+    });
+    expect(lookup(TEXTURE_GUID, SCENE_GUID)).toBeUndefined();
   });
 
-  it('does not substitute a legacy envelope when the own scene has no refs', () => {
+  it('reports only references present in component fields, even if the Catalog lists more dependencies', async () => {
     const registry = makeRegistry();
-    const scene = sceneWithMeshRef();
-    expect(registry.catalog(OTHER_SCENE_GUID, scene, [{ guid: TEXTURE_GUID }]).ok).toBe(true);
-    expect(registry.catalog(SCENE_GUID, scene, []).ok).toBe(true);
+    registry.setCatalogSource(
+      createCatalogSource({
+        entries: [
+          {
+            guid: SCENE_GUID,
+            kind: 'scene',
+            packageUrl: '/scene.pack.json',
+            refs: [SUB_GUID, TEXTURE_GUID],
+          },
+        ],
+      }),
+    );
+    (await registry.enumerateCatalog()).unwrap();
+    const lookup = createSceneChildContextLookup(registry, sceneWithMeshRef());
+    expect(lookup(SUB_GUID, SCENE_GUID)?.sceneEntityKey).toBe('entity-7');
+    expect(lookup(TEXTURE_GUID, SCENE_GUID)).toBeUndefined();
+  });
+
+  it('does not search another Scene source to decode an unowned index', async () => {
+    const registry = makeRegistry();
+    registry.setCatalogSource(
+      createCatalogSource({
+        entries: [
+          {
+            guid: OTHER_SCENE_GUID,
+            kind: 'scene',
+            packageUrl: '/other.pack.json',
+            refs: [TEXTURE_GUID],
+          },
+          { guid: SCENE_GUID, kind: 'scene', packageUrl: '/scene.pack.json', refs: [] },
+        ],
+      }),
+    );
+    (await registry.enumerateCatalog()).unwrap();
+    const scene = {
+      kind: 'scene' as const,
+      entities: { object: { components: { T709CtxMeshFilter: { assetHandle: 0 } } } },
+    };
     const lookup = createSceneChildContextLookup(registry, scene);
     expect(lookup(TEXTURE_GUID, SCENE_GUID)).toBeUndefined();
-    expect(lookup(TEXTURE_GUID)).toEqual({});
+    expect(createSceneChildContextLookup(registry, scene)(TEXTURE_GUID)).toBeUndefined();
   });
 
   it('has no cross-load or public-call cache after payload changes', () => {

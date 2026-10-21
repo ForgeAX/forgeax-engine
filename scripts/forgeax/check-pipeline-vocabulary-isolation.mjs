@@ -33,7 +33,7 @@ const ALLOWLIST_GLOBS = [
   // gltf is a bridge package: it consumes glTF and produces MaterialAsset
   // descriptors that the URP pipeline consumes. Like Materials.standard /
   // urp-pipeline.ts it speaks URP vocabulary by design (the produced pass
-  // tags are read by the URP recordShadowPass / recordMainPass selectors).
+  // tags are read by the URP recordShadowPass / encodeMainPass selectors).
   // Confined to bridge.ts where the descriptor literal lives.
   'packages/gltf/src/bridge.ts',
   'apps/',

@@ -1,4 +1,3 @@
-import type { RenderResourceScope } from '../publication/resource-scope';
 // @forgeax/engine-runtime - TransparentSortConfig KV resource + helpers.
 //
 // feat-20260520-2d-sprite-layer-mvp M-2 w14 / requirements AC-08 + AC-18
@@ -155,8 +154,7 @@ const HINT_MODE = '0=layer-z, 1=layer-y, 2=layer-yz, 3=distance';
  *   const cfg = getTransparentSortConfig(world);
  *   // cfg.mode === 1, cfg.yzAlpha === 1.0 (yzAlpha ignored by mode=1).
  */
-export function getTransparentSortConfig(world: RenderResourceScope): TransparentSortConfig {
-  if ('resolveAsset' in world) return world.transparentSort;
+export function getTransparentSortConfig(world: World): TransparentSortConfig {
   if (!world.hasResource(TRANSPARENT_SORT_CONFIG_KEY)) {
     return DEFAULT_CONFIG;
   }

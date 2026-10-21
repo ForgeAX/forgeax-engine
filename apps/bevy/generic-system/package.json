@@ -55,7 +55,8 @@
     "@forgeax/engine-render": "workspace:*",
     "@forgeax/engine-runtime": "workspace:*",
     "@forgeax/engine-scene": "workspace:*",
-    "@forgeax/engine-state": "workspace:*"
+    "@forgeax/engine-state": "workspace:*",
+    "@forgeax/engine-geometry": "workspace:*"
   },
   "devDependencies": {
     "@forgeax/engine-vite-plugin-rhi-debug": "workspace:*",

@@ -1,6 +1,6 @@
 import type { ResolveContext } from '@forgeax/engine-render-graph';
 import { RhiError, type RhiRenderPassEncoder, type TextureView } from '@forgeax/engine-rhi';
-import { toShared } from '@forgeax/engine-types';
+import type { AssetHandle } from '@forgeax/engine-types';
 import { BLOOM_UNIFORM_PARAMS_STRIDE_BYTES } from '../assembly/webgpu-ready-contract';
 import { standardBloomAdmitted } from '../bloom-admission';
 import { buildBeginRenderPassDescriptor } from '../pipeline-spec';
@@ -12,47 +12,19 @@ import type { _InternalRenderPipelineContext } from './render-context';
 import { VIEW_UNIFORM_BYTES } from './view-ubo';
 
 /**
- * feat-20260531-skybox-env-background M2 / w8: skybox pass recording stub.
- * Renders a fullscreen triangle that samples a cubemap using the camera's
- * inverseViewProj from the View UBO and writes the result to the hdrColor
- * render target. The pass runs after shadow and before main (D-1 topology).
- *
- * This stub early-returns when skyboxActive is false -- the actual execute
- * body is implemented in M3 / w16 (recordSkyboxPass execute). The render-
- * graph still declares the pass so the compile() step validates the
- * dependency edges (shadow -> skybox -> main) even before the execute
- * body is filled in.
+ * Draws the cubemap background as a fullscreen triangle into the skybox graph
+ * pass. The graph owns the HDR (or multisample HDR) attachment; disabled or
+ * not-yet-uploaded skyboxes record nothing.
  */
-export function recordSkyboxPass(
+export function encodeSkyboxPass(
   c: _InternalRenderPipelineContext,
-  graphPass?: RhiRenderPassEncoder,
+  pass: RhiRenderPassEncoder,
 ): void {
-  // Early-return when skybox is not active (no SkyboxBackground entity,
-  // or tonemap is disabled -- plan-strategy D-2 NOTE). The graph still
-  // compiles because the pass declaration is unconditional; only the
-  // execute body is gated on skyboxActive.
   if (!c.skyboxActive) return;
   const skyboxSnapshot = c.skybox;
   if (skyboxSnapshot === undefined) return;
 
-  const { runtime, store, encoder, pipelineState } = c;
-
-  // Guard: hdrColorView must be allocated (tonemapActive implies it)
-  const hdrColorView = pipelineState.perPassResources.hdrColorView;
-  if (graphPass === undefined && hdrColorView === null) return;
-
-  // feat-20260604 M2 / w10: under MSAA the skybox + main passes share the
-  // count=4 multisample target (hdrColorMsaa); only the main pass (last to
-  // write) resolves to the single-sample hdrColor (D-8 -- avoids a wasteful
-  // mid-chain resolve). The skybox pass writes the multisample target with no
-  // resolveTarget and uses the count=4 skybox pipeline variant.
-  const skyboxColorView =
-    graphPass === undefined
-      ? c.msaaActive
-        ? pipelineState.perPassResources.hdrColorMsaaView
-        : hdrColorView
-      : null;
-  if (graphPass === undefined && skyboxColorView === null) return;
+  const { runtime, store, pipelineState } = c;
 
   // Guard: pipeline resources must exist (null when manifest has no
   // skybox entry -- legacy manifests continue to boot)
@@ -84,7 +56,7 @@ export function recordSkyboxPass(
   // is handled by the passCtx.skyboxActive gate above -- if the
   // cubemap isn't ready, skyboxActive is already false (see w18).
   const cubemapView = store.getCubemapGpuView(
-    toShared<'EquirectAsset'>(skyboxSnapshot.equirectHandle),
+    skyboxSnapshot.equirectHandle as AssetHandle<'equirect'>,
     c.world,
   );
   if (cubemapView === undefined) return;
@@ -93,10 +65,7 @@ export function recordSkyboxPass(
   // varying binding is the cubemap view (sampler + View UBO are stable); it is
   // recreated on each internal equirect-to-cubemap projection (which may happen
   // mid-app asynchronously), so keying on its identity rebuilds exactly when the
-  // cubemap changes. This supersedes the prior `hdrTextureWidth`/`Height`
-  // size-guard, which tracked the wrong resource (the skybox BindGroup never
-  // binds hdrColor -- it writes the color attachment) and missed cubemap
-  // re-projections that reused the old cached bind group.
+  // cubemap changes.
   const skyboxBg = getOrCreateFromChain(
     c.frameState.postProcessBgCache,
     [cubemapView],
@@ -136,33 +105,9 @@ export function recordSkyboxPass(
     c.bindGroupCounts,
   );
 
-  // Skybox pass: clear hdrColor (first pass writing to it),
-  // draw fullscreen triangle, write cubemap colour.
-  // No depth/stencil -- skybox is the far plane; main pass depth test rejects
-  // occluded skybox pixels (plan-strategy D-1). HDR target ('rgba16float') is
-  // declared on specAttachments for descriptor parity, even though color-only
-  // policies do not gate on format.
-  const skyboxPass =
-    graphPass ??
-    encoder.beginRenderPass(
-      buildBeginRenderPassDescriptor(
-        { colorFormats: ['rgba16float'], depthFormat: undefined, sampleCount: 1 },
-        { colorViews: [skyboxColorView as TextureView] },
-        'skybox',
-      ) as never,
-    );
-
-  skyboxPass.setPipeline(skyboxPipeline);
-  skyboxPass.setBindGroup(0, skyboxBg);
-  skyboxPass.draw(3);
-  if (graphPass === undefined) skyboxPass.end();
-}
-
-export function encodeSkyboxPass(
-  c: _InternalRenderPipelineContext,
-  pass: RhiRenderPassEncoder,
-): void {
-  recordSkyboxPass(c, pass);
+  pass.setPipeline(skyboxPipeline);
+  pass.setBindGroup(0, skyboxBg);
+  pass.draw(3);
 }
 
 // Bloom records its admitted horizontal/vertical passes on the shared encoder.
@@ -209,8 +154,9 @@ function bloomRecordActive(c: _InternalRenderPipelineContext): boolean {
   return standardBloomAdmitted(c.camera) && c.tonemapActive;
 }
 
-export function recordBloomHorizontalPass(
+export function recordBloomBlurPass(
   _c: _InternalRenderPipelineContext,
+  axis: 'horizontal' | 'vertical',
   resolve?: ResolveContext,
   graphPass?: RhiRenderPassEncoder,
   level = 0,
@@ -219,61 +165,75 @@ export function recordBloomHorizontalPass(
   const { runtime, encoder, camera, frameState, bindGroupCounts } = _c;
   const pp = _c.bloomResources;
   if (!bloomRecordActive(_c)) return;
-  if (
-    pp === undefined ||
-    pp === null ||
-    pp.bloomHorizontalPipeline === null ||
-    pp.bloomHorizontalBindGroupLayout === null ||
-    pp.bloomSampler === null ||
-    pp.bloomHorizontalParamsBuffer === null
-  ) {
-    throwBloomRecordFailure('Bloom horizontal resources are ready before encoding');
+  if (pp === undefined || pp === null) {
+    throwBloomRecordFailure(`Bloom ${axis} resources are ready before encoding`);
   }
-  const horizontalPipeline = pp.bloomHorizontalPipeline;
-  const horizontalLayout = pp.bloomHorizontalBindGroupLayout;
-  const bloomSampler = pp.bloomSampler;
-  const horizontalParamsBuffer = pp.bloomHorizontalParamsBuffer;
-  const sourceName = level === 0 ? 'hdrColor' : `bloomVertical${level - 1}`;
-  const targetName = `bloomHorizontal${level}`;
+  const horizontal = axis === 'horizontal';
+  const pipeline = horizontal ? pp.bloomHorizontalPipeline : pp.bloomVerticalPipeline;
+  const layout = horizontal ? pp.bloomHorizontalBindGroupLayout : pp.bloomVerticalBindGroupLayout;
+  const sampler = pp.bloomSampler;
+  const paramsBuffer = horizontal ? pp.bloomHorizontalParamsBuffer : pp.bloomVerticalParamsBuffer;
+  if (pipeline === null || layout === null || sampler === null || paramsBuffer === null) {
+    throwBloomRecordFailure(`Bloom ${axis} resources are ready before encoding`);
+  }
+  const sourceName = horizontal
+    ? level === 0
+      ? 'hdrColor'
+      : `bloomVertical${level - 1}`
+    : `bloomHorizontal${level}`;
+  const targetName = horizontal ? `bloomHorizontal${level}` : `bloomVertical${level}`;
   const sourceView = resolve?.resolve(sourceName) as TextureView | undefined;
   const targetView = resolve?.resolve(targetName) as TextureView | undefined;
   if (sourceView === undefined || targetView === undefined) {
-    throwBloomRecordFailure(`Bloom horizontal level ${level} resolves source and target views`);
+    throwBloomRecordFailure(
+      horizontal
+        ? `Bloom horizontal level ${level} resolves source and target views`
+        : `Bloom vertical level ${level} resolves horizontal source and target`,
+    );
   }
-  const size = destinationSize ?? {
-    width: Math.max(1, Math.ceil(_c.targetW / 2)),
-    height: Math.max(1, Math.ceil(_c.targetH / 2)),
-  };
-  const params = new Float32Array([
-    camera.bloomThreshold,
-    camera.bloomSmoothWidth,
-    size.width,
-    size.height,
-    level,
-    0,
-    0,
-    0,
-  ]);
+  let params: Float32Array;
+  if (horizontal) {
+    const size = destinationSize ?? {
+      width: Math.max(1, Math.ceil(_c.targetW / 2)),
+      height: Math.max(1, Math.ceil(_c.targetH / 2)),
+    };
+    params = new Float32Array([
+      camera.bloomThreshold,
+      camera.bloomSmoothWidth,
+      size.width,
+      size.height,
+      level,
+      0,
+      0,
+      0,
+    ]);
+  } else {
+    params = new Float32Array([level, 0, 0, 0]);
+  }
   const offset = level * BLOOM_UNIFORM_PARAMS_STRIDE_BYTES;
-  const upload = runtime.device.queue.writeBuffer(pp.bloomHorizontalParamsBuffer, offset, params);
+  const upload = runtime.device.queue.writeBuffer(paramsBuffer, offset, params);
   if (!upload.ok) throw upload.error;
   stageBloomUpload(_c);
   const bindGroup = getOrCreateFromChain(
     frameState.postProcessBgCache,
-    [sourceView, horizontalParamsBuffer],
-    `bloom-horizontal-${level}`,
+    [sourceView, paramsBuffer],
+    `bloom-${axis}-${level}`,
     () => {
       const created = runtime.device.createBindGroup({
-        label: `bloom-horizontal-${level}-bg`,
-        layout: horizontalLayout,
+        label: `bloom-${axis}-${level}-bg`,
+        layout,
         entries: [
           { binding: 0, resource: { kind: 'textureView', value: sourceView } },
-          { binding: 1, resource: { kind: 'sampler', value: bloomSampler } },
+          { binding: 1, resource: { kind: 'sampler', value: sampler } },
           {
             binding: 2,
             resource: {
               kind: 'buffer',
-              value: { buffer: horizontalParamsBuffer, offset, size: 32 },
+              value: {
+                buffer: paramsBuffer,
+                offset,
+                size: params.byteLength,
+              },
             },
           },
         ],
@@ -289,82 +249,10 @@ export function recordBloomHorizontalPass(
       buildBeginRenderPassDescriptor(
         { colorFormats: ['rgba16float'], depthFormat: undefined, sampleCount: 1 },
         { colorViews: [targetView] },
-        'bloom-horizontal',
+        `bloom-${axis}`,
       ) as never,
     );
-  pass.setPipeline(horizontalPipeline);
-  pass.setBindGroup(0, bindGroup);
-  stageBloomBindGroup(_c);
-  pass.draw(3, 1, 0, 0);
-  stageBloomEncode(_c);
-  if (graphPass === undefined) pass.end();
-}
-
-export function recordBloomVerticalPass(
-  _c: _InternalRenderPipelineContext,
-  resolve?: ResolveContext,
-  graphPass?: RhiRenderPassEncoder,
-  level = 0,
-): void {
-  const { runtime, encoder, frameState, bindGroupCounts } = _c;
-  const pp = _c.bloomResources;
-  if (!bloomRecordActive(_c)) return;
-  if (
-    pp === undefined ||
-    pp === null ||
-    pp.bloomVerticalPipeline === null ||
-    pp.bloomVerticalBindGroupLayout === null ||
-    pp.bloomSampler === null ||
-    pp.bloomVerticalParamsBuffer === null
-  ) {
-    throwBloomRecordFailure('Bloom vertical resources are ready before encoding');
-  }
-  const verticalPipeline = pp.bloomVerticalPipeline;
-  const verticalLayout = pp.bloomVerticalBindGroupLayout;
-  const bloomSampler = pp.bloomSampler;
-  const verticalParamsBuffer = pp.bloomVerticalParamsBuffer;
-  const currentView = resolve?.resolve(`bloomHorizontal${level}`) as TextureView | undefined;
-  const targetView = resolve?.resolve(`bloomVertical${level}`) as TextureView | undefined;
-  if (currentView === undefined || targetView === undefined) {
-    throwBloomRecordFailure(`Bloom vertical level ${level} resolves horizontal source and target`);
-  }
-  const params = new Float32Array([level, 0, 0, 0]);
-  const offset = level * BLOOM_UNIFORM_PARAMS_STRIDE_BYTES;
-  const upload = runtime.device.queue.writeBuffer(pp.bloomVerticalParamsBuffer, offset, params);
-  if (!upload.ok) throw upload.error;
-  stageBloomUpload(_c);
-  const bindGroup = getOrCreateFromChain(
-    frameState.postProcessBgCache,
-    [currentView, verticalParamsBuffer],
-    `bloom-vertical-${level}`,
-    () => {
-      const created = runtime.device.createBindGroup({
-        label: `bloom-vertical-${level}-bg`,
-        layout: verticalLayout,
-        entries: [
-          { binding: 0, resource: { kind: 'textureView', value: currentView } },
-          { binding: 1, resource: { kind: 'sampler', value: bloomSampler } },
-          {
-            binding: 2,
-            resource: { kind: 'buffer', value: { buffer: verticalParamsBuffer, offset, size: 16 } },
-          },
-        ],
-      });
-      if (!created.ok) throw created.error;
-      return created.value;
-    },
-    bindGroupCounts,
-  );
-  const pass =
-    graphPass ??
-    encoder.beginRenderPass(
-      buildBeginRenderPassDescriptor(
-        { colorFormats: ['rgba16float'], depthFormat: undefined, sampleCount: 1 },
-        { colorViews: [targetView] },
-        'bloom-vertical',
-      ) as never,
-    );
-  pass.setPipeline(verticalPipeline);
+  pass.setPipeline(pipeline);
   pass.setBindGroup(0, bindGroup);
   stageBloomBindGroup(_c);
   pass.draw(3, 1, 0, 0);

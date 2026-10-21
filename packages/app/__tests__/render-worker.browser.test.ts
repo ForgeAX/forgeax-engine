@@ -6,16 +6,26 @@ declare module 'vitest/browser' {
   }
 }
 
-import type { ExecutionRendererInspectionResult } from '@forgeax/engine-app';
+import { type BrowserFrameCompleted, type ExecutionRendererInspectionResult, FORGEAX_FRAME_COMPLETED_EVENT } from '@forgeax/engine-app';
 import { createApp } from '@forgeax/engine-app/browser';
 import { expect, it } from 'vitest';
 
-const LIGHTWEIGHT = import.meta.env.FORGEAX_BROWSER_CI_LIGHTWEIGHT === '1';
+const LIGHTWEIGHT = (import.meta as { env: { FORGEAX_BROWSER_CI_LIGHTWEIGHT?: string } }).env.FORGEAX_BROWSER_CI_LIGHTWEIGHT === '1';
 const RECOVERY_ENTITIES = LIGHTWEIGHT ? 1000 : 10_000;
 const PRESSURE_ENTITIES = LIGHTWEIGHT ? 1000 : 50_000;
 const PING_SAMPLES = LIGHTWEIGHT ? 20 : 100;
 
 async function expectPicture(canvas: HTMLCanvasElement): Promise<void> {
+  let ready = false;
+  const onCompleted = (event: Event) => {
+    if ((event as CustomEvent<BrowserFrameCompleted>).detail.presentation === 'ready') ready = true;
+  };
+  canvas.addEventListener(FORGEAX_FRAME_COMPLETED_EVENT, onCompleted);
+  try {
+    await expect.poll(() => ready, { timeout: 60_000 }).toBe(true);
+  } finally {
+    canvas.removeEventListener(FORGEAX_FRAME_COMPLETED_EVENT, onCompleted);
+  }
   const shot = await page.elementLocator(canvas).screenshot({ base64: true });
   const bytes = Uint8Array.from(atob(typeof shot === 'string' ? shot : shot.base64), (character) =>
     character.charCodeAt(0),
@@ -203,18 +213,24 @@ it.each([
   let lastTicks = 0;
   const samples: number[] = [];
   const errors: unknown[] = [];
+  let presentationReady = false;
+  const onCompleted = (event: Event) => {
+    if ((event as CustomEvent<BrowserFrameCompleted>).detail.presentation === 'ready')
+      presentationReady = true;
+  };
+  canvas.addEventListener(FORGEAX_FRAME_COMPLETED_EVENT, onCompleted);
+  const completed = () =>
+    tier === 'render-worker'
+      ? (execution.report().render?.completedFrame ?? 0)
+      : execution.report().frame.completed;
   app.onError((error) => errors.push(error));
   try {
     app.start().unwrap();
+    // GPU-completed receipts can still be waiting for scene pipelines. Both
+    // facts must hold within the original startup budget before measuring.
     await expect
-      .poll(
-        () =>
-          tier === 'render-worker'
-            ? execution.report().render?.completedFrame
-            : execution.report().frame.completed,
-        { timeout: 90_000 },
-      )
-      .toBeGreaterThan(1);
+      .poll(() => presentationReady && completed() > 1, { timeout: 90_000 })
+      .toBe(true);
     const request = (command: string): Promise<unknown> =>
       new Promise((resolve, reject) => {
         const deadline = setTimeout(() => reject(new Error('Metrics deadline exceeded')), 30_000);
@@ -228,10 +244,6 @@ it.each([
     await request('reset-metrics');
     const initial = execution.report();
     const started = performance.now();
-    const completed = () =>
-      tier === 'render-worker'
-        ? (execution.report().render?.completedFrame ?? 0)
-        : execution.report().frame.completed;
     let previousCompleted = completed();
     let rendered = 0;
     for (let index = 0; index < PING_SAMPLES || rendered < 2; index++) {
@@ -322,6 +334,7 @@ it.each([
       rendererRead,
     });
   } finally {
+    canvas.removeEventListener(FORGEAX_FRAME_COMPLETED_EVENT, onCompleted);
     await app.dispose();
     channel.port1.close();
     app.canvas?.remove();

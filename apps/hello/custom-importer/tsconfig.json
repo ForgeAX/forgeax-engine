@@ -5,6 +5,7 @@
     "rootDir": ".",
     "noEmit": true,
     "emitDeclarationOnly": false,
+    "allowImportingTsExtensions": true,
     "types": ["@webgpu/types"]
   },
   "include": ["src/**/*", "vite.config.ts"]

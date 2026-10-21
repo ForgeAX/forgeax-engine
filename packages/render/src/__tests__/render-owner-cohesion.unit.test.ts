@@ -34,7 +34,7 @@ describe('render owner cohesion', () => {
     expect(productionRaster).not.toMatch(
       /AssetRegistry|resolveAssetHandle|assets\.(?:get|lookup|load)/,
     );
-    expect(productionRaster).toContain('RenderableSnapshot');
+    expect(productionRaster).toContain('BatchExecutions');
   });
 
   it('keeps the root seams attached to their single owners', () => {

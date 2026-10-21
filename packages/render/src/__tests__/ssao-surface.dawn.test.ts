@@ -110,7 +110,7 @@ for (const algorithm of ['ssao', 'gtao'] as const)
       payload.set(mat4.identity(mat4.create()));
       payload.set(projection, 16);
       payload.set(inverse, 32);
-      payload.set([1, 0.5, 0.025, sampleCount], 48);
+      payload.set([1, 0.5, algorithm === 'gtao' ? 0 : 0.025, sampleCount], 48);
       payload.set([algorithm === 'gtao' ? 1 : 0, 1, 1, 1], 52);
       device.queue.writeBuffer(uniform, 0, payload);
       device.queue.writeBuffer(

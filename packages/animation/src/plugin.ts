@@ -14,10 +14,7 @@ import { clearPropertyBindings } from './property-binding';
 import { AnimationRootMotion } from './root-motion';
 import { AnimationBindingError } from './solver-errors';
 import { registerAdvanceAnimationPlayer } from './systems/advance-animation-player';
-import {
-  type AnimationPayloadLookup,
-  registerEvaluateAnimationGraph,
-} from './systems/evaluate-animation-graph';
+import { registerEvaluateAnimationGraph } from './systems/evaluate-animation-graph';
 import { clearAnimationEvents } from './timeline';
 
 /** Serializable assembly choice; World remains the sole clock. */
@@ -54,47 +51,8 @@ function registerAnimationComponents(world: World): () => void {
   };
 }
 
-declare module '@forgeax/engine-plugin' {
-  interface EngineContextServices {
-    animationPayloads?: AnimationPayloadLookup;
-  }
-}
-
-/** Provide the realm's asset-backed animation payload resolver. */
-export function animationPayloadsPlugin(lookup: AnimationPayloadLookup): Plugin {
-  return {
-    name: 'animation-payloads',
-    provide: 'animationPayloads',
-    apply(ctx) {
-      ctx.provide('animationPayloads', lookup);
-    },
-  };
-}
-
-/** Install animation behavior from declared World and payload services. */
-export function animationRuntimePlugin(options: AnimationPlaybackOptions = {}): Plugin {
-  const schedule = playbackSchedule(options);
-  return {
-    name: 'animation',
-    inject: ['world', 'animationPayloads'],
-    apply(ctx) {
-      ctx.effect(() => registerAnimationComponents(ctx.world), 'animation/components');
-      ctx.effect(
-        () => registerEvaluateAnimationGraph(ctx.world, ctx.animationPayloads, schedule),
-        'animation/evaluate-graph',
-      );
-      ctx.effect(
-        () => registerAdvanceAnimationPlayer(ctx.world, schedule),
-        'animation/advance-player',
-      );
-    },
-  };
-}
-
-export function animationPlugin(
-  lookup?: AnimationPayloadLookup,
-  options: AnimationPlaybackOptions = {},
-): Plugin {
+/** Install animation against the World's native asset owner and schedule. */
+export function animationPlugin(options: AnimationPlaybackOptions = {}): Plugin {
   const schedule = playbackSchedule(options);
   return {
     name: 'animation',
@@ -102,7 +60,7 @@ export function animationPlugin(
     apply(ctx) {
       ctx.effect(() => registerAnimationComponents(ctx.world), 'animation/components');
       ctx.effect(
-        () => registerEvaluateAnimationGraph(ctx.world, lookup, schedule),
+        () => registerEvaluateAnimationGraph(ctx.world, schedule),
         'animation/evaluate-graph',
       );
       ctx.effect(

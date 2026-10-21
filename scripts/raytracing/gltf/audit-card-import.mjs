@@ -11,14 +11,18 @@ import { decodeImageForImport } from '../../../packages/image/dist/image-importe
 import {
   ImporterRegistry,
   projectImportProductForBuild,
+  projectMaterialPackTransport,
   runImport,
 } from '../../../packages/import/dist/index.mjs';
 import { finalizePackageProduct } from '../../../packages/pack/dist/build.mjs';
+import { createRuntimePackPublication } from '../../../packages/pack/dist/runtime.mjs';
 import {
   createShaderModuleImmediate,
   rhi as nullRhi,
 } from '../../../packages/rhi-null/dist/index.mjs';
+import { defaultAssetDecoderContributions } from '../../../packages/runtime/dist/index.mjs';
 import { ShaderRegistry } from '../../../packages/shader/dist/index.mjs';
+import { createMaterialPackCooker } from '../../../packages/shader-compiler/dist/index.mjs';
 
 const source = resolve(process.argv[2]);
 const output = resolve(process.argv[3]);
@@ -54,6 +58,23 @@ assert(!('skipped' in imported.value));
 const importMs = performance.now() - start;
 const { product } = imported.value;
 const pack = projectImportProductForBuild(product);
+const materialCooker = createMaterialPackCooker();
+const assets = await Promise.all(
+  pack.assets.map(async (row) => {
+    if (row.kind !== 'material') return row;
+    const cooked = await materialCooker.cook({
+      guid: row.guid,
+      source: row.payload,
+      refs: row.refs,
+    });
+    return {
+      ...row,
+      payload: cooked.payload,
+      refs: cooked.refs,
+      artifacts: cooked.artifacts,
+    };
+  }),
+);
 const served = new Map(),
   requests = [];
 const server = createServer((request, response) => {
@@ -67,7 +88,7 @@ try {
   const base = `http://127.0.0.1:${server.address().port}`;
   const finalized = await finalizePackageProduct(
     {
-      assets: pack.assets,
+      assets,
       receipts: product.receipts,
       diagnostics: product.diagnostics,
       sourceRevision: product.sourceRevision,
@@ -86,26 +107,52 @@ try {
     },
   );
   assert(finalized.ok, JSON.stringify(finalized.error));
+  const publication = createRuntimePackPublication({
+    scopeId: 'asset-runtime',
+    sourcePath: source,
+    sourceRevision: product.sourceRevision,
+    packageUrl: `${base}/scene.pack.json`,
+    pack: finalized.value.pack,
+  });
+  const packBytes = Buffer.from(JSON.stringify(projectMaterialPackTransport(publication.pack)));
+  served.set('/scene.pack.json', packBytes);
+  await writeFile(resolve(output, 'scene.pack.json'), packBytes);
   const catalog = finalized.value.pack.assets.map((row) => ({
     guid: row.guid,
     kind: row.kind,
     packageUrl: `${base}/scene.pack.json`,
+    sourcePath: source,
+    publication: publication.publication,
   }));
   served.set('/pack-index.json', Buffer.from(JSON.stringify(catalog)));
   const device = (await (await nullRhi.requestAdapter()).unwrap().requestDevice()).unwrap();
-  const runtime = new AssetRegistry(
-    new ShaderRegistry({
+  const runtime = new AssetRegistry({
+    shaderRegistry: new ShaderRegistry({
       device: { createShaderModule: (desc) => createShaderModuleImmediate(device, desc) },
       manifestUrl: '',
     }),
-  );
+  });
+  for (const contribution of defaultAssetDecoderContributions)
+    runtime.installDecoder(contribution.kind, contribution.decoder);
   runtime.configurePackIndex(`${base}/pack-index.json`);
   const meshes = [];
   const loadStart = performance.now();
   for (const row of pack.assets.filter((row) => row.kind === 'mesh')) {
-    const loaded = await runtime.loadByGuid(runtime.parseGuid(row.guid));
+    const loaded = await runtime.load(runtime.parseGuid(row.guid), 'mesh');
     assert(loaded.ok, JSON.stringify(loaded.error));
-    const mesh = loaded.value;
+    const adopted = runtime.read(loaded.value).unwrap();
+    const mesh = {
+      ...adopted,
+      materialSlots: adopted.materialSlots.map((slot) => ({
+        ...slot,
+        ...(slot.defaultMaterial === undefined
+          ? {}
+          : {
+              defaultMaterial: runtime.parseGuid(runtime.guidOf(slot.defaultMaterial)),
+            }),
+      })),
+    };
+    runtime.release(loaded.value).unwrap();
     assert.equal(mesh.kind, 'mesh');
     assert(mesh.cardLayout !== undefined);
     const { cardLayout, ...withoutCards } = mesh;
@@ -127,9 +174,10 @@ try {
       })),
     });
   }
+  runtime.dispose();
   const report = {
     scope:
-      'Full glTF importer and image decoder, shared package finalizer, real HTTP Catalog -> Pack -> body -> loadByGuid; mesh byte round trip. Material program cooking and GPU capture are separate evidence.',
+      'Full glTF importer and image decoder, shared package finalizer, real HTTP Catalog -> Pack -> body -> load -> read; mesh byte round trip. Material dependencies use the ordinary cooker; GPU capture is separate evidence.',
     sourceSha256: createHash('sha256')
       .update(await readFile(source))
       .digest('hex'),

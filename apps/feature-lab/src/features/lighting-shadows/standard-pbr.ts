@@ -1,7 +1,9 @@
+import { AssetRegistry } from '@forgeax/engine/assets-runtime';
 import type { EntityHandle } from '@forgeax/engine/ecs';
+import { createPrimitiveMesh } from '@forgeax/engine/geometry';
 import { MeshRenderer } from '@forgeax/engine/render';
 import { defineFeature } from '../../lab/feature';
-import { MESH, spawnMesh, spawnStage, standard, unlit } from '../../lab/stage';
+import { spawnMesh, spawnStage, standard, unlit } from '../../lab/stage';
 
 export default defineFeature({
   title: 'Standard PBR',
@@ -12,6 +14,12 @@ export default defineFeature({
   expect:
     'ON: shaded red spheres with highlights that grow wider with roughness; metallic ones look darker and mirror-like. OFF: every sphere is a flat, unshaded red disc.',
   setup({ world }) {
+    const primitiveAssets = world.assets;
+    if (!(primitiveAssets instanceof AssetRegistry))
+      throw new Error('Scene requires its runtime asset owner');
+
+    const stageSphere = primitiveAssets.create(createPrimitiveMesh('sphere').unwrap()).unwrap();
+
     spawnStage(world, { eye: [0, 1.6, 5.5], target: [0, 1, 0] });
     const pbr: ReturnType<typeof standard>[] = [];
     const entities: EntityHandle[] = [];
@@ -24,7 +32,7 @@ export default defineFeature({
         });
         pbr.push(mat);
         entities.push(
-          spawnMesh(world, MESH.sphere, mat, {
+          spawnMesh(world, stageSphere, mat, {
             pos: [-2.4 + i * 1.2, 0.5 + row * 1.1, 0],
             scale: [0.5, 0.5, 0.5],
           }),

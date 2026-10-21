@@ -15,14 +15,14 @@ fn vs_main(@builtin(vertex_index) vertex : u32) -> @builtin(position) vec4<f32> 
 struct DecalSurfaceOutput {
   @location(0) normal : u32,
   @location(1) albedo : u32,
-  @location(2) f0 : u32,
+  @location(2) f0 : vec2<u32>,
 };
 @fragment
 fn fs_main(@builtin(position) pixel : vec4<f32>) -> DecalSurfaceOutput {
   let coord = vec2<i32>(pixel.xy);
   let normalBits = textureLoad(originalNormal, coord, 0).r;
   let albedoBits = textureLoad(originalAlbedo, coord, 0).r;
-  let f0Bits = textureLoad(originalF0, coord, 0).r;
+  let f0Bits = textureLoad(originalF0, coord, 0).rg;
   let color = textureLoad(decalColor, coord, 0);
   let normal = textureLoad(decalNormal, coord, 0);
   let roughness = textureLoad(decalRoughness, coord, 0);
@@ -31,7 +31,7 @@ fn fs_main(@builtin(position) pixel : vec4<f32>) -> DecalSurfaceOutput {
   }
   let baseNormal = loadStandardNormalRoughness(originalNormal, coord);
   let baseColor = decodeStandardReflectance(albedoBits);
-  let baseF0 = decodeStandardReflectance(f0Bits);
+  let baseF0 = decodeStandardReflectance(f0Bits.x);
   let finalColor = color.rgb + baseColor.rgb * (1.0 - color.a);
   let normalSum = normal.xyz + baseNormal.xyz * (1.0 - normal.a);
   var finalNormal = baseNormal.xyz;
@@ -40,5 +40,5 @@ fn fs_main(@builtin(position) pixel : vec4<f32>) -> DecalSurfaceOutput {
   // Preserve the receiver's metallic fraction and dielectric reflectance.
   let finalF0 = baseF0.rgb + (finalColor - baseColor.rgb) * baseColor.a;
   return DecalSurfaceOutput(encodeStandardNormalRoughness(finalNormal, finalRoughness),
-    encodeStandardReflectance(finalColor, baseColor.a), encodeStandardReflectance(finalF0, baseF0.a));
+    encodeStandardReflectance(finalColor, baseColor.a), vec2<u32>(encodeStandardReflectance(finalF0, baseF0.a), f0Bits.y));
 }

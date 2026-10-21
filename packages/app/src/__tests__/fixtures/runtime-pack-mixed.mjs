@@ -9,7 +9,9 @@ import { assembleRuntimePacks, createAssetRuntimeAssembly } from '../../../dist/
 const [archive, target] = process.argv.slice(2);
 const saved = JSON.parse(await readFile(archive, 'utf8'));
 const context = await createWorldContext(new World(), []);
-const assets = new AssetRegistry(new ShaderRegistry({ manifestUrl: undefined }));
+const assets = new AssetRegistry({
+  shaderRegistry: new ShaderRegistry({ manifestUrl: undefined }),
+});
 const assembly = createAssetRuntimeAssembly(assets, {
   catalogSource: createCatalogSource({ entries: [] }),
   fetcher: async () => {

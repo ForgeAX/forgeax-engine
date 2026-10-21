@@ -6,7 +6,8 @@ import { setLocale as setSceneLocale } from '../../packages/view-plugin-scene-tr
 import { mountInspectorPanel } from '../../packages/view-plugin-inspector/src/ui/mount';
 import { setLocale as setInspectorLocale } from '../../packages/view-plugin-inspector/src/i18n/index.ts';
 import type { AssetReferenceService } from '@forgeax/view-workspace-core/asset-references';
-import { AssetReferenceField } from '@forgeax/view-components';
+import { AssetReferenceField, IconButton, MenuDropdown, Tooltip } from '@forgeax/view-components';
+import { Box, RotateCcw } from 'lucide-react';
 import { createRoot } from 'react-dom/client';
 
 setContentLocale('zh');
@@ -80,12 +81,12 @@ const client = {
         await new Promise<void>(resolve => { finishInspection = resolve; });
       }
       return { entityId: args.entityId, targetId: args.targetId, components: args.entityId === 'scene:world:4' ? [
-        { name: 'AudioSource', fields: { clip: { type: 'shared<AudioClipAsset>' } }, values: { clip: 1088 } },
+        { name: 'AudioSource', fields: { clip: { type: 'asset<audio>' } }, values: { clip: 1088 } },
       ] : args.entityId === 'scene:world:6' ? [
-        { name: 'ProjectedDecal', fields: { material: { type: 'shared<MaterialAsset>' } }, values: { material: 1089 } },
+        { name: 'ProjectedDecal', fields: { material: { type: 'asset<material>' } }, values: { material: 1089 } },
       ] : [
-        { name: 'MeshFilter', fields: { assetHandle: { type: 'shared<MeshAsset>' } }, values: { assetHandle: handle } },
-        { name: 'MeshRenderer', fields: { materials: { type: 'array<shared<MaterialAsset>>' } }, values: { materials: [0] } },
+        { name: 'MeshFilter', fields: { assetHandle: { type: 'asset<mesh>' } }, values: { assetHandle: handle } },
+        { name: 'MeshRenderer', fields: { materials: { type: 'array<asset<material>>' } }, values: { materials: [0] } },
       ] };
     }
     if (operation === 'assets.list') return { assets };
@@ -142,6 +143,25 @@ createRoot(unavailableCards).render(<div style={{ width: 320 }}>
   <div data-testid="missing-asset"><AssetReferenceField value={{ guid: 'removed', name: 'Removed', missing: true }} onOpen={() => { throw new Error('Missing asset opened'); }} /></div>
   <div data-testid="unregistered-asset"><AssetReferenceField value={{ name: 'Handle 1088' }} onOpen={() => { throw new Error('Unregistered asset opened'); }} /></div>
   <div data-testid="unavailable-viewer"><AssetReferenceField value={{ guid: 'cube-guid', name: 'Cube' }} /></div>
+</div>);
+
+const tooltipFixture = document.createElement('div');
+tooltipFixture.id = 'fixture-toolbar-tooltips';
+tooltipFixture.hidden = true;
+tooltipFixture.style.cssText = 'width:320px;max-width:100%;overflow:hidden';
+document.body.append(tooltipFixture);
+createRoot(tooltipFixture).render(<div className="fx-toolbar fx-toolbar--viewport fx-ui">
+  <Tooltip title="Preview action" description="Focus and hover share one opening timer." placement="bottom" portaled>
+    <IconButton label="Preview action" title="" icon={<Box className="fx-icon" />} size="compact" />
+  </Tooltip>
+  <Tooltip title="Preview options" description="Choose a preview option." placement="bottom" portaled>
+    <MenuDropdown label="Preview options" trigger={<IconButton label="Preview options" title="" icon={<Box className="fx-icon" />} size="compact" />} items={[
+      { id: 'choose', label: 'Choose preview', onSelect: () => { tooltipFixture.dataset.chosen = 'true'; } },
+    ]} />
+  </Tooltip>
+  <Tooltip title="Disabled preview action" description="Disabled controls keep their descriptions." placement="bottom" portaled>
+    <IconButton label="Disabled preview action" title="" icon={<RotateCcw className="fx-icon" />} size="compact" disabled />
+  </Tooltip>
 </div>);
 
 Object.assign(globalThis, { sceneMeshAssetFixture: {

@@ -3,13 +3,13 @@
 > [!NOTE]
 > **LO original chapter**: [LearnOpenGL 4.6 Cubemaps](https://learnopengl.com/Advanced-OpenGL/Cubemaps)
 >
-> **Engine surface**: `createApp` + `loadByGuid<EquirectAsset>` + `Skylight{ equirect }` + `SkyboxBackground(SKYBOX_MODE_CUBEMAP)` + `Materials.standard({ metallic, roughness })` + PBR IBL reflection.
+> **Engine surface**: `createApp` + `assets.load(guid, 'equirect')` + `Skylight{ equirect }` + `SkyboxBackground(SKYBOX_MODE_CUBEMAP)` + `Materials.standard({ metallic, roughness })` + PBR IBL reflection.
 
 ## Hit-rate index (AI user fast-locate)
 
 | LO sub-example | Hit? | forgeax equivalent | grep anchor |
 |:--|:--|:--|:--|
-| 6-PNG cubemap face loading | **offset** | equirect HDR routing via `loadByGuid<EquirectAsset>` (OOS-3: 6-PNG loader deferred) | `EquirectAsset` |
+| 6-PNG cubemap face loading | **offset** | equirect HDR routing via `assets.load(guid, 'equirect')` (OOS-3: 6-PNG loader deferred) | `EquirectAsset` |
 | Cube-mapped skybox rendering | **hit** | `SkyboxBackground(SKYBOX_MODE_CUBEMAP)` renders the cubemap as visible background | `SkyboxBackground` |
 | Reflection environment mapping | **hit** | PBR `standard` material with `metallic=1, roughness=0` + IBL `Skylight` | `Materials.standard` |
 | Cubemap sampler in shader | N/A | Engine handles `textureCube` sampling internally via `Skylight`; user sees one `SkyboxBackground` spawn | `SKYBOX_MODE_CUBEMAP` |
@@ -20,7 +20,7 @@ LO 4.6 teaches cubemaps: loading 6 cube-face PNG images, creating a cubemap text
 
 In forgeax, this example demonstrates the same teaching concept through forgeax-first primitives:
 
-1. **Equirect HDR as an asset kind**: forgeax loads an equirectangular HDR image (`newport_loft.hdr`, GUID `019e4a26-3c29-7420-af5d-20f2724a16b0` from the `forgeax-engine-assets` vendor submodule, CC BY-NC 4.0) as an `EquirectAsset` via `loadByGuid<EquirectAsset>`. This is the forgeax equivalent of LO's 6-PNG cubemap face loading -- a single HDR input replaces 6 PNG faces (OOS-3: 6-PNG cubemap loader is deferred in the engine). The equirect-to-cubemap conversion + IBL precompute happen **internally** inside the render record arm; the demo never calls an upload API.
+1. **Equirect HDR as an asset kind**: forgeax loads an equirectangular HDR image (`newport_loft.hdr`, GUID `019e4a26-3c29-7420-af5d-20f2724a16b0` from the `forgeax-engine-assets` vendor submodule, CC BY-NC 4.0) as an `EquirectAsset` via `assets.load(guid, 'equirect')`. This is the forgeax equivalent of LO's 6-PNG cubemap face loading -- a single HDR input replaces 6 PNG faces (OOS-3: 6-PNG cubemap loader is deferred in the engine). The equirect-to-cubemap conversion + IBL precompute happen **internally** inside the render record arm; the demo never calls an upload API.
 
 2. **Skylight + SkyboxBackground**: Two components hold the same equirect handle (`Skylight{ equirect }`, `SkyboxBackground{ equirect }`):
    - `Skylight` provides PBR IBL (image-based lighting) -- diffuse irradiance and specular prefiltered mip chain for the PBR standard material.
@@ -38,7 +38,7 @@ In forgeax, this example demonstrates the same teaching concept through forgeax-
 
 ```
 newport_loft.hdr (disk, 3.8 MB equirect HDR)
-  |-- loadByGuid<EquirectAsset>(guid)                    -- GUID asset pipeline (EquirectAsset POD)
+  |-- assets.load(guid, 'equirect')                    -- GUID asset pipeline (EquirectAsset POD)
   |-- allocSharedRef('EquirectAsset', pod)               -- mint a user-tier equirect handle
   |-- spawn Skylight{ equirect: handle }                 -- PBR IBL diffuse+specular
   |-- spawn SkyboxBackground{ equirect: handle }         -- visible cubemap background
@@ -52,7 +52,7 @@ newport_loft.hdr (disk, 3.8 MB equirect HDR)
 > [!IMPORTANT]
 > **Use `build` + `preview`, not `dev`, to see this demo render.** The newport_loft
 > HDR equirect source is cooked into a cubemap at **build time** only; `pnpm dev`
-> serves the raw source uncooked, so `loadByGuid` returns `asset-not-imported` and
+> serves the raw source uncooked, so `assets.load` returns `asset-not-imported` and
 > the frame stays black (structured error logged to the console, per charter P3).
 > This is shared IBL-demo-family behavior (same as `6.pbr/3.ibl-specular`), not a
 > bug. The dawn-node `smoke` builds an in-memory cubemap and is unaffected.
@@ -104,7 +104,7 @@ pnpm --filter "@forgeax/app-learn-render-4-advanced-opengl-6-cubemaps" typecheck
 
 | File | Lines | Role |
 |:--|--:|:--|
-| `src/index.ts` | ~190 | Three-section bootstrap -- loads newport_loft.hdr via `loadByGuid<EquirectAsset>`, spawns Skylight + SkyboxBackground (both hold the equirect handle) + 2 contrast cubes, camera with HDR tonemap |
+| `src/index.ts` | ~190 | Three-section bootstrap -- loads newport_loft.hdr via `assets.load(guid, 'equirect')`, spawns Skylight + SkyboxBackground (both hold the equirect handle) + 2 contrast cubes, camera with HDR tonemap |
 | `scripts/smoke-dawn.mjs` | ~480 | Dawn-node dual-state pixel-diff smoke: skybox-on vs skybox-off two-World diff, FALSIFY=skybox-reuse-buffer sensitivity check |
 | `package.json` | ~55 | Workspace metadata + dependencies |
 
@@ -122,7 +122,7 @@ The smoke script uses a **dual-state pixel-diff** approach (not single-state sel
 
 ## Traps / debugging
 
-- **Black screen / no skybox visible**: Verify the `forgeax-engine-assets` submodule is initialised (`git submodule update --init --recursive`). The `newport_loft.hdr` file is in the CC BY-NC 4.0 carve-out vendor subtree. If the file is missing, `loadByGuid` will fail with a structured error (charter P3 explicit failure).
+- **Black screen / no skybox visible**: Verify the `forgeax-engine-assets` submodule is initialised (`git submodule update --init --recursive`). The `newport_loft.hdr` file is in the CC BY-NC 4.0 carve-out vendor subtree. If the file is missing, `assets.load` will fail with a structured error (charter P3 explicit failure).
 - **Reflective cube appears matte**: Check that `Skylight` is spawned (PBR IBL requires it) and the material uses `metallic: 1, roughness: 0`.
 - **Tonemap issues**: The camera must use a non-none tonemap (`TONEMAP_REINHARD_EXTENDED` here). The skybox pass writes HDR values; a `'none'` tonemap clips them.
 - **Smoke flakiness**: The dual-state diff threshold is 0.05% of (512x512) = 131 pixels. If the smoke fails with diff slightly below threshold, try increasing `SMOKE_MIN_FRAMES` to ensure the IBL pipeline has fully settled (default 60).

@@ -7,7 +7,6 @@ import {
   createRuntimePackPublication,
   finalizePackageTransportSource,
   metaPathForGuid,
-  projectPackageCatalog,
 } from '@forgeax/engine-pack/build';
 import { AssetGuid } from '@forgeax/engine-pack/guid';
 import type { NativeCooker } from '@forgeax/engine-pack/native-cooker';
@@ -35,7 +34,7 @@ import type { ImportRunnerFs } from './import-runner.js';
 import type { ImporterRegistry } from './importer-registry.js';
 import { projectMaterialPackTransport } from './material-pack-transport.js';
 import { packBuildConcurrency } from './pack-build-concurrency.js';
-import { projectImportProductForBuild } from './pack-projection.js';
+import { projectImportProductForBuild, projectPackBuildCatalog } from './pack-projection.js';
 import type { ScriptablePackBuildProduct } from './scriptable-pack-build.js';
 import {
   canonicalScriptableSourcePath,
@@ -53,6 +52,7 @@ import {
   sourcePackageAssetsByGuid,
 } from './source-package.js';
 import { sourceDeclarationForCatalogPath } from './source-path.js';
+import { chunkMeshArtifacts, meshChunkingRequested } from './transport-artifact-chunks.js';
 
 export interface BuildProductionFailure {
   readonly code: string;
@@ -311,28 +311,10 @@ async function buildPackSources(context: BuildProductionOptions): Promise<PackBu
           detail: { sourcePath: input.sourcePath },
         });
       }
-      const packageId = PackageId.format(input.subjectPackageId ?? input.definition.packageId);
-      const stagedByGuid = new Map(
-        prepared.product.stagedOutputs.map((output) => [
-          AssetGuid.format(output.guid).toLowerCase(),
-          output,
-        ]),
-      );
-      const entries = projectPackageCatalog(
-        prepared.product.product.assets.map((asset, sourceIndex) => {
-          const staged = stagedByGuid.get(asset.guid.toLowerCase());
-          return {
-            guid: asset.guid,
-            kind: asset.kind,
-            sourcePath: input.displaySourcePath,
-            sourceIndex,
-            ...(staged?.sourceKey === undefined ? {} : { sourceKey: staged.sourceKey }),
-            refs: asset.refs.map((reference) => reference.guid),
-            execution: 'cooked' as const,
-            packageId,
-            provenance: { provider: 'pack-ts', version: '2.0.0' },
-          };
-        }),
+      const entries = projectPackBuildCatalog(
+        prepared.product,
+        input.displaySourcePath,
+        input.subjectPackageId ?? input.definition.packageId,
         `${context.basePrefix === '/' ? '' : context.basePrefix}/${input.displaySourcePath}`,
       );
       bundles.push({ input, prepared, entries });
@@ -398,7 +380,13 @@ async function emitPackDocument(
   work: BuildEmissionWork,
   options: PackEmissionOptions,
 ): Promise<string> {
-  for (const artifact of options.artifacts) {
+  const transport = meshChunkingRequested(
+    process.env.FORGEAX_BUNDLE_SMALL_MESHES,
+    options.sourcePath,
+  )
+    ? chunkMeshArtifacts(options.pack, options.artifacts, options.guids)
+    : { pack: options.pack, artifacts: options.artifacts };
+  for (const artifact of transport.artifacts) {
     const shared = /^shared\/materials\/programs\/([a-f0-9]{64})\.wgsl$/.exec(artifact.path);
     if (shared !== null) {
       const actual = createHash('sha256').update(artifact.bytes).digest('hex');
@@ -426,7 +414,7 @@ async function emitPackDocument(
       : `assets/${options.packageName}`,
     name: options.packageName,
     originalFileName: options.originalFileName,
-    source: new TextEncoder().encode(JSON.stringify(projectMaterialPackTransport(options.pack))),
+    source: new TextEncoder().encode(JSON.stringify(projectMaterialPackTransport(transport.pack))),
   });
   const packageUrl = work.context.sink.fileUrl(work.context.sink.getFileName(referenceId));
   const receiptUrls = new Map<string, string>();

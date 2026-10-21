@@ -42,8 +42,7 @@ export default defineFeature({
   kind: 'headless',
   summary:
     'Catalog projection reports authoritative/degraded plus structured diagnostics instead of posing as success.',
-  expect:
-    'A clean tree is authoritative; unknown providers, host kind conflicts, and scan failures degrade with codes.',
+  expect: 'A clean tree is authoritative; unknown providers and scan failures degrade with codes.',
   async run(checks) {
     checks.equal('clean tree is authoritative with both rows', await project(clean), {
       authority: 'authoritative',
@@ -75,9 +74,11 @@ export default defineFeature({
     const reserved = await project({ 'tool.dat': 'x', 'tool.dat.meta.json': toolMeta('mesh') }, [
       'lab-tool',
     ]);
-    checks.equal('host provider may not claim engine kinds', reserved.codes, [
-      'catalog-host-kind-conflict',
-    ]);
+    checks.equal('registered importer may produce native mesh data', reserved, {
+      authority: 'authoritative',
+      codes: [],
+      kinds: ['mesh'],
+    });
 
     const broken = await project({ ...clean, 'broken.pack.json': '{' });
     checks.equal('scan failure publishes no rows', broken, {

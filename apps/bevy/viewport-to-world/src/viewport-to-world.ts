@@ -1,5 +1,5 @@
 import type { EntityHandle, World } from '@forgeax/engine-ecs';
-import { HANDLE_CUBE, HANDLE_SPHERE } from '@forgeax/engine-assets-runtime';
+
 import { quat, ray, vec3 } from '@forgeax/engine-math';
 import { viewportToWorld } from '@forgeax/engine-picking';
 import { Transform } from '@forgeax/engine-scene';
@@ -11,7 +11,11 @@ import {
   MeshRenderer,
   perspective,
 } from '@forgeax/engine-render';
-import type { MaterialAsset } from '@forgeax/engine-types';
+
+import { AssetRegistry } from '@forgeax/engine-assets-runtime';
+
+import { createPrimitiveMesh } from '@forgeax/engine-geometry';
+
 
 export interface ViewportToWorldScene {
   readonly camera: EntityHandle;
@@ -19,25 +23,26 @@ export interface ViewportToWorldScene {
 }
 
 export function buildViewportToWorldWorld(world: World): ViewportToWorldScene {
-  const groundMaterial = world.allocSharedRef<'MaterialAsset', MaterialAsset>(
-    'MaterialAsset',
-    Materials.standard({ baseColor: [0.24, 0.42, 0.28, 1] }),
-  );
-  const markerMaterial = world.allocSharedRef<'MaterialAsset', MaterialAsset>(
-    'MaterialAsset',
-    Materials.standard({ baseColor: [1, 0.8, 0.1, 1], roughness: 0.28 }),
-  );
+const sceneAssets = world.assets;
+if (!(sceneAssets instanceof AssetRegistry)) throw new Error('Scene requires its runtime asset owner');
+
+const primitiveCube = sceneAssets.create(createPrimitiveMesh('cube').unwrap()).unwrap();
+
+const primitiveSphere = sceneAssets.create(createPrimitiveMesh('sphere').unwrap()).unwrap();
+
+  const groundMaterial = sceneAssets.create(Materials.standard({ baseColor: [0.24, 0.42, 0.28, 1] })).unwrap();
+  const markerMaterial = sceneAssets.create(Materials.standard({ baseColor: [1, 0.8, 0.1, 1], roughness: 0.28 })).unwrap();
 
   world.spawn(
     { component: Transform, data: { pos: [0, -0.04, 0], scale: [16, 0.08, 16] } },
-    { component: MeshFilter, data: { assetHandle: HANDLE_CUBE } },
+    { component: MeshFilter, data: { assetHandle: primitiveCube } },
     { component: MeshRenderer, data: { materials: [groundMaterial] } },
   );
 
   const marker = world
     .spawn(
       { component: Transform, data: { pos: [0, 0.22, 0], scale: [0.22, 0.22, 0.22] } },
-      { component: MeshFilter, data: { assetHandle: HANDLE_SPHERE } },
+      { component: MeshFilter, data: { assetHandle: primitiveSphere } },
       { component: MeshRenderer, data: { materials: [markerMaterial] } },
     )
     .unwrap();

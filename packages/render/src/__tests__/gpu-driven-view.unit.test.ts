@@ -1,38 +1,50 @@
-import { frustum, mat4 } from '@forgeax/engine-math';
+import { createBoxGeometry } from '@forgeax/engine-geometry';
+import { frustum, mat4, vec3 } from '@forgeax/engine-math';
 import { describe, expect, it } from 'vitest';
+import { capturedGpuDrivenBatchKey } from '../gpu-driven/batch-key';
 import {
-  BatchTopology,
   batchLevelStride,
   batchLodLevelCount,
   batchVisibleSpan,
   GPU_DRIVEN_INDIRECT_COMMAND_BYTES,
-} from '../gpu-driven/batch-topology';
+} from '../gpu-driven/batch-layout';
+import { BatchTopology } from '../gpu-driven/batch-topology';
 import {
   GPU_DRIVEN_VIEW_SHADOW_CAMERA_WGSL,
   GPU_DRIVEN_VIEW_WGSL,
   invertLightViewProjection,
 } from '../gpu-driven/view-gpu';
-import type { MaterialSnapshot, RenderableSnapshot } from '../render-system-extract';
+import { MaterialResource } from '../material-resource';
+import type { RenderableSnapshot } from '../render-system-extract';
+import { MeshFrame } from '../scene/mesh-frame';
 import { RenderScene } from '../scene/render-scene';
 import { preparedPbrSnapshot } from './gpu-driven-production-fixture';
 import { classifyGpuDrivenView } from './gpu-driven-view-reference';
 
-const material = {
-  baseColor: new Float32Array([1, 1, 1]),
+const material = new MaterialResource({
+  baseColor: vec3.create(1, 1, 1),
   metallic: 0,
   roughness: 1,
+  passes: [],
   materialShaderId: 'forgeax::default-standard-pbr',
-} as MaterialSnapshot;
+});
+
+const materials = new Map([['plain', material]]);
 
 function snapshot(entityKey: number, x: number, resourceClass = 'plain'): RenderableSnapshot {
+  let binding = materials.get(resourceClass);
+  if (binding === undefined) {
+    binding = new MaterialResource({ ...material.snapshot });
+    materials.set(resourceClass, binding);
+  }
   const world = mat4.identity(mat4.create());
   world[12] = x;
   return {
     assetHandle: 7,
     transform: { world: new Float32Array(world) },
     localAabb: new Float32Array([-0.25, -0.25, -0.25, 0.25, 0.25, 0.25]),
-    material,
-    materials: [material],
+    material: binding,
+    materials: [binding],
     materialBindingSources: ['engine-default'],
     worldId: 0,
     entityKey,
@@ -44,6 +56,11 @@ function snapshot(entityKey: number, x: number, resourceClass = 'plain'): Render
         baseVertex: -2,
         materialSlot: 0,
         topology: 'triangle-list',
+        geometry: {
+          receipt: { identity: 'cube', vertexInputs: [], topology: 'triangle-list', indexed: true },
+          draw: { kind: 'indexed', topology: 'triangle-list', first: 3, count: 36, baseVertex: -2 },
+          deformation: 'rigid',
+        },
         pipelineClass: 'opaque-pbr',
         materialResourceClass: resourceClass,
       },
@@ -71,7 +88,7 @@ describe('GPU-driven batch topology and CPU oracle', () => {
     ]);
     const topology = new BatchTopology();
     topology.rebuild(projection.slotsSnapshot());
-    const batches = topology.plan().batches;
+    const batches = topology.query(topology.sourcePlan(), undefined).batches;
     // The LOD pair shares a chain, so it shares a batch; the level is a GPU
     // choice and never splits membership. The chain-less member stays apart.
     expect(batches).toHaveLength(2);
@@ -106,21 +123,24 @@ describe('GPU-driven batch topology and CPU oracle', () => {
   it('selects LOD levels and crossfade pairs on the GPU, never from a CPU height payload', () => {
     expect(GPU_DRIVEN_VIEW_WGSL).toContain('LodViewConstants');
     expect(GPU_DRIVEN_VIEW_WGSL).toContain('primitiveHeight(primitive, rootWorld)');
-    expect(GPU_DRIVEN_VIEW_WGSL).toContain('lodCrossfade(height, candidate.lodRows');
+    expect(GPU_DRIVEN_VIEW_WGSL).toContain('lodCrossfade(height, rows');
     expect(GPU_DRIVEN_VIEW_WGSL).toMatch(
-      /appendVisible\(\s*candidate\.batchIndex,\s*candidate\.visibleBase \+ \(level \+ 1u\) \* candidate\.levelStride,[\s\S]*bitcast<u32>\(-lod\.fade\)/,
+      /appendVisible\(\s*candidate\.batchIndex,\s*batchWord\(candidate\.batchIndex, 0u\) \+ \(level \+ 1u\) \* batchWord\(candidate\.batchIndex, 8u\),[\s\S]*bitcast<u32>\(-lod\.fade\)/,
     );
     expect(GPU_DRIVEN_VIEW_WGSL).not.toMatch(/lodHeights|projectedHeights/);
   });
 
-  it('projects compact visible items as scene instance, material, palette-or-candidate and fade rows', () => {
+  it('projects compact visible items as scene instance, material, candidate and fade rows', () => {
     expect(GPU_DRIVEN_VIEW_WGSL).toMatch(
-      /vec4<u32>\(\s*instanceIndex,\s*candidate\.materialAddress & 0x7fffffffu,\s*select\(candidateIndex, customDataStart, skinned\),\s*bitcast<u32>\(lod\.fade\),/,
+      /vec4<u32>\(\s*instanceIndex,\s*materialIndex,\s*candidateIndex,\s*bitcast<u32>\(lod\.fade\),/,
     );
+    expect(GPU_DRIVEN_VIEW_WGSL).toContain('materialIndex = sceneInputs[materialAddress + 0u]');
+    expect(GPU_DRIVEN_VIEW_WGSL).toContain('bitcast<f32>(sceneInputs[materialAddress + 1u])');
+    expect(GPU_DRIVEN_VIEW_WGSL).not.toContain('primitives[materialAddress]');
     expect(GPU_DRIVEN_VIEW_WGSL).not.toContain('submitAdmission');
-    expect(GPU_DRIVEN_VIEW_WGSL).toContain('if (isSuppressed(candidate.primitiveIndex))');
-    expect(GPU_DRIVEN_VIEW_WGSL).toContain('instance.customDataStart');
-    expect(GPU_DRIVEN_VIEW_WGSL).toContain('(candidate.materialAddress & 0x80000000u)');
+    expect(GPU_DRIVEN_VIEW_WGSL).toContain('if (isSuppressed(candidate.sourceSlot))');
+    expect(GPU_DRIVEN_VIEW_WGSL).not.toContain('instance.customDataStart');
+    expect(GPU_DRIVEN_VIEW_WGSL).not.toContain('0x80000000u');
     expect(GPU_DRIVEN_VIEW_WGSL).toContain('visibleIndices[segmentBase + localVisible]');
     expect(GPU_DRIVEN_VIEW_WGSL).toContain('atomicStore(&counters[overflowIndex(batchIndex)], 1u)');
     expect(GPU_DRIVEN_VIEW_WGSL).toContain('visibleCount = 0u');
@@ -155,7 +175,9 @@ describe('GPU-driven batch topology and CPU oracle', () => {
     const topology = new BatchTopology();
     topology.rebuild(projection.slotsSnapshot());
     expect(topology.inspect()).toMatchObject({ batchCount: 2, candidateCount: 3, rebuilds: 1 });
-    expect(topology.plan()).toBe(topology.plan());
+    expect(topology.query(topology.sourcePlan(), undefined)).toBe(
+      topology.query(topology.sourcePlan(), undefined),
+    );
 
     const transformOnly = projection.apply([
       {
@@ -166,7 +188,9 @@ describe('GPU-driven batch topology and CPU oracle', () => {
       },
     ]);
     expect(topology.apply(transformOnly)).toBe(false);
-    expect(topology.plan()).toBe(topology.plan());
+    expect(topology.query(topology.sourcePlan(), undefined)).toBe(
+      topology.query(topology.sourcePlan(), undefined),
+    );
     expect(topology.inspect().patches).toBe(0);
 
     const removed = projection.apply([{ kind: 'remove', worldId: 0, entityKey: 3 }]);
@@ -180,7 +204,11 @@ describe('GPU-driven batch topology and CPU oracle', () => {
     const topology = new BatchTopology();
     topology.rebuild(projection.slotsSnapshot());
     const planes = frustum.fromViewProjection(frustum.create(), mat4.identity(mat4.create()));
-    const result = classifyGpuDrivenView(topology.plan(), projection.slotsSnapshot(), planes);
+    const result = classifyGpuDrivenView(
+      topology.query(topology.sourcePlan(), undefined),
+      projection.slotsSnapshot(),
+      planes,
+    );
 
     expect(result).toMatchObject({
       candidateCount: 2,
@@ -216,22 +244,31 @@ describe('GPU-driven batch topology and CPU oracle', () => {
     ]);
     const topology = new BatchTopology();
     topology.rebuild(projection.slotsSnapshot());
-    const plan = topology.plan();
-    expect(plan).toMatchObject({ candidateCount: 2, batches: [{}, {}] });
+    const plan = topology.query(topology.sourcePlan(), undefined);
+    expect(plan.candidateCount).toBe(2);
+    expect(plan.batches.length).toBe(2);
     const result = classifyGpuDrivenView(
       plan,
       projection.slotsSnapshot(),
       frustum.fromViewProjection(frustum.create(), mat4.identity(mat4.create())),
     );
-    const firstArgs = new DataView(result.indirectArgs, plan.batches[0]?.indirectOffset ?? 0, 20);
-    const secondArgs = new DataView(result.indirectArgs, plan.batches[1]?.indirectOffset ?? 0, 20);
+    const firstArgs = new DataView(
+      result.indirectArgs,
+      plan.batches.at(0)?.indirectOffset ?? 0,
+      20,
+    );
+    const secondArgs = new DataView(
+      result.indirectArgs,
+      plan.batches.at(1)?.indirectOffset ?? 0,
+      20,
+    );
     expect([firstArgs.getUint32(0, true), firstArgs.getUint32(8, true)]).toEqual([3, 0]);
     expect([secondArgs.getUint32(0, true), secondArgs.getUint32(8, true)]).toEqual([6, 3]);
     expect(firstArgs.getUint32(12, true)).toBe(0);
     expect(secondArgs.getUint32(12, true)).toBe(0);
   });
 
-  it('retains source draw identity when an earlier compact draw is ineligible', () => {
+  it('retains source geometry even when an earlier draw uses a different program', () => {
     const source = snapshot(1, 0);
     const first = source.gpuDrivenDraws?.[0];
     expect(first).toBeDefined();
@@ -257,13 +294,18 @@ describe('GPU-driven batch topology and CPU oracle', () => {
     ]);
     const topology = new BatchTopology();
     topology.rebuild(projection.slotsSnapshot());
-    const candidates = topology.plan().batches.flatMap((batch) => batch.candidates);
-    expect(candidates).toHaveLength(1);
-    expect(candidates[0]?.drawItemIndex).toBe(20);
-    expect(topology.plan().batches[0]?.key).toMatchObject({ first: 9, count: 12 });
+    expect(
+      topology
+        .query(topology.sourcePlan(), undefined)
+        .batches.map((batch) => batch.binding?.drawItemIndex),
+    ).toEqual([10, 20]);
+    expect(topology.query(topology.sourcePlan(), undefined).batches.at(1)?.key).toMatchObject({
+      first: 9,
+      count: 12,
+    });
   });
 
-  it('patches a same-key eligibility swap using the retained draw identity', () => {
+  it('patches a source draw range swap using the retained draw identity', () => {
     const source = snapshot(1, 0);
     const first = source.gpuDrivenDraws?.[0];
     expect(first).toBeDefined();
@@ -290,7 +332,16 @@ describe('GPU-driven batch topology and CPU oracle', () => {
     ]);
     expect(topology.apply(swapped)).toBe(true);
     expect(topology.inspect().patches).toBe(1);
-    expect(topology.plan().batches.flatMap((batch) => batch.candidates)[0]?.drawItemIndex).toBe(10);
+    expect(
+      topology
+        .query(topology.sourcePlan(), undefined)
+        .batches.find((batch) => batch.key.first === 9)?.binding?.drawItemIndex,
+    ).toBe(10);
+    expect(
+      topology
+        .query(topology.sourcePlan(), undefined)
+        .batches.find((batch) => batch.key.first === 3)?.binding?.drawItemIndex,
+    ).toBe(20);
   });
 
   it('keeps prepared material and range identity after reversing submesh order', () => {
@@ -298,8 +349,8 @@ describe('GPU-driven batch topology and CPU oracle', () => {
     const first = source.gpuDrivenDraws?.[0];
     expect(first).toBeDefined();
     if (first === undefined) return;
-    const materialA = { ...material, materialHandle: 11 } as MaterialSnapshot;
-    const materialB = { ...material, materialHandle: 12 } as MaterialSnapshot;
+    const materialA = new MaterialResource({ ...material.snapshot, materialHandle: 11 });
+    const materialB = new MaterialResource({ ...material.snapshot, materialHandle: 12 });
     const orderedDraws = [
       { ...first, drawItemIndex: 4, materialSlot: 0, first: 0, count: 3 },
       { ...first, drawItemIndex: 9, materialSlot: 1, first: 3, count: 6 },
@@ -326,12 +377,12 @@ describe('GPU-driven batch topology and CPU oracle', () => {
     reversedTopology.rebuild(reversedScene.slotsSnapshot());
     const describe = (topology: BatchTopology) =>
       topology
-        .plan()
+        .query(topology.sourcePlan(), undefined)
         .batches.map((batch) => [
           batch.key.materialSlot,
           batch.key.first,
           batch.key.count,
-          batch.candidates[0]?.drawItemIndex,
+          batch.candidates.at(0)?.drawItemIndex,
         ]);
     expect(describe(reversedTopology).sort()).toEqual(describe(orderedTopology).sort());
   });
@@ -357,7 +408,7 @@ describe('GPU-driven batch topology and CPU oracle', () => {
     topology.rebuild(projection.slotsSnapshot());
     expect(topology.inspect()).toMatchObject({ candidateCount: 2, ineligible: 0 });
     const result = classifyGpuDrivenView(
-      topology.plan(),
+      topology.query(topology.sourcePlan(), undefined),
       projection.slotsSnapshot(),
       frustum.fromViewProjection(frustum.create(), mat4.identity(mat4.create())),
     );
@@ -372,8 +423,8 @@ describe('GPU-driven batch topology and CPU oracle', () => {
     projection.apply([updateSnapshot(snapshot(1, 0)), updateSnapshot(snapshot(2, 0.5))]);
     const topology = new BatchTopology();
     topology.rebuild(projection.slotsSnapshot());
-    const plan = topology.plan();
-    const batch = plan.batches[0];
+    const plan = topology.query(topology.sourcePlan(), undefined);
+    const batch = plan.batches.at(0);
     expect(batch).toBeDefined();
     if (batch === undefined) return;
     const result = classifyGpuDrivenView(
@@ -439,4 +490,20 @@ describe('shadow camera cull light inverse', () => {
     expect(invertLightViewProjection(singular)).toBeUndefined();
     expect(invertLightViewProjection(new Float32Array(16))).toBeUndefined();
   });
+});
+
+it('captures native batch keys without admitting borrowed mutable or frozen copies', () => {
+  const scene = new RenderScene();
+  scene.apply([updateSnapshot(snapshot(1, 0))]);
+  const topology = new BatchTopology();
+  topology.rebuild(scene.slotsSnapshot());
+  const meshes = new MeshFrame().with(0, 7, createBoxGeometry(0.5, 0.5, 0.5).unwrap(), [material]);
+  const batch = topology.query(topology.sourcePlan(), meshes).batches.at(0);
+  const key = batch?.key;
+  expect(key).toBeDefined();
+  if (key === undefined || batch === undefined) return;
+  expect(Object.isFrozen(key)).toBe(true);
+  expect(capturedGpuDrivenBatchKey(batch)).toBe(JSON.stringify(key));
+  expect(capturedGpuDrivenBatchKey({ ...batch })).toBeUndefined();
+  expect(capturedGpuDrivenBatchKey(Object.freeze({ ...batch }))).toBeUndefined();
 });

@@ -9,7 +9,7 @@
 //
 // Four-step recipe (same as hello-cube / hello-culling):
 //   (1) await host initialization
-//   (2) register a custom box mesh (createBoxGeometry -> world.allocSharedRef(...)) so the
+//   (2) register a custom box mesh (createBoxGeometry -> assets.create(...)) so the
 //       AABB the ray-AABB test needs is present, plus two unlit materials
 //   (3) spawn the cube + a perspective camera entity
 //   (4) rAF draw loop + a `click` listener that calls `pick(...)` and highlights
@@ -20,29 +20,20 @@
 // pointer to the viewport-relative coordinate `pick` expects.
 
 import { World } from '@forgeax/engine-ecs';
-import { type MeshAsset } from '@forgeax/engine-assets-runtime';
+
 import { propagateTransforms, Transform } from '@forgeax/engine-scene';
 
 import { perspective } from '@forgeax/engine-render';
 import { constructRuntimeRendererHost } from '@forgeax/engine-runtime/internal/renderer-host';
-import { EngineEnvironmentError, type MaterialAsset } from '@forgeax/engine-runtime';
+import { EngineEnvironmentError } from '@forgeax/engine-runtime';
 import { Materials } from '@forgeax/engine-render';
 import { Camera, DirectionalLight, MeshFilter, MeshRenderer } from '@forgeax/engine-render';
 
 import { pick, pickVertex, pickVertexOnEntity, type VertexHit } from '@forgeax/engine-picking';
 import { createBoxGeometry } from '@forgeax/engine-geometry';
 import { forgeaxBundlerAdapter } from 'virtual:forgeax/bundler';
+import { AssetRegistry } from '@forgeax/engine-assets-runtime';
 
-const world = new World();
-
-// DirectionalLight has no asset deps; safe to spawn before the renderer is ready.
-world.spawn({
-  component: DirectionalLight,
-  data: { castShadow: true,
-    direction: [-0.5, -1, -0.3],
-    color: [1, 1, 1], intensity: 1,
-  },
-});
 
 const canvas = document.querySelector<HTMLCanvasElement>('#app');
 if (!canvas) throw new Error('hello-picking: missing <canvas id="app"> in index.html');
@@ -55,6 +46,20 @@ async function bootstrap(target: HTMLCanvasElement): Promise<void> {
   const constructed = await constructRuntimeRendererHost(target, {}, forgeaxBundlerAdapter());
   if (!constructed.ok) throw constructed.error;
   const renderer = constructed.value.renderer;
+const world = new World({ assets: constructed.value.assets });
+const sceneAssets = world.assets;
+if (!(sceneAssets instanceof AssetRegistry)) throw new Error('Scene requires its runtime asset owner');
+
+
+// DirectionalLight has no asset deps; safe to spawn before the renderer is ready.
+world.spawn({
+  component: DirectionalLight,
+  data: { castShadow: true,
+    direction: [-0.5, -1, -0.3],
+    color: [1, 1, 1], intensity: 1,
+  },
+});
+
   const worldAttachment1 = renderer.attach(world);
   if (!worldAttachment1.ok) throw worldAttachment1.error;
   console.warn('[picking] Standard pipeline active');
@@ -67,17 +72,11 @@ async function bootstrap(target: HTMLCanvasElement): Promise<void> {
     console.error('[picking] createBoxGeometry failed:', boxResult.error.code);
     return;
   }
-  const cubeHandle = world.allocSharedRef<'MeshAsset', MeshAsset>('MeshAsset', boxResult.value);
+  const cubeHandle = sceneAssets.create(boxResult.value).unwrap();
 
   // Two unlit materials: default grey + bright highlight (swapped on a pick hit).
-  const defaultHandle = world.allocSharedRef<'MaterialAsset', MaterialAsset>(
-    'MaterialAsset',
-    Materials.unlit([0.55, 0.55, 0.6, 1]),
-  );
-  const highlightHandle = world.allocSharedRef<'MaterialAsset', MaterialAsset>(
-    'MaterialAsset',
-    Materials.unlit([1, 0.85, 0.1, 1]),
-  );
+  const defaultHandle = sceneAssets.create(Materials.unlit([0.55, 0.55, 0.6, 1])).unwrap();
+  const highlightHandle = sceneAssets.create(Materials.unlit([1, 0.85, 0.1, 1])).unwrap();
 
   // Cube at the origin, bound to the default material.
   const cubeEntity = world.spawn(

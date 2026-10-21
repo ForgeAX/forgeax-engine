@@ -1,5 +1,6 @@
-import { AssetRegistry, HANDLE_CUBE } from '@forgeax/engine-assets-runtime';
+import { AssetRegistry } from '@forgeax/engine-assets-runtime';
 import { World } from '@forgeax/engine-ecs';
+import { createPrimitiveMesh } from '@forgeax/engine-geometry';
 import { propagateTransforms, Transform } from '@forgeax/engine-scene';
 import { ShaderRegistry } from '@forgeax/engine-shader';
 import { expect, it } from 'vitest';
@@ -23,6 +24,8 @@ import { createRenderPublisher } from '../publisher';
 import { RenderPublicationReceiver } from '../receiver';
 import { RenderPublicationTargetOwner, RenderPublicationTargetReceiver } from '../targets';
 
+const BUILTIN_CUBE = createPrimitiveMesh('cube').unwrap();
+
 function unwrap<T, E>(result: RenderResult<T, E>): T {
   if (!result.ok) throw result.error;
   return result.value;
@@ -39,8 +42,10 @@ const descriptor: RenderTargetDescriptor = {
 };
 
 it('maps auxiliary/cube cameras and distinct material targets into the receiver owner, including resize and retirement', () => {
-  const world = new World();
-  const assets = new AssetRegistry(new ShaderRegistry({ manifestUrl: undefined }));
+  const assets = new AssetRegistry({
+    shaderRegistry: new ShaderRegistry({ manifestUrl: undefined }),
+  });
+  const world = new World({ assets });
   const source = new RenderPublicationTargetOwner();
   const host = createRenderTargetHost();
   const projection = new RenderPublicationTargetReceiver(host);
@@ -63,6 +68,7 @@ it('maps auxiliary/cube cameras and distinct material targets into the receiver 
       { component: CubeCamera, data: { target: world.allocSharedRef('RenderTarget', cube) } },
     )
     .unwrap();
+  const cubeMesh = assets.create(BUILTIN_CUBE).unwrap();
   for (const target of [first, second]) {
     const texture = unwrap(
       source.authoring.createRenderTargetTextureSource(target, {
@@ -71,22 +77,24 @@ it('maps auxiliary/cube cameras and distinct material targets into the receiver 
         mipLevel: 0,
       }),
     );
-    const textureRef = world.allocSharedRef('RenderTargetTextureSource', texture);
-    const material = world.allocSharedRef('MaterialAsset', {
-      kind: 'material',
-      passes: [
-        {
-          name: 'Forward',
-          program: { module: 'forgeax::default-standard-pbr' },
-          renderState: { tags: { LightMode: 'Forward' }, queue: 2000 },
-        },
-      ],
-      values: { baseColorTexture: textureRef },
-    });
+    const textureRef = { source: texture };
+    const material = assets
+      .create({
+        kind: 'material',
+        passes: [
+          {
+            name: 'Forward',
+            program: { module: 'forgeax::default-standard-pbr' },
+            renderState: { tags: { LightMode: 'Forward' }, queue: 2000 },
+          },
+        ],
+        values: { baseColorTexture: textureRef },
+      })
+      .unwrap();
     world
       .spawn(
         { component: Transform, data: {} },
-        { component: MeshFilter, data: { assetHandle: HANDLE_CUBE } },
+        { component: MeshFilter, data: { assetHandle: cubeMesh } },
         { component: MeshRenderer, data: { materials: [material] } },
       )
       .unwrap();
@@ -109,7 +117,7 @@ it('maps auxiliary/cube cameras and distinct material targets into the receiver 
   expect(host.descriptions().find((row) => row.target === remote)?.descriptor).toEqual(descriptor);
   expect(initial.frame.cubeCameras).toHaveLength(1);
   const bindings = initial.frame.renderables.map((row) => {
-    const source = row.material.textureSources?.get('baseColorTexture');
+    const source = row.material.snapshot.textureSources?.get('baseColorTexture');
     if (source === undefined || isCanvasTextureSource(source) || isExternalTextureSource(source))
       throw new Error('Missing published target source');
     return resolveRenderTargetMaterialSource(source);
@@ -128,11 +136,15 @@ it('maps auxiliary/cube cameras and distinct material targets into the receiver 
   publisher.dispose();
   source.dispose();
   host.dispose();
+  receiver.dispose();
+  assets.dispose();
 });
 
 it('publishes every display-owned planar target once and rejects duplicate output writers', () => {
-  const world = new World();
-  const assets = new AssetRegistry(new ShaderRegistry({ manifestUrl: undefined }));
+  const assets = new AssetRegistry({
+    shaderRegistry: new ShaderRegistry({ manifestUrl: undefined }),
+  });
+  const world = new World({ assets });
   const source = new RenderPublicationTargetOwner();
   const host = createRenderTargetHost();
   const identity = { source: 'planar-target-publication', epoch: 1 };
@@ -192,4 +204,6 @@ it('publishes every display-owned planar target once and rejects duplicate outpu
   publisher.dispose();
   source.dispose();
   host.dispose();
+  receiver.dispose();
+  assets.dispose();
 });

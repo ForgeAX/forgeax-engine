@@ -83,3 +83,21 @@ it('separates immutable Pack content from the runtime publication tuple', () => 
     generation: 23,
   });
 });
+
+it('rebinds and strips lifecycle fields inside shared material program transport', () => {
+  const pack = {
+    schemaVersion: '2.0.0',
+    kind: 'internal-text-package',
+    scopeId: 'old',
+    generation: 2,
+    digest: 'digest',
+    outputSetDigest: 'outputs',
+    assets: [],
+  };
+  const wire = { schemaVersion: 'pack-material-programs/1', pack, programs: [] };
+  const bound = bindRuntimePackScope(wire, 'new', 9);
+  expect(bound).not.toEqual(wire);
+  const semantic = stripRuntimePackLifecycle(wire);
+  expect(JSON.stringify(semantic)).not.toContain('scopeId');
+  expect(JSON.stringify(semantic)).not.toContain('generation');
+});

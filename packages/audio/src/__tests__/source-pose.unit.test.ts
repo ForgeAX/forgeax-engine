@@ -1,15 +1,22 @@
+import { AssetRegistry } from '@forgeax/engine-assets-runtime';
 import { World } from '@forgeax/engine-ecs';
 import { GlobalTransform } from '@forgeax/engine-scene';
 import { expect, it } from 'vitest';
+import { audioContribution } from '../assets/audio-decoder';
 import { type AudioIntent, AudioSource, audioTickSystem, createAudioIntentBackend } from '../index';
 
 it('plays at the propagated source position, then publishes only changed poses', () => {
-  const world = new World();
-  const clip = world.allocSharedRef('AudioClipAsset', {
-    kind: 'audio',
-    sourceKey: 'spatial',
-    bytes: Uint8Array.of(1),
-  });
+  const assets = new AssetRegistry();
+  assets.installDecoder(audioContribution.kind, audioContribution.decoder);
+  const world = new World({ assets });
+  const clip = assets
+    .create({
+      kind: 'audio',
+      mediaType: 'audio/wav',
+      sourceKey: 'spatial',
+      bytes: Uint8Array.of(1),
+    })
+    .unwrap();
   const matrix = new Float32Array([2, 0, 0, 0, 0, 3, 0, 0, 0, 0, 4, 0, 5, 6, 7, 1]);
   const entity = world
     .spawn(
@@ -18,7 +25,11 @@ it('plays at the propagated source position, then publishes only changed poses',
     )
     .unwrap();
   const intents: AudioIntent[] = [];
-  const backend = createAudioIntentBackend({ emit: (intent) => intents.push(intent) });
+  const backend = createAudioIntentBackend({
+    emit: (intent) => {
+      intents.push(intent);
+    },
+  });
   audioTickSystem(world, backend);
   expect(intents[0]).toMatchObject({
     kind: 'play',
@@ -53,20 +64,29 @@ import { ChildOf, scenePlugin, Transform } from '@forgeax/engine-scene';
 import { audioBackendPlugin, audioPlugin, sourcePoseFromWorldMatrix } from '../index';
 
 it('syncs the current parented pose after scene propagation in the same Update', async () => {
-  const world = new World();
+  const assets = new AssetRegistry();
+  assets.installDecoder(audioContribution.kind, audioContribution.decoder);
+  const world = new World({ assets });
   const intents: AudioIntent[] = [];
-  const backend = createAudioIntentBackend({ emit: (intent) => intents.push(intent) });
+  const backend = createAudioIntentBackend({
+    emit: (intent) => {
+      intents.push(intent);
+    },
+  });
   const ctx = await createWorldContext(world, [
     audioBackendPlugin(backend),
     audioPlugin(),
     scenePlugin(),
   ]);
   try {
-    const clip = world.allocSharedRef('AudioClipAsset', {
-      kind: 'audio',
-      sourceKey: 'parented',
-      bytes: Uint8Array.of(1),
-    });
+    const clip = assets
+      .create({
+        kind: 'audio',
+        mediaType: 'audio/wav',
+        sourceKey: 'parented',
+        bytes: Uint8Array.of(1),
+      })
+      .unwrap();
     const parent = world
       .spawn({ component: Transform, data: { pos: [10, 0, 0], scale: [2, 3, 4] } })
       .unwrap();
@@ -95,12 +115,17 @@ it('syncs the current parented pose after scene propagation in the same Update',
 });
 
 it('keeps 2D sources pose-free and resets a removed spatial transform to the origin', () => {
-  const world = new World();
-  const clip = world.allocSharedRef('AudioClipAsset', {
-    kind: 'audio',
-    sourceKey: 'optional',
-    bytes: Uint8Array.of(1),
-  });
+  const assets = new AssetRegistry();
+  assets.installDecoder(audioContribution.kind, audioContribution.decoder);
+  const world = new World({ assets });
+  const clip = assets
+    .create({
+      kind: 'audio',
+      mediaType: 'audio/wav',
+      sourceKey: 'optional',
+      bytes: Uint8Array.of(1),
+    })
+    .unwrap();
   const twoD = world.spawn({ component: AudioSource, data: { clip, playing: true } }).unwrap();
   const spatial = world
     .spawn(
@@ -112,7 +137,11 @@ it('keeps 2D sources pose-free and resets a removed spatial transform to the ori
     )
     .unwrap();
   const intents: AudioIntent[] = [];
-  const backend = createAudioIntentBackend({ emit: (intent) => intents.push(intent) });
+  const backend = createAudioIntentBackend({
+    emit: (intent) => {
+      intents.push(intent);
+    },
+  });
   audioTickSystem(world, backend);
   expect(intents.find((i) => i.kind === 'play' && i.entityId === twoD)).not.toHaveProperty(
     'options.sourcePose',

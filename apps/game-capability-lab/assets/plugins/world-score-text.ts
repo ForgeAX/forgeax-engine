@@ -1,17 +1,15 @@
+import type { AssetHandle } from '@forgeax/engine-types';
 import type { AssetRegistry } from '@forgeax/engine-assets-runtime';
 import { type EntityHandle, type World } from '@forgeax/engine-ecs';
 import { AssetGuid } from '@forgeax/engine-pack/guid';
 import { MeshFilter } from '@forgeax/engine-render';
 import { GlyphText } from '@forgeax/engine-render/authoring';
 import { Transform } from '@forgeax/engine-scene';
-import type { FontAsset, Handle } from '@forgeax/engine-types';
 
 /** The legacy baked font remains the default compatibility/reference source. */
 export const GAME_DEFAULT_FONT_GUID = '019eb276-4d96-7f2c-9ecf-5124a020eebb';
-const GAME_DEFAULT_FONT_SAMPLER_GUID = '019eb276-4d96-7313-b4f0-f5d55536acd2';
 /** The same licensed TTF through the build-time font importer/plugin. */
 export const GAME_DEFAULT_TTF_FONT_GUID = '57db8d79-bb62-4b2a-8400-67c9601870cd';
-const GAME_DEFAULT_TTF_FONT_SAMPLER_GUID = '852a14da-4f2d-4da9-b199-819b92f29606';
 const WORLD_SCORE_FONT_SIZE = 0.024;
 const WORLD_SCORE_TTF_FONT_SIZE = 0.030;
 const WORLD_SCORE_LEGACY_COLOR = [1, 0.8, 0.2, 1] as const;
@@ -65,34 +63,24 @@ export async function createWorldScoreText(
 ): Promise<WorldScoreTextHandle | undefined> {
   if (assets === undefined) return undefined;
 
-  const fontEntries: readonly [WorldScoreFontSource, string, string][] = [
-    ['legacy-pack', GAME_DEFAULT_FONT_GUID, GAME_DEFAULT_FONT_SAMPLER_GUID],
-    ['ttf-plugin', GAME_DEFAULT_TTF_FONT_GUID, GAME_DEFAULT_TTF_FONT_SAMPLER_GUID],
+  const fontEntries: readonly [WorldScoreFontSource, string][] = [
+    ['legacy-pack', GAME_DEFAULT_FONT_GUID],
+    ['ttf-plugin', GAME_DEFAULT_TTF_FONT_GUID],
   ];
   const loadedFonts: Array<{
     readonly source: WorldScoreFontSource;
     readonly guid: string;
-    readonly handle: Handle<'FontAsset', 'shared'>;
+    readonly handle: AssetHandle<'font'>;
   }> = [];
-  for (const [source, guidText, samplerGuidText] of fontEntries) {
+  for (const [source, guidText] of fontEntries) {
     const fontGuid = AssetGuid.parse(guidText);
-    const samplerGuid = AssetGuid.parse(samplerGuidText);
-    if (!fontGuid.ok || !samplerGuid.ok) continue;
-    assets.catalog(samplerGuid.value, {
-      kind: 'sampler',
-      addressModeU: 'clamp-to-edge',
-      addressModeV: 'clamp-to-edge',
-      addressModeW: 'clamp-to-edge',
-      magFilter: 'linear',
-      minFilter: 'linear',
-      mipmapFilter: 'nearest',
-    });
-    const loaded = await assets.loadByGuid<FontAsset>(fontGuid.value);
+    if (!fontGuid.ok) continue;
+    const loaded = await assets.load(fontGuid.value, 'font');
     if (!loaded.ok) {
       console.warn(`[game] ${source} world score font unavailable (${loaded.error.code}): ${loaded.error.hint}`);
       continue;
     }
-    loadedFonts.push({ source, guid: guidText, handle: world.allocSharedRef('FontAsset', loaded.value) });
+    loadedFonts.push({ source, guid: guidText, handle: loaded.value });
   }
   if (loadedFonts.length === 0) return undefined;
 
@@ -191,7 +179,7 @@ export async function createWorldScoreText(
       if (disposed) return;
       disposed = true;
       world.despawn(entity);
-      for (const font of loadedFonts) world.sharedRefs.release(font.handle);
+      for (const font of loadedFonts) assets.release(font.handle);
     },
   };
 }

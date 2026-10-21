@@ -40,7 +40,8 @@ const app = await createApp(
 );
 if (!app.ok) reportError(app.error);
 else {
-  populateDemoWorld(app.value.world);
+  if (app.value.assets === undefined) throw new Error('Demo requires the host AssetRegistry');
+  populateDemoWorld(app.value.world, app.value.assets);
   app.value.start();
 }
 

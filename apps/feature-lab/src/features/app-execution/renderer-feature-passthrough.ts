@@ -1,7 +1,9 @@
+import { AssetRegistry } from '@forgeax/engine/assets-runtime';
+import { createPrimitiveMesh } from '@forgeax/engine/geometry';
 import type { RenderFeature } from '@forgeax/engine/render';
 import { ok } from '@forgeax/engine/types';
 import { CheckList, defineFeature } from '../../lab/feature';
-import { MESH, spawnMesh, spawnStage, standard } from '../../lab/stage';
+import { spawnMesh, spawnStage, standard } from '../../lab/stage';
 
 const trace = {
   extracts: 0,
@@ -52,8 +54,14 @@ export default defineFeature({
   expect:
     'All checks pass: both features are called every frame in declared order, with the App World and at least one view.',
   setup({ app, world, frames }) {
+    const primitiveAssets = world.assets;
+    if (!(primitiveAssets instanceof AssetRegistry))
+      throw new Error('Scene requires its runtime asset owner');
+
+    const stageCube = primitiveAssets.create(createPrimitiveMesh('cube').unwrap()).unwrap();
+
     spawnStage(world);
-    spawnMesh(world, MESH.cube, standard(world, { baseColor: [0.1, 0.8, 0.8, 1] }), {
+    spawnMesh(world, stageCube, standard(world, { baseColor: [0.1, 0.8, 0.8, 1] }), {
       pos: [0, 0.5, 0],
     });
     return {

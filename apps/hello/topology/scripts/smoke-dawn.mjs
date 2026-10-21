@@ -102,7 +102,7 @@ const mockCanvas = {
 
 const { World } = await import('@forgeax/engine-ecs');
 const { constructRuntimeRendererHost } = await import('@forgeax/engine-runtime/internal/renderer-host');
-const { buildMeshAttributeMapForUvSets, createBoxGeometry, createEdgesGeometry, createWireframeGeometry } =
+const { createMeshBuilder, createBoxGeometry, createEdgesGeometry, createWireframeGeometry } =
   await import('@forgeax/engine-geometry');
 const { Camera, Lines, Materials, MeshFilter, MeshRenderer, PointShapeValue, Points, perspective } =
   await import('@forgeax/engine-render');
@@ -193,26 +193,12 @@ const pointPositions = [
   [0, 0.65, 0],
   [0.4, 0.45, 0],
 ];
-const pointVertices = new Float32Array(pointPositions.length * 12);
-const pointAttribute = new Float32Array(pointPositions.length * 3);
-for (let index = 0; index < pointPositions.length; index += 1) {
-  const position = pointPositions[index];
-  pointVertices.set(position, index * 12);
-  pointAttribute.set(position, index * 3);
-}
-const pointMeshPayload = {
-  kind: 'mesh',
-  vertices: pointVertices,
-  attributes: { ...buildMeshAttributeMapForUvSets(1), position: pointAttribute },
-  submeshes: [{
-    indexOffset: 0,
-    indexCount: 0,
-    vertexCount: pointPositions.length,
-    topology: 'point-list',
-    materialSlot: 0,
-  }],
+const pointMeshPayload = createMeshBuilder({
+  attributes: { position: new Float32Array(pointPositions.flat()) },
+  submeshes: [{ topology: 'point-list' }],
   materialSlots: [{ slotName: 'Points' }],
-};
+}).build().unwrap();
+
 console.log(
   `[smoke] geometry=${JSON.stringify({
     factory: FALSIFY === '' ? 'createWireframeGeometry' : 'createWireframeGeometry:falsified',
@@ -231,20 +217,18 @@ if (device === undefined) {
   process.exit(1);
 }
 
-const world = new World();
+const assets = hostAssets;
+const world = new World({ assets });
 const attached = renderer.attach(world);
 if (!attached.ok) {
   console.error(`[smoke] FAIL - renderer.attach: ${attached.error.code}`);
   process.exit(1);
 }
-const meshHandle = world.allocSharedRef('MeshAsset', meshPayload);
-const pointMeshHandle = world.allocSharedRef('MeshAsset', pointMeshPayload);
-const materialHandle = world.allocSharedRef(
-  'MaterialAsset',
-  Materials.unlit([0.1, 0.9, 1, 1], {
+const meshHandle = assets.create(meshPayload).unwrap();
+const pointMeshHandle = assets.create(pointMeshPayload).unwrap();
+const materialHandle = assets.create(Materials.unlit([0.1, 0.9, 1, 1], {
     ...(FALSIFY === 'depth-sort' ? { renderState: { depthWriteEnabled: false } } : {}),
-  }),
-);
+  })).unwrap();
 
 const meshEntity = world.spawn(
   { component: Transform, data: { quat: [0, 0, 0, 1], scale: [1, 1, 1] } },

@@ -1,5 +1,7 @@
 #!/usr/bin/env node
 import { encodePng } from '@forgeax/engine-image/png';
+import { constructRuntimeRendererHost } from '@forgeax/engine-runtime/internal/renderer-host';
+let smokeAssets;
 import testQuality from '../../../../scripts/test/render-quality.json' with { type: 'json' };
 import { createSmokeRenderer, drawSmokeFrame, rendererBackend, subscribeSmokeErrors } from "../../scripts/renderer-smoke.mjs";
 import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
@@ -57,21 +59,27 @@ const mockCanvas = {
   removeEventListener() {},
 };
 
+const { AssetRegistry } = await import('@forgeax/engine-assets-runtime');
 const { World } = await import('@forgeax/engine-ecs');
+const { registerPropagateTransforms } = await import('@forgeax/engine-scene');
 const { createRenderer } = await import('@forgeax/engine-runtime');
 const { buildAnimatedMaterialWorld, hslToRgb, stepAnimatedMaterials } = await import(resolve(root, 'src', 'animated-material.ts'));
 const manifest = readFileSync(resolve(root, 'dist', 'shaders', 'manifest.json'), 'utf8');
 let renderer;
 try {
-  renderer = await createSmokeRenderer(createRenderer, mockCanvas, {}, { shaderManifestUrl: `data:application/json,${encodeURIComponent(manifest)}` });
+  const hostResult = await constructRuntimeRendererHost(mockCanvas, {}, { shaderManifestUrl: `data:application/json,${encodeURIComponent(manifest)}` });
+if (!hostResult.ok) throw hostResult.error;
+({ renderer, assets: smokeAssets } = hostResult.value);
 } finally {
   globalThis.navigator.gpu.requestAdapter = originalRequestAdapter;
 }
 subscribeSmokeErrors(renderer, (error) => errors.push(error));
-const world = new World();
+const assets = smokeAssets;
+const world = new World({ assets });
+registerPropagateTransforms(world);
 const worldAttachment1 = renderer.attach(world);
 if (!worldAttachment1.ok) throw worldAttachment1.error;
-const scene = buildAnimatedMaterialWorld(world, WIDTH / HEIGHT);
+const scene = buildAnimatedMaterialWorld(world, assets, WIDTH / HEIGHT);
 const captures = [];
 const bytesPerRow = Math.ceil((WIDTH * 4) / 256) * 256;
 
@@ -95,7 +103,7 @@ async function capture(label) {
 
 for (let frame = 0; frame < FRAME_COUNT; frame += 1) {
   const elapsed = process.env.FALSIFY === 'freeze-material' ? 0 : frame * FIXED_DT;
-  stepAnimatedMaterials(world, scene, elapsed);
+  stepAnimatedMaterials(assets, scene, elapsed);
   world.update().unwrap();
   const draw = await drawSmokeFrame(renderer, world);
   if (!draw.ok) errors.push(draw.error);

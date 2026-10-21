@@ -1,7 +1,10 @@
 import { defineComponent, World } from '@forgeax/engine-ecs';
-import { err, type Handle, ok, type SceneAsset } from '@forgeax/engine-types';
+import { type AssetHandle, err, ok, type SceneAsset } from '@forgeax/engine-types';
 import { describe, expect, it } from 'vitest';
 import { ChildOf, Children, compileKeyedSceneAsset, type KeyedSceneCompileContext } from '../index';
+
+let nextSceneHandle = 1;
+const sceneHandle = () => nextSceneHandle++ as AssetHandle<'scene'>;
 
 const Marker = defineComponent('KeyedSceneMarker', { value: 'i32' });
 const DirectionalLight = defineComponent('DirectionalLight', { shadowFilter: 'f32' });
@@ -13,14 +16,14 @@ function register(world: World): void {
 
 function compile(
   world: World,
-  handle: Handle<'SceneAsset', 'shared'>,
+  handle: AssetHandle<'scene'>,
   asset: SceneAsset,
   assets: ReadonlyMap<number, SceneAsset>,
-  handles: ReadonlyMap<string, Handle<'SceneAsset', 'shared'>>,
+  handles: ReadonlyMap<string, AssetHandle<'scene'>>,
 ): ReturnType<typeof compileKeyedSceneAsset> {
   const context: KeyedSceneCompileContext = {
     resolveSource: (source, _parent) => {
-      const child = handles.get(source);
+      const child = typeof source === 'string' ? handles.get(source) : source;
       return child === undefined ? err({ code: 'missing-source' }) : ok(child);
     },
     resolveAsset: (child) => {
@@ -66,8 +69,8 @@ describe('keyed SceneAsset compiler', () => {
         },
       },
     };
-    const childHandle = world.allocSharedRef('SceneAsset', child);
-    const parentHandle = world.allocSharedRef('SceneAsset', parent);
+    const childHandle = sceneHandle();
+    const parentHandle = sceneHandle();
     const result = compile(
       world,
       parentHandle,
@@ -121,9 +124,9 @@ describe('keyed SceneAsset compiler', () => {
         },
       },
     };
-    const grandHandle = world.allocSharedRef('SceneAsset', grandchild);
-    const childHandle = world.allocSharedRef('SceneAsset', child);
-    const parentHandle = world.allocSharedRef('SceneAsset', parent);
+    const grandHandle = sceneHandle();
+    const childHandle = sceneHandle();
+    const parentHandle = sceneHandle();
     const result = compile(
       world,
       parentHandle,
@@ -174,7 +177,7 @@ describe('keyed SceneAsset compiler', () => {
   it('rejects hierarchy cycles before producing a runtime projection', () => {
     const world = new World();
     register(world);
-    const handle = world.allocSharedRef('SceneAsset', { kind: 'scene', entities: {} });
+    const handle = sceneHandle();
     const asset: SceneAsset = {
       kind: 'scene',
       entities: {
@@ -205,8 +208,8 @@ describe('keyed SceneAsset compiler', () => {
         },
       },
     };
-    const childHandle = world.allocSharedRef('SceneAsset', child);
-    const parentHandle = world.allocSharedRef('SceneAsset', parent);
+    const childHandle = sceneHandle();
+    const parentHandle = sceneHandle();
     const result = compile(
       world,
       parentHandle,
@@ -242,8 +245,8 @@ describe('keyed SceneAsset compiler', () => {
         },
       },
     };
-    const childHandle = world.allocSharedRef('SceneAsset', child);
-    const parentHandle = world.allocSharedRef('SceneAsset', parent);
+    const childHandle = sceneHandle();
+    const parentHandle = sceneHandle();
     const result = compile(
       world,
       parentHandle,
@@ -272,9 +275,9 @@ describe('keyed SceneAsset compiler', () => {
       kind: 'scene',
       entities: { outer: { components: {}, instance: { source: 'inside-guid' } } },
     };
-    const leafHandle = world.allocSharedRef('SceneAsset', leaf);
-    const insideHandle = world.allocSharedRef('SceneAsset', inside);
-    const outerHandle = world.allocSharedRef('SceneAsset', outer);
+    const leafHandle = sceneHandle();
+    const insideHandle = sceneHandle();
+    const outerHandle = sceneHandle();
     const result = compile(
       world,
       outerHandle,
@@ -301,7 +304,7 @@ describe('keyed SceneAsset compiler', () => {
       kind: 'scene',
       entities: { root: { components: { KeyedSceneMarker: { typo: 1 } } } },
     };
-    const handle = world.allocSharedRef('SceneAsset', asset);
+    const handle = sceneHandle();
     const result = compile(world, handle, asset, new Map([[Number(handle), asset]]), new Map());
     expect(result).toMatchObject({
       ok: false,
@@ -331,7 +334,7 @@ describe('keyed SceneAsset compiler', () => {
         },
       },
     } as unknown as SceneAsset;
-    const handle = world.allocSharedRef('SceneAsset', asset);
+    const handle = sceneHandle();
     const result = compile(world, handle, asset, new Map([[Number(handle), asset]]), new Map());
     expect(result).toMatchObject({
       ok: true,

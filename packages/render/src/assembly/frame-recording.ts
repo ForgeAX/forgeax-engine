@@ -9,6 +9,7 @@ import {
   type RenderFeatureHost,
   runRenderFeatureFrame,
 } from '../features/host';
+import { MaterialUniformRecording } from '../record/material-uniforms';
 import type { RenderSystemInternals } from '../record/render-context';
 import type { CameraSnapshot, CubeCameraSnapshot, RenderPhase } from '../render-contract';
 import { recordSharedFeatureGraph } from './feature-frame-graph';
@@ -71,6 +72,32 @@ export type FrameRecording<T = boolean> = Generator<
   T,
   RendererFrameStageResult<void>
 >;
+
+/** Submit the existing generation-fenced barrier while source or GPU work prepares.
+ * No scene/capture/history state is published by a pending receipt. */
+export function* recordPreparationBarrier(
+  internals: RenderSystemInternals,
+  encoder?: RhiCommandEncoder,
+): FrameRecording {
+  if (encoder === undefined) {
+    const created = internals.device.createCommandEncoder({ label: 'render-preparation-pending' });
+    if (!created.ok) {
+      internals.errorRegistry.fire(created.error);
+      return false;
+    }
+    encoder = created.value;
+  }
+  const generation = internals.deviceScope.generation;
+  const pending = yield {
+    presentation: 'pending',
+    encoder,
+    device: internals.device,
+    beforeSubmit: internals.beforeSubmit,
+    isCurrent: () => internals.deviceScope.generation === generation,
+    reportError: (error: RhiError) => internals.errorRegistry.fire(error),
+  };
+  return pending.ok;
+}
 
 export function* recordFrameTransaction<T>(
   steps: Omit<RendererFrameTransactionSteps<T>, 'submit'>,
@@ -139,6 +166,10 @@ export function* prepareFrameSubmission(
   let result: RendererFrameStageResult<void> = { ok: false, stage: 'execute' };
   const failures: unknown[] = [];
   let completion: Promise<void> | undefined;
+  let textureMips: ReturnType<RenderSystemInternals['gpuStore']['prepareTextureMips']> | undefined;
+  let canvasMips:
+    | ReturnType<NonNullable<RenderSystemInternals['dynamicTextureStore']>['prepareMipmaps']>
+    | undefined;
   const framePassNames: string[] = [];
   if (rendererInternals !== undefined) rendererInternals.framePassNames = framePassNames;
   const admitWork = (
@@ -258,6 +289,18 @@ export function* prepareFrameSubmission(
     const finishPhase = beginSubmissionPhase(profileSession, 'submission/finish');
     let finished: ReturnType<RhiCommandEncoder['finish']>;
     try {
+      textureMips = timingOwner?.gpuStore?.prepareTextureMips();
+      if (textureMips !== undefined && !textureMips.ok) {
+        work.reportError(textureMips.error);
+        result = { ok: false, stage: 'finish' };
+        return false;
+      }
+      canvasMips = timingOwner?.dynamicTextureStore?.prepareMipmaps(work.device);
+      if (canvasMips !== undefined && !canvasMips.ok) {
+        work.reportError(canvasMips.error);
+        result = { ok: false, stage: 'finish' };
+        return false;
+      }
       if (capture !== undefined) {
         const tail = capture.encodeTail(work.encoder, timingOwner?.observationGraphGeneration);
         if (!tail.ok) capture.abort({ code: tail.error.code });
@@ -283,7 +326,11 @@ export function* prepareFrameSubmission(
         result = { ok: false, stage: 'submit' };
         return false;
       }
-      const submitted = work.device.queue.submit([finished.value]);
+      const mipBuffer = textureMips?.ok ? textureMips.value?.buffer : undefined;
+      const buffers = mipBuffer === undefined ? [] : [mipBuffer];
+      if (canvasMips?.ok) buffers.push(canvasMips.value.buffer);
+      buffers.push(finished.value);
+      const submitted = work.device.queue.submit(buffers);
       if (!submitted.ok) {
         work.reportError(submitted.error);
         result = { ok: false, stage: 'submit' };
@@ -312,13 +359,39 @@ export function* prepareFrameSubmission(
       if (submitPhase) endSubmissionPhase(profileSession);
     }
   };
+  const uniforms = new MaterialUniformRecording();
+  const operation = encodeAndSubmit();
   try {
     try {
-      yield* encodeAndSubmit();
+      let next = uniforms.run(() => operation.next());
+      while (!next.done) {
+        yield next.value;
+        next = uniforms.run(() => operation.next());
+      }
     } catch (cause) {
       failures.push(cause);
     }
   } finally {
+    try {
+      uniforms.run(() => operation.return(false));
+    } catch (cause) {
+      failures.push(cause);
+    }
+    try {
+      uniforms.complete();
+    } catch (cause) {
+      failures.push(cause);
+    }
+    try {
+      if (textureMips?.ok) textureMips.value?.complete(result.ok);
+    } catch (cause) {
+      failures.push(cause);
+    }
+    try {
+      if (canvasMips?.ok) canvasMips.value.complete(result.ok);
+    } catch (cause) {
+      failures.push(cause);
+    }
     for (const recording of pending) {
       try {
         recording.next(result);

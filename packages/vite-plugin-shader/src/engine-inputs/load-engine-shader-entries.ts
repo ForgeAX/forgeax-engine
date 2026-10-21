@@ -2,6 +2,7 @@ import { existsSync } from 'node:fs';
 import { readdir, readFile } from 'node:fs/promises';
 import { createRequire } from 'node:module';
 import { dirname, resolve } from 'node:path';
+import { terrainProgramSource } from '@forgeax/engine-shader-compiler';
 import { assertMaterialAsset, type MaterialProgram } from '@forgeax/engine-types';
 import { cloudAtmosphereEntries } from './cloud-atmosphere-entries';
 
@@ -13,9 +14,9 @@ export interface EngineShaderFile {
   readonly source: string;
   readonly reservedIdentifier?: string | undefined;
   readonly program?: MaterialProgram;
+  /** Engine-owned fixed Surface composition, prepared only at build time. */
+  readonly surfaceModule?: string;
 }
-
-export type EngineShaderEntries = Awaited<ReturnType<typeof loadEngineShaderEntries>>;
 
 export function extractDefineImportPath(source: string): string | undefined {
   return DEFINE_IMPORT_PATH_RE.exec(source)?.[1];
@@ -66,6 +67,28 @@ export async function loadEngineShaderEntries() {
       ...(defines === undefined ? {} : { defines }),
       ...(reservedIdentifier === undefined ? {} : { reservedIdentifier }),
     }));
+  const terrainEntries = Promise.all(
+    [false, true].flatMap((ids) =>
+      [false, true].map(async (shadow) => {
+        const file = await readEntry(shadow ? 'shadow_caster.wgsl' : 'default-standard-pbr.wgsl');
+        const identifier = `forgeax::standard-terrain${ids ? '-ids' : ''}${shadow ? '-shadow' : ''}`;
+        const composition = terrainProgramSource(identifier);
+        if (composition === undefined)
+          throw new Error(`Unknown Terrain composition: ${identifier}`);
+        const fixed = composition.defines;
+        return {
+          ...file,
+          id: `${file.id}?terrain=${ids ? 'ids' : 'weights'}${shadow ? '-shadow' : ''}`,
+          reservedIdentifier: identifier,
+          surfaceModule: composition.surface,
+          source: file.source.replace(/^#pragma variant_axis (\w+)\s*$/gm, (line, axis: string) =>
+            Object.hasOwn(fixed, axis) ? '' : line,
+          ),
+          defines: fixed,
+        } satisfies EngineShaderFile;
+      }),
+    ),
+  );
   const entries = {
     defaultStandardPbr: readEntry('default-standard-pbr.wgsl', 'forgeax::default-standard-pbr'),
     defaultStandardPbrSkin: readEntry('default-standard-pbr-skin.wgsl', 'forgeax::pbr-skin'),
@@ -79,7 +102,9 @@ export async function loadEngineShaderEntries() {
     motionBlur: readEntry('motion-blur.wgsl'),
     depthOfField: readEntry('depth-of-field.wgsl'),
     depthOfFieldMsaa: readEntry('depth-of-field-msaa.wgsl'),
-    shadowCaster: readEntry('shadow_caster.wgsl', 'forgeax::default-shadow-caster'),
+    shadowCaster: readEntry('shadow_caster.wgsl', 'forgeax::default-shadow-caster', {
+      STANDARD_STOCK_SURFACE_AVAILABLE: true,
+    }),
     sprite: readEntry('sprite.wgsl', 'forgeax::sprite'),
     spriteLit: readEntry('sprite-lit.wgsl', 'forgeax::sprite-lit'),
     msdfText: readEntry('msdf-text.wgsl', 'forgeax::msdf-text'),
@@ -134,6 +159,7 @@ export async function loadEngineShaderEntries() {
       'standard-deferred-lighting.wgsl',
       'forgeax::engine-standard-deferred-lighting',
     ),
+    shadowVariance: readEntry('shadow-variance.wgsl', 'forgeax::engine-shadow-variance'),
     decalProject: readEntry('decal-project.wgsl', 'forgeax::engine-decal-project'),
     decalApply: readEntry('decal-apply.wgsl', 'forgeax::engine-decal-apply'),
     subsurfaceDiffusion: readEntry(
@@ -143,7 +169,9 @@ export async function loadEngineShaderEntries() {
   };
   const imports = {
     'forgeax_material::terrain_vertex': readSource('terrain-vertex.wgsl'),
+    'forgeax_material::terrain_layer_sampling': readSource('terrain-layer-sampling.wgsl'),
     'forgeax_material::terrain_surface': readSource('terrain-surface.wgsl'),
+    'forgeax_material::terrain_id_surface': readSource('terrain-id-surface.wgsl'),
     'forgeax_ray::irradiance_field_sample': readSource('ray-irradiance-field-sample.wgsl'),
     'forgeax_ray::traversal': readSource('ray-traversal.wgsl'),
     'forgeax_material::ray_abi': readSource('ray-material-abi.wgsl'),
@@ -170,6 +198,7 @@ export async function loadEngineShaderEntries() {
     'forgeax_pbr::ibl_prefilter': readSource('ibl-prefilter.wgsl'),
     'forgeax_pbr::ibl_brdf_lut': readSource('ibl-brdf-lut.wgsl'),
     'forgeax_pbr::ibl_sampling': readSource('ibl-sampling.wgsl'),
+    'forgeax_pbr::pmrem': readSource('ibl-pmrem.wgsl'),
     'forgeax_pbr::tbn': readSource('tbn.wgsl'),
     'forgeax_pbr::lighting_directional': readSource('lighting-directional.wgsl'),
     'forgeax_pbr::lighting_punctual': readSource('lighting-punctual.wgsl'),
@@ -220,6 +249,7 @@ export async function loadEngineShaderEntries() {
   ]);
   return {
     cloudAtmosphere: cloudAtmosphereEntries(),
+    terrain: await terrainEntries,
     ...resolvedEntries,
     imports: resolvedImports,
   };

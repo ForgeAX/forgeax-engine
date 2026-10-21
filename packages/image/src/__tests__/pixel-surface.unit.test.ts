@@ -35,7 +35,7 @@ describe('PixelSurface', () => {
       expect(badColor.error.detail.operation).toBe('set-pixel');
     }
 
-    const badSeed = candidate.fillNoise(Number.NaN);
+    const badSeed = candidate.noise(Number.NaN);
     expect(badSeed.ok).toBe(false);
     if (!badSeed.ok && badSeed.error.code === 'image-surface-invalid') {
       expect(badSeed.error.detail.operation).toBe('noise');
@@ -70,7 +70,7 @@ describe('PixelSurface', () => {
   it('produces byte-identical seeded noise and a regular TextureAsset/Pack carrier', () => {
     const first = surface();
     const second = surface();
-    expect(first.fillNoise(42, { min: 10, max: 200, alpha: 123 }).ok).toBe(true);
+    expect(first.noise(42, { min: 10, max: 200, alpha: 123 }).ok).toBe(true);
     expect(second.noise(42, { min: 10, max: 200, alpha: 123 }).ok).toBe(true);
     expect(first.data).toEqual(second.data);
     expect(first.toTextureAsset()).toMatchObject({

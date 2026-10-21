@@ -10,8 +10,8 @@ function entity(extra = []) {
     { name: 'Entity', fields: { self: { type: 'entity' } }, values: { self: 0 } },
     { name: 'Transform', fields: { pos: { type: 'array<f32, 3>' }, quat: { type: 'array<f32, 4>' }, scale: { type: 'array<f32, 3>' } }, values: { pos: [0, -0.28, 0], quat: [0, 0, 0, 1], scale: [1, 1, 1] } },
     { name: 'GlobalTransform', fields: { world: { type: 'array<f32, 16>' } }, values: { world: Array(16).fill(0) } },
-    { name: 'MeshFilter', fields: { assetHandle: { type: 'shared<MeshAsset>' } }, values: { assetHandle: 1025 } },
-    { name: 'MeshRenderer', fields: { materials: { type: 'array<shared<MaterialAsset>>' }, lightingChannels: { type: 'f64' } }, values: { materials: [1026, 1027, 1028], lightingChannels: 1 } },
+    { name: 'MeshFilter', fields: { assetHandle: { type: 'asset<mesh>' } }, values: { assetHandle: 1025 } },
+    { name: 'MeshRenderer', fields: { materials: { type: 'array<asset<material>>' }, lightingChannels: { type: 'f64' } }, values: { materials: [1026, 1027, 1028], lightingChannels: 1 } },
     ...extra,
   ] });
 }
@@ -53,7 +53,7 @@ describe('mesh inspector presentation', () => {
   });
   it('keeps partial mesh bindings visible without inventing missing component fields', () => {
     const source = inspectorEntityFromInspection({ entityId: 'partial', components: [
-      { name: 'MeshFilter', fields: { assetHandle: { type: 'shared<MeshAsset>' } }, values: { assetHandle: 1025 } },
+      { name: 'MeshFilter', fields: { assetHandle: { type: 'asset<mesh>' } }, values: { assetHandle: 1025 } },
     ] });
     const [meshNode] = inspectorComponentTree(source);
     assert.deepEqual(meshNode.components, ['MeshFilter']);

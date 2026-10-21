@@ -42,6 +42,10 @@ import { setTimeout as delay } from 'node:timers/promises';
 import { fileURLToPath } from 'node:url';
 import { encodePng } from '@forgeax/engine-image/png';
 import { drawReadyFrame } from '../../../../../scripts/test/ready-render-frame.mjs';
+import { AssetRegistry } from '@forgeax/engine-assets-runtime';
+
+import { createPrimitiveMesh } from '@forgeax/engine-geometry';
+
 
 const SMOKE_DURATION_MS = Number.parseInt(process.env.SMOKE_DURATION_MS ?? '5000', 10);
 const SMOKE_MIN_FRAMES = Number.parseInt(process.env.SMOKE_MIN_FRAMES ?? '60', 10);
@@ -165,9 +169,7 @@ const {
   SpotLight,
 } = await import('@forgeax/engine-render');
 const { Transform } = await import('@forgeax/engine-scene');
-const {
-  HANDLE_CUBE,
-} = await import('@forgeax/engine-assets-runtime');
+
 
 const { buildEngineShaderManifest } = await import('@forgeax/engine-vite-plugin-shader');
 const ENGINE_MANIFEST = await buildEngineShaderManifest();
@@ -207,7 +209,12 @@ const errors = [];
 renderer.subscribe((event) => { if (event.kind === 'error') errors.push({ code: event.error.code, hint: event.error.hint }); });
 
 
-const world = new World();
+const world = new World({ assets: assets });
+const sceneAssets = world.assets;
+if (!(sceneAssets instanceof AssetRegistry)) throw new Error('Scene requires its runtime asset owner');
+
+const primitiveCube = sceneAssets.create(createPrimitiveMesh('cube').unwrap()).unwrap();
+
 const worldAttachment1 = renderer.attach(world);
 if (!worldAttachment1.ok) throw worldAttachment1.error;
 const lease = worldAttachment1.value;
@@ -225,14 +232,14 @@ const CUBE_POSITIONS = [
   [1.5, 0.2, -1.5],
   [-1.3, 1.0, -1.5],
 ];
-const gridMat = world.allocSharedRef('MaterialAsset', Materials.standard({ baseColor: [0.6, 0.6, 0.6, 1] }));
+const gridMat = world.assets.create(Materials.standard({ baseColor: [0.6, 0.6, 0.6, 1] })).unwrap();
 for (const pos of CUBE_POSITIONS) {
   world.spawn(
     {
       component: Transform,
       data: { pos: [pos[0], pos[1], pos[2]], quat: [0, 0, 0, 1], scale: [1, 1, 1]},
     },
-    { component: MeshFilter, data: { assetHandle: HANDLE_CUBE } },
+    { component: MeshFilter, data: { assetHandle: primitiveCube } },
     { component: MeshRenderer, data: { materials: [gridMat] } },
   );
 }
@@ -281,11 +288,8 @@ if (!floorRes.ok) {
   console.error('[smoke] FAIL - createPlaneGeometry failed:', floorRes.error.code);
   process.exit(1);
 }
-const floorMesh = world.allocSharedRef('MeshAsset', floorRes.value);
-const floorMat = world.allocSharedRef(
-  'MaterialAsset',
-  Materials.standard({ baseColor: [0.55, 0.55, 0.6, 1], metallic: 0, roughness: 0.9 }),
-);
+const floorMesh = world.assets.create(floorRes.value).unwrap();
+const floorMat = world.assets.create(Materials.standard({ baseColor: [0.55, 0.55, 0.6, 1], metallic: 0, roughness: 0.9 })).unwrap();
 const FLOOR_QUAT_X = Math.sin(-Math.PI / 4);
 const FLOOR_QUAT_W = Math.cos(-Math.PI / 4);
 world
@@ -311,17 +315,14 @@ const occluderPresent = FALSIFY !== 'no-occluder';
 if (!occluderPresent) {
   console.log('[smoke] FALSIFY=no-occluder -- obstructing cube omitted (no shadow caster)');
 } else {
-  const obstructorMat = world.allocSharedRef(
-    'MaterialAsset',
-    Materials.standard({ baseColor: [0.85, 0.5, 0.25, 1], metallic: 0, roughness: 0.6 }),
-  );
+  const obstructorMat = world.assets.create(Materials.standard({ baseColor: [0.85, 0.5, 0.25, 1], metallic: 0, roughness: 0.6 })).unwrap();
   world
     .spawn(
       {
         component: Transform,
         data: { pos: [SHADOW_X, -0.6, SHADOW_Z], quat: [0, 0, 0, 1], scale: [1, 1, 1]},
       },
-      { component: MeshFilter, data: { assetHandle: HANDLE_CUBE } },
+      { component: MeshFilter, data: { assetHandle: primitiveCube } },
       { component: MeshRenderer, data: { materials: [obstructorMat] } },
     )
     .unwrap();

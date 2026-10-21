@@ -18,12 +18,13 @@ import {
 import type { EncodedTape, RecorderAttachment } from '@forgeax/engine-rhi-debug';
 import { propagateTransforms, Transform } from '@forgeax/engine-scene';
 import { Skin } from '@forgeax/engine-skinning';
-import type { MaterialAsset, MeshAsset } from '@forgeax/engine-types';
+import type { AssetHandle, MaterialAsset, MeshAsset } from '@forgeax/engine-types';
 import { expect } from 'vitest';
 import { completeReadyFrame } from '../../../../scripts/test/ready-render-frame.mjs';
 import testQuality from '../../../../scripts/test/render-quality.json' with { type: 'json' };
 import { compactTape } from './compact-tape.fixture';
 import { luminanceRgba16f } from './contact-shadow.fixture';
+import { testAssets } from './helpers/runtime-assets';
 import { renderValue } from './standard-gbuffer-replay.fixture';
 
 function required<T>(value: T | undefined): T {
@@ -55,8 +56,9 @@ export interface ChannelSample {
 export async function verifyLightingChannels(
   renderer: Renderer,
   options: {
+    readonly assets: AssetRegistry;
     readonly receiver?: ChannelReceiver;
-    readonly preparePhysicalMaterial?: (source: MaterialAsset) => Promise<void>;
+    readonly preparePhysicalMaterial?: (source: MaterialAsset) => Promise<AssetHandle<'material'>>;
     readonly paths?: readonly ChannelSample['path'][];
     readonly captureLights?: readonly ChannelSample['light'][];
     readonly recorder?: RecorderAttachment;
@@ -66,9 +68,9 @@ export async function verifyLightingChannels(
       readonly assets: AssetRegistry;
       readonly identity: { readonly source: string; readonly epoch: number };
     };
-  } = {},
+  },
 ): Promise<ChannelSample[]> {
-  const world = new World();
+  const world = new World({ assets: options.assets });
   const receiverKind = options.receiver ?? 'rigid';
   let meshValue = createBoxGeometry(2, 2, 0.1).unwrap();
   if (receiverKind === 'sections') {
@@ -94,7 +96,7 @@ export async function verifyLightingChannels(
     const packed = packInterleavedVertexAttributes(attributes, count).unwrap();
     meshValue = { ...meshValue, attributes, vertices: packed.vertices } as MeshAsset;
   }
-  const mesh = world.allocSharedRef('MeshAsset', meshValue);
+  const mesh = testAssets(world).create(meshValue).unwrap();
   const authoredMaterial = Materials.standard({
     ...(receiverKind === 'physical'
       ? { staticSwitches: { clearcoat: true }, clearcoat: 1, clearcoatRoughness: 0.1 }
@@ -142,12 +144,10 @@ export async function verifyLightingChannels(
           ),
         }
       : authoredMaterial;
-  if (receiverKind === 'physical') {
-    if (options.preparePhysicalMaterial === undefined)
-      throw new Error('physical lighting fixture requires its cooked publication');
-    await options.preparePhysicalMaterial(authoredMaterial);
-  }
-  const material = world.allocSharedRef('MaterialAsset', materialValue);
+  const material =
+    receiverKind === 'physical'
+      ? await required(options.preparePhysicalMaterial)(authoredMaterial)
+      : testAssets(world).create(materialValue).unwrap();
   const receiver = world
     .spawn(
       { component: Transform, data: { pos: [0, 0, -4] } },
@@ -162,12 +162,14 @@ export async function verifyLightingChannels(
     const joint = world.spawn({ component: Transform, data: { pos: [0, 0, -4] } }).unwrap();
     const inverse = new Float32Array(16);
     inverse[0] = inverse[5] = inverse[10] = inverse[15] = 1;
-    const skeleton = world.allocSharedRef('SkeletonAsset', {
-      kind: 'skeleton' as const,
-      jointCount: 1,
-      inverseBindMatrices: inverse,
-      bounds: new Float32Array([-1, -1, -0.1, 1, 1, 0.1]),
-    });
+    const skeleton = testAssets(world)
+      .create({
+        kind: 'skeleton' as const,
+        jointCount: 1,
+        inverseBindMatrices: inverse,
+        bounds: new Float32Array([-1, -1, -0.1, 1, 1, 0.1]),
+      })
+      .unwrap();
     world
       .addComponent(receiver, {
         component: Skin,

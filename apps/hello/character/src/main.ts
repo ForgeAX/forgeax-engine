@@ -27,11 +27,15 @@ import {
   RigidBody,
   RigidBodyTypeValue,
 } from '@forgeax/engine-physics';
-import { HANDLE_CUBE } from '@forgeax/engine-assets-runtime';
+
 import { Transform } from '@forgeax/engine-scene';
 import { Camera, DirectionalLight, MeshFilter, MeshRenderer } from '@forgeax/engine-render';
 import { EngineEnvironmentError } from '@forgeax/engine-runtime';
 import { forgeaxBundlerAdapter } from 'virtual:forgeax/bundler';
+import { AssetRegistry } from '@forgeax/engine-assets-runtime';
+
+import { createPrimitiveMesh } from '@forgeax/engine-geometry';
+
 
 // Capsule character dims: radius 0.3 + halfHeight 0.5 -> half-total 0.8.
 const CHAR_RADIUS = 0.3;
@@ -60,11 +64,16 @@ if (!app.ok) {
 }
 
 function spawnScene(world: World): number {
+const sceneAssets = world.assets;
+if (!(sceneAssets instanceof AssetRegistry)) throw new Error('Scene requires its runtime asset owner');
+
+const primitiveCube = sceneAssets.create(createPrimitiveMesh('cube').unwrap()).unwrap();
+
   // Ground slab.
   world
     .spawn(
       { component: Transform, data: { pos: [0, -0.85, 0], scale: [20, 1, 20]} },
-      { component: MeshFilter, data: { assetHandle: HANDLE_CUBE } },
+      { component: MeshFilter, data: { assetHandle: primitiveCube } },
       { component: MeshRenderer, data: {} },
       { component: RigidBody, data: { type: RigidBodyTypeValue.static } },
       {
@@ -81,7 +90,7 @@ function spawnScene(world: World): number {
   world
     .spawn(
       { component: Transform, data: { pos: [3, -0.45, 0], scale: [2, 0.4, 8]} },
-      { component: MeshFilter, data: { assetHandle: HANDLE_CUBE } },
+      { component: MeshFilter, data: { assetHandle: primitiveCube } },
       { component: MeshRenderer, data: {} },
       { component: RigidBody, data: { type: RigidBodyTypeValue.static } },
       {
@@ -98,7 +107,7 @@ function spawnScene(world: World): number {
   world
     .spawn(
       { component: Transform, data: { pos: [-3, 0.5, -2], scale: [1, 2, 1]} },
-      { component: MeshFilter, data: { assetHandle: HANDLE_CUBE } },
+      { component: MeshFilter, data: { assetHandle: primitiveCube } },
       { component: MeshRenderer, data: {} },
       { component: RigidBody, data: { type: RigidBodyTypeValue.static } },
       {
@@ -115,7 +124,7 @@ function spawnScene(world: World): number {
   const character = world
     .spawn(
       { component: Transform, data: { pos: [0, CHAR_REST_Y, 0]} },
-      { component: MeshFilter, data: { assetHandle: HANDLE_CUBE } },
+      { component: MeshFilter, data: { assetHandle: primitiveCube } },
       { component: MeshRenderer, data: {} },
       { component: RigidBody, data: { type: RigidBodyTypeValue.kinematic } },
       {

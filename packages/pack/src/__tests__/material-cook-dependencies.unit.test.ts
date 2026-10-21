@@ -138,9 +138,7 @@ describe('material cook dependency closure', () => {
       value: {
         status: 'recovered',
         generation: 1,
-        candidateGeneration: 2,
-        lastKnownGoodGeneration: 1,
-        lastKnownGood: committed.value.draft,
+        draft: committed.value.draft,
       },
     });
   });

@@ -1,7 +1,6 @@
 // @forgeax/engine-rhi-debug/browser -- browser-only capture transport.
 
 import { err, ok, type Result } from '@forgeax/engine-types';
-import type { RhiDebugError } from './errors';
 import { digestBytesAsync } from './protocol/digest-async';
 import {
   CHUNK_DIGEST_HEADER,
@@ -9,22 +8,12 @@ import {
   type RawTapeArtifactRef,
   type TapeChunk,
 } from './protocol/upload';
-import type {
-  CaptureFrameOptions,
-  EncodedTape,
-  RecorderAttachment,
-  TapeArtifact,
-} from './recorder/session';
-
-export interface BrowserCaptureProvider {
-  captureFrame(options?: CaptureFrameOptions): Promise<Result<EncodedTape, RhiDebugError>>;
-}
+import type { TapeArtifact } from './recorder/session';
 
 export interface BrowserCaptureOptions {
   /** Tape route root; chunks go to `<endpoint>/chunks`, the commit to `<endpoint>/commit`. */
   readonly endpoint?: string;
   readonly runId?: string;
-  readonly capture?: CaptureFrameOptions;
   readonly signal?: AbortSignal;
   /** Upload window; bounds the extra renderer memory of one upload. Default 16 MiB. */
   readonly chunkBytes?: number;
@@ -62,20 +51,6 @@ export type BrowserCaptureError =
       readonly hint: string;
       readonly detail: { readonly endpoint: string; readonly cause: string };
     };
-
-export function browserCaptureProvider(attachment: RecorderAttachment): BrowserCaptureProvider {
-  return attachment;
-}
-
-export async function captureAndUpload(
-  provider: BrowserCaptureProvider,
-  options: BrowserCaptureOptions = {},
-): Promise<Result<BrowserArtifactRef, RhiDebugError | BrowserCaptureError>> {
-  const captureOptions = mergeCaptureOptions(options.capture, options.signal);
-  const captured = await provider.captureFrame(captureOptions);
-  if (!captured.ok) return captured;
-  return uploadTape(captured.value, options);
-}
 
 /**
  * Resumable chunked upload. Each window carries its SHA-256; windows the
@@ -246,14 +221,6 @@ function receivedChunks(value: unknown): TapeChunk[] {
       typeof chunk.length === 'number' &&
       typeof chunk.digest === 'string',
   );
-}
-
-function mergeCaptureOptions(
-  capture: CaptureFrameOptions | undefined,
-  signal: AbortSignal | undefined,
-): CaptureFrameOptions | undefined {
-  if (capture === undefined && signal === undefined) return undefined;
-  return { ...capture, ...(signal === undefined ? {} : { signal }) };
 }
 
 function createRunId(): string {

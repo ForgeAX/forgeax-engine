@@ -1,5 +1,5 @@
 import type { MeshAsset } from '@forgeax/engine-types';
-import type { PointsLinesRetainedSnapshot } from './snapshot';
+import type { PointsLinesPreparedSnapshot } from './snapshot';
 
 export interface PointsLinesExpandedGeometry {
   readonly key: string;
@@ -22,17 +22,32 @@ export interface PointsLinesExpandedGeometry {
 
 /** Shared CPU expansion cache. Material generations are not geometry key data. */
 export class PointsLinesExpansionCache {
+  private readonly identities = new WeakMap<MeshAsset, number>();
+  private nextIdentity = 0;
   private readonly entries = new Map<string, PointsLinesExpandedGeometry>();
 
-  getOrCreate(snapshot: PointsLinesRetainedSnapshot, mesh: MeshAsset): PointsLinesExpandedGeometry {
+  getOrCreate(snapshot: PointsLinesPreparedSnapshot, mesh: MeshAsset): PointsLinesExpandedGeometry {
     if (snapshot.component === undefined || snapshot.style === undefined) {
       return emptyGeometry(snapshot);
     }
-    const key = expansionKey(snapshot);
+    let identity = this.identities.get(mesh);
+    if (identity === undefined) {
+      identity = ++this.nextIdentity;
+      this.identities.set(mesh, identity);
+    }
+    const key = `${expansionKey(snapshot)}:source=${identity}`;
     const cached = this.entries.get(key);
-    if (cached !== undefined) return cached;
+    if (cached !== undefined) {
+      this.entries.delete(key);
+      this.entries.set(key, cached);
+      return cached;
+    }
     const geometry = deriveExpandedGeometry(snapshot, mesh, key);
     this.entries.set(key, geometry);
+    if (this.entries.size > 256) {
+      const oldest = this.entries.keys().next().value;
+      if (oldest !== undefined) this.entries.delete(oldest);
+    }
     return geometry;
   }
 
@@ -45,12 +60,12 @@ export class PointsLinesExpansionCache {
   }
 }
 
-function expansionKey(snapshot: PointsLinesRetainedSnapshot): string {
+function expansionKey(snapshot: PointsLinesPreparedSnapshot): string {
   return `mesh:${snapshot.meshHandle}:${snapshot.meshGeneration}:component=${snapshot.component ?? 'none'}`;
 }
 
 function deriveExpandedGeometry(
-  snapshot: PointsLinesRetainedSnapshot,
+  snapshot: PointsLinesPreparedSnapshot,
   mesh: MeshAsset,
   key: string,
 ): PointsLinesExpandedGeometry {
@@ -231,7 +246,7 @@ function boundsOf(positions: Float32Array): Float32Array {
   return bounds;
 }
 
-function emptyGeometry(snapshot: PointsLinesRetainedSnapshot): PointsLinesExpandedGeometry {
+function emptyGeometry(snapshot: PointsLinesPreparedSnapshot): PointsLinesExpandedGeometry {
   return {
     key: `empty:${snapshot.entityKey}`,
     component: snapshot.component ?? 'Points',

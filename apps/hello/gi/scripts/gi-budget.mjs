@@ -53,10 +53,10 @@ async function measure(sceneId, configure) {
     height: SIZE,
     timing: true,
   });
-  const world = new World();
+  const world = new World({ assets: assets });
   const scene = sceneId === 'sponza' ? SPONZA : PROCEDURAL_SCENES[sceneId];
   if (sceneId === 'sponza') await gi.spawnSponza(world, assets, SPONZA_DIST);
-  else spawnProceduralScene(world, scene, gi.publishMaterials(world, assets, cooked), 1, boxMesh);
+  else spawnProceduralScene(world, scene, await gi.publishMaterials(world, assets, cooked), 1, boxMesh);
   const lease = renderer.attach(world).unwrap();
   const driver = await gi.createFrameDriver({ renderer, world, lease });
   const direct = gi.directProfile(renderer.inspect().profile);

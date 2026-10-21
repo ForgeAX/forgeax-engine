@@ -2,12 +2,11 @@
 // Consolidated by feat-20260609-test-pool-startup-reduction-merge-tiny-test-files
 // biome-ignore-all lint/complexity/noUselessLoneBlockStatements: scope isolation between merged source files
 //
-// Source files (N=9):
+// Source files (N=8):
 //   - packages/shader/src/__tests__/fullscreen-triangle.test.ts
 //   - packages/shader/src/__tests__/fxaa-shader.test.ts
 //   - packages/shader/src/__tests__/ibl-modules-parse.test.ts
 //   - packages/shader/src/__tests__/register-material-shader.test.ts
-//   - packages/shader/src/__tests__/register-pbr-skin.test.ts
 //   - packages/shader/src/__tests__/registry.test.ts
 //   - packages/shader/src/__tests__/skybox-direction.test.ts
 //   - packages/shader/src/__tests__/tbn-lighting-helpers.test.ts
@@ -22,8 +21,6 @@ import { beforeAll, describe, expect, it } from 'vitest';
 import type { ShaderError } from '../errors.js';
 import { err as errResult, ok as okResult } from '../errors.js';
 import { TONEMAP_LUMINANCE_EPSILON } from '../index.js';
-import { STANDARD_PIPELINE_PARAM_SCHEMA } from '../material-schemas.js';
-import { registerDefaultStandardPbrSkin } from '../register-default-standard-pbr-skin.js';
 import {
   FORGEAX_RESERVED_PATH_PREFIX,
   type MaterialShaderEntry,
@@ -304,28 +301,28 @@ import {
   interface ModuleSpec {
     readonly file: string;
     readonly importPath: string;
-    readonly expectedGroup1: 'texture_2d' | 'texture_cube' | 'none';
+    readonly expectedGroup1: readonly ('texture_2d' | 'texture_cube')[];
   }
 
   const MODULES: readonly ModuleSpec[] = [
-    { file: 'ibl-shared.wgsl', importPath: 'forgeax_pbr::ibl_shared', expectedGroup1: 'none' },
+    { file: 'ibl-shared.wgsl', importPath: 'forgeax_pbr::ibl_shared', expectedGroup1: [] },
     {
       file: 'ibl-equirect-to-cube.wgsl',
       importPath: 'forgeax_pbr::ibl_equirect_to_cube',
-      expectedGroup1: 'texture_2d',
+      expectedGroup1: ['texture_2d'],
     },
     {
       file: 'ibl-irradiance.wgsl',
       importPath: 'forgeax_pbr::ibl_irradiance',
-      expectedGroup1: 'texture_cube',
+      expectedGroup1: ['texture_cube'],
     },
     {
       file: 'ibl-prefilter.wgsl',
       importPath: 'forgeax_pbr::ibl_prefilter',
-      expectedGroup1: 'texture_cube',
+      expectedGroup1: ['texture_cube', 'texture_2d'],
     },
-    { file: 'ibl-brdf-lut.wgsl', importPath: 'forgeax_pbr::ibl_brdf_lut', expectedGroup1: 'none' },
-    { file: 'ibl-sampling.wgsl', importPath: 'forgeax_pbr::ibl_sampling', expectedGroup1: 'none' },
+    { file: 'ibl-brdf-lut.wgsl', importPath: 'forgeax_pbr::ibl_brdf_lut', expectedGroup1: [] },
+    { file: 'ibl-sampling.wgsl', importPath: 'forgeax_pbr::ibl_sampling', expectedGroup1: [] },
   ];
 
   function readSource(file: string): string {
@@ -354,22 +351,17 @@ import {
             .split(/\r?\n/)
             .filter((line: string) => /@group\(1\)/.test(line));
 
-          if (spec.expectedGroup1 === 'none') {
+          if (spec.expectedGroup1.length === 0) {
             // Shared math + sampling helpers + brdf-lut entry are zero-binding.
             expect(group1Lines).toHaveLength(0);
             return;
           }
-          // At least one binding line; every texture binding line in @group(1)
-          // must match the expected texture type (no mixing texture_2d /
-          // texture_cube inside a single module -- this was the round-1
-          // collision root cause).
           expect(group1Lines.length).toBeGreaterThan(0);
-          const textureBindings = group1Lines.filter((line: string) =>
-            /var\s+\w+\s*:\s*texture_/.test(line),
-          );
-          for (const line of textureBindings) {
-            expect(line).toMatch(new RegExp(`texture_${spec.expectedGroup1.split('_')[1]}\\b`));
-          }
+          const textureTypes = group1Lines.flatMap((line: string) => {
+            const type = /var\s+\w+\s*:\s*(texture_\w+)/.exec(line)?.[1];
+            return type === undefined ? [] : [type];
+          });
+          expect(textureTypes).toEqual(spec.expectedGroup1);
         });
 
         it('every @binding(N) inside @group(1) is unique within the module', () => {
@@ -410,18 +402,14 @@ import {
     it('pads ibl-prefilter PrefilterUniforms to a 16-byte block', () => {
       const src = readSource('ibl-prefilter.wgsl');
       expect(src).toMatch(
-        /struct\s+PrefilterUniforms\s*\{[\s\S]*?roughness:\s*f32,[\s\S]*?faceSize:\s*f32,[\s\S]*?sourceMipLevelCount:\s*f32,[\s\S]*?sourceIsCameraCube:\s*f32,/,
+        /struct\s+PrefilterUniforms\s*\{[\s\S]*?level:\s*f32,[\s\S]*?face:\s*f32,[\s\S]*?sourceIsCameraCube:\s*f32,[\s\S]*?_padding:\s*f32,/,
       );
     });
 
-    it('bounds prefilter mip selection to the allocated cube levels', () => {
-      const src = readSource('ibl-prefilter.wgsl');
-      expect(src).toContain('PREFILTER_MIP_LEVEL_COUNT');
-      expect(src).toMatch(/sourceMipLevelCount:\s*f32,/);
-      expect(src).toMatch(
-        /clamp\(\s*requestedMipLevel,\s*0\.0,\s*max\(\s*prefUniforms\.sourceMipLevelCount\s*-\s*1\.0,\s*0\.0\s*\),\s*\)/s,
-      );
-      expect(src).toMatch(/max\(4\.0\s*\*\s*HdotV,\s*0\.0001\)/);
+    it('bounds runtime roughness sampling to the complete CubeUV level range', () => {
+      const src = readSource('ibl-pmrem.wgsl');
+      expect(src).toContain('clamp(pmremRoughnessToMip(roughness), -2.0, maxMip)');
+      expect(src).toContain('if (fract(mip) == 0.0) { return first; }');
     });
 
     it('evaluates the real Hammersley domain without a zero GGX denominator', () => {
@@ -434,7 +422,7 @@ import {
         value = (((value & 0x00ff00ff) << 8) | ((value & 0xff00ff00) >>> 8)) >>> 0;
         return value * 2.3283064365386963e-10;
       };
-      const sampleCount = 1024;
+      const sampleCount = 512;
       const roughness = 0;
       let maximumXiY = 0;
       let minimumDenominator = Number.POSITIVE_INFINITY;
@@ -971,150 +959,6 @@ import {
           /@group\(3\)\s+@binding\(0\)/,
         );
       }
-    });
-  });
-}
-
-{
-  // --- from register-pbr-skin.test.ts ---
-  // register-pbr-skin.test.ts — feat-20260523-skin-skeleton-animation M3 / T-31.
-  //
-  // Tests for registerDefaultStandardPbrSkin helper (T-30).
-  //
-  // 5 cases per plan acceptanceCheck (M3 / w13: case (d) deleted; the
-  // sidecar binding-layout field is gone — runtime/pbr-pipeline.ts is the
-  // BGL SSOT and exercises the dual-binding skin layout in
-  // render-system-skin-bg.unit.test.ts):
-  //   (a) register + lookup happy path
-  //   (b) lookup returns MaterialShaderEntry with non-empty source
-  //   (c) paramSchema reuses default-standard-pbr schema
-  //   (e) duplicate register throws (fail-fast no overwrite)
-  //   (f) lookup of non-registered id after register returns material-shader-not-found
-  //
-  // Anchors:
-  //   - plan acceptanceCheck AC-25 (paramSchema correct)
-  //   - R-10 paramSchema reuse assertion
-  //   - plan-strategy section 5.3 critical test point register
-
-  const STUB_WGSL = '// stub composed pbr-skin wgsl\n';
-
-  const SHADER_MODULE_BRAND: unique symbol = Symbol('mock-shader-module');
-  type MockShaderModule = { readonly [SHADER_MODULE_BRAND]: 'mock' };
-
-  function makeMockRegistry(): ShaderRegistry {
-    return new ShaderRegistry({
-      device: {
-        createShaderModule(): Result<ShaderModule, RhiError> {
-          const handle: MockShaderModule = { [SHADER_MODULE_BRAND]: 'mock' as const };
-          return { ok: true, value: handle as unknown as ShaderModule } as unknown as Result<
-            ShaderModule,
-            RhiError
-          >;
-        },
-      },
-      manifestUrl: undefined,
-    });
-  }
-
-  function lookup(registry: ShaderRegistry): MaterialShaderEntry {
-    const r = registry.findMaterialArtifact('forgeax::pbr-skin');
-    if (!r.ok) throw new Error(`lookup failed: ${r.error.code}`);
-    return r.value;
-  }
-
-  describe('T-31 (a) — register + lookup happy path', () => {
-    it('registers forgeax::pbr-skin and looks it back up', () => {
-      const registry = makeMockRegistry();
-      registerDefaultStandardPbrSkin(registry, STUB_WGSL);
-      const entry = lookup(registry);
-      expect(entry.source).toBe(STUB_WGSL);
-    });
-  });
-
-  describe('T-31 (b) — entry.source is non-empty', () => {
-    it('source matches the passed-in composed wgsl', () => {
-      const registry = makeMockRegistry();
-      const src = '// composed pbr-skin wgsl v2\n';
-      registerDefaultStandardPbrSkin(registry, src);
-      expect(lookup(registry).source).toBe(src);
-    });
-
-    it('source is never empty after registration', () => {
-      const registry = makeMockRegistry();
-      registerDefaultStandardPbrSkin(registry, '// non-empty\n');
-      expect(lookup(registry).source.length).toBeGreaterThan(0);
-    });
-  });
-
-  describe('T-31 (c) — paramSchema reuses default-standard-pbr schema (R-10)', () => {
-    it('paramSchema length matches the default standard-PBR schema', () => {
-      const registry = makeMockRegistry();
-      registerDefaultStandardPbrSkin(registry, STUB_WGSL);
-      const entry = lookup(registry);
-      expect(entry.paramSchema).toHaveLength(STANDARD_PIPELINE_PARAM_SCHEMA.length);
-    });
-
-    it('paramSchema names match default-standard-pbr schema field-for-field', () => {
-      const registry = makeMockRegistry();
-      registerDefaultStandardPbrSkin(registry, STUB_WGSL);
-      const entry = lookup(registry);
-      expect(entry.paramSchema).toEqual(STANDARD_PIPELINE_PARAM_SCHEMA);
-    });
-
-    it('paramSchema types match expected value-level types', () => {
-      const registry = makeMockRegistry();
-      registerDefaultStandardPbrSkin(registry, STUB_WGSL);
-      const entry = lookup(registry);
-      expect(entry.paramSchema.map((p) => p.type)).toEqual(
-        STANDARD_PIPELINE_PARAM_SCHEMA.map((p) => p.type),
-      );
-    });
-  });
-
-  // T-31 (d) deleted by feat-20260613-material-paramschema-driven-binding
-  // M3 / w13: the per-shader binding-layout sidecar field has been removed
-  // from MaterialShaderEntry. The skin pipeline's @group(2) 2-binding layout
-  // contract (meshes + palette + dynamic offset) is now owned by
-  // runtime/src/pbr-pipeline.ts:buildPbrSkinLayouts and exercised by
-  // packages/runtime/src/__tests__/render-system-skin-bg.unit.test.ts.
-
-  describe('T-31 (e) — duplicate register throws (fail-fast no overwrite)', () => {
-    it('throws on same-name re-register', () => {
-      const registry = makeMockRegistry();
-      registerDefaultStandardPbrSkin(registry, STUB_WGSL);
-      expect(() => registerDefaultStandardPbrSkin(registry, '// attempted drift\n')).toThrow(
-        /already registered/,
-      );
-    });
-
-    it('original entry stays intact after failed re-register', () => {
-      const registry = makeMockRegistry();
-      registerDefaultStandardPbrSkin(registry, STUB_WGSL);
-      try {
-        registerDefaultStandardPbrSkin(registry, '// drift\n');
-      } catch {
-        // expected
-      }
-      expect(lookup(registry).source).toBe(STUB_WGSL);
-    });
-  });
-
-  describe('T-31 (f) — non-registered identifier returns material-shader-not-found', () => {
-    it('lookup after registration still fails for non-existent id', () => {
-      const registry = makeMockRegistry();
-      registerDefaultStandardPbrSkin(registry, STUB_WGSL);
-      const r = registry.findMaterialArtifact('forgeax::no-such-skin');
-      expect(r.ok).toBe(false);
-      if (r.ok) return;
-      expect(r.error.code).toBe('material-shader-not-found');
-    });
-
-    it("identifier prefix 'forgeax::' matches reserved prefix", () => {
-      // Verify the reserved prefix is the same constant used by ShaderRegistry
-      // (charter F1 grep gate — AI users grep FORGEAX_RESERVED_PATH_PREFIX).
-      expect(FORGEAX_RESERVED_PATH_PREFIX).toBe('forgeax::');
-      const id = 'forgeax::pbr-skin';
-      expect(id.startsWith(FORGEAX_RESERVED_PATH_PREFIX)).toBe(true);
     });
   });
 }
@@ -1905,7 +1749,7 @@ import {
 
     it('directional CSM adds the receiver family base to its logical cascade layer', () => {
       const codeOnly = stripComments(readSource('lighting-directional.wgsl'));
-      expect(codeOnly).toMatch(/let\s+uv\s*=\s*tileUv\s*;/);
+      expect(codeOnly).toMatch(/let\s+uv\s*=\s*tileUv\s*\*\s*viewportScale\s*;/);
       expect(codeOnly).toMatch(/let\s+shadowLayer\s*=\s*i32\(layer\s*\+\s*layerBase\)/);
       expect(codeOnly).not.toMatch(/_atlasTile/);
       expect(stripComments(readSource('common.wgsl'))).toMatch(

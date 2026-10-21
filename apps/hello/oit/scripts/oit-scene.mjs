@@ -86,13 +86,10 @@ export function probeReference(probe, size) {
 }
 
 /** Spawn the backdrop, occluder, camera and the three layers in `order`. */
-export function spawnOitScene(world, { order = [0, 1, 2] } = {}) {
-  const quad = (w, h) => world.allocSharedRef('MeshAsset', createPlaneGeometry(w, h).unwrap());
+export function spawnOitScene(world, assets, { order = [0, 1, 2] } = {}) {
+  const quad = (w, h) => assets.create(createPlaneGeometry(w, h).unwrap()).unwrap();
   const opaque = (color) =>
-    world.allocSharedRef(
-      'MaterialAsset',
-      Materials.unlit([...color, 1], { renderState: { cullMode: 'none' } }),
-    );
+    assets.create(Materials.unlit([...color, 1], { renderState: { cullMode: 'none' } })).unwrap();
   world
     .spawn(
       { component: Transform, data: { pos: [0, 0, -3] } },
@@ -109,12 +106,9 @@ export function spawnOitScene(world, { order = [0, 1, 2] } = {}) {
     .unwrap();
   const layerMesh = quad(3, 1.2);
   const layerMaterials = OIT_LAYERS.map((layer) =>
-    world.allocSharedRef(
-      'MaterialAsset',
-      Materials.unlit([...layer.color, layer.alpha], {
+    assets.create(Materials.unlit([...layer.color, layer.alpha], {
         renderState: { cullMode: 'none', blend: STRAIGHT_OVER },
-      }),
-    ),
+      })).unwrap(),
   );
   let layers = [];
   const spawnLayers = (nextOrder) => {

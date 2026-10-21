@@ -1,4 +1,4 @@
-import { err, ok, type Result } from '@forgeax/engine-types';
+import { err, ok, type Result, type RigidBodyType } from '@forgeax/engine-types';
 
 /** A portable quaternion used by derived-physics inputs. */
 export type PhysicsQuaternion = readonly [number, number, number, number];
@@ -27,6 +27,13 @@ interface DerivedShapeBase {
 export interface ConvexCompoundShapeInput extends DerivedShapeBase {
   readonly kind: 'convex-compound';
   readonly pieces: readonly Float32Array[];
+  /** Experimental, default absent. Same geometry, at most eight internal colliders.
+   * Geometry preparation groups only dynamic explicit-mass bodies; unsupported sizes retain one collider.
+   * A later type-only policy change preserves the existing owned layout.
+   * Logical contact transitions are coalesced. A started observation samples a real
+   * contact from the lowest active spatial-group ordinal; its representative point
+   * can differ from the single collider, including the gameplay impact location. */
+  readonly nativeLayout?: 'spatial-groups-16';
 }
 
 /** Finite column-major matrix in the same bounded candidate transaction. */
@@ -126,7 +133,7 @@ export interface DerivedPhysicsCandidateInput {
   readonly sourceKey: string;
   /** Empty clears derived shapes; ordinary colliders and ECS body lifetime remain independent. */
   readonly shapes: readonly DerivedShapeInput[];
-  readonly bodyType?: 'static' | 'dynamic' | 'kinematic';
+  readonly bodyType?: RigidBodyType;
   readonly massProperties?: PhysicsMassProperties;
   readonly velocityPolicy?: PhysicsVelocityPolicy;
   /** Optional committed motion to restore after native mass admission. */
@@ -140,8 +147,29 @@ export interface DerivedPhysicsCandidateInput {
 export interface DerivedBodyTypeCandidateInput {
   /** The exact current frozen receipt returned by getDerivedPublication, not a reconstructed copy. */
   readonly publication: DerivedPhysicsPublication;
-  readonly bodyType: 'static' | 'dynamic' | 'kinematic';
+  readonly bodyType: RigidBodyType;
 }
+
+/** Detached current Native state, sampled before any member of this batch mutates.
+ * This is not a publication receipt or permission to read a half-committed World. */
+export interface DerivedPhysicsAdmissionState {
+  readonly entity: number;
+  readonly candidateId: string;
+  readonly generation: number;
+  readonly source: Readonly<{ sourceKey: string; revision: number }> | undefined;
+  readonly bodyType: RigidBodyType;
+  readonly position: readonly [number, number, number];
+  readonly rotation: readonly [number, number, number, number];
+  readonly linearVelocity: readonly [number, number, number];
+  readonly angularVelocity: readonly [number, number, number];
+  readonly sleeping: boolean;
+}
+
+/** Must be synchronous and read-only. Only literal true permits admission.
+ * Managed physics access is fenced while it runs; use the detached states. */
+export type DerivedPhysicsAdmissionGuard = (
+  states: readonly DerivedPhysicsAdmissionState[],
+) => boolean;
 
 /** Candidate lifecycle visible to a consumer. */
 export type DerivedPhysicsCandidateState =
@@ -216,7 +244,7 @@ export interface DerivedPhysicsSnapshot {
     readonly revision: number;
     readonly sourceKey: string;
     readonly shapes: readonly DerivedShapeInput[];
-    readonly bodyType?: 'static' | 'dynamic' | 'kinematic';
+    readonly bodyType?: RigidBodyType;
     readonly massProperties?: PhysicsMassProperties;
     readonly velocityPolicy?: PhysicsVelocityPolicy;
     /** Committed world-space COM and velocities at capture time. */
@@ -320,7 +348,7 @@ const SHAPE_BASE_KEYS = [
   'collisionGroups',
   'solverGroups',
 ];
-const COMPOUND_KEYS = new Set([...SHAPE_BASE_KEYS, 'pieces']);
+const COMPOUND_KEYS = new Set([...SHAPE_BASE_KEYS, 'pieces', 'nativeLayout']);
 const VOXEL_KEYS = new Set([...SHAPE_BASE_KEYS, 'regions', 'voxelSize']);
 const HEIGHTFIELD_KEYS = new Set([...SHAPE_BASE_KEYS, 'rows', 'columns', 'heights', 'scale']);
 const CANDIDATE_KEYS = new Set([
@@ -398,6 +426,9 @@ function candidateEnvelopeError(
     } else if (shape.kind === 'convex-compound') {
       if (!declaredKeys(shape, COMPOUND_KEYS) || !Array.isArray(shape.pieces))
         return invalid('compound fields and piece array match the public contract');
+      if (shape.nativeLayout !== undefined && shape.nativeLayout !== 'spatial-groups-16')
+        return invalid('unsupported compound native layout');
+      if (shape.nativeLayout !== undefined) bytes += 8 * 256;
       pieces += shape.pieces.length;
       if (pieces > DERIVED_PHYSICS_LIMITS.maxConvexPiecesPerCandidate) return budget();
       for (const piece of shape.pieces) {
@@ -929,7 +960,10 @@ export function estimateDerivedPhysicsInputBytes(input: DerivedPhysicsCandidateI
         ? shape.heights.byteLength * 4
         : shape.kind === 'voxels'
           ? estimateVoxelShapeBytes(shape)
-          : shape.pieces.reduce((bytes, piece) => bytes + piece.byteLength * 4 + 128, 0)),
+          : shape.pieces.reduce(
+              (bytes, piece) => bytes + piece.byteLength * 4 + 128,
+              shape.nativeLayout === undefined ? 0 : 8 * 256,
+            )),
     0,
   );
   return shapeBytes + (input.constraints?.length ?? 0) * 192 + 256;

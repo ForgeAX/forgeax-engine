@@ -1,5 +1,6 @@
 import { frustum, mat4 } from '@forgeax/engine-math';
 import { describe, expect, it, vi } from 'vitest';
+import { receiptRow } from '../../__tests__/gpu-draw-selection-fixture';
 import * as derivedBounds from '../../instances-derived-bounds';
 import { InstanceBoundsCache } from '../../instances-derived-bounds';
 import type { RenderableSnapshot } from '../../render-system-extract';
@@ -15,7 +16,7 @@ function snapshot(x = 0, worldId = 0) {
     entityKey: 7,
     assetHandle: 1,
     transform: { world },
-    material: {} as never,
+    material: receiptRow().source.material,
     materials: [],
     materialBindingSources: [],
     localAabb: new Float32Array([-0.1, -0.1, 0.2, 0.1, 0.1, 0.4]),

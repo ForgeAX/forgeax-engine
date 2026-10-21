@@ -1,5 +1,5 @@
-import { HANDLE_CUBE, RuntimeMaterialValue } from '@forgeax/engine-assets-runtime';
 import { World } from '@forgeax/engine-ecs';
+import { createPrimitiveMesh } from '@forgeax/engine-geometry';
 import {
   Camera,
   createRenderPublisher,
@@ -53,8 +53,8 @@ it('renders the same Standard scene through local World and transferred publicat
     await constructRuntimeRendererHost(canvases[1], { publicationSource: identity }),
   );
   const assets = local.assets;
-  const world = new World();
-  world.insertResource('AssetRegistry', assets);
+  const world = new World({ assets });
+  const cube = assets.create(createPrimitiveMesh('cube').unwrap()).unwrap();
   const publisher = createRenderPublisher(
     world,
     assets,
@@ -88,54 +88,46 @@ it('renders the same Standard scene through local World and transferred publicat
       },
     )
     .unwrap();
-  const texture = world.allocSharedRef('TextureAsset', {
-    kind: 'texture',
-    shape: { viewDimension: '2d', extent: { width: 2, height: 2 } },
-    format: 'rgba8unorm',
-    data: new Uint8Array([
-      255, 80, 40, 255, 40, 255, 80, 255, 40, 80, 255, 255, 255, 255, 255, 255,
-    ]),
-    colorSpace: 'linear',
-    mips: { kind: 'none' },
-  } satisfies import('@forgeax/engine-types').TextureAsset);
-  const material = world.allocSharedRef(
-    'MaterialAsset',
-    Materials.standard({ baseColor: [1, 1, 1, 1], baseColorTexture: texture }),
-  );
-  const color = world
-    .spawn({
-      component: RuntimeMaterialValue,
-      data: { asset: material, parameter: 'baseColor', kind: 2, value: [1, 1, 1, 1] },
-    })
+  const texture = assets
+    .create({
+      kind: 'texture',
+      shape: { viewDimension: '2d', extent: { width: 2, height: 2 } },
+      format: 'rgba8unorm',
+      data: new Uint8Array([
+        255, 80, 40, 255, 40, 255, 80, 255, 40, 80, 255, 255, 255, 255, 255, 255,
+      ]),
+      colorSpace: 'linear',
+      mips: { kind: 'none' },
+    } satisfies import('@forgeax/engine-types').TextureAsset)
+    .unwrap();
+  const material = assets
+    .create(Materials.standard({ baseColor: [1, 1, 1, 1], baseColorTexture: texture }))
     .unwrap();
   const mesh = world
     .spawn(
       { component: Transform, data: {} },
-      { component: MeshFilter, data: { assetHandle: HANDLE_CUBE } },
+      { component: MeshFilter, data: { assetHandle: cube } },
       { component: MeshRenderer, data: { materials: [material] } },
     )
     .unwrap();
   world
     .spawn(
       { component: Transform, data: { pos: [0, -1, 0], scale: [4, 0.1, 4] } },
-      { component: MeshFilter, data: { assetHandle: HANDLE_CUBE } },
+      { component: MeshFilter, data: { assetHandle: cube } },
       { component: MeshRenderer, data: { materials: [material] } },
     )
     .unwrap();
   assets.configurePackIndex('/__material-programs/pack-index.json');
-  const cooked = (
-    await assets.loadByGuid<import('@forgeax/engine-types').MaterialAsset>(
-      assets.parseGuid('8f50ae65-6e0a-40b4-8949-b47006edab90'),
-    )
+  const cookedHandle = (
+    await assets.load(assets.parseGuid('8f50ae65-6e0a-40b4-8949-b47006edab90'), 'material')
   ).unwrap();
-  const cookedHandle = world.allocSharedRef('MaterialAsset', cooked);
   const images: Uint8ClampedArray[] = [];
   try {
     for (const x of [0, 1, -1, 2]) {
       if (x === 2) world.set(mesh, MeshRenderer, { materials: [cookedHandle] }).unwrap();
       world.set(mesh, Transform, { pos: [x, 0, 0] }).unwrap();
-      world
-        .set(color, RuntimeMaterialValue, { value: x === 1 ? [0.2, 1, 0.2, 1] : [1, 1, 1, 1] })
+      assets
+        .update(material, { values: { baseColor: x === 1 ? [0.2, 1, 0.2, 1] : [1, 1, 1, 1] } })
         .unwrap();
       world.update(1 / 60).unwrap();
       const shadowClaims: import('@forgeax/engine-render').GpuDrivenLaneSummary[] = [];
@@ -207,14 +199,7 @@ it('renders the same Standard scene through local World and transferred publicat
         // The cooked fixture places vertices directly in clip space. Change its
         // actual scalar input so both material paths have a visible falsifier.
         if (x === 2)
-          world
-            .set(color, RuntimeMaterialValue, {
-              asset: cookedHandle,
-              parameter: 'strength',
-              kind: 0,
-              value: [offset === 0 ? 1 : 0.25, 0, 0, 0],
-            })
-            .unwrap();
+          assets.update(cookedHandle, { values: { strength: offset === 0 ? 1 : 0.25 } }).unwrap();
         world.update(1 / 60).unwrap();
         if (
           local.renderer.requestObservation === undefined ||

@@ -1,3 +1,5 @@
+import { createPrimitiveMesh } from '@forgeax/engine-geometry';
+import { testAssets } from './helpers/runtime-assets';
 import { shaderManifestUrl } from './shader-manifest-url.fixture';
 // Real Dawn regression for MaterialPass depthCompare 'always' in a late queue.
 //
@@ -6,7 +8,6 @@ import { shaderManifestUrl } from './shader-manifest-url.fixture';
 // opaque batch to land before the queue-3000 overlay; otherwise the wall is
 // rasterized over the x-ray draw and the overlay stays hidden.
 
-import { HANDLE_CUBE } from '@forgeax/engine-assets-runtime';
 import { World } from '@forgeax/engine-ecs';
 import type { Renderer } from '@forgeax/engine-render';
 import {
@@ -17,7 +18,6 @@ import {
   MeshRenderer,
 } from '@forgeax/engine-render';
 import { Transform } from '@forgeax/engine-scene';
-import type { MaterialAsset } from '@forgeax/engine-types';
 import { describe, expect, it } from 'vitest';
 import { drawReadyFrame } from '../../../../scripts/test/ready-render-frame.mjs';
 import { constructRuntimeRendererHost } from '../renderer-host';
@@ -36,29 +36,34 @@ const ENGINE_MANIFEST_URL = shaderManifestUrl(
 );
 
 function spawnScene(world: World, xray: boolean): void {
-  const wall = world.allocSharedRef<'MaterialAsset', MaterialAsset>(
-    'MaterialAsset',
-    Materials.standard({ baseColor: [0.2, 0.2, 0.2, 1], roughness: 1 }),
-  );
-  const overlay = world.allocSharedRef<'MaterialAsset', MaterialAsset>(
-    'MaterialAsset',
-    Materials.unlit(
-      [1, 0, 0, 1],
-      xray
-        ? {
-            castShadow: false,
-            queue: 3000,
-            renderState: { depthCompare: 'always', depthWriteEnabled: false },
-          }
-        : { castShadow: false },
-    ),
-  );
+  const wall = testAssets(world)
+    .create(Materials.standard({ baseColor: [0.2, 0.2, 0.2, 1], roughness: 1 }))
+    .unwrap();
+  const overlay = testAssets(world)
+    .create(
+      Materials.unlit(
+        [1, 0, 0, 1],
+        xray
+          ? {
+              castShadow: false,
+              queue: 3000,
+              renderState: { depthCompare: 'always', depthWriteEnabled: false },
+            }
+          : { castShadow: false },
+      ),
+    )
+    .unwrap();
   world.spawn(
     {
       component: Transform,
       data: { pos: [0, 0, 0], quat: [0, 0, 0, 1], scale: [4, 4, 0.2] },
     },
-    { component: MeshFilter, data: { assetHandle: HANDLE_CUBE } },
+    {
+      component: MeshFilter,
+      data: {
+        assetHandle: testAssets(world).create(createPrimitiveMesh('cube').unwrap()).unwrap(),
+      },
+    },
     { component: MeshRenderer, data: { materials: [wall] } },
   );
   world.spawn(
@@ -66,7 +71,12 @@ function spawnScene(world: World, xray: boolean): void {
       component: Transform,
       data: { pos: [0, 0, -2], quat: [0, 0, 0, 1], scale: [1, 1, 1] },
     },
-    { component: MeshFilter, data: { assetHandle: HANDLE_CUBE } },
+    {
+      component: MeshFilter,
+      data: {
+        assetHandle: testAssets(world).create(createPrimitiveMesh('cube').unwrap()).unwrap(),
+      },
+    },
     { component: MeshRenderer, data: { materials: [overlay] } },
   );
   world.spawn(

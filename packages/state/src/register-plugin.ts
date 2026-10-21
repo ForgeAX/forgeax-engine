@@ -1,8 +1,7 @@
 import { Update } from '@forgeax/engine-ecs';
 // @forgeax/engine-state -- registerStatesPlugin (M2 / m2w2, M3 / m3w4)
 //
-// Idempotent plugin that inserts per-token Resources (State / NextState /
-// PreviousState), pre-registers ScopedTo components, and registers the
+// Idempotent plugin that inserts one complete resource per token, pre-registers ScopedTo components, and registers the
 // transitionStatesSystem in the ECS schedule. Called automatically by
 // createApp in both canvas and assemble forms.
 //
@@ -15,12 +14,7 @@ import { Update } from '@forgeax/engine-ecs';
 
 import { defineSystem, defineSystemSet, type SystemHandle, type World } from '@forgeax/engine-ecs';
 import { getRegisteredTokens, onStateDefined, type StateToken } from './define-state';
-import {
-  type NextStatePayload,
-  nextStateResourceKey,
-  previousStateResourceKey,
-  stateResourceKey,
-} from './resources';
+import { type StatePayload, stateResourceKey } from './resources';
 import { getScopedComponent } from './scoped-component';
 import { transitionStatesSystem } from './transition-system';
 
@@ -47,7 +41,7 @@ const STATE_RUNTIMES = new WeakMap<World, StateRuntime>();
  * Anchored `after: ['input-frame-start-scan']`, `before: ['propagateTransforms']`
  * and labelled `'state'` (spec §6.2 label-anchor map).
  */
-export const TransitionStates: SystemHandle<readonly []> = defineSystem({
+const TransitionStates: SystemHandle<readonly []> = defineSystem({
   name: TRANSITION_STATES_SYSTEM_NAME,
   queries: [],
   after: [FRAME_START_SCAN_SYSTEM_NAME],
@@ -60,9 +54,7 @@ export const TransitionStates: SystemHandle<readonly []> = defineSystem({
  *
  * Side effects:
  * 1. Pre-registers `__scopedTo__<name>` components for all known tokens.
- * 2. For each globally registered {@link StateToken}: inserts three Resources
- *    ({@link State} = defaultValue index, {@link NextState} = undefined,
- *    {@link PreviousState} = defaultValue index).
+ * 2. Inserts each token's current/previous index and pending request together.
  * 3. Registers the {@link TransitionStates} system in the schedule.
  *
  * Tokens defined after registration are projected immediately. Repeated calls
@@ -88,15 +80,13 @@ export function registerStatesPlugin(world: World): () => void {
     if (defaultValueIdx === undefined) return;
 
     const stateKey = stateResourceKey(token);
-    const nextKey = nextStateResourceKey(token);
-    const previousKey = previousStateResourceKey(token);
     if (world.hasResource(stateKey)) return;
     resourceKeys.add(stateKey);
-    resourceKeys.add(nextKey);
-    resourceKeys.add(previousKey);
-    world.insertResource(stateKey, defaultValueIdx);
-    world.insertResource(nextKey, undefined as NextStatePayload | undefined);
-    world.insertResource(previousKey, defaultValueIdx);
+    world.insertResource<StatePayload>(stateKey, {
+      current: defaultValueIdx,
+      previous: defaultValueIdx,
+      next: undefined,
+    });
   };
 
   const releaseContributions = (): void => {

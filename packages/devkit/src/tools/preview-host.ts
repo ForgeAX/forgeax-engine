@@ -12,7 +12,7 @@ import type {
   ToolDomainFailure,
   ToolExecutionContext,
 } from '@forgeax/engine-tool-runtime';
-import type { CaptureBackend } from '../types.js';
+import type { CaptureBackend, CaptureBackendObserved } from '../types.js';
 import { runBrowserPreviewHost } from './browser-host.js';
 import type { BrowserCarrierTarget } from './display-carrier.js';
 
@@ -40,7 +40,7 @@ export interface PreviewHostResult extends ToolPreviewRunResult {
   readonly actualCarrier: 'headless-private' | 'headed-private' | 'visible-consumer';
   /** Requested and observed browser adapter lane for host-owned captures. */
   readonly backendRequested?: CaptureBackend;
-  readonly backendObserved?: 'software' | 'hardware' | 'unknown';
+  readonly backendObserved?: CaptureBackendObserved;
   readonly backendFallbackReason?: string;
   /** Exact target identity when the headed page was borrowed from a display host. */
   readonly carrierTarget?: BrowserCarrierTarget;
@@ -61,31 +61,6 @@ export type PreviewHostRunner = (
 type PreviewRouteResult<T> =
   | { readonly ok: true; readonly value: T }
   | { readonly ok: false; readonly error: ToolDomainFailure };
-
-export interface CarrierCleanupTrace {
-  readonly actualCarrier: 'headless-private' | 'headed-private' | 'visible-consumer';
-  readonly backend: 'webgpu';
-  readonly cleanup: readonly ['gpu', 'canvas', 'page', 'carrier'];
-  readonly failure: {
-    readonly code: 'tool-preview-carrier-exit';
-    readonly detail: { readonly carrier: CarrierCleanupTrace['actualCarrier'] };
-  };
-}
-
-export function createCarrierCleanupTrace(input: {
-  readonly actualCarrier: CarrierCleanupTrace['actualCarrier'];
-  readonly backend: 'webgpu';
-}): CarrierCleanupTrace {
-  return {
-    actualCarrier: input.actualCarrier,
-    backend: input.backend,
-    cleanup: ['gpu', 'canvas', 'page', 'carrier'],
-    failure: {
-      code: 'tool-preview-carrier-exit',
-      detail: { carrier: input.actualCarrier },
-    },
-  };
-}
 
 function carrierRouteFailure(
   code: string,

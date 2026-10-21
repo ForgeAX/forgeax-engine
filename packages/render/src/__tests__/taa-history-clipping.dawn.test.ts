@@ -271,8 +271,8 @@ fn probeClip(current : vec3<f32>, neighbors : array<vec3<f32>, 8>, history : vec
     const pixels = [...new Float32Array(mapped.getMappedRange().unwrap().slice(0))];
     mapped.unmap();
     expect(pixels.slice(0, 40)).toEqual([
-      0.75, 0, 0.25, 1, 0.75, 0, 0.25, 1, 1, 0, 0, 1, 3, 0, 1, 1, 0.75, 0, 0.25, 1, 9.59375,
-      9.59375, 11, 11, 0.25, 0.25, 0.25, 1, 0, 0.5, 0.75, 0.875, 0.25, 0.5, 2, 0, 0.125, 0.25, 4, 0,
+      0.75, 0, 0.25, 1, 0.75, 0, 0.25, 1, 1, 0, 0, 1, 3, 0, 1, 1, 0.75, 0, 0.25, 1, 19.1875,
+      19.1875, 22, 22, 0.25, 0.25, 0.25, 1, 0, 0.5, 0.75, 0.875, 0.25, 0.5, 2, 0, 0.125, 0.25, 4, 0,
     ]);
     expect(pixels[40]).toBeCloseTo(1 / 24, 5);
     expect(pixels[41]).toBeCloseTo(19 / 6, 5);

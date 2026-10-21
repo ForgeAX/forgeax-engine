@@ -13,10 +13,10 @@
 // math at the demo layer (AC-07).
 //
 // Model+texture hit-rate:
-//   Planet mesh:    hit (vendor gltf) — planet.gltf via loadByGuid<MeshAsset>
-//   Asteroid mesh:  hit (vendor gltf) — rock.gltf via loadByGuid<MeshAsset>
-//   Planet texture: hit (vendor png)  — mars.png via loadByGuid<TextureAsset>
-//   Rock texture:   hit (vendor png)  — rock.png via loadByGuid<TextureAsset>
+//   Planet mesh:    hit (vendor gltf) — planet.gltf via assets.load(..., "mesh")
+//   Asteroid mesh:  hit (vendor gltf) — rock.gltf via assets.load(..., "mesh")
+//   Planet texture: hit (vendor png)  — mars.png via assets.load(..., "texture")
+//   Rock texture:   hit (vendor png)  — rock.png via assets.load(..., "texture")
 //
 // GREP anchors for AI users:
 //   "// 1. engine usage"    public engine API consumed (copy-paste)
@@ -35,12 +35,8 @@ import { perspective } from '@forgeax/engine-render';
 import { Materials } from '@forgeax/engine-render';
 import { Instances } from '@forgeax/engine-render';
 
-import type {
-  MaterialAsset,
-  MeshAsset,
-  TextureAsset,
-} from '@forgeax/engine-types';
-import { unwrapHandle } from '@forgeax/engine-types';
+
+
 import { AssetGuid } from '@forgeax/engine-pack/guid';
 import { forgeaxBundlerAdapter } from 'virtual:forgeax/bundler';
 import { addFirstPersonSystem } from '../../../../shared/src/learn-render-first-person';
@@ -162,8 +158,7 @@ const appRes = await createApp(
     return;
   }
 
-  // Wire the scoped catalog: loadByGuid fast-path checks the in-memory map
-  // first; the binding also supplies the scoped package and import endpoints.
+  // Configure the catalog scope and its package/import endpoints for assets.load.
   configureRuntimeAssetCatalog(assets, runtimeBinding);
 
   // --- load vendored planet mesh + mars.png texture ---
@@ -185,66 +180,60 @@ const appRes = await createApp(
     return;
   }
 
-  const planetMeshRes = await assets.loadByGuid<MeshAsset>(PLANET_MESH_GUID.value);
+  const planetMeshRes = await assets.load(PLANET_MESH_GUID.value, 'mesh');
   if (!planetMeshRes.ok) {
-    console.error('[learn-render 4.9 instancing] loadByGuid<MeshAsset>(planet) failed:', planetMeshRes.error);
+    console.error('[learn-render 4.9 instancing] load(planet) failed:', planetMeshRes.error);
     const bus = (globalThis as unknown as { __learnRenderErrors?: Array<{ code: string; hint?: string }> }).__learnRenderErrors;
     if (bus !== undefined) bus.push({ code: planetMeshRes.error.code, hint: planetMeshRes.error.hint });
     return;
   }
-  const planetMeshHandle = world.allocSharedRef('MeshAsset', planetMeshRes.value);
+  const planetMeshHandle = planetMeshRes.value;
 
-  const marsTexRes = await assets.loadByGuid<TextureAsset>(MARS_TEXTURE_GUID.value);
+  const marsTexRes = await assets.load(MARS_TEXTURE_GUID.value, 'texture');
   if (!marsTexRes.ok) {
-    console.error('[learn-render 4.9 instancing] loadByGuid<TextureAsset>(mars.png) failed:', marsTexRes.error);
+    console.error('[learn-render 4.9 instancing] load(mars.png) failed:', marsTexRes.error);
     const bus = (globalThis as unknown as { __learnRenderErrors?: Array<{ code: string; hint?: string }> }).__learnRenderErrors;
     if (bus !== undefined) bus.push({ code: marsTexRes.error.code, hint: marsTexRes.error.hint });
     return;
   }
-  const marsTexHandle = unwrapHandle(world.allocSharedRef('TextureAsset', marsTexRes.value));
+  const marsTexHandle = Number(marsTexRes.value);
 
-  const rockMeshRes = await assets.loadByGuid<MeshAsset>(ROCK_MESH_GUID.value);
+  const rockMeshRes = await assets.load(ROCK_MESH_GUID.value, 'mesh');
   if (!rockMeshRes.ok) {
-    console.error('[learn-render 4.9 instancing] loadByGuid<MeshAsset>(rock) failed:', rockMeshRes.error);
+    console.error('[learn-render 4.9 instancing] load(rock) failed:', rockMeshRes.error);
     const bus = (globalThis as unknown as { __learnRenderErrors?: Array<{ code: string; hint?: string }> }).__learnRenderErrors;
     if (bus !== undefined) bus.push({ code: rockMeshRes.error.code, hint: rockMeshRes.error.hint });
     return;
   }
-  const rockMeshHandle = world.allocSharedRef('MeshAsset', rockMeshRes.value);
+  const rockMeshHandle = rockMeshRes.value;
 
-  const rockTexRes = await assets.loadByGuid<TextureAsset>(ROCK_TEXTURE_GUID.value);
+  const rockTexRes = await assets.load(ROCK_TEXTURE_GUID.value, 'texture');
   if (!rockTexRes.ok) {
-    console.error('[learn-render 4.9 instancing] loadByGuid<TextureAsset>(rock.png) failed:', rockTexRes.error);
+    console.error('[learn-render 4.9 instancing] load(rock.png) failed:', rockTexRes.error);
     const bus = (globalThis as unknown as { __learnRenderErrors?: Array<{ code: string; hint?: string }> }).__learnRenderErrors;
     if (bus !== undefined) bus.push({ code: rockTexRes.error.code, hint: rockTexRes.error.hint });
     return;
   }
-  const rockTexHandle = unwrapHandle(world.allocSharedRef('TextureAsset', rockTexRes.value));
+  const rockTexHandle = Number(rockTexRes.value);
 
   // Central planet material — PBR standard with mars.png baseColorTexture.
-  const planetMat = world.allocSharedRef<'MaterialAsset', MaterialAsset>(
-    'MaterialAsset',
-    Materials.standard({
+  const planetMat = assets.create(Materials.standard({
       baseColor: [0.7, 0.7, 0.7, 1],
       metallic: 0.1,
       roughness: 0.8,
       baseColorTexture: marsTexHandle,
-    }),
-  );
+    })).unwrap();
 
   // Asteroid material — PBR standard with rock.png baseColorTexture.
   // rock.mtl maps rock.png via map_Bump (normalTexture), not map_Kd
   // (baseColorTexture). Research F-7: demo self-manufactures material,
   // ignoring gltf built-in material entirely.
-  const asteroidMat = world.allocSharedRef<'MaterialAsset', MaterialAsset>(
-    'MaterialAsset',
-    Materials.standard({
+  const asteroidMat = assets.create(Materials.standard({
       baseColor: [0.7, 0.7, 0.7, 1],
       metallic: 0.05,
       roughness: 0.9,
       baseColorTexture: rockTexHandle,
-    }),
-  );
+    })).unwrap();
 
   // Central planet — a single non-instanced sphere at the origin, using
   // vendored planet mesh + mars.png texture.
@@ -308,7 +297,7 @@ const appRes = await createApp(
   console.warn('[learn-render 4.9 instancing] Standard pipeline active');
 
   // Positive "bootstrap ran to completion" marker for the onerror-gate
-  // tripwire (#426). Reaching here means every loadByGuid resolved and the
+  // tripwire (#426). Reaching here means every asset load succeeded and the
   // demo started — i.e. the OOS-1 mesh-DDC gap is closed. The reverse-
   // expectation test reads this to tell "OOS-1 fixed -> flip the tripwire
   // red" apart from "bootstrap disrupted before the planet load -> stay

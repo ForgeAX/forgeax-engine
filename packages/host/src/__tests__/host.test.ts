@@ -28,6 +28,25 @@ describe('native root Host assembly', () => {
     expect(validateHostAssembly({ ...value, sessionGeneration: 2 }).ok).toBe(false);
     expect(() => createHostAssembly({ config: { nan: NaN } })).toThrow();
   });
+  it('admits exactly the HostAssembly and root descriptor fields', () => {
+    const value = assembly();
+    const reason = (candidate: unknown) => {
+      const checked = validateHostAssembly(candidate);
+      return checked.ok ? undefined : checked.error.detail;
+    };
+    expect(
+      validateHostAssembly(
+        createHostAssembly({ root: { program: 'game#main', codeRevision: 'one', source: 'g' } }),
+      ).ok,
+    ).toBe(true);
+    expect(reason({ ...value, schemaVersion: 1 })).toEqual({
+      reason: 'invalid schema or session generation',
+    });
+    expect(reason({ ...value, root: { ...value.root, entry: 'main' } })).toEqual({
+      reason: 'invalid root descriptor',
+    });
+    expect(reason({ ...value, toString: 'x' })).toEqual({ reason: 'unknown assembly fields' });
+  });
   it('waits outside the native parent and cleans only its own contributions', async () => {
     const ctx = new Context();
     let disposed = 0;

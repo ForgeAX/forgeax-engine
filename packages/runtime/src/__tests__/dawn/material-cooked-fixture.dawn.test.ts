@@ -1,16 +1,18 @@
 import { readFileSync } from 'node:fs';
 import { stdout } from 'node:process';
 import { fileURLToPath } from 'node:url';
-import { loadMaterialReadyByGuid } from '@forgeax/engine-assets-runtime';
+import { runtimeAssets } from '@forgeax/engine-assets-runtime/internal';
 import { World } from '@forgeax/engine-ecs';
 import { createBoxGeometry } from '@forgeax/engine-geometry';
-import { AssetGuid } from '@forgeax/engine-pack';
+import { AssetGuid, validateCookedMaterialRecord } from '@forgeax/engine-pack';
 import { Camera, MeshFilter, MeshRenderer } from '@forgeax/engine-render';
 import { Transform } from '@forgeax/engine-scene';
 import type { MaterialAsset } from '@forgeax/engine-types';
 import { buildEngineShaderManifest } from '@forgeax/engine-vite-plugin-shader';
 import { beforeAll, describe, expect, it, onTestFinished } from 'vitest';
+import { publishRuntimeAssets } from '../../../../assets-runtime/src/__tests__/fixtures/runtime-publication';
 import { constructRuntimeRendererHost } from '../../renderer-host';
+import { testAssets } from '../helpers/runtime-assets';
 
 type CookedRecord = {
   readonly specializationKey: string;
@@ -129,8 +131,6 @@ describe('custom-shader cooked MaterialAsset fixture', () => {
       new Blob([JSON.stringify(manifest)], { type: 'application/json' }),
     );
     onTestFinished(() => URL.revokeObjectURL(shaderManifestUrl));
-    const dataUrl = (value: unknown) =>
-      `data:application/json,${encodeURIComponent(JSON.stringify(value))}`;
     const gpuErrors: string[] = [];
     let device: GPUDevice | undefined;
     let target: GPUTexture | undefined;
@@ -169,54 +169,48 @@ describe('custom-shader cooked MaterialAsset fixture', () => {
     renderer.subscribe((event) => {
       if (event.kind === 'error') errors.push(event.error);
     });
-    const world = new World();
+    const world = new World({ assets });
     try {
       // The fixture's parent-less material is the publication root. Keep the
       // runtime smoke on the same authority used by the contract assertions
       // above; the pack payload does not carry a second `role` discriminator.
       if (root === undefined) throw new Error('missing root publication');
-      const packUrl = dataUrl(fixture);
-      assets.configurePackIndex(
-        dataUrl(
-          fixture.assets.map((asset) => ({
-            guid: asset.guid,
-            kind: asset.kind,
-            packageUrl: packUrl,
-          })),
-        ),
-      );
-      for (const [guid, color] of [
+      const textureEntries = [
         ['01935b00-7d8c-7c4e-9f12-345678abcd11', [220, 100, 40, 255]],
         ['01935b00-7d8c-7c4e-9f12-345678abcd12', [128, 128, 255, 255]],
-      ] as const) {
-        const parsed = AssetGuid.parse(guid);
-        if (!parsed.ok) throw parsed.error;
-        const cataloged = assets.catalog(parsed.value, {
-          kind: 'texture',
-          shape: { viewDimension: '2d', extent: { width: 1, height: 1 } },
-          format: 'rgba8unorm',
-          data: new Uint8Array(color),
-          colorSpace: 'linear',
-          mips: { kind: 'none' },
-        });
-        if (!cataloged.ok) throw cataloged.error;
-      }
+      ] as const;
+      publishRuntimeAssets(assets, [
+        ...textureEntries.map(([guid, color]) => ({
+          guid,
+          asset: {
+            kind: 'texture' as const,
+            shape: { viewDimension: '2d' as const, extent: { width: 1, height: 1 } },
+            format: 'rgba8unorm' as const,
+            data: new Uint8Array(color),
+            colorSpace: 'linear' as const,
+            mips: { kind: 'none' as const },
+          },
+        })),
+        ...materialRows.map((row) => ({
+          guid: row.guid,
+          asset: {
+            ...row.payload,
+            kind: row.kind,
+          } as MaterialAsset,
+          refs: textureEntries.map(([guid]) => guid),
+        })),
+      ]);
       const rootGuid = AssetGuid.parse(root.guid);
       if (!rootGuid.ok) throw rootGuid.error;
-      const loaded = await assets.loadByGuid<MaterialAsset>(rootGuid.value);
+      const loaded = await assets.load(rootGuid.value, 'material');
       if (!loaded.ok) throw loaded.error;
-      const info = assets.getMaterialReadiness(root.guid);
-      expect(info?.status).toBe('Ready');
-      if (info?.status !== 'Ready') throw new Error('material never became ready');
-      const readiness = await loadMaterialReadyByGuid(assets, {
-        guid: root.guid,
-        specializationKey: info.specializationKey,
-      });
-      if (readiness.status !== 'Ready') throw new Error('complete material read failed');
-      expect(readiness.record.artifactDigest).toBe(root.payload.cooked?.artifactDigest);
-      const module = loaded.value.passes?.[0]?.program.module;
+      const payload = runtimeAssets(assets).borrow<MaterialAsset>(loaded.value).unwrap();
+      const projection = assets.getMaterialProjectionForPayload(payload);
+      expect(projection?.artifactHash).toBe(root.payload.cooked?.artifactDigest);
+      const record = validateCookedMaterialRecord(root.payload.cooked).unwrap();
+      const module = assets.read(loaded.value).unwrap().passes?.[0]?.program.module;
       if (module === undefined) throw new Error('material has no program');
-      const forwardPrograms = readiness.record.programs.filter((candidate) =>
+      const forwardPrograms = record.programs.filter((candidate) =>
         candidate.selections.some((selection) => selection.pass === 'Forward'),
       );
       expect(forwardPrograms.length).toBeGreaterThan(0);
@@ -268,10 +262,10 @@ describe('custom-shader cooked MaterialAsset fixture', () => {
       const entity = world
         .spawn(
           { component: Transform, data: { pos: [0, 0, 0], quat: [0, 0, 0, 1], scale: [1, 1, 1] } },
-          { component: MeshFilter, data: { assetHandle: world.allocSharedRef('MeshAsset', mesh) } },
+          { component: MeshFilter, data: { assetHandle: testAssets(world).create(mesh).unwrap() } },
           {
             component: MeshRenderer,
-            data: { materials: [world.internSharedRef('MaterialAsset', loaded.value)] },
+            data: { materials: [loaded.value] },
           },
         )
         .unwrap();

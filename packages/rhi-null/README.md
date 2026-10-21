@@ -63,8 +63,8 @@ The exported `rhi` singleton has the `RhiBackendPack`-mandated shape (`RhiInstan
 
 The adapter advertises `depth32float-stencil8` for structural descriptor replay.
 `requestDevice` enables only requested advertised features and rejects unavailable
-ones. Default devices retain an empty feature set; `device.limits` remains an
-empty record. This enables descriptor/command bookkeeping, never depth pixels,
+ones. Default devices retain an empty feature set; `device.limits` reports the structural color attachment capacity (128 bytes
+per sample across eight attachments), with other numeric limits unspecified. This enables descriptor/command bookkeeping, never depth pixels,
 shader execution or GPU timing. Capability planning also reads `caps`.
 
 ## Handle bookkeeping

@@ -3,14 +3,14 @@ import {
   runtimeBinding,
 } from '@forgeax/apps-shared/asset-runtime-config';
 import type { ExecutionBootstrapEntry } from '@forgeax/engine-app';
-import { HANDLE_CUBE } from '@forgeax/engine-assets-runtime';
+import { createPrimitiveMesh } from '@forgeax/engine-geometry';
 import { FixedTime } from '@forgeax/engine-ecs';
 import { quat } from '@forgeax/engine-math';
 import { AssetGuid } from '@forgeax/engine-pack/guid';
 import { DesiredPathPose, Path, PathFollower, pathPlugin } from '@forgeax/engine-path';
 import { Camera, Materials, MeshFilter, MeshRenderer, perspective } from '@forgeax/engine-render';
 import { GlobalTransform, Name, Transform, worldInstantiateSceneFlat } from '@forgeax/engine-scene';
-import type { SceneAsset } from '@forgeax/engine-types';
+
 import { sceneGuid } from './scene-guid';
 
 const entry: ExecutionBootstrapEntry = () => ({
@@ -22,17 +22,14 @@ const entry: ExecutionBootstrapEntry = () => ({
       async apply(ctx) {
         if (!ctx.assets) throw new Error('Worker asset service absent');
         configureRuntimeAssetCatalog(ctx.assets, runtimeBinding);
-        const source = (await ctx.assets.loadByGuid<SceneAsset>(sceneGuid)).unwrap();
-        const handle = ctx.world.allocSharedRef('SceneAsset', source);
+        const handle = (await ctx.assets.load(sceneGuid, 'scene')).unwrap();
+        const cube = ctx.assets.create(createPrimitiveMesh('cube').unwrap()).unwrap();
         try {
           worldInstantiateSceneFlat(ctx.world, handle).unwrap();
         } finally {
-          ctx.world.sharedRefs.release(handle).unwrap();
+          ctx.assets.release(handle).unwrap();
         }
-        const material = ctx.world.allocSharedRef(
-          'MaterialAsset',
-          Materials.unlit([0.05, 0.85, 0.8, 1]),
-        );
+        const material = ctx.assets.create(Materials.unlit([0.05, 0.85, 0.8, 1])).unwrap();
         const entities = Array.from(ctx.world.query({ read: [Name] }).unwrap(), (row) => ({
           name: row.get(Name).value,
           entity: row.entity,
@@ -45,7 +42,7 @@ const entry: ExecutionBootstrapEntry = () => ({
             ctx.world
               .addComponent(row.entity, {
                 component: MeshFilter,
-                data: { assetHandle: HANDLE_CUBE },
+                data: { assetHandle: cube },
               })
               .unwrap();
             ctx.world

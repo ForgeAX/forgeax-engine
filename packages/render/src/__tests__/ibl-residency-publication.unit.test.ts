@@ -9,7 +9,7 @@ describe('IBL residency publication', () => {
     const precomputeCall = source.indexOf('const runResult = await runIblPrecompute({');
     const precomputeSuccess = source.indexOf('if (!runResult.ok)', precomputeCall);
     const sourceReady = source.indexOf("status: 'ready'", precomputeCall);
-    const cubeRegistration = source.indexOf('const cubeHandle = regResult.value;', precomputeCall);
+    const cubeRegistration = source.indexOf('const cubeHandle = sourceHandle;', precomputeCall);
     const mapPublication = source.indexOf(
       'this.cubemapIdempotentMap.set(sourceId, cubeHandle, namespace);',
       precomputeCall,

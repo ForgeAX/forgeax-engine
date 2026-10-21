@@ -61,7 +61,7 @@ export const COOKIE_MATRIX_BYTES = 32 * 16 * Float32Array.BYTES_PER_ELEMENT;
  * layout count even when a compiled shader variant does not read every
  * optional entry.
  */
-export const EXTENDED_LIGHTING_REQUIRED_SAMPLED_TEXTURES = 24;
+export const EXTENDED_LIGHTING_REQUIRED_SAMPLED_TEXTURES = 25;
 
 /**
  * Keep shader-variant selection and resource admission on one capability fact.

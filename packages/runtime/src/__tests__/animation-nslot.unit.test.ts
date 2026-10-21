@@ -1,21 +1,9 @@
-// feat-20260713-animation-state-machine-plugin M1 / w1 — variable N-slot lock.
-//
-// AC-01: AnimationPlayer.clips/times/weights/speeds drop the fixed 4-slot cap
-// and become variable `array<T>` columns. This test constructs an entity with
-// SIX concurrent slots, runs advanceAnimationPlayer for one frame, and asserts
-// the read-back arrays keep length 6 with no overflow / truncation / throw.
-//
-// TDD red anchor: before the schema migration (w4), `clips` is
-// `array<shared<AnimationClip>, 4>`; spawning a 6-element clips array trips the
-// ECS `FixedArrayOverflowError` and `.unwrap()` throws — the construction
-// itself fails. After w4 the variable schema accepts 6 slots and the frame
-// leaves all six weight columns intact.
-
 import { AnimationPlayer, advanceAnimationPlayer } from '@forgeax/engine-animation';
 import type { EntityHandle } from '@forgeax/engine-ecs';
 import { World } from '@forgeax/engine-ecs';
 import type { AnimationClip } from '@forgeax/engine-types';
 import { describe, expect, it } from 'vitest';
+import { testAssets } from './helpers/runtime-assets';
 
 function makeClip(duration: number): AnimationClip {
   return { kind: 'animation-clip', duration, channels: [] };
@@ -24,9 +12,7 @@ function makeClip(duration: number): AnimationClip {
 describe('AnimationPlayer — variable N-slot (M1 / w1)', () => {
   it('constructs and evaluates 6 concurrent slots without overflow / truncation', () => {
     const world = new World();
-    const clips = Array.from({ length: 6 }, () =>
-      world.allocSharedRef('AnimationClip', makeClip(10)),
-    );
+    const clips = Array.from({ length: 6 }, () => testAssets(world).create(makeClip(10)).unwrap());
     const e = world
       .spawn({
         component: AnimationPlayer,

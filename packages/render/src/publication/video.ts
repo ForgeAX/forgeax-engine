@@ -4,7 +4,7 @@ import {
   type VideoSourceProvider,
   videoSourceExtent,
 } from '@forgeax/engine-graphics-extras';
-import type { Handle } from '@forgeax/engine-types';
+import type { AssetHandle } from '@forgeax/engine-types';
 import type { RenderPublication } from './contract';
 
 /** Native VideoFrame cloning shares decoded pixels; it never copies source ECS storage. */
@@ -18,10 +18,7 @@ export function publicationVideoFrames(
   try {
     for (const [entity, clips] of consumers)
       for (const clip of clips) {
-        const source = provider.getSource(
-          entity as EntityHandle,
-          clip as Handle<'VideoAsset', 'shared'>,
-        );
+        const source = provider.getSource(entity as EntityHandle, clip as AssetHandle<'video'>);
         if (source === undefined || videoSourceExtent(source) === undefined) continue;
         frames.push({ entity, clip, frame: new VideoFrame(source) });
       }

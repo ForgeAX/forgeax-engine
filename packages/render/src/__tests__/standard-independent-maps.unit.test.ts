@@ -1,9 +1,10 @@
 import { AssetRegistry } from '@forgeax/engine-assets-runtime';
 import { World } from '@forgeax/engine-ecs';
 import { ShaderRegistry, STANDARD_SAMPLE_REUSE } from '@forgeax/engine-shader';
-import { STANDARD_MATERIAL_PARAM_SCHEMA } from '@forgeax/engine-types';
+import { type AssetHandle, STANDARD_MATERIAL_PARAM_SCHEMA } from '@forgeax/engine-types';
 import { describe, expect, it } from 'vitest';
 import { Materials } from '../materials';
+import { worldRenderResources } from '../publication/resource-scope';
 import {
   materialStandardTextureMask,
   materialTextureFields,
@@ -35,13 +36,24 @@ describe('Standard independent scalar maps', () => {
   });
   it('publishes independent inputs, channels and per-slot coordinates in the default Surface', () => {
     const inputs = {
-      metallicTexture: { texture: 1, coordinates: { set: 1, transform: { offset: [0.5, 0] } } },
-      roughnessTexture: { texture: 2, coordinates: { set: 0 } },
-      alphaTexture: { texture: 3, coordinates: { set: 2 } },
+      metallicTexture: {
+        texture: 1 as AssetHandle<'texture'>,
+        coordinates: { set: 1, transform: { offset: [0.5, 0] } },
+      },
+      roughnessTexture: { texture: 2 as AssetHandle<'texture'>, coordinates: { set: 0 } },
+      alphaTexture: { texture: 3 as AssetHandle<'texture'>, coordinates: { set: 2 } },
       metallicChannel: 0,
       roughnessChannel: 3,
       alphaChannel: 2,
-    } as const;
+    } satisfies Pick<
+      Parameters<typeof Materials.standard>[0],
+      | 'metallicTexture'
+      | 'roughnessTexture'
+      | 'alphaTexture'
+      | 'metallicChannel'
+      | 'roughnessChannel'
+      | 'alphaChannel'
+    >;
     const material = Materials.standard({ baseColor: [1, 1, 1, 0.5], ...inputs });
     expect(material.values).toMatchObject(inputs);
     for (const slot of ['metallicTexture', 'roughnessTexture', 'alphaTexture']) {
@@ -131,9 +143,8 @@ describe('Standard independent scalar maps', () => {
   });
 
   it('projects reuse into the renderer material snapshot', () => {
-    const world = new World();
-    const assets = new AssetRegistry(
-      new ShaderRegistry({
+    const assets = new AssetRegistry({
+      shaderRegistry: new ShaderRegistry({
         device: {
           createShaderModule() {
             throw new Error('unexpected shader compile');
@@ -141,17 +152,31 @@ describe('Standard independent scalar maps', () => {
         },
         manifestUrl: undefined,
       }),
+    });
+    const world = new World({ assets });
+    const texture = assets
+      .create({
+        kind: 'texture',
+        shape: { viewDimension: '2d', extent: { width: 1, height: 1 } },
+        format: 'rgba8unorm',
+        colorSpace: 'linear',
+        mips: { kind: 'none' },
+        data: new Uint8Array(4),
+      })
+      .unwrap();
+    const material = assets
+      .create(
+        Materials.standard({
+          baseColor: [1, 1, 1, 1],
+          metallicTexture: texture,
+          roughnessTexture: texture,
+          alphaTexture: texture,
+        }),
+      )
+      .unwrap();
+    const mask = requireMask(
+      resolveMaterialSnapshot(material, worldRenderResources(world), assets).standardTextureMask,
     );
-    const material = world.allocSharedRef(
-      'MaterialAsset',
-      Materials.standard({
-        baseColor: [1, 1, 1, 1],
-        metallicTexture: 1,
-        roughnessTexture: 1,
-        alphaTexture: 1,
-      }),
-    );
-    const mask = requireMask(resolveMaterialSnapshot(material, world, assets).standardTextureMask);
     expect(reuseSelector(mask, 'roughnessTexture')).toBe(3);
     expect(reuseSelector(mask, 'alphaTexture')).toBe(3);
   });

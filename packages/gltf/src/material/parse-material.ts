@@ -4,13 +4,6 @@ export interface GltfTextureIr {
   readonly name?: string;
 }
 
-export interface GltfImageIr {
-  readonly uri?: string;
-  readonly mimeType?: string;
-  readonly bufferView?: number;
-  readonly name?: string;
-}
-
 export interface GltfSamplerIr {
   readonly magFilter?: number;
   readonly minFilter?: number;
@@ -212,28 +205,31 @@ export interface GltfMaterialIr {
  * values, pack refs and their ref-index rewrite share.
  */
 export const GLTF_MATERIAL_TEXTURE_SLOTS = [
-  'baseColorTexture',
-  'metallicRoughnessTexture',
-  'normalTexture',
-  'occlusionTexture',
-  'emissiveTexture',
-  'transmissionTexture',
-  'thicknessTexture',
-  'clearcoatTexture',
-  'clearcoatRoughnessTexture',
-  'clearcoatNormalTexture',
-  'anisotropyTexture',
-  'sheenColorTexture',
-  'sheenRoughnessTexture',
-  'iridescenceTexture',
-  'iridescenceThicknessTexture',
-  'specularTexture',
-  'specularColorTexture',
-  'diffuseTransmissionTexture',
-  'diffuseTransmissionColorTexture',
-] as const satisfies readonly (keyof GltfMaterialIr)[];
+  { slot: 'baseColorTexture', colorSpace: 'srgb' },
+  { slot: 'metallicRoughnessTexture', colorSpace: 'linear' },
+  { slot: 'normalTexture', colorSpace: 'linear' },
+  { slot: 'occlusionTexture', colorSpace: 'linear' },
+  { slot: 'emissiveTexture', colorSpace: 'srgb' },
+  { slot: 'transmissionTexture', colorSpace: 'linear' },
+  { slot: 'thicknessTexture', colorSpace: 'linear' },
+  { slot: 'clearcoatTexture', colorSpace: 'linear' },
+  { slot: 'clearcoatRoughnessTexture', colorSpace: 'linear' },
+  { slot: 'clearcoatNormalTexture', colorSpace: 'linear' },
+  { slot: 'anisotropyTexture', colorSpace: 'linear' },
+  { slot: 'sheenColorTexture', colorSpace: 'srgb' },
+  { slot: 'sheenRoughnessTexture', colorSpace: 'linear' },
+  { slot: 'iridescenceTexture', colorSpace: 'linear' },
+  { slot: 'iridescenceThicknessTexture', colorSpace: 'linear' },
+  { slot: 'specularTexture', colorSpace: 'linear' },
+  { slot: 'specularColorTexture', colorSpace: 'srgb' },
+  { slot: 'diffuseTransmissionTexture', colorSpace: 'linear' },
+  { slot: 'diffuseTransmissionColorTexture', colorSpace: 'srgb' },
+] as const satisfies readonly {
+  readonly slot: keyof GltfMaterialIr;
+  readonly colorSpace: 'srgb' | 'linear';
+}[];
 
-export type GltfMaterialTextureSlot = (typeof GLTF_MATERIAL_TEXTURE_SLOTS)[number];
+export type GltfMaterialTextureSlot = (typeof GLTF_MATERIAL_TEXTURE_SLOTS)[number]['slot'];
 
 /** Normalize a slot binding; the bare-number form names only the texture. */
 export function materialTextureBinding(
@@ -254,7 +250,7 @@ function tuple3(
   return [values[0] ?? 0, values[1] ?? 0, values[2] ?? 0];
 }
 
-export function parseTextureInfo(
+function parseTextureInfo(
   info: TextureInfoJson,
   textures: readonly GltfTextureIr[],
 ): GltfTextureInfoIr {
@@ -325,9 +321,9 @@ export function parseMaterial(
   const diffuseTransmission = matJson.extensions?.KHR_materials_diffuse_transmission;
   const attenuationColor = tuple3(volume?.attenuationColor);
   const invalid = (
-    extension: 'KHR_materials_transmission' | 'KHR_materials_ior' | 'KHR_materials_volume',
+    extension: GltfMaterialTransmissionInvalidDetail['extension'],
     field: string,
-    reason: 'type' | 'range' | 'non-finite' | 'blend',
+    reason: GltfMaterialTransmissionInvalidDetail['reason'],
     actual?: unknown,
   ): Result<GltfMaterialIr, GltfError> =>
     err(
@@ -339,16 +335,9 @@ export function parseMaterial(
       }),
     );
   const physicalInvalid = (
-    extension:
-      | 'KHR_materials_clearcoat'
-      | 'KHR_materials_anisotropy'
-      | 'KHR_materials_sheen'
-      | 'KHR_materials_iridescence'
-      | 'KHR_materials_specular'
-      | 'KHR_materials_diffuse_transmission'
-      | 'KHR_materials_emissive_strength',
+    extension: GltfMaterialPhysicalInvalidDetail['extension'],
     field: string,
-    reason: 'type' | 'range' | 'non-finite',
+    reason: GltfMaterialPhysicalInvalidDetail['reason'],
     actual?: unknown,
   ): Result<GltfMaterialIr, GltfError> =>
     err(
@@ -487,7 +476,7 @@ export function parseMaterial(
     );
   }
   const validateUnit = (
-    extension: Parameters<typeof physicalInvalid>[0],
+    extension: GltfMaterialPhysicalInvalidDetail['extension'],
     field: string,
     value: number | undefined,
   ) => {
@@ -498,7 +487,7 @@ export function parseMaterial(
     return undefined;
   };
   const validateFinite = (
-    extension: Parameters<typeof physicalInvalid>[0],
+    extension: GltfMaterialPhysicalInvalidDetail['extension'],
     field: string,
     value: number | undefined,
     minimum?: number,
@@ -511,7 +500,7 @@ export function parseMaterial(
     return undefined;
   };
   const validateColor = (
-    extension: Parameters<typeof physicalInvalid>[0],
+    extension: GltfMaterialPhysicalInvalidDetail['extension'],
     field: string,
     value: readonly number[] | undefined,
   ) => {
@@ -763,4 +752,12 @@ export function parseMaterial(
   });
 }
 
-import { err, type GltfError, gltfErr, ok, type Result } from '../errors.js';
+import {
+  err,
+  type GltfError,
+  type GltfMaterialPhysicalInvalidDetail,
+  type GltfMaterialTransmissionInvalidDetail,
+  gltfErr,
+  ok,
+  type Result,
+} from '../errors.js';

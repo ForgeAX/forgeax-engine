@@ -94,6 +94,12 @@ stateDiagram-v2
 
 Each `begin` persists a strictly increasing generation and an expected head revision. `commit` rechecks the lease, expiry, expected revision, desired key, entry receipt, and integrity before switching `current`. A failed candidate never promotes LKG to current; LKG remains a read-only recovery view.
 
+A successful commit returns its accepted `head` and rollback fence. That head is
+the snapshot written by this CAS; later writers cannot change the returned
+publication's key, revision, generation, or LKG. Consumers use this snapshot
+without rereading the complete entry. Rejected commits return their attempted
+key and observed revision; an `invalid` commit also carries its rollback fence.
+
 `DdcGenerationSession` heartbeats active candidate leases while a multi-asset generation is still producing, so atomic publication may outlive one lease interval without weakening the final commit fence. A heartbeat renews only the persisted, unexpired attempt with its matching revision and desired key; an expired lease cannot be revived. Closing, discarding, or committing a candidate stops its heartbeat.
 
 > [!NOTE]
@@ -143,6 +149,11 @@ including wrapper field order and padding, without building a string for the
 whole publication. This permits aggregate artifact content above V8's single
 string limit while preserving existing cache keys and conflict checks.
 `canonicalDdcJson` still returns a string for the ordinary stored JSON records.
+Staging captures private payload JSON, references, receipt and logical artifact
+bytes synchronously, then validates that exact disk representation through the
+same three-digest reader. Its verified payload text is shared across the hashes;
+caller edits and callbacks cannot change the candidate after capture. Publication
+still independently reads and validates every staged file before promotion.
 Readback validation cooperatively hashes its private parsed JSON and artifact
 buffers, yielding between bounded chunks so lease heartbeats can run. Caller-owned
 inputs and author callbacks retain synchronous canonical evaluation; readback still
@@ -193,3 +204,5 @@ Errors and status layers use the same `DdcRecoveryAction` contract, including
 lease release. Their browser projections share path redaction. Construct
 `DdcStoreError` with `{ code, detail, ... }`; entry-store failures use this same
 structured input as lifecycle and session failures.
+
+Both generation commit paths share candidate completion: restore validation, corruption accounting, heartbeat retirement and candidate removal. Concurrent session closes await the same completion. This does not introduce cross-session write ownership; lifecycle mutation fences remain authoritative.

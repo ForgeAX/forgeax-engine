@@ -26,6 +26,10 @@ import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { existsSync } from 'node:fs';
 import { emitSmokeReceipt } from '../../../../shared/scripts/smoke-receipt.mjs';
+import { AssetRegistry } from '@forgeax/engine-assets-runtime';
+
+import { createPrimitiveMesh } from '@forgeax/engine-geometry';
+
 
 const SMOKE_MIN_FRAMES = Number.parseInt(process.env.SMOKE_MIN_FRAMES ?? '60', 10);
 const SMOKE_PIXEL_THRESHOLD = Number.parseFloat(process.env.SMOKE_PIXEL_THRESHOLD ?? '0.05');
@@ -150,9 +154,7 @@ const { decodeImageFromFile } = await import('@forgeax/engine-image/decode-image
 const { constructRuntimeRendererHost } = await import('@forgeax/engine-runtime/internal/renderer-host');
 const { Camera, MeshFilter, MeshRenderer } = await import('@forgeax/engine-render');
 const { Transform } = await import('@forgeax/engine-scene');
-const {
-  HANDLE_CUBE,
-} = await import('@forgeax/engine-assets-runtime');
+
 const { unwrapHandle } = await import('@forgeax/engine-types');
 const { AssetGuid } = await import('@forgeax/engine-pack/guid');
 
@@ -219,12 +221,17 @@ if (!marbleGuidRes.ok) {
 }
 
 // World must exist before allocSharedRef mints any column handle.
-const world = new World();
+const world = new World({ assets: assets });
+const sceneAssets = world.assets;
+if (!(sceneAssets instanceof AssetRegistry)) throw new Error('Scene requires its runtime asset owner');
+
+const primitiveCube = sceneAssets.create(createPrimitiveMesh('cube').unwrap()).unwrap();
+
 const worldAttachment1 = renderer.attach(world);
 if (!worldAttachment1.ok) throw worldAttachment1.error;
 const lease = worldAttachment1.value;
 
-const marbleHandle = unwrapHandle(world.allocSharedRef('TextureAsset', makeTexAsset(marbleDecoded)));
+const marbleHandle = unwrapHandle(world.assets.create(makeTexAsset(marbleDecoded)).unwrap());
 console.log(`[learn-render-4-face-culling] registered marble handle id=${marbleHandle}`);
 
 // Cube material: unlit marble.jpg texture (matches LO 4.4 -- full-brightness
@@ -234,7 +241,7 @@ console.log(`[learn-render-4-face-culling] registered marble handle id=${marbleH
 // The unlit shader honors renderState via the engine's renderState-aware
 // pipeline cache (the static unlit pipeline's default frontFace='ccw' would
 // back-cull the CW-appearing inner faces).
-const cubeMatHandle = world.allocSharedRef('MaterialAsset', {
+const cubeMatHandle = world.assets.create({
   kind: 'material',
   passes: [
     {
@@ -251,7 +258,7 @@ const cubeMatHandle = world.allocSharedRef('MaterialAsset', {
     baseColor: [1.0, 1.0, 1.0, 1.0],
     baseColorTexture: marbleHandle,
   },
-});
+}).unwrap();
 
 // Single marble cube at origin.
 world
@@ -261,7 +268,7 @@ world
       data: {
         pos: [0, 0, 0], quat: [0, 0, 0, 1], scale: [1, 1, 1],},
     },
-    { component: MeshFilter, data: { assetHandle: HANDLE_CUBE } },
+    { component: MeshFilter, data: { assetHandle: primitiveCube } },
     { component: MeshRenderer, data: { materials: [cubeMatHandle] } },
   )
   .unwrap();

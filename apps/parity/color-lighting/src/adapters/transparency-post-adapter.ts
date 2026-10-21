@@ -33,6 +33,8 @@ import {
   Scene,
   WebGLRenderer,
 } from 'three';
+import { AssetRegistry } from '@forgeax/engine-assets-runtime';
+
 
 const blend = {
   color: { srcFactor: 'src-alpha' as const, dstFactor: 'one-minus-src-alpha' as const, operation: 'add' as const },
@@ -40,16 +42,19 @@ const blend = {
 };
 
 function makeMaterial(world: World): void {
+const sceneAssets = world.assets;
+if (!(sceneAssets instanceof AssetRegistry)) throw new Error('Scene requires its runtime asset owner');
+
   const plane = createPlaneGeometry(2.8, 2.8);
   if (!plane.ok) throw new Error(`transparent plane creation failed: ${plane.error.code}`);
-  const meshHandle = world.allocSharedRef('MeshAsset', plane.value);
-  const materialHandle = world.allocSharedRef('MaterialAsset', Materials.standard({
+  const meshHandle = sceneAssets.create(plane.value).unwrap();
+  const materialHandle = sceneAssets.create(Materials.standard({
     baseColor: [0.8, 0.28, 0.12, 0.5],
     metallic: 0,
     roughness: 1,
     queue: 3000,
     renderState: { cullMode: 'none', depthWriteEnabled: false, blend },
-  }));
+  })).unwrap();
   world.spawn(
     { component: Transform, data: {} },
     { component: MeshFilter, data: { assetHandle: meshHandle } },
@@ -57,8 +62,8 @@ function makeMaterial(world: World): void {
   ).unwrap();
 }
 
-export function makeTransparencyWorld(sceneCase: SceneCase): World {
-  const world = new World();
+export function makeTransparencyWorld(sceneCase: SceneCase, assets: AssetRegistry): World {
+  const world = new World({ assets });
   world.spawn(
     { component: Transform, data: { pos: [0, 0, 3], quat: [0, 0, 0, 1] } },
     {
@@ -135,7 +140,7 @@ export async function captureTransparencyForgeaxBrowser(
       const error = event.error;
       renderErrors.push(`${error.code}: ${error.hint}`);
     });
-    const world = makeTransparencyWorld(sceneCase);
+    const world = makeTransparencyWorld(sceneCase, created.value.assets);
     const worldAttachment1 = renderer.attach(world);
     if (!worldAttachment1.ok) throw worldAttachment1.error;
     const lease = worldAttachment1.value;

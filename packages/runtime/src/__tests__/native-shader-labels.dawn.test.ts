@@ -1,4 +1,6 @@
+import { runtimeAssets } from '@forgeax/engine-assets-runtime/internal';
 import * as webgpu from '@forgeax/engine-rhi-webgpu';
+import type { MaterialAsset } from '@forgeax/engine-types';
 import { buildEngineShaderManifest } from '@forgeax/engine-vite-plugin-shader';
 import { expect, it } from 'vitest';
 import { createIrradianceFieldHarness } from './renderer-irradiance-field.fixture';
@@ -66,7 +68,9 @@ it.skipIf(process.env.FORGEAX_WEBGPU_NODE !== 'wgpu-native')(
       const forwardImage = await h.image();
       expect(h.errors).toEqual([]);
       expect(forwardImage.mean).toBeGreaterThan(0);
-      const white = h.assets.getMaterialProjection('irradiance-field-white');
+      const white = h.assets.getMaterialProjectionForPayload(
+        runtimeAssets(h.assets).borrow<MaterialAsset>(h.white).unwrap(),
+      );
       expect(white).toBeDefined();
       const targets = white?.passes.flatMap((pass) =>
         pass.programs.flatMap((program) => {

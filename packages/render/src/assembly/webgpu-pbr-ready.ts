@@ -42,7 +42,6 @@ export type AsyncCreateShaderModule = (
 ) => Promise<Result<ShaderModule, RhiError>>;
 
 interface GpuDrivenPbrReadyModules {
-  readonly pbrSkinModule: ShaderModule | null;
   readonly gpuDrivenPbrPrograms: ReadonlyMap<string, GpuDrivenPbrProgram>;
 }
 
@@ -136,7 +135,10 @@ export async function buildGpuDrivenPbrReadyModules(
         const key = standardPbrProgramKey(materialId, color);
         const artifact = assembleStandardPbrArtifact(
           materialId,
-          input.registry.materialProgram(variant.composedWgsl),
+          input.registry.materialProgram(
+            variant.composedWgsl,
+            variant.entryPoints ?? variant.receipt?.entryPoints,
+          ),
           color,
         );
         if (key === undefined || artifact === undefined) continue;
@@ -204,7 +206,7 @@ export async function buildGpuDrivenPbrReadyModules(
       input.admitsVariant,
     );
   }
-  return { pbrSkinModule, gpuDrivenPbrPrograms };
+  return { gpuDrivenPbrPrograms };
 }
 
 export function buildGpuDrivenPbrReadyLayouts(

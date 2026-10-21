@@ -70,7 +70,7 @@ interface RecorderState {
   droppedEventCount: number;
   firstAffectedFrameId: number | undefined;
   lastAffectedFrameId: number | undefined;
-  finished: boolean;
+  terminal: ProfilerResult<ProfileCapture> | undefined;
 }
 
 const OK_VOID: ProfilerResult<void> = Object.freeze({ ok: true, value: undefined });
@@ -79,7 +79,7 @@ function positiveSafeInteger(value: unknown): value is number {
   return typeof value === 'number' && Number.isSafeInteger(value) && value > 0;
 }
 
-export function validateRecorderLimits(limits: RecorderLimits): ProfilerResult<void> {
+function validateRecorderLimits(limits: RecorderLimits): ProfilerResult<void> {
   if (!positiveSafeInteger(limits.frameLimit) || !positiveSafeInteger(limits.eventLimit)) {
     return { ok: false, error: boundaryError(limits.frameLimit, limits.eventLimit) };
   }
@@ -93,7 +93,7 @@ function recordOverflow(state: RecorderState, frameId: number): void {
 }
 
 function stateResult(state: RecorderState, operation: string): ProfilerResult<void> {
-  if (state.finished) return { ok: false, error: stateError(operation) };
+  if (state.terminal !== undefined) return { ok: false, error: stateError(operation) };
   return OK_VOID;
 }
 
@@ -251,11 +251,17 @@ function buildCapture(state: RecorderState): ProfileCapture {
 
 export function createRecorder(
   captureId: string,
-  limits: RecorderLimits,
+  input: RecorderLimits,
   clock: ProfileClock,
   phaseCatalog: RecorderPhaseCatalog,
-  allocationReport?: { profilerEventObjectAllocations: number },
+  allocationReport: { profilerEventObjectAllocations: number } | undefined,
+  complete: (capture: ProfileCapture) => ProfilerResult<ProfileCapture>,
 ): ProfilerResult<RecorderSession> {
+  const limits = {
+    frameLimit: input.frameLimit,
+    eventLimit: input.eventLimit,
+    detail: input.detail ?? 'owner',
+  };
   const validLimits = validateRecorderLimits(limits);
   if (!validLimits.ok) return validLimits;
   const initialRecordCapacity = Math.min(limits.eventLimit, INITIAL_RECORD_CAPACITY);
@@ -290,12 +296,12 @@ export function createRecorder(
     droppedEventCount: 0,
     firstAffectedFrameId: undefined,
     lastAffectedFrameId: undefined,
-    finished: false,
+    terminal: undefined,
   };
 
   const session: RecorderSession = {
     captureId,
-    detail: limits.detail ?? 'owner',
+    detail: limits.detail,
     beginFrame(frameId) {
       const stateCheck = stateResult(state, 'beginFrame');
       if (!stateCheck.ok) return stateCheck;
@@ -385,16 +391,19 @@ export function createRecorder(
       if (state.currentFrameId === undefined || state.openDepth > 0)
         return { ok: false, error: stateError('endFrame') };
       state.currentFrameId = undefined;
+      if (state.frameCount >= state.limits.frameLimit) session.finish();
       return OK_VOID;
     },
     finish() {
-      const stateCheck = stateResult(state, 'finish');
-      if (!stateCheck.ok) return { ok: false, error: stateCheck.error };
+      if (state.terminal !== undefined) return state.terminal;
       if (state.openDepth > 0 || state.currentFrameId !== undefined) {
         return { ok: false, error: stateError('finish') };
       }
-      state.finished = true;
-      return { ok: true, value: buildCapture(state) };
+      const capture = buildCapture(state);
+      // Publish terminal identity before owner/sink callbacks can reenter.
+      state.terminal = { ok: true, value: capture };
+      state.terminal = complete(capture);
+      return state.terminal;
     },
   };
   return { ok: true, value: session };

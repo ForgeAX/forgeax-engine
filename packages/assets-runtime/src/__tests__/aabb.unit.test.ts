@@ -8,7 +8,7 @@ import type { MeshAsset } from '@forgeax/engine-types';
 import { describe, expect, it } from 'vitest';
 import { withMeshAabb } from '../aabb';
 
-const EMPTY_BOX = [Infinity, Infinity, Infinity, -Infinity, -Infinity, -Infinity];
+const EMPTY_BOX = [0, 0, 0, 0, 0, 0];
 
 function meshWith(position: Float32Array | ArrayBuffer | undefined): MeshAsset {
   return {
@@ -50,7 +50,7 @@ describe('withMeshAabb', () => {
     expect(Array.from(out.aabb as Float32Array)).toEqual([1, 1, 1, 2, 3, 4]);
   });
 
-  it('returns the inverted-infinity empty box when position is absent', () => {
+  it('returns the finite neutral empty box when position is absent', () => {
     const out = withMeshAabb(meshWith(undefined));
     expect(Array.from(out.aabb as Float32Array)).toEqual(EMPTY_BOX);
   });

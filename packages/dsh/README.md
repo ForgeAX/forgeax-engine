@@ -61,3 +61,5 @@ pnpm --filter @forgeax/engine-dsh test
 pnpm --filter @forgeax/engine-dsh test:integration
 pnpm --filter @forgeax/engine-dsh test:visual
 ```
+
+Activity provider close waits for every retained request task and shares that completion across concurrent callers. Cancellation suppresses later text and completion delivery, including cancellation from an event callback.

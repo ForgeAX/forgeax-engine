@@ -50,29 +50,14 @@ export interface FieldEdit {
   readonly rematerialized: readonly (FieldEditSource & { readonly index: number })[];
 }
 
-function stableFacts(value: unknown): string {
-  return JSON.stringify(value, (_key, v: unknown) => {
-    if (v instanceof Map) return ['Map', [...v.entries()].sort(([a], [b]) => (a < b ? -1 : 1))];
-    if (v instanceof Set) return ['Set', [...v].sort()];
-    if (ArrayBuffer.isView(v)) return ['View', Array.from(v as unknown as ArrayLike<number>)];
-    if (typeof v === 'bigint') return ['BigInt', String(v)];
-    return v;
-  });
-}
-
 function geometryFacts(source: SceneFieldSource): unknown[] {
-  return [source.scope, source.mesh, source.field];
+  return [source.scope, source.assetHandle, source.assetRevision];
 }
 
 function materialFacts(source: SceneFieldSource): unknown[] {
-  return source.materials.flatMap((m) => [
-    m.materialSlot,
-    m.handle,
-    m.payload,
-    m.effectivePayload,
-    m.projection,
-    stableFacts(m.facts),
-  ]);
+  // Values belong to shared material roots. This state tracks only instance
+  // bindings; root adoption must never fan values out into instance baselines.
+  return source.materials.flatMap((m) => [m.materialSlot, m.resource, m.handle]);
 }
 
 const same = (a: readonly unknown[], b: readonly unknown[]) =>

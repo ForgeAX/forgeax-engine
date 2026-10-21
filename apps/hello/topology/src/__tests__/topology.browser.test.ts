@@ -1,3 +1,4 @@
+import { AssetRegistry } from '@forgeax/engine-assets-runtime';
 import { World } from '@forgeax/engine-ecs';
 import {
   createBoxGeometry,
@@ -180,15 +181,16 @@ describe('hello-topology browser visual consumer', () => {
       expect(wireframeResult.value.indices).toBeUndefined();
       expect(thresholdResult.value.indices).toBeUndefined();
 
-      const world = new World();
+      const assets = new AssetRegistry();
+      const world = new World({ assets });
       const attached = renderer.attach(world);
       expect(attached.ok).toBe(true);
       if (!attached.ok) return;
       lease = attached.value;
-      const wireframeHandle = world.allocSharedRef('MeshAsset', wireframeResult.value);
-      const thresholdHandle = world.allocSharedRef('MeshAsset', thresholdResult.value);
-      const cyan = world.allocSharedRef('MaterialAsset', material([0.1, 0.9, 1, 1]));
-      const orange = world.allocSharedRef('MaterialAsset', material([1, 0.65, 0.12, 1]));
+      const wireframeHandle = assets.create(wireframeResult.value).unwrap();
+      const thresholdHandle = assets.create(thresholdResult.value).unwrap();
+      const cyan = assets.create(material([0.1, 0.9, 1, 1])).unwrap();
+      const orange = assets.create(material([1, 0.65, 0.12, 1])).unwrap();
       expect(
         world.spawn(
           { component: Transform, data: { pos: [-1.1, 0, 0], quat: [0, 0, 0, 1], scale: [1, 1, 1] } },

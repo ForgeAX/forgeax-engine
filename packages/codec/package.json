@@ -42,7 +42,8 @@
   "dependencies": {
     "@noble/hashes": "^2.2.0",
     "@bokuweb/zstd-wasm": "0.0.27",
-    "fzstd": "^0.1.1"
+    "fzstd": "^0.1.1",
+    "@forgeax/engine-types": "workspace:*"
   },
   "forgeax": {
     "metrics": {

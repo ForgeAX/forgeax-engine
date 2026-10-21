@@ -31,6 +31,7 @@ export {
   encodeCatalogWire,
   type RuntimeCatalogWire,
 } from './catalog-wire.js';
+export { serializeMetaJson } from './cli-output.js';
 export {
   type CookedMaterialRecord,
   collectMaterialCookRefs,
@@ -72,6 +73,7 @@ export {
   type MaterialArtifactWriteResult,
   writeMaterialArtifact,
 } from './material/artifact-writer.js';
+export { decodeMaterialProgramWire, encodeMaterialProgramWire } from './material-program-wire.js';
 export {
   decodeMeshBinHeader,
   decodeMeshBinMorphs,

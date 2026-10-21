@@ -7,7 +7,7 @@ import {
   ShaderRegistry,
   STANDARD_PIPELINE_PARAM_SCHEMA,
 } from '@forgeax/engine-shader';
-import { resolveMaterialAsset } from '@forgeax/engine-types';
+import { materialValuesToLinearRuntime, resolveMaterialAsset } from '@forgeax/engine-types';
 import { describe, expect, it, vi } from 'vitest';
 import { Materials } from '../materials.js';
 import {
@@ -19,7 +19,7 @@ import {
 describe('vertex color does not change the material contract', () => {
   it('uses optional schema lookup without constructing missing shader diagnostics', () => {
     const registry = new ShaderRegistry({ manifestUrl: undefined });
-    const assets = new AssetRegistry(registry);
+    const assets = new AssetRegistry({ shaderRegistry: registry });
     const authored = [{ name: 'color', type: 'vec4' as const, default: [1, 0, 0, 1] }];
     const strict = vi.spyOn(registry, 'findMaterialArtifact').mockImplementation(() => {
       throw Error('optional extraction must not use strict diagnostics');
@@ -45,6 +45,37 @@ describe('vertex color does not change the material contract', () => {
       strict.mockRestore();
     }
   });
+  it.each([
+    'forgeax::default-standard-pbr',
+    'forgeax::pbr-skin',
+    'forgeax::sprite',
+  ])('prepares the same %s colors before and after GPU program installation', (id) => {
+    const shaders = new ShaderRegistry({ manifestUrl: undefined });
+    const assets = new AssetRegistry({ shaderRegistry: shaders });
+    const schema =
+      id === 'forgeax::sprite' ? DEFAULT_SPRITE_PARAM_SCHEMA : STANDARD_PIPELINE_PARAM_SCHEMA;
+    const values = { baseColor: [0.8, 0.3, 0.1, 1], colorTint: [0.8, 0.3, 0.1, 1] };
+    const field = id === 'forgeax::sprite' ? 'colorTint' : 'baseColor';
+    const source = materialValuesToLinearRuntime(
+      values,
+      materialColorParameterSchema([], id, assets),
+    );
+    shaders.installMaterialArtifact(id, { source: '', paramSchema: schema });
+    const rendered = materialValuesToLinearRuntime(
+      values,
+      materialColorParameterSchema([], id, assets),
+    );
+    expect(source).toEqual(rendered);
+    expect(source[field]).toEqual(expect.arrayContaining([expect.closeTo(0.603827, 5)]));
+    const linear = [{ name: field, type: 'vec4' as const, colorSpace: 'linear' as const }];
+    expect(
+      materialValuesToLinearRuntime(values, materialColorParameterSchema(linear, id, assets))[
+        field
+      ],
+    ).toEqual(values[field]);
+    assets.dispose();
+  });
+
   it('keeps colored and plain materials on the same schema and resource identity', () => {
     const plain = createBuiltinMaterialAsset('standard');
     const colored = createBuiltinMaterialAsset('standard');
@@ -94,6 +125,9 @@ describe('vertex color does not change the material contract', () => {
       'alphaCutoff',
       'specular',
       'alphaHash',
+      'shadowAlphaMode',
+      'alphaMode',
+      'alphaToCoverage',
       'specularColor',
       'normalScale',
       'bumpScale',
@@ -156,8 +190,23 @@ describe('vertex color does not change the material contract', () => {
   it.each([
     'forgeax::sprite',
     'forgeax::sprite-lit',
-    'project::authored',
-  ])('retains authored parameters when %s has no published parameter layout', (shaderId) => {
+  ])('keeps the compiled %s ABI when authoring reorders fields and adds CPU inputs', (shaderId) => {
+    expect(
+      materialParametersToParamSchema(
+        [
+          { name: 'baseColorTexture', type: 'texture' },
+          { name: 'colorTint', type: 'color' },
+          { name: 'flipX', type: 'f32', default: 0 },
+          { name: 'flipY', type: 'f32', default: 0 },
+        ],
+        shaderId,
+        [],
+      ),
+    ).toBe(DEFAULT_SPRITE_PARAM_SCHEMA);
+  });
+
+  it('retains authored parameters when a custom program has no published parameter layout', () => {
+    const shaderId = 'project::authored';
     const registry = new ShaderRegistry({ manifestUrl: undefined });
     registry.installMaterialArtifact(shaderId, { source: '', paramSchema: [] });
     const parameters = [
@@ -168,7 +217,12 @@ describe('vertex color does not change the material contract', () => {
       { name: 'baseColorTexture', type: 'texture' as const },
     ];
     expect(
-      materialParamSchemaForMaterial(parameters, shaderId, [], new AssetRegistry(registry)),
+      materialParamSchemaForMaterial(
+        parameters,
+        shaderId,
+        [],
+        new AssetRegistry({ shaderRegistry: registry }),
+      ),
     ).toEqual(materialParametersToParamSchema(parameters));
   });
 
@@ -182,7 +236,7 @@ describe('vertex color does not change the material contract', () => {
     const schema = materialParametersToParamSchema(material.parameters ?? []);
     registry.installMaterialArtifact('program/paint', { source: '', paramSchema: schema });
     const accepted = registry.findMaterialArtifact('program/paint').unwrap();
-    const assets = new AssetRegistry(registry);
+    const assets = new AssetRegistry({ shaderRegistry: registry });
     expect(
       materialParamSchemaForMaterial(
         material.parameters ?? [],
@@ -260,7 +314,7 @@ describe('vertex color does not change the material contract', () => {
     expect(() => Materials.standard({ baseColor: [1, 1, 1, 1], ...options })).toThrow();
   });
 
-  it('rejects BLEND and depth writes for an active transmission material', () => {
+  it('preserves authored BLEND and depth writes for an active transmission material', () => {
     expect(() =>
       Materials.standard({
         baseColor: [1, 1, 1, 1],
@@ -272,13 +326,13 @@ describe('vertex color does not change the material contract', () => {
           },
         },
       }),
-    ).toThrow();
+    ).not.toThrow();
     expect(() =>
       Materials.standard({
         baseColor: [1, 1, 1, 1],
         transmission: 0.5,
         renderState: { depthWriteEnabled: true },
       }),
-    ).toThrow();
+    ).not.toThrow();
   });
 });

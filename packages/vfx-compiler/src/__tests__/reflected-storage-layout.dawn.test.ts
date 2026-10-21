@@ -1,5 +1,5 @@
 import { expect, it } from 'vitest';
-import { reflectVfxLayoutV3 } from '../reflection';
+import { reflectVfxLayout } from '../reflection';
 
 it.each([
   '',
@@ -8,7 +8,7 @@ it.each([
 ])('matches authored WGSL order and storage stride (%s)', async (extra) => {
   const source = `struct VfxParameters { z: f32, a: f32, }
 struct VfxCustom { value: f32, ${extra} }`;
-  const reflected = reflectVfxLayoutV3({ root: source });
+  const reflected = reflectVfxLayout({ root: source });
   if (!reflected.ok) throw reflected.error;
   const layout = reflected.value;
   const adapter = await navigator.gpu.requestAdapter();

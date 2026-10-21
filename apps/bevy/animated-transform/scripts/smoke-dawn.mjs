@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 import { createSmokeRenderer, drawSmokeFrame, rendererBackend, subscribeSmokeErrors } from "../../scripts/renderer-smoke.mjs";
 import assert from 'node:assert/strict';
+import { AssetRegistry } from '@forgeax/engine-assets-runtime';
 import { AnimatedBy, AnimationTargetId, animationPlugin } from '@forgeax/engine-animation';
 import { createWorldContext, World } from '@forgeax/engine-ecs';
 import { scenePlugin, GlobalTransform, Transform } from '@forgeax/engine-scene';
@@ -9,7 +10,6 @@ import {
   replayAnimatedTransform,
   setAnimatedTransformPaused,
   setAnimatedTransformSpeed,
-  TRANSFORM_CLIP_GUID,
   transformClip,
 } from '../src/animated-transform.ts';
 
@@ -18,14 +18,14 @@ const near = (actual, expected, label) =>
 
 function advance(world, seconds) {
   for (let remaining = seconds; remaining > 1e-9; remaining -= 0.1) {
-    world.update(Math.min(0.1, remaining));
+    world.update(Math.min(0.1, remaining)).unwrap();
   }
 }
 
-const world = new World();
+const assets = new AssetRegistry();
+const world = new World({ assets });
 const clip = transformClip();
-const clips = new Map([[TRANSFORM_CLIP_GUID, clip]]);
-await createWorldContext(world, [scenePlugin(), animationPlugin((guid) => clips.get(guid))]);
+await createWorldContext(world, [scenePlugin(), animationPlugin()]);
 const demo = buildAnimatedTransformWorld(world, clip);
 const [direct, graph] = demo.instances;
 assert.ok(direct);
@@ -80,7 +80,7 @@ near(world.get(direct.planet, Transform).unwrap().pos[1], 3, 'resumed direct use
 near(world.get(graph.planet, Transform).unwrap().pos[1], 2, 'paused graph remains still');
 
 replayAnimatedTransform(world, demo, 'direct');
-world.update(0);
+world.update(0).unwrap();
 near(world.get(direct.planet, Transform).unwrap().pos[1], 0, 'direct replay resets time');
 
 console.log('[bevy-animated-transform] running=1 motion=1 isolation=1');

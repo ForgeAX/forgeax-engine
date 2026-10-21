@@ -17,7 +17,9 @@
   },
   "forgeax": {
     "rhiDebug": {
-      "riskFamilies": ["raster-state"]
+      "riskFamilies": [
+        "raster-state"
+      ]
     },
     "smokeInvocation": "pnpm --filter @forgeax/app-learn-render-4-advanced-opengl-5-framebuffers smoke:gauntlet",
     "gauntletScenario": {
@@ -34,11 +36,39 @@
         "@forgeax/engine-runtime",
         "@forgeax/engine-rhi-debug"
       ],
-      "risks": ["baseline", "dynamic", "live", "fault", "recovery", "behavioral", "visual", "cleanup"],
-      "phaseInputs": ["baseline", "dynamic", "live", "fault", "recovery", "cleanup"],
+      "risks": [
+        "baseline",
+        "dynamic",
+        "live",
+        "fault",
+        "recovery",
+        "behavioral",
+        "visual",
+        "cleanup"
+      ],
+      "phaseInputs": [
+        "baseline",
+        "dynamic",
+        "live",
+        "fault",
+        "recovery",
+        "cleanup"
+      ],
       "evidence": {
-        "frontDoors": ["dawn-node", "render-graph-cycle", "browser-webgpu", "browser-live", "rhi-debug"],
-        "legs": ["semantic", "live", "gpu", "behavioral", "recovery"]
+        "frontDoors": [
+          "dawn-node",
+          "render-graph-cycle",
+          "browser-webgpu",
+          "browser-live",
+          "rhi-debug"
+        ],
+        "legs": [
+          "semantic",
+          "live",
+          "gpu",
+          "behavioral",
+          "recovery"
+        ]
       },
       "oracle": {
         "stdoutIncludes": [
@@ -83,7 +113,8 @@
     "@forgeax/engine-runtime": "workspace:*",
     "@forgeax/engine-types": "workspace:*",
     "@forgeax/engine-scene": "workspace:*",
-    "@forgeax/engine-render": "workspace:*"
+    "@forgeax/engine-render": "workspace:*",
+    "@forgeax/engine-geometry": "workspace:*"
   },
   "devDependencies": {
     "@forgeax/engine-image": "workspace:*",

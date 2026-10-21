@@ -1,5 +1,6 @@
 #!/usr/bin/env node
-import { createSmokeRenderer, rendererBackend, subscribeSmokeErrors } from '../../scripts/renderer-smoke.mjs';
+import { constructRuntimeRendererHost } from '@forgeax/engine-runtime/internal/renderer-host';
+import { drawSmokeFrame, rendererBackend, subscribeSmokeErrors } from '../../scripts/renderer-smoke.mjs';
 // Dawn smoke for the Bevy load_gltf reproduction.
 
 import { readFileSync } from 'node:fs';
@@ -65,12 +66,9 @@ const { DirectionalLight, renderComponentsPlugin } = await import('@forgeax/engi
 const { Transform, scenePlugin, worldInstantiateScene } = await import('@forgeax/engine-scene');
 const { gltfDocToSceneAsset, meshIrToMeshAsset, parseGltf, toMaterialAsset } = await import('@forgeax/engine-gltf');
 
-const renderer = await createSmokeRenderer(
-  createRenderer,
-  canvas,
-  {},
-  { shaderManifestUrl: `data:application/json,${encodeURIComponent(manifest)}` },
-);
+const hostResult = await constructRuntimeRendererHost(canvas, {}, { shaderManifestUrl: `data:application/json,${encodeURIComponent(manifest)}` });
+if (!hostResult.ok) throw hostResult.error;
+const { renderer, assets: smokeAssets } = hostResult.value;
 subscribeSmokeErrors(renderer, (error) => errors.push(error));
 const gltfPath = resolve(root, 'apps/hello/gltf/assets/box.gltf');
 const docResult = await parseGltf(JSON.parse(readFileSync(gltfPath, 'utf8')), async () => {
@@ -83,17 +81,17 @@ const mesh = meshResult.value;
 const materialIr = docResult.value.materials[0];
 if (!materialIr) throw new Error('glTF has no material');
 const material = toMaterialAsset(materialIr);
-const world = new World();
+const world = new World({ assets: smokeAssets });
 await createWorldContext(world, [renderComponentsPlugin(), scenePlugin()]);
 const worldAttachment1 = renderer.attach(world);
 if (!worldAttachment1.ok) throw worldAttachment1.error;
-const meshHandle = world.allocSharedRef('MeshAsset', mesh);
-const materialHandle = world.allocSharedRef('MaterialAsset', material);
+const meshHandle = world.assets.create(mesh).unwrap();
+const materialHandle = world.assets.create(material).unwrap();
 const scene = gltfDocToSceneAsset(docResult.value, {
   meshHandles: new Map([[0, meshHandle]]),
   materialHandles: new Map([[0, materialHandle]]),
 });
-const instanceResult = worldInstantiateScene(world, world.allocSharedRef('SceneAsset', scene));
+const instanceResult = worldInstantiateScene(world, world.assets.create(scene).unwrap());
 if (!instanceResult.ok) throw new Error(`instantiate failed: ${instanceResult.error.code}`);
 world.spawn(
   { component: Transform, data: { pos: [1.5, 2.5, 2.5], quat: [0, 0, 0, 1], scale: [1, 1, 1] } },
@@ -126,11 +124,7 @@ async function meanLuma() {
 let frames = 0;
 for (; frames < minFrames; frames += 1) {
   world.update().unwrap();
-  const result = renderer.draw({
-    leases: [worldAttachment1.value],
-    camera: { lease: worldAttachment1.value },
-    environment: { lease: worldAttachment1.value },
-  });
+  const result = await drawSmokeFrame(renderer, world);
   if (!result.ok) errors.push(result.error);
 }
 const luma = await meanLuma();
@@ -141,4 +135,6 @@ if (rendererBackend(renderer) !== 'webgpu' || frames < minFrames || luma <= 0.02
   process.exit(1);
 }
 console.log('[smoke] PASS - real glTF parsed, SceneAsset instantiated, and rendered for the full frame gate');
+await renderer.dispose();
+smokeAssets.dispose();
 device.destroy?.();

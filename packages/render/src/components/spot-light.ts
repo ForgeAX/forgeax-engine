@@ -78,11 +78,11 @@ export interface SpotLightAuthoring {
  * Shadow fields (embedded, aligned with DirectionalLight):
  *   castShadow    ∈ {true, false}    — shadow opt-in gate (default false)
  *   mapSize       >= 1               — shadow map resolution per tile (default 1024)
- *   depthBias                        — shadow acne bias (default 0.005)
- *   normalBias                       — shadow acne normal offset (default 0.05)
+ *   depthBias                        — normalized reverse-Z receiver bias (default 0.00001)
+ *   normalBias                       — world-space normal offset (default 0.05)
  *   nearPlane                        — shadow-camera near (default 0.5)
  *   farPlane                         — unlimited-light shadow far fallback (default 500)
- *   pcfKernelSize odd >= 1           — PCF kernel width (default 3)
+ *   pcfKernelSize finite >= 1           — Vogel footprint diameter (1: hardware PCF, 3: radius 1)
  *   shadowIntensity in [0,1]         — residual light in shadow (default 1)
  *
  * Atlas capacity is capped at 4 castShadow spot lights by the extract stage;
@@ -127,24 +127,37 @@ export const SpotLight = defineComponent('SpotLight', {
   range: { type: 'f32', default: Number.POSITIVE_INFINITY },
   innerConeDeg: { type: 'f32', default: 60 },
   outerConeDeg: { type: 'f32', default: 60 },
-  iesProfile: { type: 'shared<IesProfileAsset>' },
-  cookie: { type: 'shared<TextureAsset>' },
+  iesProfile: { type: 'asset<ies-profile>' },
+  cookie: { type: 'asset<texture>' },
   rollDeg: { type: 'f32', default: 0 },
   // Shadow opt-in gate: default lights allocate no shadow tile.
   castShadow: { type: 'bool', default: false },
   // 7 shadow fields aligned with the shared light shadow vocabulary.
+  shadowMapAspect: { type: 'f32', default: 1 },
+  shadowCasterChannels: { type: 'f64', default: 0xffffffff },
+  shadowAutoUpdate: { type: 'bool', default: true },
+  shadowRevision: { type: 'f64', default: 0 },
   mapSize: { type: 'f32', default: 1024 },
-  depthBias: { type: 'f32', default: 0.005 },
+  depthBias: { type: 'f32', default: 0.00001 },
   normalBias: { type: 'f32', default: 0.05 },
   nearPlane: { type: 'f32', default: 0.5 },
   // Finite positive light.range overrides this fallback, as in Three r184.
   farPlane: { type: 'f32', default: 500 },
   pcfKernelSize: { type: 'f32', default: 3 },
+  shadowFilter: {
+    type: 'enum',
+    labels: { basic: 1, pcfVogel: 6, pcfSoft: 7, variance: 8 },
+    default: 6,
+  },
+  shadowBiasMode: { type: 'enum', labels: { facingNormal: 0, constant: 1 }, default: 0 },
+  shadowProjection: { type: 'enum', labels: { cone: 0, matrix: 1 }, default: 0 },
+  shadowViewProjection: { type: 'array<f32, 16>' },
   // Three's SpotLight.shadow.intensity is the fraction of visibility applied
   // to a shadowed contribution. Keep it in the author-facing [0,1] domain;
   // extract/record transport this one fact to surface and volume consumers.
   shadowIntensity: { type: 'f32', default: 1 },
+  shadowBlurSamples: { type: 'f32', default: 8 },
   // Shared TextureAsset identity; publication and residency remain owned by
   // the existing asset and GPU resource owners.
-  projector: { type: 'shared<TextureAsset>', simulationTransient: true },
+  projector: { type: 'asset<texture>', simulationTransient: true },
 });

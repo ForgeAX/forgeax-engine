@@ -7,6 +7,7 @@ import { ATMOSPHERE_REQUIRED_SAMPLED_TEXTURES } from '../environment/capability'
 import { EXTENDED_LIGHTING_REQUIRED_SAMPLED_TEXTURES } from '../prepare/extended-lighting/resources';
 import type { MaterialSnapshot } from '../render-system-extract';
 import { DEFERRED_ATTACHMENT_BYTES, SUBSURFACE_ATTACHMENT_BYTES } from '../standard-attachments';
+import { standardTransmissionValue } from '../transmission/projection';
 import { STANDARD_PBR_REQUIRED_SAMPLED_TEXTURES } from './shader-prewarm-policy';
 
 const COMPRESSION_FEATURES: GPUFeatureName[] = [
@@ -49,14 +50,13 @@ export type StandardTransmissionSlotAdmission =
  * shares the split scalar-map pairs or is `exceeded` and renders without it.
  */
 export function standardTransmissionAdmission(
-  material: Pick<MaterialSnapshot, 'materialShaderId' | 'paramSnapshot' | 'standardTextureMask'>,
+  material: Pick<
+    MaterialSnapshot,
+    'materialShaderId' | 'surfaceModel' | 'paramSnapshot' | 'standardTextureMask'
+  >,
   sampledTextureLimit: number | undefined,
 ): StandardTransmissionSlotAdmission | undefined {
-  if (
-    material.materialShaderId !== 'forgeax::default-standard-pbr' ||
-    material.paramSnapshot?.transmission === undefined
-  )
-    return undefined;
+  if (standardTransmissionValue(material) === undefined) return undefined;
   if (transmissionBackdropAvailable(sampledTextureLimit)) return { kind: 'dedicated' };
   const conflicts = standardSharedTransmissionConflicts(material.standardTextureMask ?? 0);
   return conflicts.length === 0 ? { kind: 'shared' } : { kind: 'exceeded', conflicts };
@@ -69,7 +69,7 @@ export function standardTransmissionAdmission(
  * provide it; lower-capability devices remain fail-closed at material
  * pipeline admission instead of receiving an invalid WebGPU layout.
  */
-export const STANDARD_PHYSICAL_REQUIRED_SAMPLED_TEXTURES = 26;
+export const STANDARD_PHYSICAL_REQUIRED_SAMPLED_TEXTURES = 27;
 
 export interface DeviceFeatureAdmission {
   readonly requiredFeatures: GPUFeatureName[];
@@ -121,7 +121,7 @@ export function deriveDeviceFeatureAdmission(adapter: AdapterFeatureProbe): Devi
     (adapter.limits?.maxComputeWorkgroupStorageSize ?? 0) >= 32768 ? 32768 : undefined;
   const requiredColorAttachmentBytes = visibleSurface
     ? Math.min(colorAttachmentBytes, SUBSURFACE_ATTACHMENT_BYTES.visibleSurfaceTemporal)
-    : colorAttachmentBytes >= DEFERRED_ATTACHMENT_BYTES.temporal
+    : colorAttachmentBytes >= DEFERRED_ATTACHMENT_BYTES.surface
       ? Math.min(colorAttachmentBytes, SUBSURFACE_ATTACHMENT_BYTES.temporal)
       : undefined;
   const requiredSampledTextureLimit =

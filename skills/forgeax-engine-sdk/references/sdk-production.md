@@ -112,6 +112,12 @@ to development Candidates, and the source still needs its own successful push CI
 
 The Candidate workflow resolves one channel-branch source SHA and binds its CI baseline, builds the SDK seed once, runs npm-consumer and exact archive/browser gates against it while the reproducibility and collision lanes rebuild the same commit in parallel, compares their evidence with the exact seed (npm-tree byte inventory, version/tag collision) in `seal`, then seals `sdk-candidate.json` with per-file SHA-256 and npm integrity. The normal baseline is a successful `ci.yml` `push` run for that exact source SHA; when an admin merge is intentionally tree-empty, the workflow may instead reuse a successful `ci.yml` `push` run for the merge commit's first parent, but only after proving the two commit trees are byte-identical and recording that basis in the run summary. A PR check, a non-empty merge, or an unrelated SHA is never interchangeable. If neither baseline exists, Candidate remains fail-closed and must not be promoted. The reproducibility lane keeps full Git history because `sdk:build` validates the feature-catalog baseline ancestry; a depth-1 checkout can falsely reject a valid main commit. Record the successful workflow run ID; only a sealed Candidate is promotable.
 
+Candidate prepares and source-verifies its Rapier payload once before the seed,
+independent JavaScript rebuild and collision jobs. Each receiver verifies the same
+transported bytes against the pinned source recipe; a mismatch fails rather than
+rebuilding a different native input. Independent Rust/Binaryen compilation
+reproducibility remains a separate native producer concern.
+
 Candidate sets no consumer matrix concurrency cap after the source-producing
 gates pass, retaining each owner's existing deadline. Its four receipts,
 runner scheduling and seed-byte manifest are documented in the [Candidate
@@ -162,10 +168,12 @@ public snapshot and target without remote writes. This mandatory admission runs
 even when mirror synchronization is paused; its Candidate-bound proof is required
 by the npm publisher. See [public-source admission](../../../scripts/forgeax/EXPORT.md#stable-publication)
 for coverage and local recovery commands. Promotion creates or completes the
-GitHub Release idempotently, then publishes the enabled stable source mirror and
-requires its public CI and final tree to pass before npm publication. The mirror
-uses the same export manifest and Git tree as preflight. A paused mirror permits
-npm publication after mandatory source qualification and GitHub Release success.
+GitHub Release idempotently and publishes npm products independently after this
+shared source qualification. The enabled stable source mirror follows GitHub
+publication to validate the formal Release/tag identity, using the same export
+manifest and Git tree as preflight. Its public CI and final tree must pass for
+complete delivery, but npm does not wait for GitHub or mirror completion. A paused
+mirror still requires mandatory source qualification before npm publication.
 Development releases skip the stable source stages.
 
 The three existing npm tarballs upload concurrently under `candidate` without

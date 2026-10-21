@@ -3,7 +3,7 @@ import { describe, expect, it } from 'vitest';
 import { DeviceScope } from '../device/device-scope';
 import { createSsrHistoryOwner, type SsrHistoryResetReason } from '../ssr/history';
 import { createSsrTemporalConsumer } from '../ssr/temporal';
-import { TemporalFrameCoordinator } from '../temporal/frame-coordinator';
+import { TemporalFrameCoordinator, type TemporalFrameStage } from '../temporal/frame-coordinator';
 
 class DeferredQueue extends RhiNullQueue {
   private readonly completion: Promise<undefined>;
@@ -29,7 +29,7 @@ async function createDevice() {
   return (await new RhiNullAdapter().requestDevice()).unwrap();
 }
 
-function phases(stage?: 'build' | 'encode' | 'finish' | 'submit') {
+function phases(stage?: TemporalFrameStage) {
   return {
     build: () => {
       if (stage === 'build') throw { stage };

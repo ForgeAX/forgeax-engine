@@ -22,11 +22,12 @@ import {
 } from '@forgeax/engine-rhi-debug';
 import * as webgpu from '@forgeax/engine-rhi-webgpu';
 import { propagateTransforms, Transform } from '@forgeax/engine-scene';
-import { type MaterialAsset, ok, type RuntimeAssetBinding } from '@forgeax/engine-types';
+import { ok, type RuntimeAssetBinding } from '@forgeax/engine-types';
 import { expect } from 'vitest';
 import testQuality from '../../../../scripts/test/render-quality.json' with { type: 'json' };
 import { createDevImportTransport } from '../dev-import-transport';
 import { constructRuntimeRendererHost } from '../renderer-host';
+import { testAssets } from './helpers/runtime-assets';
 import { renderValue } from './standard-gbuffer-replay.fixture';
 
 export async function verifyMaterialMrt(options: {
@@ -155,14 +156,14 @@ export async function verifyMaterialMrt(options: {
   renderer.subscribe((event) => {
     if (event.kind === 'error') errors.push(event.error);
   });
-  const world = new World();
+  const world = new World({ assets });
   const devices: GPUDevice[] = [];
   try {
     assets.configureRuntimeBinding(options.binding);
-    const material = renderValue(
-      await assets.loadByGuid<MaterialAsset>(renderValue(AssetGuid.parse(options.guid))),
-    );
-    expect(material.passes?.[0]?.outputs).toHaveLength(4);
+    const material = (
+      await assets.load(renderValue(AssetGuid.parse(options.guid)), 'material')
+    ).unwrap();
+    expect(assets.read(material).unwrap().passes?.[0]?.outputs).toHaveLength(4);
     world
       .spawn(
         { component: Transform, data: { pos: [0, 0, 3] } },
@@ -186,15 +187,14 @@ export async function verifyMaterialMrt(options: {
         {
           component: MeshFilter,
           data: {
-            assetHandle: world.allocSharedRef(
-              'MeshAsset',
-              createBoxGeometry(1.5, 1.5, 1.5).unwrap(),
-            ),
+            assetHandle: testAssets(world)
+              .create(createBoxGeometry(1.5, 1.5, 1.5).unwrap())
+              .unwrap(),
           },
         },
         {
           component: MeshRenderer,
-          data: { materials: [world.allocSharedRef('MaterialAsset', material)] },
+          data: { materials: [material] },
         },
       )
       .unwrap();

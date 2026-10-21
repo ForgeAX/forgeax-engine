@@ -1,14 +1,19 @@
 import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
-import { describe, expect, it } from 'vitest';
+import { mat4, vec3 } from '@forgeax/engine-math';
+import { describe, expect, it, vi } from 'vitest';
 import { resolveMaterialShaderVariantSet } from '../assembly/material-shader-policy';
+import { MaterialResource } from '../material-resource';
 import {
   createPbrSkinMeshBindGroupEntries,
   pbrSkinMeshDynamicOffsets,
   SHADOW_CASTER_SHADER_ID,
   shadowCasterVariantSet,
 } from '../pbr-pipeline.js';
-import { shadowShaderMap } from '../record/shadow-pass.js';
+import type { _InternalRenderPipelineContext } from '../record/render-context';
+import { prepareShadowMaterialPipelines } from '../record/shadow-pass.js';
+import type { MaterialSnapshot } from '../render-system-extract';
+import { MaterialDispatch } from '../scene/material-dispatch';
 
 describe('skinned shadow caster', () => {
   it('preserves distinct canonical define text for all 32 capability selections', () => {
@@ -74,7 +79,7 @@ describe('skinned shadow caster', () => {
     expect(shader).toContain('@group(2) @binding(1)');
     expect(shader).toContain('let skinMatrix = palette[');
     expect(shader).toContain('let materialIndex = visible.y;');
-    expect(shader).toContain('let paletteBase = visible.z;');
+    expect(shader).toContain('let paletteBase = sceneInstances[visible.x].customDataStart;');
     expect(shader).not.toContain('meshes[meshIndex]');
     expect(shader).toContain('@location(13) color : vec4<f32>');
     expect(shader).toContain('out.color = in.color;');
@@ -246,58 +251,86 @@ describe('skinned shadow caster', () => {
     );
   });
 
-  it('keeps the dispatch material handle, snapshot, and frame slot together', () => {
-    const paramSnapshot = { alphaClipThreshold: 0.4 };
+  const shadowMaterial = (
+    materialHandle: number,
+    module = 'forgeax::default-standard-pbr',
+    entries: { vertexEntry?: string; fragmentEntry?: string } = {},
+  ): MaterialSnapshot => ({
+    materialHandle,
+    baseColor: vec3.create(1, 1, 1),
+    metallic: 0,
+    roughness: 1,
+    paramSnapshot: { alphaCutoff: 0.4 },
+    passes: [
+      {
+        name: 'shadow',
+        program: { module, ...entries },
+        renderState: { tags: { LightMode: 'ShadowCaster' } },
+      },
+    ],
+  });
+
+  function preparation(resources: MaterialResource[]) {
+    let frame = new MaterialDispatch().materials();
+    for (const resource of resources) frame = frame.with(resource);
+    const request = vi.fn(() => ({}));
     const context = {
-      dispatch: [
+      materialFrame: frame,
+      pipelinePreparationEntries: [
         {
           renderableIndex: 4,
-          materialHandle: 42,
-          materialShaderId: 'forgeax::default-standard-pbr',
-          paramSnapshot,
-          tags: { LightMode: 'ShadowCaster' },
+          source: {
+            transform: { world: mat4.identity(mat4.create()) },
+            material: resources[0],
+            materials: resources,
+          },
+          mesh: {
+            layoutProjection: { attributes: [] },
+            submeshes: resources.map((_resource, materialSlot) => ({
+              materialSlot,
+              topology: 'triangle-list',
+            })),
+          },
         },
       ],
-      validatedOrdered: [{ renderableIndex: 4 }],
-      materialSlotIndices: [[3, 7]],
-      materialSlots: Array.from({ length: 8 }, (_, slot) => ({
-        materialHandle: slot === 7 ? 42 : 11,
-      })),
-    } as never;
-    const bindings = shadowShaderMap(context);
-    expect(bindings.get(4)?.get(42)?.[0]).toMatchObject({
-      materialHandle: 42,
-      materialShaderId: SHADOW_CASTER_SHADER_ID,
-      materialSlot: 7,
-      paramSnapshot,
-    });
+      runtime: {
+        device: { caps: { storageBuffer: false } },
+        prepareMaterialShaderPipeline: request,
+      },
+      frameState: {},
+    } as unknown as _InternalRenderPipelineContext;
+    return { frame, request, prepare: () => prepareShadowMaterialPipelines(context) };
+  }
+
+  it('keeps the accepted material and alpha-mask snapshot fixed through later adoption', () => {
+    const original = shadowMaterial(42);
+    const resource = new MaterialResource(original);
+    const fixture = preparation([resource]);
+    resource.adopt({ ...original, paramSnapshot: { alphaCutoff: 0 } });
+    fixture.prepare();
+    expect(fixture.frame.get(resource)?.snapshot).toBe(original);
+    expect(fixture.frame.get(resource)?.snapshot.materialHandle).toBe(42);
+    expect(fixture.request).toHaveBeenCalledTimes(1);
+    const call = fixture.request.mock.calls[0] as unknown[] | undefined;
+    expect(call?.[0]).toBe(SHADOW_CASTER_SHADER_ID);
+    expect(call?.[5]).toContain('ALPHA_MASK=true');
   });
 
   it('keeps each submesh material associated with its selected shadow program and entries', () => {
-    const context = {
-      dispatch: [
-        {
-          renderableIndex: 4,
-          materialHandle: 42,
-          materialShaderId: 'forgeax::default-standard-pbr',
-          tags: { LightMode: 'ShadowCaster' },
-        },
-        {
-          renderableIndex: 4,
-          materialHandle: 43,
-          materialShaderId: 'custom::cutout',
-          vertexEntry: 'vs_displaced',
-          fragmentEntry: 'fs_cutout',
-          tags: { LightMode: 'ShadowCaster' },
-        },
-      ],
-    } as never;
-    const bindings = shadowShaderMap(context);
-    expect(bindings.get(4)?.get(42)?.[0]?.materialShaderId).toBe(SHADOW_CASTER_SHADER_ID);
-    expect(bindings.get(4)?.get(43)?.[0]).toMatchObject({
-      materialShaderId: 'custom::cutout',
-      vertexEntry: 'vs_displaced',
-      fragmentEntry: 'fs_cutout',
-    });
+    const builtin = new MaterialResource(shadowMaterial(42));
+    const custom = new MaterialResource(
+      shadowMaterial(43, 'custom::cutout', {
+        vertexEntry: 'vs_displaced',
+        fragmentEntry: 'fs_cutout',
+      }),
+    );
+    const fixture = preparation([builtin, custom]);
+    fixture.prepare();
+    const calls = fixture.request.mock.calls as unknown as unknown[][];
+    expect(calls).toHaveLength(2);
+    expect(calls[0]?.[0]).toBe(SHADOW_CASTER_SHADER_ID);
+    expect(calls[1]?.[0]).toBe('custom::cutout');
+    expect(calls[1]?.[18]).toBe('vs_displaced');
+    expect(calls[1]?.[19]).toBe('fs_cutout');
   });
 });

@@ -1,3 +1,5 @@
+import { AssetRegistry } from '@forgeax/engine-assets-runtime';
+import { runtimeAssetRegistry } from '@forgeax/engine-assets-runtime/internal';
 import { createWorldContext, FixedTime, World } from '@forgeax/engine-ecs';
 import { scenePlugin, Transform } from '@forgeax/engine-scene';
 import { describe, expect, it } from 'vitest';
@@ -6,7 +8,7 @@ import { AnimationPlayer, animationPlugin } from '../index';
 describe('fixed animation playback', () => {
   it('rejects an invalid transported cadence before installing World contributions', () => {
     try {
-      animationPlugin(undefined, { cadence: 'invalid' as 'fixed' });
+      animationPlugin({ cadence: 'invalid' as 'fixed' });
       expect.fail('invalid cadence was accepted');
     } catch (error) {
       expect(error).toMatchObject({
@@ -16,16 +18,21 @@ describe('fixed animation playback', () => {
     }
   });
   it('advances the existing player exactly once per fixed step and holds on render-only ticks', async () => {
-    const world = new World({ time: { fixedDeltaSeconds: 1 / 60, maxStepsPerUpdate: 4 } });
+    const world = new World({
+      assets: new AssetRegistry(),
+      ...{ time: { fixedDeltaSeconds: 1 / 60, maxStepsPerUpdate: 4 } },
+    });
     const context = await createWorldContext(world, [
       scenePlugin(),
-      animationPlugin(undefined, { cadence: 'fixed' }),
+      animationPlugin({ cadence: 'fixed' }),
     ]);
-    const clip = world.allocSharedRef('AnimationClip', {
-      kind: 'animation-clip',
-      duration: 10,
-      channels: [],
-    });
+    const clip = runtimeAssetRegistry(world.assets)
+      .create({
+        kind: 'animation-clip',
+        duration: 10,
+        channels: [],
+      })
+      .unwrap();
     const player = world
       .spawn(
         { component: Transform, data: {} },

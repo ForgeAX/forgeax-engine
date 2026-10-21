@@ -1,4 +1,7 @@
 import { Context } from '@forgeax/engine/plugin';
+import { AssetRegistry, createCatalogSource } from '@forgeax/engine/assets-runtime';
+import { createRuntimePackPublication } from '@forgeax/engine/pack/runtime';
+import { uiAssetContribution } from '@forgeax/engine/ui';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { ui as uiPlugin } from '../ui.pack.ts';
 
@@ -25,7 +28,10 @@ const { dispose, mountUi, label, toggle, signal, button, status, player, dispose
 });
 vi.mock('../player-controls.ts', () => ({ installPlayerControls }));
 vi.mock('../vase-controls.ts', () => ({ installVaseControls }));
-vi.mock('@forgeax/engine/ui', () => ({ mountUi, createUiLoader: () => ({ load: () => ({ ok: true, value: {} }) }) }));
+vi.mock('@forgeax/engine/ui', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('@forgeax/engine/ui')>()),
+  mountUi,
+}));
 vi.mock('@forgeax/engine/ui/localization', () => ({
   createUiLocalization: async () => ({ ok: true, value: { t: (key: string) => key === 'vase.unavailable' ? 'Vase generation is unavailable in this host.' : key === 'lock' ? 'Camera locked' : key === 'touchUnavailable' ? 'Touch controls need a connected game' : key === 'touch' ? 'Touch to interact' : 'Click to lock camera' } }),
   bindUiLocalization: (_ui: unknown, _i18n: unknown, render: () => void) => { render(); return () => {}; },
@@ -52,15 +58,39 @@ function hostFixture(ports: { port?: MessagePort; presentationPort?: MessagePort
     },
   };
   const ctx = new Context();
+  const guid = '019fb7ce-3600-7000-8000-000000000001';
+  const packageUrl = 'https://game-3d.invalid/ui.pack.json';
+  const sourcePath = 'ui.pack.json';
+  const kind = uiAssetContribution.kind.kind;
+  const { pack, publication } = createRuntimePackPublication({
+    scopeId: 'asset-runtime',
+    sourcePath,
+    sourceRevision: '1',
+    packageUrl,
+    pack: {
+      assets: [{
+        guid, kind, payload: { guid, html: '<main></main>', css: '' }, refs: [], artifacts: {},
+      }],
+    },
+  });
+  const assets = new AssetRegistry({
+    catalog: createCatalogSource({
+      entries: [{ guid, kind, packageUrl, sourcePath, publication }],
+      fetch: async () => new Response(JSON.stringify(pack)),
+    }),
+  });
+  vi.spyOn(assets, 'load');
+  vi.spyOn(assets, 'release');
   ctx.provide('gameHost', { uiRoot: root, controlMode, ...ports } as never);
-  ctx.provide('assets', { installDecoder: () => ({ dispose() {} }), load: async () => ({ ok: true, value: {} }) } as never);
-  return { ctx, root, controlMode, setMode(value: typeof mode) { mode = value; events.dispatchEvent(new Event('change')); } };
+  ctx.provide('assets', assets);
+  ctx.effect(() => () => assets.dispose());
+  return { ctx, assets, root, controlMode, setMode(value: typeof mode) { mode = value; events.dispatchEvent(new Event('change')); } };
 }
 
 describe('game-3d Host UI lifecycle', () => {
   it.each(['worker', 'same-realm'] as const)('routes both controllers through the %s presentation endpoint', async (realm) => {
     const channel = new MessageChannel();
-    const { ctx, setMode } = hostFixture(realm === 'worker'
+    const { ctx, assets, setMode } = hostFixture(realm === 'worker'
       ? { port: channel.port1 }
       : { port: channel.port2, presentationPort: channel.port1 });
     try {
@@ -72,9 +102,17 @@ describe('game-3d Host UI lifecycle', () => {
       expect(installVaseControls.mock.calls[0]?.[1]).toBe(channel.port1);
       expect(label.textContent).toBe('Touch to interact');
       expect(player.setEnabled).toHaveBeenLastCalledWith(true);
+      const loaded = (await vi.mocked(assets.load).mock.results[0]?.value).unwrap();
+      expect(assets.validate(loaded).ok).toBe(true);
       await fiber.dispose();
+      expect(assets.release).toHaveBeenCalledTimes(1);
+      expect(assets.release).toHaveBeenCalledWith(loaded);
+      // The plugin returns its hold; the source cache lives with the Registry.
+      expect(assets.validate(loaded).ok).toBe(true);
       expect(player.dispose).toHaveBeenCalledTimes(1);
       expect(disposeVase).toHaveBeenCalledTimes(1);
+      await ctx.fiber.dispose();
+      expect(assets.validate(loaded).ok).toBe(false);
     } finally {
       await ctx.fiber.dispose();
       channel.port1.close();

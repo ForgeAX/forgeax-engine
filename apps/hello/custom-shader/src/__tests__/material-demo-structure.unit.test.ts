@@ -4,7 +4,6 @@ import { describe, expect, it } from 'vitest';
 const appRoot = new URL('../..', import.meta.url);
 const source = readFileSync(new URL('../index.ts', import.meta.url), 'utf8');
 const shader = readFileSync(new URL('../pulse-material.wgsl', import.meta.url), 'utf8');
-const browserSmoke = readFileSync(new URL('../../scripts/smoke-browser.mjs', import.meta.url), 'utf8');
 const fixture = JSON.parse(
   readFileSync(new URL('../../assets/pulse-material.pack.json', import.meta.url), 'utf8'),
 );
@@ -13,7 +12,7 @@ const DERIVED_MATERIAL_GUID = '01935b00-7d8c-7c4e-9f12-345678abcd03';
 
 describe('material-inheritance-demo structure', () => {
   it('loads root and derived MaterialAsset records through the runtime', () => {
-    expect(source).toContain('loadByGuid<MaterialAsset>');
+    expect(source).toContain("assets.load(rootGuid.value, 'material')");
     expect(source).toContain('createMaterialLoader');
     expect(source).toContain('loadCookedMaterial');
     expect(source).toContain('materialFromCookedRecord');
@@ -28,36 +27,6 @@ describe('material-inheritance-demo structure', () => {
     expect(source).not.toContain('JSON.stringify(rootReady.record.resolved.values)');
     expect(source).not.toContain('const materialHandle');
     expect(source).not.toContain(['install', 'MaterialArtifact'].join(''));
-  });
-
-  it('uses an owned ephemeral browser server and never borrows a foreign listener', () => {
-    expect(browserSmoke).toContain('startOwnedServer');
-    expect(browserSmoke).toContain('stopOwnedServer');
-    expect(browserSmoke).toContain('requestedPort: 0');
-    expect(browserSmoke).toContain("'--host', '127.0.0.1'");
-    expect(browserSmoke).toContain("'--port', '__PORT__'");
-    expect(browserSmoke).toContain("'--strictPort'");
-    expect(browserSmoke).toContain('const url = ownedServer.url;');
-    expect(browserSmoke).toContain('page.goto(targetUrl');
-    expect(browserSmoke).toContain('timeout: 90_000');
-    expect(browserSmoke).toContain("throw new Error('browser close timed out after 15000ms')");
-  });
-
-  it('retains bounded server evidence when browser setup or cleanup fails', () => {
-    expect(browserSmoke).toContain('const retainServerEvidence =');
-    expect(browserSmoke).toMatch(/if \(!retainServerEvidence\) \{\s+await rm\(serverStateRoot/);
-    expect(browserSmoke).toContain('stateFile: serverStateFile');
-    expect(browserSmoke).toContain('logFile: ownedServer?.logFile');
-    expect(browserSmoke).toContain('requestedPortOccupied:');
-    expect(browserSmoke).toContain('remainingTreePids');
-    expect(browserSmoke).toContain('remainingListenerPids');
-    expect(browserSmoke).toContain('custom-shader browser server evidence:');
-    expect(browserSmoke).toContain('cleanupError ??= error');
-    expect(browserSmoke).toContain('browser inherited values lost shared runtime parameters');
-    expect(browserSmoke).toContain('browser inherited values lost the derived baseColor override');
-    expect(browserSmoke.lastIndexOf('await closeBrowserBounded()')).toBeLessThan(
-      browserSmoke.lastIndexOf('cleanup = await stopOwnedServer'),
-    );
   });
 
   it('keeps the derived values limited to color while sharing a dynamic shader', () => {

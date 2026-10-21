@@ -1,5 +1,5 @@
 import { AudioError, validAudioStream } from '@forgeax/engine-audio';
-import type { AudioClipAsset, AudioStreamManifest } from '@forgeax/engine-types';
+import type { AudioClipAsset, AudioErrorDetail, AudioStreamManifest } from '@forgeax/engine-types';
 
 export interface AudioStreamState {
   readonly status: 'buffering' | 'playing' | 'paused' | 'ended' | 'failed';
@@ -13,13 +13,7 @@ export interface AudioStreamState {
   readonly error: AudioError | null;
 }
 
-type StreamFailure =
-  | 'unsupported-format'
-  | 'range-unsupported'
-  | 'range-oversized'
-  | 'integrity-failed'
-  | 'network-failed'
-  | 'budget-exceeded';
+type StreamFailure = Extract<AudioErrorDetail, { code: 'stream-failed' }>['reason'];
 class StreamReadError extends Error {
   constructor(
     readonly reason: StreamFailure,

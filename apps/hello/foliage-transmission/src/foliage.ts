@@ -13,6 +13,8 @@ import {
 import { Transform } from '@forgeax/engine-scene';
 import type { MaterialAsset, TextureAsset } from '@forgeax/engine-types';
 import { withFoliageMaterialModule } from './material-contract.ts';
+import { AssetRegistry } from '@forgeax/engine-assets-runtime';
+
 
 /**
  * `no-transmission` builds the same scene with every diffuse-transmission
@@ -61,12 +63,15 @@ function transmissionMask(): TextureAsset {
  * comes from the transmission lobe.
  */
 export function buildFoliageWorld(world: World, options: FoliageOptions): void {
+const sceneAssets = world.assets;
+if (!(sceneAssets instanceof AssetRegistry)) throw new Error('Scene requires its runtime asset owner');
+
   const factor = options.mode === 'no-transmission' ? 0 : 1;
   const plane = createPlaneGeometry(1.6, 2.2);
   if (!plane.ok) throw new Error(`foliage plane failed: ${plane.error.code}`);
-  const leafMesh = world.allocSharedRef('MeshAsset', plane.value);
+  const leafMesh = sceneAssets.create(plane.value).unwrap();
   const material = (asset: MaterialAsset) =>
-    world.allocSharedRef<'MaterialAsset', MaterialAsset>('MaterialAsset', asset);
+    sceneAssets.create(asset).unwrap();
   const opaque = material(Materials.standard(LEAF_BASE));
   const transmissive = material(
     withFoliageMaterialModule(
@@ -83,7 +88,7 @@ export function buildFoliageWorld(world: World, options: FoliageOptions): void {
         ...LEAF_BASE,
         diffuseTransmission: factor,
         diffuseTransmissionColor: LEAF_TINT,
-        diffuseTransmissionTexture: world.allocSharedRef('TextureAsset', transmissionMask()),
+        diffuseTransmissionTexture: sceneAssets.create(transmissionMask()).unwrap(),
       }),
     ),
   );

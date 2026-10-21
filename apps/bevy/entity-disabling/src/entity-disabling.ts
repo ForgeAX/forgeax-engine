@@ -3,7 +3,7 @@
 // Disabled is an ECS marker: ordinary queries exclude it, while a query that
 // explicitly includes Disabled can inspect and re-enable those entities.
 
-import { HANDLE_CUBE } from '@forgeax/engine-assets-runtime';
+
 import {
   Disabled,
   Time,
@@ -14,8 +14,12 @@ import {
   type EntityHandle,
 } from '@forgeax/engine-ecs';
 import { Camera, Materials, MeshFilter, MeshRenderer, orthographic } from '@forgeax/engine-render';
-import type { MaterialAsset } from '@forgeax/engine-runtime';
+
 import { Transform } from '@forgeax/engine-scene';
+import { AssetRegistry } from '@forgeax/engine-assets-runtime';
+
+import { createPrimitiveMesh } from '@forgeax/engine-geometry';
+
 
 export const DisableOnClick = defineComponent('EntityDisablingTarget', { slot: 'u32' });
 
@@ -48,11 +52,16 @@ function spawnTarget(
   pos: readonly [number, number, number],
   color: readonly [number, number, number, number],
 ): EntityHandle {
-  const material = world.allocSharedRef<'MaterialAsset', MaterialAsset>('MaterialAsset', Materials.unlit(color));
+const sceneAssets = world.assets;
+if (!(sceneAssets instanceof AssetRegistry)) throw new Error('Scene requires its runtime asset owner');
+
+const primitiveCube = sceneAssets.create(createPrimitiveMesh('cube').unwrap()).unwrap();
+
+  const material = sceneAssets.create(Materials.unlit(color)).unwrap();
   return world
     .spawn(
       { component: Transform, data: { pos, quat: [0, 0, 0, 1], scale: [100, 100, 1] } },
-      { component: MeshFilter, data: { assetHandle: HANDLE_CUBE } },
+      { component: MeshFilter, data: { assetHandle: primitiveCube } },
       { component: MeshRenderer, data: { materials: [material] } },
       { component: DisableOnClick, data: { slot } },
     )

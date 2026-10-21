@@ -7,6 +7,8 @@
 #import forgeax_shadow::surface::{projectShadowPosition}
 #import forgeax_scene_temporal::{packSceneTemporalV1WithValidity}
 #import forgeax_material::alpha_hash::{applyAlphaHash}
+#import forgeax_material::alpha_hash::{alphaCoverage, materialOutputAlpha, materialOutputColor}
+#import forgeax_material::texture_coordinates::{materialUvLinear}
 #import forgeax_view::fog::{translucent_fog}
 #import forgeax_material::oit::{OitOutput, oitAccumulate}
 
@@ -55,12 +57,19 @@ struct Material {
   baseColor : vec4<f32>,
   alphaCutoff : f32,
   alphaHash : f32,
+  shadowAlphaMode : f32,
+  alphaMode : f32,
+  alphaToCoverage : f32,
   // 0 = base shading, 1 = normal visualization, 2 = matcap. It fills the scalar
   // padding before the coordinate records, so every mode shares one UBO size.
   shading : f32,
+  alphaChannel : f32,
   baseColorTextureCoordinatesTransform : vec4<f32>,
   baseColorTextureCoordinatesMetadata : vec4<f32>,
   baseColorTextureCoordinatesRotation : vec4<f32>,
+  alphaTextureCoordinatesTransform : vec4<f32>,
+  alphaTextureCoordinatesMetadata : vec4<f32>,
+  alphaTextureCoordinatesRotation : vec4<f32>,
 #ifdef MATERIAL_CLIPPING_AVAILABLE
   clippingControl : vec4<f32>,
   clippingPlaneA : vec4<f32>,
@@ -79,11 +88,14 @@ struct Material {
 @group(1) @binding(0) var<uniform> material : Material;
 @group(1) @binding(1) var baseColorSampler : sampler;
 @group(1) @binding(2) var baseColorTexture : texture_2d<f32>;
+@group(1) @binding(3) var alphaSampler : sampler;
+@group(1) @binding(4) var alphaTexture : texture_2d<f32>;
 
 // Preserve filtering reflection for the bound texture passed to the helper.
 fn materialTextureFilteringWitness() {
   let base = baseColorTexture;
   let baseWitness = textureSample(base, baseColorSampler, vec2<f32>(0.0));
+  let alphaWitness = textureSample(alphaTexture, alphaSampler, vec2<f32>(0.0));
 }
 
 #if SKINNING_DISABLED == false
@@ -101,6 +113,13 @@ struct VsIn {
   @location(1) normal  : vec3<f32>,
   @location(2) uv      : vec2<f32>,
   @location(3) tangent : vec4<f32>,
+  @location(6) uv1 : vec2<f32>,
+  @location(7) uv2 : vec2<f32>,
+  @location(8) uv3 : vec2<f32>,
+  @location(9) uv4 : vec2<f32>,
+  @location(10) uv5 : vec2<f32>,
+  @location(11) uv6 : vec2<f32>,
+  @location(12) uv7 : vec2<f32>,
 #if SKINNING_DISABLED == false
   @location(4) skinIndex : vec4<u32>,
   @location(5) skinWeight : vec4<f32>,
@@ -113,6 +132,7 @@ struct VsOut {
   @location(3) positionOS : vec3<f32>,
   @builtin(position) @invariant clip : vec4<f32>,
   @location(0) uv : vec2<f32>,
+  @location(5) alphaUv : vec2<f32>,
   @location(1) worldPos : vec3<f32>,
   @location(2) worldNormal : vec3<f32>,
 #ifdef VERTEX_COLOR_AVAILABLE
@@ -121,6 +141,18 @@ struct VsOut {
 };
 
 const UNLIT_SHADING_NORMAL : f32 = 1.0;
+
+fn unlitUv(in : VsIn, uvSet : f32, transform : vec4<f32>, rotation : vec4<f32>) -> vec2<f32> {
+  var source = in.uv;
+  if (uvSet >= 1.0) { source = in.uv1; }
+  if (uvSet >= 2.0) { source = in.uv2; }
+  if (uvSet >= 3.0) { source = in.uv3; }
+  if (uvSet >= 4.0) { source = in.uv4; }
+  if (uvSet >= 5.0) { source = in.uv5; }
+  if (uvSet >= 6.0) { source = in.uv6; }
+  if (uvSet >= 7.0) { source = in.uv7; }
+  return materialUvLinear(source, transform, rotation) + transform.xy;
+}
 
 fn unlitVertex(in : VsIn, idx : u32) -> VsOut {
   // feat-20260604-instances-per-instance-transform-shader-group3-bin M1 / w5:
@@ -141,7 +173,8 @@ fn unlitVertex(in : VsIn, idx : u32) -> VsOut {
   var out : VsOut;
   out.positionOS = in.pos;
   out.clip = view.worldViewProj * world;
-  out.uv = in.uv;
+  out.uv = unlitUv(in, material.baseColorTextureCoordinatesMetadata.x, material.baseColorTextureCoordinatesTransform, material.baseColorTextureCoordinatesRotation);
+  out.alphaUv = unlitUv(in, material.alphaTextureCoordinatesMetadata.x, material.alphaTextureCoordinatesTransform, material.alphaTextureCoordinatesRotation);
   out.worldPos = world.xyz;
   if (material.shading > 0.5) {
     let m0 = localToWorld[0].xyz;
@@ -229,22 +262,25 @@ fn unlitColor(in : VsOut, frontFacing : bool) -> vec4<f32> {
   var sampleScale = material.baseColorTextureCoordinatesMetadata.zw;
   // select evaluates both operands: keep mode-specific camera/normal work
   // behind the material-uniform branch instead of charging color fragments.
-  if (material.shading > 1.5) {
+  if (abs(material.shading - 2.0) < 0.5) {
     sampleUv = unlitMatcapUv(in, frontFacing);
     sampleScale = vec2<f32>(1.0);
   }
   let texSample = sampleMaterialTextureLinear(baseColorTexture, baseColorSampler, sampleUv, sampleScale);
   let vertexColor = materialVertexColor(in);
-  let alpha = material.baseColor.a * unlitTextureAlpha(texSample.a) * vertexColor.a;
-  applyAlphaHash(alpha, in.positionOS, material.alphaHash);
-  if (material.alphaCutoff > 0.0 && alpha < material.alphaCutoff) {
-    discard;
-  }
+  let mappedAlpha = sampleMaterialTextureLinear(alphaTexture, alphaSampler, in.alphaUv, material.alphaTextureCoordinatesMetadata.zw)[u32(material.alphaChannel)];
+  let coverage = alphaCoverage(material.baseColor.a * unlitTextureAlpha(texSample.a) * vertexColor.a * mappedAlpha, material.alphaCutoff, material.alphaToCoverage);
+  applyAlphaHash(coverage, in.positionOS, material.alphaHash);
+  let alpha = materialOutputAlpha(coverage, material.alphaMode);
   // Normal visualization is an exact encoded readback (Three fog: false).
-  if (abs(material.shading - UNLIT_SHADING_NORMAL) < 0.5) {
-    return vec4<f32>(unlitViewNormal(in, frontFacing) * 0.5 + 0.5, alpha);
+  if (abs(material.shading - UNLIT_SHADING_NORMAL) < 0.5 || material.shading > 2.5) {
+    var normalColor = unlitViewNormal(in, frontFacing) * 0.5 + 0.5;
+    if (material.shading > 2.5) {
+      normalColor = select(pow((normalColor + 0.055) / 1.055, vec3<f32>(2.4)), normalColor / 12.92, normalColor <= vec3<f32>(0.04045));
+    }
+    return vec4<f32>(materialOutputColor(normalColor, alpha, material.alphaMode), alpha);
   }
-  let shaded = material.baseColor.rgb * texSample.rgb * vertexColor.rgb;
+  let shaded = materialOutputColor(material.baseColor.rgb * texSample.rgb * vertexColor.rgb, alpha, material.alphaMode);
   let fogged = translucent_fog(view, in.worldPos, shaded, alpha);
   return vec4<f32>(fogged, alpha);
 }
@@ -288,11 +324,15 @@ fn fs_shadow(in : VsOut) {
 
   let texSample = sampleMaterialTextureLinear(baseColorTexture, baseColorSampler, in.uv, material.baseColorTextureCoordinatesMetadata.zw);
   let vertexColor = materialVertexColor(in);
-  let alpha = material.baseColor.a * unlitTextureAlpha(texSample.a) * vertexColor.a;
-  applyAlphaHash(alpha, in.positionOS, material.alphaHash);
-  if (material.alphaCutoff > 0.0 && alpha < material.alphaCutoff) {
-    discard;
+  if (material.shadowAlphaMode > 0.5) {
+    let mappedAlpha = sampleMaterialTextureLinear(alphaTexture, alphaSampler, in.alphaUv, material.alphaTextureCoordinatesMetadata.zw)[u32(material.alphaChannel)];
+    let coverage = alphaCoverage(unlitTextureAlpha(texSample.a) * mappedAlpha, material.alphaCutoff, 0.0);
+    return;
   }
+  let mappedAlpha = sampleMaterialTextureLinear(alphaTexture, alphaSampler, in.alphaUv, material.alphaTextureCoordinatesMetadata.zw)[u32(material.alphaChannel)];
+  let coverage = alphaCoverage(material.baseColor.a * unlitTextureAlpha(texSample.a) * vertexColor.a * mappedAlpha, material.alphaCutoff, material.alphaToCoverage);
+  applyAlphaHash(coverage, in.positionOS, material.alphaHash);
+  let alpha = materialOutputAlpha(coverage, material.alphaMode);
 }
 
 struct TemporalVsOut {
@@ -300,6 +340,7 @@ struct TemporalVsOut {
   @location(4) clippingPositionWS : vec3<f32>,
   @builtin(position) @invariant clip : vec4<f32>,
   @location(0) uv : vec2<f32>,
+  @location(5) alphaUv : vec2<f32>,
   @location(1) @interpolate(perspective) currentClip : vec4<f32>,
   @location(2) @interpolate(perspective) previousClip : vec4<f32>,
 #ifdef VERTEX_COLOR_AVAILABLE
@@ -309,7 +350,8 @@ struct TemporalVsOut {
 
 @vertex
 fn vs_temporal(in : VsIn, @builtin(instance_index) idx : u32) -> TemporalVsOut {
-  let currentWorld = vec4<f32>(unlitVertex(in, idx).worldPos, 1.0);
+  let current = unlitVertex(in, idx);
+  let currentWorld = vec4<f32>(current.worldPos, 1.0);
   var previousWorld = currentWorld;
 #if SKINNING_DISABLED == false
   let previousSkin = previousPalette[in.skinIndex.x] * in.skinWeight.x +
@@ -329,7 +371,8 @@ fn vs_temporal(in : VsIn, @builtin(instance_index) idx : u32) -> TemporalVsOut {
   out.currentClip = view.temporalCurrentViewProj * currentWorld;
   out.clip = view.worldViewProj * currentWorld;
   out.previousClip = view.temporalPreviousViewProj * previousWorld;
-  out.uv = in.uv;
+  out.uv = current.uv;
+  out.alphaUv = current.alphaUv;
 #ifdef VERTEX_COLOR_AVAILABLE
   out.color = in.color;
 #endif
@@ -353,11 +396,10 @@ fn fs_temporal(in : TemporalVsOut) -> @location(0) vec4<f32> {
 
   let texSample = sampleMaterialTextureLinear(baseColorTexture, baseColorSampler, in.uv, material.baseColorTextureCoordinatesMetadata.zw);
   let vertexColor = temporalVertexColor(in);
-  let alpha = material.baseColor.a * unlitTextureAlpha(texSample.a) * vertexColor.a;
-  applyAlphaHash(alpha, in.positionOS, material.alphaHash);
-  if (material.alphaCutoff > 0.0 && alpha < material.alphaCutoff) {
-    discard;
-  }
+  let mappedAlpha = sampleMaterialTextureLinear(alphaTexture, alphaSampler, in.alphaUv, material.alphaTextureCoordinatesMetadata.zw)[u32(material.alphaChannel)];
+  let coverage = alphaCoverage(material.baseColor.a * unlitTextureAlpha(texSample.a) * vertexColor.a * mappedAlpha, material.alphaCutoff, material.alphaToCoverage);
+  applyAlphaHash(coverage, in.positionOS, material.alphaHash);
+  let alpha = materialOutputAlpha(coverage, material.alphaMode);
 #ifdef COVERAGE_ONLY
   return vec4<f32>(1.0);
 #endif
@@ -367,6 +409,8 @@ fn fs_temporal(in : TemporalVsOut) -> @location(0) vec4<f32> {
   reactive = meshes[0].temporal.x;
   motionValid = meshMotionValid(meshes[0].temporal.y);
 #endif
+  // Material coverage is shared shader state, never copied into every Mesh row.
+  if (material.alphaHash <= 0.5 && alpha < 1.0) { reactive = 1.0; }
   return packSceneTemporalV1WithValidity(
     in.currentClip,
     in.previousClip,

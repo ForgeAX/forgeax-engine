@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+import { useImportedAssetSource } from '../../../shared/scripts/source-publication.mjs';
 // hello-fbx-skin dawn smoke (M4 / T18): structural gate + multi-frame skin
 // animation proof (the FBX skinning chain animates, not a frozen T-pose).
 //
@@ -6,15 +7,15 @@
 // imports humanoid.fbx through fbxImporter at run time and COOKS the resulting
 // ImportedAsset[] into an in-memory pack (a `{ assets: [...] }` body + a
 // pack-index array), then serves both through a thin globalThis.fetch shim.
-// loadByGuid<SceneAsset> then runs the exact CANONICAL pack-fetch decode over
+// load then runs the exact CANONICAL pack-fetch decode over
 // that in-memory pack:
 //   - parseScenePayload decodes the scene's numeric refs-index handle fields
 //     (MeshFilter.assetHandle, MeshRenderer.materials[], Skin.skeleton) into
 //     GUID strings and resolves the SceneAsset.skinGuids cross-edge;
-//   - loadByGuid recursively catalogues the scene's mesh / material / skeleton /
+//   - load recursively catalogues the scene's mesh / material / skeleton /
 //     skin sub-assets (envelope.refs walk);
-//   - instantiate's _resolveSceneGuids mints user-tier handles for those GUID
-//     strings and postSpawnResolveJoints wires Skin.joints from the SkinAsset.
+//   - instantiate resolves GUID references to managed asset handles and
+//     wires Skin.joints from the skin asset.
 // This is the same decode a real FBX skin ships on -- the ONLY difference from
 // the deployed dev-server/build path is where the pack bytes come from (a fresh
 // in-memory import here vs. a build-time pre-import into dist/).
@@ -64,10 +65,10 @@ import { fileURLToPath } from 'node:url';
 import { dirname, resolve } from 'node:path';
 import { readFileSync } from 'node:fs';
 import { emitSmokeReceipt } from '../../../shared/scripts/smoke-receipt.mjs';
+import { teardownDawnInstance } from '../../../../scripts/lib/dawn-teardown.mjs';
 
-// CI (smoke-fleet) sets SMOKE_MIN_FRAMES=100; local default matches the other
-// dawn smokes' 60-frame per-frame-leak soak. Frame-count-independent gates
-// (palette distinctness, FALSIFY) hold at either depth.
+// CI and local acceptance both retain 60 completed frames. Longer diagnostic
+// runs preserve the same palette-distinctness and FALSIFY gates.
 const SMOKE_MIN_FRAMES = Number.parseInt(process.env.SMOKE_MIN_FRAMES ?? '60', 10);
 const WIDTH = 200;
 const HEIGHT = 150;
@@ -82,8 +83,7 @@ const RUN_CLIP_GUID = '019ecd87-179b-71f7-b9f8-4c8518326b65';
 
 const FALSIFY = process.env.FALSIFY ?? '';
 if (FALSIFY !== '' && FALSIFY !== 'static') {
-  console.error(`[smoke] FAIL - unknown FALSIFY mode '${FALSIFY}' (expected '' or 'static')`);
-  process.exit(1);
+  throw new Error(`[smoke] FAIL - unknown FALSIFY mode '${FALSIFY}' (expected '' or 'static')`);
 }
 
 const here = dirname(fileURLToPath(import.meta.url));
@@ -102,24 +102,30 @@ const HUMANOID_FBX = resolve(
   'humanoid.fbx',
 );
 
+let gpu;
+let sharedDevice;
+let renderTarget;
+let renderer;
+let worldContext;
+let framesObserved = 0;
+let distinctPaletteHashes = 0;
+
+try {
 // --- 1. dawn.node binding setup ---
 let create, globals;
 try {
   ({ create, globals } = await import('@forgeax/engine-dawn-node'));
 } catch (err) {
-  console.error(`[smoke] FAIL - dawn.node import: ${err instanceof Error ? err.message : String(err)}`);
-  process.exit(1);
+  throw new Error(`[smoke] FAIL - dawn.node import: ${err instanceof Error ? err.message : String(err)}`);
 }
 Object.assign(globalThis, globals);
 if (!('navigator' in globalThis) || globalThis.navigator === undefined) {
   Object.defineProperty(globalThis, 'navigator', { value: {}, configurable: true, writable: true });
 }
-let gpu;
 try {
   gpu = create([]);
 } catch (err) {
-  console.error(`[smoke] FAIL - dawn-node create: ${err instanceof Error ? err.message : String(err)}`);
-  process.exit(1);
+  throw new Error(`[smoke] FAIL - dawn-node create: ${err instanceof Error ? err.message : String(err)}`);
 }
 Object.defineProperty(globalThis.navigator, 'gpu', { value: gpu, configurable: true, writable: true });
 gpu.getPreferredCanvasFormat = () => 'rgba8unorm';
@@ -135,7 +141,6 @@ gpu.getPreferredCanvasFormat = () => 'rgba8unorm';
 // zero state change, which would swamp a per-sample colour delta. The pixel
 // readback below is kept only as a coarse "the humanoid actually renders
 // non-black" proof (AGENTS.md LO 5.1 black-screen lesson).
-let sharedDevice;
 const skinPaletteWrites = [];
 const fnv1a32 = (bytes, start, end) => {
   let h = 0x811c9dc5;
@@ -186,7 +191,6 @@ globalThis.navigator.gpu.requestAdapter = async (opts) => {
 };
 
 // --- 2. Mock canvas with offscreen render target ---
-let renderTarget;
 function ensureRenderTarget(device, format) {
   if (renderTarget) return renderTarget;
   renderTarget = device.createTexture({
@@ -237,63 +241,14 @@ try {
   });
 } catch (err) {
   const code = err && typeof err === 'object' && 'code' in err ? err.code : String(err);
-  console.error(`[smoke] FAIL - fbxImporter.import threw: ${code}`);
-  process.exit(1);
+  throw new Error(`[smoke] FAIL - fbxImporter.import threw: ${code}`);
 }
 
 // Use the same import-to-wire projection and finalizer as Vite. Importer POD
 // stays available to import consumers; the package carries only one Mesh source.
 if (!imported.ok) {
-  console.error(`[smoke] FAIL - fbxImporter failed: ${imported.error.code}`);
-  process.exit(1);
+  throw new Error(`[smoke] FAIL - fbxImporter failed: ${imported.error.code}`);
 }
-
-const { projectImportProductForBuild } = await import('@forgeax/engine-import');
-const { finalizePackageTransportSource } = await import('@forgeax/engine-pack/build');
-const importedAssets = imported.value.assets;
-const PACK_URL = '/humanoid.pack.json';
-const PACK_INDEX_URL = '/pack-index.json';
-const artifactBytes = new Map();
-const packIndex = importedAssets.map((a) => ({
-  guid: a.guid,
-  packageUrl: PACK_URL,
-  kind: a.kind,
-  sourcePath: HUMANOID_FBX,
-  ...(a.name !== undefined ? { name: a.name } : {}),
-}));
-const finalized = await finalizePackageTransportSource(
-  projectImportProductForBuild(imported.value),
-  {
-    base: '/',
-    packagePath: 'humanoid.pack.json',
-    artifactPath: (guid, key) => `artifacts/${guid}/${key}`,
-  },
-);
-for (const artifact of finalized.artifacts) {
-  artifactBytes.set(`/${artifact.path}`, artifact);
-}
-const packBody = JSON.stringify(finalized.pack);
-console.log(`[smoke] cooked in-memory pack: ${packIndex.length} entries from fbxImporter.import`);
-
-const originalFetch = globalThis.fetch;
-globalThis.fetch = async (url, ...rest) => {
-  const urlStr = typeof url === 'string' ? url : String(url);
-  // data: URLs (e.g. the shader manifest passed via shaderManifestUrl) and any
-  // other non-pack URL fall through to the real fetch.
-  if (urlStr.startsWith('data:')) return originalFetch(url, ...rest);
-  if (urlStr === PACK_INDEX_URL) {
-    return Response.json(packIndex);
-  }
-  if (urlStr === PACK_URL) {
-    return new Response(packBody, { headers: { 'content-type': 'application/json' } });
-  }
-  const artifactPath = new URL(urlStr, 'http://asset.local').pathname;
-  const artifact = artifactBytes.get(artifactPath);
-  if (artifact !== undefined) {
-    return new Response(artifact.bytes, { headers: { 'content-type': artifact.mediaType } });
-  }
-  return { ok: false, status: 404, json: () => Promise.resolve({}), arrayBuffer: () => Promise.resolve(new ArrayBuffer(0)) };
-};
 
 // --- 4. Engine bootstrap ---
 const { createWorldContext, ENTITY_NULL_RAW, World } = await import('@forgeax/engine-ecs');
@@ -316,7 +271,6 @@ try {
   MANIFEST_URL = `data:application/json,${encodeURIComponent(readFileSync(MANIFEST_PATH, 'utf8'))}`;
 } catch {}
 
-let renderer;
 let assets;
 try {
   const constructed = await constructRuntimeRendererHost(mockCanvas, {}, MANIFEST_URL ? { shaderManifestUrl: MANIFEST_URL } : {});
@@ -324,18 +278,17 @@ try {
   renderer = constructed.value.renderer;
   assets = constructed.value.assets;
 } catch (err) {
-  console.error(`[smoke] FAIL - createRenderer: ${err instanceof Error ? err.message : String(err)}`);
-  process.exit(1);
+  throw new Error(`[smoke] FAIL - createRenderer: ${err instanceof Error ? err.message : String(err)}`);
 } finally {
   globalThis.navigator.gpu.requestAdapter = originalAmbientRequestAdapter;
 }
 
 console.log('[hello-fbx-skin] Standard pipeline active');
-if (!assets) { console.error('[smoke] FAIL - AssetRegistry null'); process.exit(1); }
+if (!assets) { throw new Error('[smoke] FAIL - AssetRegistry null'); }
 
-// --- 5. Canonical load: configurePackIndex + loadByGuid<SceneAsset> ---
-const world = new World();
-await createWorldContext(world, [
+// --- 5. Canonical load: configurePackIndex + load ---
+const world = new World({ assets: assets });
+worldContext = await createWorldContext(world, [
   renderComponentsPlugin(),
   scenePlugin(),
   animationPlugin(),
@@ -343,27 +296,25 @@ await createWorldContext(world, [
 ]);
 const worldAttachment1 = renderer.attach(world);
 if (!worldAttachment1.ok) throw worldAttachment1.error;
-assets.configurePackIndex(PACK_INDEX_URL);
+await useImportedAssetSource(assets, imported.value, 'humanoid.fbx');
 
 const sceneGuidRes = AssetGuid.parse(SCENE_GUID);
-if (!sceneGuidRes.ok) { console.error('[smoke] FAIL - AssetGuid.parse(scene)'); process.exit(1); }
-const sceneRes = await assets.loadByGuid(sceneGuidRes.value);
+if (!sceneGuidRes.ok) { throw new Error('[smoke] FAIL - AssetGuid.parse(scene)'); }
+const sceneRes = await assets.load(sceneGuidRes.value, 'scene');
 if (!sceneRes.ok) {
-  console.error(`[smoke] FAIL - loadByGuid<SceneAsset>: ${sceneRes.error.code} - ${sceneRes.error.hint ?? ''}`);
-  process.exit(1);
+  throw new Error(`[smoke] FAIL - load: ${sceneRes.error.code} - ${sceneRes.error.hint ?? ''}`);
 }
-const sceneHandle = world.allocSharedRef('SceneAsset', sceneRes.value);
+const sceneHandle = sceneRes.value;
 const instRes = assets.instantiate(sceneHandle, world);
 if (!instRes.ok) {
-  console.error(`[smoke] FAIL - instantiate scene (skin joints unresolved?): ${instRes.error.code} - ${instRes.error.hint ?? ''}`);
-  process.exit(1);
+  throw new Error(`[smoke] FAIL - instantiate scene (skin joints unresolved?): ${instRes.error.code} - ${instRes.error.hint ?? ''}`);
 }
 const sceneRoot = instRes.value;
-console.log('[smoke] scene instantiated via loadByGuid<SceneAsset> (skin joints resolved)');
+console.log('[smoke] scene instantiated via load (skin joints resolved)');
 
 // Locate the Skin-bearing entity and attach an AnimationPlayer on the run clip.
 const inst = world.get(sceneRoot, SceneInstance);
-if (!inst.ok) { console.error('[smoke] FAIL - scene root has no SceneInstance'); process.exit(1); }
+if (!inst.ok) { throw new Error('[smoke] FAIL - scene root has no SceneInstance'); }
 let skinEnt;
 const animationTargets = [];
 for (const raw of inst.value.mapping) {
@@ -371,13 +322,13 @@ for (const raw of inst.value.mapping) {
   if (world.get(raw, AnimationTargetId).ok) animationTargets.push(raw);
   if (skinEnt === undefined && world.get(raw, Skin).ok) skinEnt = raw;
 }
-if (skinEnt === undefined) { console.error('[smoke] FAIL - no Skin entity in instantiated scene'); process.exit(1); }
+if (skinEnt === undefined) { throw new Error('[smoke] FAIL - no Skin entity in instantiated scene'); }
 
 const clipGuidRes = AssetGuid.parse(RUN_CLIP_GUID);
-if (!clipGuidRes.ok) { console.error('[smoke] FAIL - AssetGuid.parse(clip)'); process.exit(1); }
-const clipRes = await assets.loadByGuid(clipGuidRes.value);
-if (!clipRes.ok) { console.error(`[smoke] FAIL - loadByGuid(clip): ${clipRes.error.code}`); process.exit(1); }
-const clipHandle = world.allocSharedRef('AnimationClip', clipRes.value);
+if (!clipGuidRes.ok) { throw new Error('[smoke] FAIL - AssetGuid.parse(clip)'); }
+const clipRes = await assets.load(clipGuidRes.value, 'animation-clip');
+if (!clipRes.ok) { throw new Error(`[smoke] FAIL - load(clip): ${clipRes.error.code}`); }
+const clipHandle = clipRes.value;
 
 // FALSIFY=static: pause the player so world.update(1 / 60).unwrap() cannot advance time; the
 // joint palette is re-uploaded with the same t=0 pose every frame, so the
@@ -398,8 +349,7 @@ world.addComponent(sceneRoot, {
 });
 const bound = bindAnimationTargets(world, sceneRoot, animationTargets);
 if (!bound.ok) {
-  console.error('[smoke] FAIL - bindAnimationTargets:', bound.error.code);
-  process.exit(1);
+  throw new Error(`[smoke] FAIL - bindAnimationTargets: ${bound.error.code}`);
 }
 
 // Camera + directional light. humanoid.fbx is in cm; ~150-unit body.
@@ -419,13 +369,12 @@ renderer.subscribe((event) => {
 
 
 const device = sharedDevice;
-if (!device) { console.error('[smoke] FAIL - no shared device captured'); process.exit(1); }
+if (!device) { throw new Error('[smoke] FAIL - no shared device captured'); }
 
 // --- 6. Render loop: drive the animation, collect per-frame palette hashes ---
 // Each world.update(1 / 60).unwrap() ticks advanceAnimationPlayer (moves joints), then
 // renderer.draw builds + uploads the joint palette (hashed by the writeBuffer
 // hook) as part of the skinned-draw path.
-let framesObserved = 0;
 for (let i = 0; i < SMOKE_MIN_FRAMES; i++) {
   world.update(1 / 60).unwrap();
   const r = renderer.draw({
@@ -437,10 +386,9 @@ for (let i = 0; i < SMOKE_MIN_FRAMES; i++) {
   framesObserved++;
 }
 await device.queue.onSubmittedWorkDone();
-if (!renderTarget) { console.error('[smoke] FAIL - renderTarget never allocated'); process.exit(1); }
-globalThis.fetch = originalFetch;
+if (!renderTarget) { throw new Error('[smoke] FAIL - renderTarget never allocated'); }
 
-const distinctPaletteHashes = new Set(skinPaletteWrites).size;
+distinctPaletteHashes = new Set(skinPaletteWrites).size;
 console.log(`[smoke] frames=${framesObserved} errors=${errors.length}`);
 console.log(
   `[smoke] skin-palette writes=${skinPaletteWrites.length} distinctHashes=${distinctPaletteHashes} (min ${PALETTE_MIN_DISTINCT}, falsify=${FALSIFY || 'none'})`,
@@ -463,10 +411,29 @@ if (skinPaletteWrites.length < PALETTE_MIN_DISTINCT) {
 }
 
 if (failures.length > 0) {
-  console.error(`[smoke] FAIL - ${failures.join('; ')}`);
-  process.exit(1);
+  throw new Error(`[smoke] FAIL - ${failures.join('; ')}`);
+}
+
+} finally {
+  // Renderer owns its attachments and assets; the smoke owns the World realm,
+  // offscreen target and native Dawn instance. Retire every owner on failure too.
+  try {
+    try {
+      (await renderer?.dispose())?.unwrap();
+    } finally {
+      await worldContext?.fiber.dispose();
+    }
+  } finally {
+    try {
+      renderTarget?.destroy();
+    } finally {
+      await teardownDawnInstance(sharedDevice === undefined ? [] : [sharedDevice], () => {
+        if (gpu !== undefined && globalThis.navigator?.gpu === gpu) delete globalThis.navigator.gpu;
+        gpu = undefined;
+      });
+    }
+  }
 }
 
 console.log(`[smoke] PASS - backend=webgpu, frames=${framesObserved}, errors=0, distinctPaletteHashes=${distinctPaletteHashes}`);
 emitSmokeReceipt('hello-fbx-skin/smoke', framesObserved);
-process.exit(0);

@@ -17,7 +17,7 @@ import { emitSmokeReceipt } from '../../../shared/scripts/smoke-receipt.mjs';
 //   4. Falsification check: create a variant where scope-despawn is
 //      commented out in transitionStatesSystem, confirm that variant
 //      process.exit(1)'s because old-level entities are NOT cleaned up.
-//   5. loadByGuid<SceneAsset> + instantiateScene actually exercised
+//   5. assets.create(scene) + assets.instantiate actually exercised
 //      (smoke must load real scenes to trigger scope-despawn).
 //
 // Stability: smoke must pass 3 consecutive runs.
@@ -25,6 +25,10 @@ import { emitSmokeReceipt } from '../../../shared/scripts/smoke-receipt.mjs';
 import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { dirname, resolve } from 'node:path';
+import { AssetRegistry } from '@forgeax/engine-assets-runtime';
+
+import { createPrimitiveMesh } from '@forgeax/engine-geometry';
+
 
 const SMOKE_MIN_FRAMES = Number.parseInt(process.env.SMOKE_MIN_FRAMES ?? '60', 10);
 const WIDTH = 200;
@@ -128,10 +132,7 @@ const {
   renderComponentsPlugin,
 } = await import('@forgeax/engine-render');
 const { scenePlugin, Transform } = await import('@forgeax/engine-scene');
-const {
-  HANDLE_CUBE,
-  HANDLE_TRIANGLE,
-} = await import('@forgeax/engine-assets-runtime');
+
 
 const {
   addOnEnter, defineState, despawnOnEnter, despawnOnExit,
@@ -154,10 +155,6 @@ const M41Independent = defineState('M41IndependentSmoke', ['cold', 'warm']);
 const TUTORIAL_GUID = '6a000001-0001-4000-a000-000000000001';
 const STREET_A_GUID = '6a000002-0001-4000-a000-000000000002';
 
-const world = new World();
-registerStatesPlugin(world);
-await createWorldContext(world, [scenePlugin(), renderComponentsPlugin()]);
-
 // Register Player component for smoke verification.
 const { defineComponent } = await import('@forgeax/engine-ecs');
 const Player = defineComponent('Player', {});
@@ -178,9 +175,18 @@ try {
   console.error(`[smoke] FAIL - createRenderer threw: ${err instanceof Error ? err.message : String(err)}`);
   process.exit(1);
 }
+const assets = hostAssets;
+const world = new World({ assets });
+const sceneAssets = world.assets;
+if (!(sceneAssets instanceof AssetRegistry)) throw new Error('Scene requires its runtime asset owner');
+
+const primitiveCube = sceneAssets.create(createPrimitiveMesh('cube').unwrap()).unwrap();
+
+registerStatesPlugin(world);
+await createWorldContext(world, [scenePlugin(), renderComponentsPlugin()]);
+
 const worldAttachment1 = renderer.attach(world);
 if (!worldAttachment1.ok) throw worldAttachment1.error;
-const assets = hostAssets;
 const lease = worldAttachment1.value;
 const drawFrame = async () => {
   const receipt = await drawReadyFrame(renderer, {
@@ -234,18 +240,14 @@ async function readRenderSamples() {
   };
 }
 
-// Register materials referenced by the inline scene PODs.
-// feat-20260614 M8/D-17: register* deleted -> catalog(guid, payload) for the
-// loadByGuid entry + world.allocSharedRef for the column handle (parity with
-// src/index.ts).
+// Create managed material handles referenced by the inline scenes, as in src/index.ts.
 const unlitMatGuid = AssetGuid.parse('008e4f75-e7a3-4715-b05b-b93a9ec12074');
 if (!unlitMatGuid.ok) {
   console.error(`[smoke] FAIL - unlit material GUID parse: ${unlitMatGuid.error.code}`);
   process.exit(1);
 }
 const unlitMatPayload = Materials.unlit([0.8, 0.4, 0.2, 1]);
-assets.catalog(unlitMatGuid.value, unlitMatPayload);
-const unlitMatHandle = world.allocSharedRef('MaterialAsset', unlitMatPayload);
+const unlitMatHandle = world.assets.create(unlitMatPayload).unwrap();
 
 const stdMatGuid = AssetGuid.parse('f6af7007-158f-4d92-9e47-93bf2f213e1f');
 if (!stdMatGuid.ok) {
@@ -259,18 +261,16 @@ const stdMatPayload = {
   ],
   values: { baseColor: [0.2, 0.3, 0.9], metallic: 0, roughness: 0.5 },
 };
-assets.catalog(stdMatGuid.value, stdMatPayload);
-const stdMatHandle = world.allocSharedRef('MaterialAsset', stdMatPayload);
+const stdMatHandle = world.assets.create(stdMatPayload).unwrap();
 
-// Catalog scene assets via assets.catalog with inline PODs
-// so loadByGuid<SceneAsset> + instantiateScene are exercised.
+// Create managed scenes from inline values, then instantiate their handles.
 const tutorialScenePOD = {
   kind: 'scene',
   entities: {
     floor: {
       components: {
         Transform: { pos: [0, -0.5, 0], quat: [0, 0, 0, 1], scale: [10, 0.1, 10]},
-        MeshFilter: { assetHandle: 1 }, // HANDLE_CUBE = 1 (builtin pre-registered)
+        MeshFilter: { assetHandle: primitiveCube },
         MeshRenderer: { materials: [Number(unlitMatHandle)] },
       },
     },
@@ -282,10 +282,9 @@ if (!tutorialGuid.ok) {
   console.error(`[smoke] FAIL - tutorial GUID parse failed`);
   process.exit(1);
 }
-assets.catalog(tutorialGuid.value, tutorialScenePOD);
-const tutorialSceneHandleRes = await assets.loadByGuid(tutorialGuid.value);
+const tutorialSceneHandleRes = assets.create(tutorialScenePOD);
 if (!tutorialSceneHandleRes.ok) {
-  console.error(`[smoke] FAIL - tutorial loadByGuid failed: ${tutorialSceneHandleRes.error.code}`);
+  console.error(`[smoke] FAIL - tutorial create scene failed: ${tutorialSceneHandleRes.error.code}`);
   process.exit(1);
 }
 
@@ -295,7 +294,7 @@ const streetScenePOD = {
     floor: {
       components: {
         Transform: { pos: [0, -0.5, 0], quat: [0, 0, 0, 1], scale: [10, 0.1, 10]},
-        MeshFilter: { assetHandle: 1 },
+        MeshFilter: { assetHandle: primitiveCube },
         MeshRenderer: { materials: [Number(stdMatHandle)] },
       },
     },
@@ -307,10 +306,9 @@ if (!streetGuid.ok) {
   console.error(`[smoke] FAIL - street-a GUID parse failed`);
   process.exit(1);
 }
-assets.catalog(streetGuid.value, streetScenePOD);
-const streetSceneHandleRes = await assets.loadByGuid(streetGuid.value);
+const streetSceneHandleRes = assets.create(streetScenePOD);
 if (!streetSceneHandleRes.ok) {
-  console.error(`[smoke] FAIL - street-a loadByGuid failed: ${streetSceneHandleRes.error.code}`);
+  console.error(`[smoke] FAIL - street-a create scene failed: ${streetSceneHandleRes.error.code}`);
   process.exit(1);
 }
 
@@ -325,26 +323,22 @@ world.spawn({
 });
 
 // Cross-state player entity: no scope, red cube, Player marker.
-// feat-20260614 M8: register -> world.allocSharedRef (bare handle, not Result).
-const playerMatHandle = world.allocSharedRef('MaterialAsset', {
+const playerMatHandle = world.assets.create({
   kind: 'material',
   passes: [{ name: 'Forward', program: { module: 'forgeax::default-unlit' }, renderState: { tags: { LightMode: 'Forward' } }, queue: 2000 }],
   values: { baseColor: [0.9, 0.2, 0.2] },
-});
+}).unwrap();
 world.spawn(
   { component: Transform, data: { pos: [0, 1.2, 1.5], quat: [0, 0, 0, 1], scale: [0.8, 0.8, 0.8]} },
   { component: Player, data: {} },
-  { component: MeshFilter, data: { assetHandle: HANDLE_CUBE } },
+  { component: MeshFilter, data: { assetHandle: primitiveCube } },
   { component: MeshRenderer, data: { materials: [playerMatHandle] } },
 );
 
-// OnEnter tutorial: instantiate scene via assets.instantiate (which
-// internally call world.instantiateScene after creating a world-level
-// managed ref for the scene POD). despawn on exit.
+// OnEnter tutorial: instantiate the managed scene; despawn its entities on exit.
 addOnEnter(LevelId, 'tutorial', (w) => {
-  // D-17: loadByGuid returns the payload; mint a fresh column handle per entry
-  // so re-entry after despawnOnExit release works (parity with src/index.ts).
-  const ir = assets.instantiate(w.allocSharedRef('SceneAsset', tutorialSceneHandleRes.value), w);
+  // The retained scene handle supports re-entry after the prior instance despawns.
+  const ir = assets.instantiate(tutorialSceneHandleRes.value, w);
   if (!ir.ok) {
     console.error(`[smoke] instantiateScene(tutorial) failed: ${ir.error.code}`);
     return;
@@ -355,7 +349,7 @@ addOnEnter(LevelId, 'tutorial', (w) => {
 
 // OnEnter street-a: instantiate scene via assets.instantiate, despawn on exit.
 addOnEnter(LevelId, 'street-a', (w) => {
-  const ir = assets.instantiate(w.allocSharedRef('SceneAsset', streetSceneHandleRes.value), w);
+  const ir = assets.instantiate(streetSceneHandleRes.value, w);
   if (!ir.ok) {
     console.error(`[smoke] instantiateScene(street-a) failed: ${ir.error.code}`);
     return;
@@ -571,7 +565,7 @@ for (let i = 0; i < remainingFrames; i++) {
 
 // --- M41: invalid variant refusal and same-World recovery ------------------
 
-const m41NextStateKey = '__nextState__LevelId';
+const m41StateKey = '__state__LevelId';
 const m41InvalidVariant = String('m41-runtime-invalid');
 const m41ExecutionSignature = () => {
   const inspection = world.inspect();
@@ -586,7 +580,7 @@ const m41ExecutionSignature = () => {
 };
 const m41Snapshot = (mainMenuExit, tutorialEnter, repairEntity, callbackRuns) => {
   const inspection = world.inspect();
-  const pending = world.getResource(m41NextStateKey);
+  const pending = world.getResource(m41StateKey).next;
   const meshRows = world.query({ with: [MeshFilter] }).unwrap();
   let meshCount = 0;
   for (const _row of meshRows) meshCount += 1;

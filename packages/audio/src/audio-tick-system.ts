@@ -1,6 +1,7 @@
-import type { World } from '@forgeax/engine-ecs';
+import { Disabled, type EntityHandle, type World } from '@forgeax/engine-ecs';
+import { createStateProjection } from '@forgeax/engine-ecs/projection';
 import { GlobalTransform } from '@forgeax/engine-scene';
-import type { AudioClipAsset } from '@forgeax/engine-types';
+import { AudioError } from '@forgeax/engine-types';
 import type { AudioBackend, AudioPlayOptions, AudioSourcePose, BusName } from './audio-backend';
 import { AudioSource } from './components';
 
@@ -65,73 +66,90 @@ export function detectRemovedEntities(
 }
 
 interface SourceState {
+  entity: EntityHandle;
   bus: string;
   fromPosition: number;
   pose: AudioSourcePose | undefined;
   spatial: boolean;
-  playing: boolean;
   volume: number;
   playbackRate: number;
   paused: boolean;
 }
 
-const states = new WeakMap<Omit<AudioBackend, 'music'>, Map<number, SourceState>>();
+type TickBackend = Omit<AudioBackend, 'music'>;
 
-function stateFor(backend: Omit<AudioBackend, 'music'>): Map<number, SourceState> {
-  const existing = states.get(backend);
-  if (existing !== undefined) return existing;
-  const created = new Map<number, SourceState>();
-  states.set(backend, created);
-  return created;
-}
-
-export function createClipResolver(
-  world: World,
-): (clipHandle: number) => AudioClipAsset | undefined {
-  return (clipHandle) => {
-    const resolved = world.sharedRefs.resolve<string, AudioClipAsset>(
-      clipHandle as unknown as Parameters<typeof world.sharedRefs.resolve>[0],
-    );
-    return resolved.ok && resolved.value.kind === 'audio' ? resolved.value : undefined;
+function createTickState(world: World) {
+  const query = world.query({ read: [AudioSource], optional: [GlobalTransform] });
+  if (!query.ok) return;
+  return {
+    query: query.value,
+    projection: createStateProjection(
+      world,
+      [AudioSource, GlobalTransform, Disabled],
+      [AudioSource],
+    ),
+    // Only accepted playing controls belong here. Clip content stays with assets
+    // and each publication; idle sources have no parallel Audio metadata.
+    sources: new Map<number, SourceState>(),
+    retry: new Set<number>(),
   };
 }
 
-export function audioTickSystem(world: World, backend: Omit<AudioBackend, 'music'>): void {
-  const states = stateFor(backend);
-  const resolveClip = createClipResolver(world);
-  const currentEntities = new Set<number>();
-  const query = world.query({ read: [AudioSource], optional: [GlobalTransform] });
-  if (!query.ok) return;
-  for (const queryRow of query.value) {
-    const entity = queryRow.entity as number;
-    const source = queryRow.get(AudioSource);
-    const playing = source.playing === true;
-    let previous = states.get(entity);
-    if (previous === undefined) {
-      previous = {
-        pose: undefined,
-        spatial: false,
-        bus: source.bus,
-        playing: false,
-        fromPosition: source.fromPosition,
-        volume: source.volume,
-        playbackRate: source.playbackRate,
-        paused: source.paused,
-      };
-      states.set(entity, previous);
-    }
-    const spatial = previous.playing ? previous.spatial : source.spatialBlend > 0;
-    const matrix = spatial && playing ? queryRow.get(GlobalTransform)?.world : undefined;
-    const pose =
-      spatial && playing
+const states = new WeakMap<
+  World,
+  WeakMap<TickBackend, NonNullable<ReturnType<typeof createTickState>>>
+>();
+
+function stateFor(world: World, backend: TickBackend) {
+  let backends = states.get(world);
+  if (backends === undefined) {
+    backends = new WeakMap();
+    states.set(world, backends);
+  }
+  let state = backends.get(backend);
+  if (state === undefined) {
+    state = createTickState(world);
+    if (state !== undefined) backends.set(backend, state);
+  }
+  return state;
+}
+
+export function audioTickSystem(world: World, backend: TickBackend): void {
+  const state = stateFor(world, backend);
+  if (state === undefined) return;
+  const batch = state.projection.read();
+  for (const index of batch.indices) state.retry.add(index);
+  for (const index of state.retry) {
+    try {
+      const entity = state.projection.entity(index);
+      const row = entity === undefined ? undefined : state.query.at(entity);
+      let previous = state.sources.get(index);
+      // Generations and query membership are authoritative even if no stop edge
+      // was sampled between removal and a replacement at the same source index.
+      if (previous !== undefined && (previous.entity !== entity || row === undefined)) {
+        backend.stop(previous.entity);
+        state.sources.delete(index);
+        previous = undefined;
+      }
+      const source = row?.get(AudioSource);
+      if (source === undefined || source.playing !== true) {
+        if (previous !== undefined) {
+          backend.stop(previous.entity);
+          state.sources.delete(index);
+        }
+        state.retry.delete(index);
+        continue;
+      }
+      if (entity === undefined) continue;
+      const spatial = previous?.spatial ?? source.spatialBlend > 0;
+      const matrix = spatial ? row?.get(GlobalTransform)?.world : undefined;
+      const pose = spatial
         ? matrix === undefined
           ? ORIGIN_SOURCE_POSE
           : sourcePoseFromWorldMatrix(matrix)
         : undefined;
-    const edge = detectEdge(previous.playing, playing);
-    if (edge === 'play-start') {
-      const clip = resolveClip(source.clip as number);
-      if (clip !== undefined) {
+      if (previous === undefined) {
+        if (world.assets === undefined) continue;
         const options: AudioPlayOptions = {
           fromPosition: source.fromPosition,
           loop: source.loop === true,
@@ -145,21 +163,18 @@ export function audioTickSystem(world: World, backend: Omit<AudioBackend, 'music
           coneOuterAngle: source.coneOuterAngle,
           coneOuterGain: source.coneOuterGain,
         };
-        backend.play(entity, clip, options);
-        previous.bus = source.bus;
-        previous.playing = true;
-        previous.fromPosition = source.fromPosition;
-        previous.spatial = spatial;
-        previous.pose = pose;
-        previous.volume = source.volume;
-        previous.playbackRate = source.playbackRate;
-        previous.paused = source.paused;
-      }
-    } else {
-      previous.playing = playing;
-      if (edge === 'play-stop') {
-        backend.stop(entity);
-      } else if (playing) {
+        backend.play(entity, world.assets, source.clip, options);
+        state.sources.set(index, {
+          entity,
+          bus: source.bus,
+          fromPosition: source.fromPosition,
+          spatial,
+          pose,
+          volume: source.volume,
+          playbackRate: source.playbackRate,
+          paused: source.paused,
+        });
+      } else {
         if (pose !== undefined && !samePose(previous.pose, pose)) {
           backend.setSourcePose(entity, pose);
           previous.pose = pose;
@@ -167,22 +182,22 @@ export function audioTickSystem(world: World, backend: Omit<AudioBackend, 'music
         if (previous.bus !== source.bus) backend.setBus(entity, source.bus);
         previous.bus = source.bus;
         if (previous.volume !== source.volume) backend.setVolume(entity, source.volume);
+        previous.volume = source.volume;
         if (previous.playbackRate !== source.playbackRate)
           backend.setPlaybackRate(entity, source.playbackRate);
+        previous.playbackRate = source.playbackRate;
         if (previous.paused !== source.paused) backend.setPaused(entity, source.paused);
+        previous.paused = source.paused;
         if (previous.fromPosition !== source.fromPosition)
           backend.seek(entity, source.fromPosition);
         previous.fromPosition = source.fromPosition;
-        previous.volume = source.volume;
-        previous.playbackRate = source.playbackRate;
-        previous.paused = source.paused;
       }
+      state.retry.delete(index);
+    } catch (cause) {
+      // Keep only accepted controls and retry this exact source index after a
+      // transport failure. Other source mutations can still be accepted now.
+      if (!(cause instanceof AudioError)) throw cause;
     }
-    currentEntities.add(entity);
   }
-  for (const [entity, source] of states) {
-    if (currentEntities.has(entity)) continue;
-    if (source.playing) backend.stop(entity);
-    states.delete(entity);
-  }
+  batch.accept();
 }

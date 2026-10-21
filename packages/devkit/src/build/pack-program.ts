@@ -1,4 +1,8 @@
 import {
+  projectPackGenerationModules,
+  readPackAuthoringDeclaration,
+} from '@forgeax/engine-pack/build';
+import {
   type PackProgram,
   type PackProgramError,
   type PackProgramSource,
@@ -30,7 +34,27 @@ export function preparePackProgramSource(
       detail: { module: '', reason: 'malformed program source' },
     });
   const modules: Record<string, string> = {};
-  for (const [filename, source] of Object.entries(input.modules)) {
+  let sources = input.modules;
+  for (const [filename, source] of Object.entries(sources)) {
+    const declaration = readPackAuthoringDeclaration(filename, source);
+    if (
+      declaration.ok &&
+      declaration.value.parameters.some((parameter) => typeof parameter.apply === 'object')
+    ) {
+      try {
+        sources = projectPackGenerationModules(filename, sources, declaration.value);
+        break;
+      } catch (cause) {
+        return err({
+          code: 'pack-program-invalid',
+          expected: 'isolated live Pack generation modules',
+          hint: 'remove source self-reading and use declared dependencies',
+          detail: { module: filename, reason: JSON.stringify(cause) },
+        });
+      }
+    }
+  }
+  for (const [filename, source] of Object.entries(sources)) {
     const target = outputPath(filename);
     if (Object.hasOwn(modules, target))
       return err({

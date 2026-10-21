@@ -60,9 +60,8 @@ const [
   { createSphereGeometry },
   { Transform, propagateTransforms },
   render,
-  { createRenderer },
   { createProfiler },
-] = await Promise.all(['ecs', 'geometry', 'scene', 'render', 'runtime', 'profiler'].map(moduleOf));
+] = await Promise.all(['ecs', 'geometry', 'scene', 'render', 'profiler'].map(moduleOf));
 const {
   Camera,
   MeshFilter,
@@ -99,8 +98,11 @@ const canvas = {
 const manifest = readFileSync(`${root}/shared-build-inputs/shaders/manifest.json`);
 const shaderManifestUrl = URL.createObjectURL(new Blob([manifest], { type: 'application/json' }));
 const profiler = options.profile ? createProfiler() : undefined;
-const renderer = value(
-  await createRenderer(
+const { constructRuntimeRendererHost } = await import(
+  pathToFileURL(`${root}/packages/runtime/dist/renderer-host.mjs`)
+);
+const host = value(
+  await constructRuntimeRendererHost(
     canvas,
     {
       ...(profiler === undefined ? {} : { profiler }),
@@ -113,18 +115,20 @@ const renderer = value(
     { shaderManifestUrl },
   ),
 );
-const world = new World();
+const { renderer, assets } = host;
+const world = new World({ assets });
 const geometry = value(createSphereGeometry(0.45, 32, 16));
-const mesh = world.allocSharedRef('MeshAsset', geometry);
+const mesh = assets.create(geometry).unwrap();
 const materials = Array.from({ length: 12 }, (_, i) =>
-  world.allocSharedRef(
-    'MaterialAsset',
-    Materials.standard({
-      baseColor: [0.2 + i * 0.035, 0.4, 0.6 - i * 0.03, 1],
-      metallic: i / 16,
-      roughness: 0.3 + i * 0.04,
-    }),
-  ),
+  assets
+    .create(
+      Materials.standard({
+        baseColor: [0.2 + i * 0.035, 0.4, 0.6 - i * 0.03, 1],
+        metallic: i / 16,
+        roughness: 0.3 + i * 0.04,
+      }),
+    )
+    .unwrap(),
 );
 for (let i = 0; i < 306; i++)
   value(
@@ -184,11 +188,17 @@ async function frame(x) {
   value(world.set(camera, Transform, { pos: [x, 0, 14] }));
   value(world.update(1 / 60));
   value(propagateTransforms(world));
-  const t = performance.now();
-  const receipt = value(
-    renderer.draw({ leases: [lease], camera: { lease }, environment: { lease } }),
-  );
-  const submitted = performance.now();
+  const deadline = performance.now() + 30_000;
+  let t, submitted, receipt;
+  for (;;) {
+    t = performance.now();
+    receipt = value(renderer.draw({ leases: [lease], camera: { lease }, environment: { lease } }));
+    submitted = performance.now();
+    if (receipt.presentation === 'ready') break;
+    value(await receipt.completed);
+    if (performance.now() >= deadline) throw new Error('Renderer preparation timed out');
+    await new Promise((resolve) => setTimeout(resolve, 1));
+  }
   value(await receipt.completed);
   return { start: t, submitted, end: performance.now(), receipt };
 }
@@ -301,7 +311,7 @@ try {
   console.log(JSON.stringify(result));
 } finally {
   lease.dispose();
-  renderer.dispose();
+  await renderer.dispose();
   texture?.destroy();
   URL.revokeObjectURL(shaderManifestUrl);
   delete globalThis.navigator.gpu;

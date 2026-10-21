@@ -136,14 +136,14 @@
               "DirectionalLight": {
                 "castShadow": true,
                 "direction": [
-                  -0.5,
+                  -0.3,
                   -1,
-                  -0.3
+                  -0.5
                 ],
                 "color": [
                   1,
-                  1,
-                  1
+                  0.95,
+                  0.9
                 ],
                 "intensity": 1
               }
@@ -156,6 +156,80 @@
         "f6af7007-158f-4d92-9e47-93bf2f213e1f",
         "008e4f75-e7a3-4715-b05b-b93a9ec12074"
       ],
+      "artifacts": {}
+    },
+    {
+      "guid": "cbe42beb-8975-5096-b3a1-3dda4cb4c077",
+      "kind": "mesh",
+      "payload": {
+        "kind": "mesh",
+        "geometry": "procedural-cube"
+      },
+      "refs": [],
+      "artifacts": {}
+    },
+    {
+      "guid": "f6af7007-158f-4d92-9e47-93bf2f213e1f",
+      "kind": "material",
+      "payload": {
+        "kind": "material",
+        "passes": [
+          {
+            "name": "Forward",
+            "program": {
+              "module": "forgeax::default-standard-pbr"
+            },
+            "renderState": {
+              "tags": {
+                "LightMode": "Forward"
+              },
+              "queue": 2000
+            }
+          }
+        ],
+        "values": {
+          "baseColor": [
+            0.8,
+            0.4,
+            0.2,
+            1
+          ],
+          "metallic": 0,
+          "roughness": 0.5
+        }
+      },
+      "refs": [],
+      "artifacts": {}
+    },
+    {
+      "guid": "008e4f75-e7a3-4715-b05b-b93a9ec12074",
+      "kind": "material",
+      "payload": {
+        "kind": "material",
+        "passes": [
+          {
+            "name": "Forward",
+            "program": {
+              "module": "forgeax::default-unlit"
+            },
+            "renderState": {
+              "tags": {
+                "LightMode": "Forward"
+              },
+              "queue": 2000
+            }
+          }
+        ],
+        "values": {
+          "baseColor": [
+            0.2,
+            0.3,
+            0.9,
+            1
+          ]
+        }
+      },
+      "refs": [],
       "artifacts": {}
     }
   ]

@@ -5,6 +5,8 @@ import type {
   DerivedCandidateRecord,
   DerivedShapeRecord,
 } from './derived-candidate-records.js';
+import { derivedShapeHandles } from './derived-candidate-records.js';
+import { spatialCompoundGroups } from './spatial-compound-groups.js';
 import { voxelRegionDelta } from './voxel-region-delta.js';
 import type { Rapier3DModule } from './wasm-loader.js';
 
@@ -16,7 +18,7 @@ type CartesianBox = { center: number[]; half: number[] } | { indices: Uint32Arra
 
 /** Compare detached normalized inputs before borrowing an existing collider.
  * Producer revisions alone cannot authorize reuse of mutable caller geometry. */
-export function sameDerivedCollider(a: DerivedShapeInput, b: DerivedShapeInput): boolean {
+function sameDerivedCollider(a: DerivedShapeInput, b: DerivedShapeInput): boolean {
   const same = (x: ArrayLike<number> | undefined, y: ArrayLike<number> | undefined) => {
     if (x === undefined || y === undefined) return x === y;
     if (x.length !== y.length) return false;
@@ -48,6 +50,7 @@ export function sameDerivedCollider(a: DerivedShapeInput, b: DerivedShapeInput):
   return (
     a.kind === 'convex-compound' &&
     b.kind === 'convex-compound' &&
+    a.nativeLayout === b.nativeLayout &&
     a.pieces.length === b.pieces.length &&
     a.pieces.every((piece, i) => same(piece, b.pieces[i]))
   );
@@ -58,10 +61,13 @@ export function sameDerivedCollider(a: DerivedShapeInput, b: DerivedShapeInput):
 export function stageDerivedColliders(
   inputs: readonly DerivedShapeInput[],
   owner: DerivedBodyRecord | undefined,
-  create: (shape: DerivedShapeInput, previous?: DerivedShapeRecord) => { readonly handle: number },
+  create: (
+    shape: DerivedShapeInput,
+    previous?: DerivedShapeRecord,
+  ) => { readonly handle: number; readonly colliderHandles?: readonly number[] },
   current: (handle: number) => boolean,
   remove: (handle: number) => void,
-): Pick<DerivedCandidateRecord, 'nativeColliders' | 'sharedGeometry'> {
+): Pick<DerivedCandidateRecord, 'nativeColliders' | 'sharedGeometry' | 'stagedShapes'> {
   const previous = new Map(owner?.shapes.map((shape) => [shape.input.id, shape]));
   const nativeColliders: { handle: number }[] = [],
     shapes: DerivedShapeRecord[] = [];
@@ -69,23 +75,32 @@ export function stageDerivedColliders(
   try {
     for (const input of inputs) {
       const old = previous.get(input.id);
-      if (old && sameDerivedCollider(old.input, input) && current(old.colliderHandle)) {
+      if (old && sameDerivedCollider(old.input, input) && derivedShapeHandles(old).every(current)) {
         shapes.push({
           input: input as DerivedShapeRecord['input'],
           colliderHandle: old.colliderHandle,
+          ...(old.colliderHandles === undefined ? {} : { colliderHandles: old.colliderHandles }),
         });
         shared = true;
       } else {
-        const created = create(input, old && current(old.colliderHandle) ? old : undefined);
-        nativeColliders.push({ handle: created.handle });
+        const created = create(
+          input,
+          old && derivedShapeHandles(old).every(current) ? old : undefined,
+        );
+        for (const handle of created.colliderHandles ?? [created.handle])
+          nativeColliders.push({ handle });
         shapes.push({
           input: input as DerivedShapeRecord['input'],
           colliderHandle: created.handle,
+          ...(created.colliderHandles === undefined
+            ? {}
+            : { colliderHandles: created.colliderHandles }),
         });
       }
     }
     return {
       nativeColliders,
+      stagedShapes: shapes,
       ...(shared && owner !== undefined ? { sharedGeometry: { owner, shapes } } : {}),
     };
   } catch (error) {
@@ -258,4 +273,33 @@ export function createDerivedColliderDesc(
     .setEnabled(false);
   if (shape.isSensor === true) desc.setSensor(true);
   return desc;
+}
+
+/** Build the complete disabled roster before returning it to the transaction owner.
+ * An exception removes every newly allocated group; the previous publication is untouched. */
+export function createDerivedColliderGroup(
+  RAPIER: Rapier3DModule,
+  world: World,
+  body: RigidBody,
+  shape: DerivedShapeInput,
+  previous: DerivedShapeRecord | undefined,
+  allowGroups: boolean,
+) {
+  const groups =
+    allowGroups && shape.kind === 'convex-compound' && shape.nativeLayout === 'spatial-groups-16'
+      ? spatialCompoundGroups(shape.pieces)
+      : undefined;
+  if (groups === undefined)
+    return { colliders: [createDerivedCollider(RAPIER, world, body, shape, previous)] };
+  const colliders: ReturnType<typeof createDerivedCollider>[] = [];
+  try {
+    for (const pieces of groups)
+      colliders.push(
+        createDerivedCollider(RAPIER, world, body, { ...shape, kind: 'convex-compound', pieces }),
+      );
+    return { colliders };
+  } catch (error) {
+    for (const collider of colliders) world.removeCollider(collider, false);
+    throw error;
+  }
 }

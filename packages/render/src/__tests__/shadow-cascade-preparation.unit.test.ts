@@ -97,7 +97,7 @@ it.each([
   const f = await fixture();
   try {
     const map = f.maps[1];
-    const first = f.batches[0];
+    const first = f.batches.at(0);
     if (map === undefined || first === undefined) throw Error('missing fixture batch');
     const original = map.get(first.batchId);
     if (original === undefined) throw Error('missing fixture projection');

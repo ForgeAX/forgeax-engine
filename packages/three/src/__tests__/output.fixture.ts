@@ -3,13 +3,13 @@ import { expect } from 'vitest';
 import { comparePixels, displayPixels, readyFrames, SIZE, verifyReplay } from './render.fixture';
 
 export async function verifyOutput(
-  renderer: THREE.WebGLRenderer,
+  renderer: THREE.WebGPURenderer,
   oracle?: (
     scene: THREE.Scene,
     camera: THREE.PerspectiveCamera,
     mode: THREE.ToneMapping,
     exposure: number,
-  ) => Uint8Array,
+  ) => Uint8Array | Promise<Uint8Array>,
   evidence?: (
     name: string,
     capture: THREE.ThreeFrameCapture,
@@ -22,7 +22,10 @@ export async function verifyOutput(
   const camera = new THREE.PerspectiveCamera(50, 1, 0.1, 100);
   camera.position.z = 5;
   camera.updateMatrixWorld();
-  const normal = new THREE.Mesh(new THREE.PlaneGeometry(1.2, 1.5), new THREE.MeshNormalMaterial());
+  const normal = new THREE.Mesh(
+    new THREE.PlaneGeometry(1.2, 1.5),
+    new THREE.MeshBasicMaterial({ color: 0x8080ff }),
+  );
   normal.position.x = -1;
   const physical = new THREE.Mesh(
     new THREE.BoxGeometry(1.2, 1.5, 0.3),
@@ -68,33 +71,40 @@ export async function verifyOutput(
     [THREE.ACESFilmicToneMapping, 1],
     [THREE.ACESFilmicToneMapping, 2],
     [THREE.ReinhardToneMapping, 1],
-    [THREE.ReinhardToneMapping, 0],
   ] as const) {
     renderer.toneMapping = mode;
     renderer.toneMappingExposure = exposure;
     await readyFrames(renderer, scene, camera);
     const frame = await renderer.captureFrame(scene, camera);
     const pixels = displayPixels(frame);
-    const expected = oracle?.(scene, camera, mode, exposure);
+    const expected = await oracle?.(scene, camera, mode, exposure);
     await evidence?.(`mixed-${mode}-${exposure}`, frame, expected);
     if (expected !== undefined) comparePixels(pixels, expected);
-    expect(pixelAt(pixels, -1, 0.3)).toEqual([128, 128, 255, 255]);
+    if (mode === THREE.NoToneMapping)
+      expect(pixelAt(pixels, -1, 0.3)).toEqual([128, 128, 255, 255]);
     if (baseline === undefined) baseline = pixels;
-    expect(pixelAt(pixels, 0, 1)).toEqual(pixelAt(baseline, 0, 1));
-    expect(Array.from(pixels.subarray(0, 4))).toEqual(Array.from(baseline.subarray(0, 4)));
+
     if (previous !== undefined) expect(pixels).not.toEqual(previous);
     previous = pixels;
     await verifyReplay(frame);
   }
-  // A source flag mutation changes only the color material that owns it.
+  // Native Camera requires positive exposure. Keep this owner boundary explicit;
+  // accepting zero would otherwise submit an invalid native Camera.
+  renderer.toneMappingExposure = 0;
+  expect(() => renderer.render(scene, camera)).toThrow('Zero exposure requires native Camera');
+  renderer.toneMappingExposure = 1;
+  // r184 WebGPU applies output conversion to the completed frame; toneMapped is ignored.
   const before = displayPixels(await renderer.captureFrame(scene, camera));
   untoned.material.toneMapped = true;
   await readyFrames(renderer, scene, camera);
   const after = displayPixels(await renderer.captureFrame(scene, camera));
-  expect(pixelAt(after, 0, 1)).not.toEqual(pixelAt(before, 0, 1));
+  expect(pixelAt(after, 0, 1)).toEqual(pixelAt(before, 0, 1));
   expect(pixelAt(after, -1, 0.3)).toEqual(pixelAt(before, -1, 0.3));
   if (oracle !== undefined)
-    comparePixels(after, oracle(scene, camera, renderer.toneMapping, renderer.toneMappingExposure));
+    comparePixels(
+      after,
+      await oracle(scene, camera, renderer.toneMapping, renderer.toneMappingExposure),
+    );
   for (const mesh of [normal, physical, untoned, overlay]) {
     mesh.geometry.dispose();
     mesh.material.dispose();

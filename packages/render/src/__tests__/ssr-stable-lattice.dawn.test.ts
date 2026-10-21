@@ -101,8 +101,8 @@ it.for([
   const device = (await (await rhi.requestAdapter()).unwrap().requestDevice()).unwrap();
   const width = 32,
     height = 8,
-    fullWidth = width * 2,
-    fullHeight = height * 2;
+    fullWidth = width,
+    fullHeight = height;
   const sampled = GPU_TEXTURE_USAGE_COPY_DST | GPU_TEXTURE_USAGE_TEXTURE_BINDING;
   const historyUsage = sampled | GPU_TEXTURE_USAGE_STORAGE_BINDING | GPU_TEXTURE_USAGE_COPY_SRC;
   const texture = (
@@ -303,7 +303,7 @@ it.for([
       { length: width },
       (_, x) =>
         Array.from({ length: 8 }, (_, phase) => {
-          const jitter = temporalJitterSample(phase)[0] / 2;
+          const jitter = temporalJitterSample(phase)[0];
           const p = x + jitter,
             first = Math.floor(p),
             f = p - first;
@@ -317,7 +317,7 @@ it.for([
       { length: height },
       (_, y) =>
         Array.from({ length: 8 }, (_, phase) => {
-          const jitter = temporalJitterSample(phase)[1] / 2;
+          const jitter = temporalJitterSample(phase)[1];
           const p = y + jitter;
           const first = Math.floor(p);
           const f = p - first;
@@ -336,8 +336,8 @@ it.for([
         height,
         new Float32Array(
           Array.from({ length: width * height }, (_, i) => [
-            field((i % width) - jitter[0] / 2),
-            verticalField(Math.floor(i / width) - jitter[1] / 2),
+            field((i % width) - jitter[0]),
+            verticalField(Math.floor(i / width) - jitter[1]),
             0.25,
             1,
           ]).flat(),

@@ -85,12 +85,13 @@ import { defineComponent } from '@forgeax/engine-ecs';
  *   import { MeshFilter, MeshRenderer } from '@forgeax/engine-render';
  *   import { SpriteRegionOverride } from '@forgeax/engine-render/authoring';
  *   import { Transform } from '@forgeax/engine-scene';
- *   import { HANDLE_QUAD } from '@forgeax/engine-assets-runtime';
+ *   import { createPrimitiveMesh } from '@forgeax/engine-geometry';
+ *   const quad = assets.create(createPrimitiveMesh('quad').unwrap()).unwrap();
  *
  *   world.spawn(
  *     { component: Transform, data: { pos: [0, 0, 0],
  *       quat: [0, 0, 0, 1], scale: [1, 1, 1] } },
- *     { component: MeshFilter, data: { assetHandle: HANDLE_QUAD } },
+ *     { component: MeshFilter, data: { assetHandle: quad } },
  *     { component: MeshRenderer, data: { materials: [spriteMaterial] } },
  *     { component: SpriteRegionOverride,
  *       data: { region: new Float32Array([0.5, 0, 0.5, 1]) } },

@@ -22,7 +22,9 @@ function cubeRows(source) {
 test('positive LUT is an ordinary Catalogued 3D TextureAsset, not inline data', () => {
   const source = readFileSync(sourcePath, 'utf8');
   assert.doesNotMatch(source, /makeIdentityLut|fixture-texture-3d-lut-v1/);
-  assert.match(source, /loadByGuid\s*<\s*TextureAsset\s*>/);
+  assert.match(source, /assets\.load\(\s*parsedLutGuid\.value\s*,\s*['"]texture['"]\s*\)/);
+  assert.match(source, /if\s*\(!lutAssetResult\.ok\)\s*throw lutAssetResult\.error/);
+  assert.match(source, /const lutAsset = lutAssetResult\.value/);
   assert.ok(existsSync(cubePath), 'the .cube source must be present');
   assert.ok(existsSync(metaPath), 'the .cube CookReceipt sidecar must be present');
 

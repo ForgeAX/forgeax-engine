@@ -1,13 +1,12 @@
 import { createApp } from '@forgeax/engine-app/browser';
-import { HANDLE_CUBE } from '@forgeax/engine-assets-runtime';
+import { createPrimitiveMesh } from '@forgeax/engine-geometry';
 import { quat } from '@forgeax/engine-math';
 import { Camera, DirectionalLight, Materials, MeshFilter, MeshRenderer, perspective } from '@forgeax/engine-render';
-import type { MaterialAsset } from '@forgeax/engine-runtime';
+
 import { Transform } from '@forgeax/engine-scene';
 import { forgeaxBundlerAdapter } from 'virtual:forgeax/bundler';
 import {
   buildAnimatedTransformWorld,
-  TRANSFORM_CLIP_GUID,
   transformClip,
   replayAnimatedTransform,
   setAnimatedTransformPaused,
@@ -31,20 +30,16 @@ async function bootstrap(target: HTMLCanvasElement): Promise<void> {
   const created = await createApp(target, {}, forgeaxBundlerAdapter());
   if (!created.ok) throw created.error;
   const app = created.value;
+  const assets = app.assets;
+  if (assets === undefined) throw new Error('App asset service is unavailable');
+const demoPrimitive = assets.create(createPrimitiveMesh('cube').unwrap()).unwrap();
   const clip = transformClip();
   if (app.assets === undefined) throw new Error('bevy-animated-transform: assets unavailable');
-  app.assets.catalog(TRANSFORM_CLIP_GUID, clip).unwrap();
   const demo = buildAnimatedTransformWorld(app.world, clip);
 
   const materials = [
-    app.world.allocSharedRef<'MaterialAsset', MaterialAsset>(
-      'MaterialAsset',
-      Materials.standard({ baseColor: [0.2, 0.6, 1, 1] }),
-    ),
-    app.world.allocSharedRef<'MaterialAsset', MaterialAsset>(
-      'MaterialAsset',
-      Materials.standard({ baseColor: [1, 0.45, 0.15, 1] }),
-    ),
+    assets.create(Materials.standard({ baseColor: [0.2, 0.6, 1, 1] })).unwrap(),
+    assets.create(Materials.standard({ baseColor: [1, 0.45, 0.15, 1] })).unwrap(),
   ] as const;
   for (let instanceIndex = 0; instanceIndex < demo.instances.length; instanceIndex++) {
     const instance = demo.instances[instanceIndex];
@@ -52,7 +47,7 @@ async function bootstrap(target: HTMLCanvasElement): Promise<void> {
     if (!instance || !material) continue;
     for (const entity of [instance.planet, instance.satellite]) {
       app.world
-        .addComponent(entity, { component: MeshFilter, data: { assetHandle: HANDLE_CUBE } })
+        .addComponent(entity, { component: MeshFilter, data: { assetHandle: demoPrimitive } })
         .unwrap();
       app.world
         .addComponent(entity, { component: MeshRenderer, data: { materials: [material] } })

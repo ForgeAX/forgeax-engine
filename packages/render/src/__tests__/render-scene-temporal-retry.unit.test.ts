@@ -1,7 +1,12 @@
 import { World } from '@forgeax/engine-ecs';
 import { describe, expect, it } from 'vitest';
 import { type InstanceCollectionSnapshot, InstanceProjectionStore } from '../instances';
-import type { MaterialSnapshot, RenderableSnapshot } from '../render-system-extract';
+import { MaterialResource } from '../material-resource';
+import {
+  defaultMaterialSnapshot,
+  type MaterialSnapshot,
+  type RenderableSnapshot,
+} from '../render-system-extract';
 import { RenderScene } from '../scene/render-scene';
 
 function projected<T>(value: T): Exclude<T, Error> {
@@ -9,7 +14,7 @@ function projected<T>(value: T): Exclude<T, Error> {
   return value as Exclude<T, Error>;
 }
 
-const material = {} as MaterialSnapshot;
+const material = new MaterialResource(defaultMaterialSnapshot());
 
 function world(translationX: number): Float32Array {
   const result = new Float32Array(16);
@@ -146,12 +151,25 @@ describe('RenderScene temporal retry boundary', () => {
     const scene = new RenderScene();
     scene.setTemporalTracking(true);
     const initial = snapshot(7, 1);
-    const dynamicMaterial = {
+    const dynamicMaterial = new MaterialResource({
+      ...defaultMaterialSnapshot(),
       ...(video
         ? { videoTextureFields: new Set([field]) }
-        : { textureSources: new Map([[field, {}]]) }),
+        : {
+            textureSources: new Map([
+              [
+                field,
+                {
+                  kind: 'render-texture-source' as const,
+                  source: 'canvas' as const,
+                  owner: 'temporal-retry',
+                  id: 1,
+                },
+              ],
+            ]),
+          }),
       paramSnapshot: { displacementScale: scale },
-    } as unknown as MaterialSnapshot;
+    } as MaterialSnapshot);
     const source = { ...initial, material: dynamicMaterial, materials: [dynamicMaterial] };
     scene.apply([updateSnapshot(source)]);
     submit(scene, 7);

@@ -192,6 +192,7 @@ describe('target capture lighting ownership', () => {
     });
     vi.spyOn(f.gpu.queue, 'onSubmittedWorkDone').mockReturnValue(fence);
 
+    const capturedPointsBuffer = captured.pipeline.pointsLinesViewBuffer;
     disposeTargetCaptureLighting(f.owner);
     disposeTargetCaptureLighting(f.owner);
     expect(destroyBuffer).not.toHaveBeenCalled();
@@ -202,7 +203,7 @@ describe('target capture lighting ownership', () => {
     expect(destroyTexture.mock.calls.map(([texture]) => texture)).toEqual([fallback.texture]);
     for (const buffer of [
       captured.pipeline.viewUniformBuffer,
-      captured.pipeline.pointsLinesViewBuffer,
+      capturedPointsBuffer,
       clusters.lightDataBuffer,
       clusters.clusterGridBuffer,
       clusters.lightIndexListBuffer,
@@ -219,6 +220,7 @@ describe('target capture lighting ownership', () => {
   it('replaces buffers on device change and retires the old capture through its creation device', async () => {
     const f = await fixture();
     const old = f.prepare();
+    const oldPointsBuffer = old.pipeline.pointsLinesViewBuffer;
     const oldFallback = required(getOrCreateSsaoFallbackTexture(old.runtime));
     const destroyOldBuffer = vi.spyOn(f.gpu, 'destroyBuffer');
     const destroyOldTexture = vi.spyOn(f.gpu, 'destroyTexture');
@@ -234,7 +236,7 @@ describe('target capture lighting ownership', () => {
     const next = f.prepare(0, pipeline(replacement));
 
     expect(next.pipeline.viewUniformBuffer).not.toBe(old.pipeline.viewUniformBuffer);
-    expect(next.pipeline.pointsLinesViewBuffer).not.toBe(old.pipeline.pointsLinesViewBuffer);
+    expect(next.pipeline.pointsLinesViewBuffer).not.toBe(oldPointsBuffer);
     expect(old.runtime.device).toBe(f.gpu);
     expect(next.runtime.device).toBe(replacement);
     expect(destroyOldBuffer).not.toHaveBeenCalled();
@@ -242,7 +244,7 @@ describe('target capture lighting ownership', () => {
     complete(undefined);
     await fence;
     expect(destroyOldBuffer).toHaveBeenCalledWith(old.pipeline.viewUniformBuffer);
-    expect(destroyOldBuffer).toHaveBeenCalledWith(old.pipeline.pointsLinesViewBuffer);
+    expect(destroyOldBuffer).toHaveBeenCalledWith(oldPointsBuffer);
     expect(destroyOldTexture).toHaveBeenCalledWith(oldFallback.texture);
     expect(destroyNewBuffer).not.toHaveBeenCalled();
     expect(destroyNewTexture).not.toHaveBeenCalled();
@@ -319,7 +321,6 @@ it('uses current Fog while retaining the captured atmosphere and sun', async () 
     ],
     suns: [{ entityKey: 2, direction: [0, 1, 0], color: [1, 1, 1], intensity: 100000 }],
     fogs: [],
-    lane: 'direct',
   }).unwrap();
   const capture = retainAtmosphere(f.runtime, first);
   const fog = {
@@ -335,7 +336,6 @@ it('uses current Fog while retaining the captured atmosphere and sun', async () 
     ],
     suns: [{ entityKey: 2, direction: [1, 0, 0], color: [1, 1, 1], intensity: 100000 }],
     fogs: [fog],
-    lane: 'direct',
   }).unwrap();
   Object.assign(required(f.owner.work[0]), { atmosphere: capture.storage, candidateGeneration: 1 });
   try {

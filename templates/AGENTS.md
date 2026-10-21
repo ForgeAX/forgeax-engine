@@ -157,7 +157,7 @@ definitions; native `apply()` installs effects and composes children. Cleanup be
 
 ## Asset authority and formats
 
-The asset chain is author source → importer/cooker → DDC → catalog/pack-index → runtime `loadByGuid()`. Runtime identity uses GUIDs, not guesses from disk paths.
+The asset chain is author source → importer/cooker → DDC → catalog/pack-index → runtime `assets.load(guid, kind)`. Runtime identity uses GUIDs, not guesses from disk paths.
 
 `.assetlib` is the game's local asset workspace. Keep original downloads in
 `.assetlib/downloads/` and extracted working copies in `.assetlib/staging/`. The template's

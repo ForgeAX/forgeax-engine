@@ -1,7 +1,8 @@
+import { AssetRegistry } from '@forgeax/engine/assets-runtime';
 import { AssetGuid } from '@forgeax/engine/pack/guid';
 import { GlyphText } from '@forgeax/engine/render/authoring';
 import { Transform } from '@forgeax/engine/scene';
-import type { FontAsset, SamplerAsset } from '@forgeax/engine/types';
+import type { SamplerAsset } from '@forgeax/engine/types';
 import { defineFeature } from '../../lab/feature';
 import { buildSdfFont } from './_shared/sdf-font';
 import { spawnOrthoCamera } from './_shared/sprite';
@@ -20,6 +21,10 @@ export default defineFeature({
   expect:
     'ON: two lines "FORGEAX" / "2D TEXT" in orange and a smaller cyan "SPRITE" row with crisp edges. OFF: the big text changes to a single line "SPRITE" in green, so the glyphs and color both re-layout.',
   setup({ app, world, canvas }) {
+    const sceneAssets = world.assets;
+    if (!(sceneAssets instanceof AssetRegistry))
+      throw new Error('Scene requires its runtime asset owner');
+
     const assets = app.assets;
     if (assets === undefined) throw new Error('app.assets is undefined');
     const atlasGuid = AssetGuid.parse(ATLAS_GUID);
@@ -35,13 +40,11 @@ export default defineFeature({
       minFilter: 'linear',
       mipmapFilter: 'nearest',
     };
-    const cataloged = [
-      assets.catalog(atlasGuid.value, atlas),
-      assets.catalog(samplerGuid.value, sampler),
-    ];
-    for (const result of cataloged)
-      if (!result.ok) throw new Error(`catalog: ${result.error.code}`);
-    const fontHandle = world.allocSharedRef<'FontAsset', FontAsset>('FontAsset', font);
+    const atlasHandle = assets.create(atlas).unwrap();
+    const samplerHandle = assets.create(sampler).unwrap();
+    const fontHandle = assets
+      .create({ ...font, atlas: atlasHandle, sampler: samplerHandle })
+      .unwrap();
     spawnOrthoCamera(world, canvas);
     const big = world
       .spawn(

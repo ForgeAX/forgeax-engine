@@ -47,6 +47,59 @@ describe('mutation epoch evidence', () => {
     expect(world.get(entity, Fixed).unwrap().values[1]).toBe(7);
   });
 
+  it('preserves borrowed variable arrays and subarrays when their pool slot is reused', () => {
+    const Data = defineComponent('BorrowedArrayWrite', { values: 'array<u32>' });
+    const world = new World();
+    const entity = world.spawn({ component: Data, data: { values: [1, 2, 3, 4] } }).unwrap();
+    const borrowed = world.get(entity, Data).unwrap().values;
+    borrowed[1] = 9;
+    world.set(entity, Data, { values: borrowed }).unwrap();
+    expect([...world.get(entity, Data).unwrap().values]).toEqual([1, 9, 3, 4]);
+    world
+      .set(entity, Data, { values: world.get(entity, Data).unwrap().values.subarray(1) })
+      .unwrap();
+    expect([...world.get(entity, Data).unwrap().values]).toEqual([9, 3, 4]);
+  });
+
+  it.each([
+    'array<u32>',
+    'array<u32, 4>',
+  ] as const)('captures cross-field borrowed writes before overwriting %s storage', (type) => {
+    const Data = defineComponent(`BorrowedArraySwap${type}`, { a: type, b: type });
+    const world = new World();
+    const entity = world
+      .spawn({ component: Data, data: { a: [1, 2, 3, 4], b: [5, 6, 7, 8] } })
+      .unwrap();
+    const borrowed = world.get(entity, Data).unwrap();
+    world.set(entity, Data, { a: borrowed.b, b: borrowed.a }).unwrap();
+    const after = world.get(entity, Data).unwrap();
+    expect([...after.a]).toEqual([5, 6, 7, 8]);
+    expect([...after.b]).toEqual([1, 2, 3, 4]);
+  });
+
+  it('captures borrowed buffer bytes, including cross-field DataView writes', () => {
+    const Data = defineComponent('BorrowedBufferWrite', { a: 'buffer', b: 'buffer' });
+    const world = new World();
+    const entity = world
+      .spawn({
+        component: Data,
+        data: { a: new Uint8Array([1, 2, 3, 4]), b: new Uint8Array([5, 6, 7, 8]) },
+      })
+      .unwrap();
+    const borrowed = world.get(entity, Data).unwrap();
+    world
+      .set(entity, Data, {
+        a: borrowed.b,
+        b: new DataView(borrowed.a.buffer, borrowed.a.byteOffset + 1, 2),
+      })
+      .unwrap();
+    const after = world.get(entity, Data).unwrap();
+    expect([...after.a]).toEqual([5, 6, 7, 8]);
+    expect([...after.b]).toEqual([2, 3]);
+    world.set(entity, Data, { a: after.a }).unwrap();
+    expect([...world.get(entity, Data).unwrap().a]).toEqual([5, 6, 7, 8]);
+  });
+
   it('advances once per successful mutation and not for failures or no-ops', () => {
     const Other = defineComponent('MutationEpochOther', { value: 'f32' });
     const world = new World();

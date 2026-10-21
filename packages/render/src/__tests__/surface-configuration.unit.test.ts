@@ -2,12 +2,7 @@ import type { RhiCanvasContext, RhiDevice } from '@forgeax/engine-rhi';
 import { ok, RhiError } from '@forgeax/engine-rhi';
 import { describe, expect, it, vi } from 'vitest';
 import { createRenderSurfaceError, type RenderSurfaceFailureDetail } from '../errors/render';
-import {
-  configureSurface,
-  resolveSurfaceFormatPair,
-  resolveSurfaceProfile,
-  selectSwapChainFormat,
-} from '../render-system';
+import { configureSurface, resolveSurfaceProfile, selectSwapChainFormat } from '../render-system';
 
 function device(backendKind: 'webgpu' | 'wgpu-webgl2', storageBuffer = false): RhiDevice {
   return {
@@ -63,17 +58,6 @@ describe('configureSurface', () => {
       expect(error.hint).toBeTruthy();
       expect(error.detail).toEqual(detail);
     }
-  });
-
-  it('projects the configured surface format into graph topology without reinterpretation drift', () => {
-    expect(resolveSurfaceFormatPair('webgpu', 'bgra8unorm', 'bgra8unorm-srgb')).toEqual({
-      storage: 'bgra8unorm',
-      view: 'bgra8unorm-srgb',
-    });
-    expect(resolveSurfaceFormatPair('wgpu-webgl2', 'rgba8unorm', 'rgba8unorm-srgb')).toEqual({
-      storage: 'rgba8unorm',
-      view: 'rgba8unorm-srgb',
-    });
   });
 
   it('keeps native WebGPU sRGB view support when texture binding is available', () => {

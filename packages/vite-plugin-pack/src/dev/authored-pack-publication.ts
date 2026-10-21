@@ -13,13 +13,10 @@ import {
   produceScriptablePackProducts,
   projectImportProductForBuild,
   projectMaterialPackTransport,
+  projectPackBuildCatalog,
   type ScriptablePackInput,
 } from '@forgeax/engine-import';
-import {
-  createRuntimePackPublication,
-  packageTransportRevision,
-  projectPackageCatalog,
-} from '@forgeax/engine-pack/build';
+import { createRuntimePackPublication, packageTransportRevision } from '@forgeax/engine-pack/build';
 import { AssetGuid, PackageId } from '@forgeax/engine-pack/guid';
 import {
   resolvePackSourceSubjects,
@@ -491,27 +488,10 @@ async function publishWithExecutors(
         });
       }
       context.publicationCandidates.set(input.displaySourcePath, publication);
-      const stagedByGuid = new Map(
-        product.stagedOutputs.map((output) => [
-          AssetGuid.format(output.guid).toLowerCase(),
-          output,
-        ]),
-      );
-      const projected = projectPackageCatalog(
-        product.product.assets.map((asset, sourceIndex) => {
-          const staged = stagedByGuid.get(asset.guid.toLowerCase());
-          return {
-            guid: asset.guid,
-            kind: asset.kind,
-            sourcePath: input.displaySourcePath,
-            sourceIndex,
-            ...(staged?.sourceKey === undefined ? {} : { sourceKey: staged.sourceKey }),
-            refs: asset.refs.map((reference) => reference.guid),
-            execution: 'cooked' as const,
-            packageId: PackageId.format(input.subjectPackageId ?? input.definition.packageId),
-            provenance: { provider: 'pack-ts', version: '2.0.0' },
-          };
-        }),
+      const projected = projectPackBuildCatalog(
+        product,
+        input.displaySourcePath,
+        input.subjectPackageId ?? input.definition.packageId,
         finalized.packageUrl,
       ).map((entry) => {
         const cookReceiptUrl = receiptUrls.get(entry.guid.toLowerCase());

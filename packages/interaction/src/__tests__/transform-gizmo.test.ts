@@ -1,3 +1,5 @@
+import { AssetRegistry } from '@forgeax/engine-assets-runtime';
+import { runtimeAssets } from '@forgeax/engine-assets-runtime/internal';
 import { World } from '@forgeax/engine-ecs';
 import { quat } from '@forgeax/engine-math';
 import { Camera, orthographic, perspective } from '@forgeax/engine-render';
@@ -14,7 +16,8 @@ import { createGizmoPresentation } from '../gizmo-presentation';
 import { TransformGizmo } from '../transform-gizmo';
 
 function fixture() {
-  const world = new World(),
+  const assets = new AssetRegistry();
+  const world = new World({ assets }),
     q = quat.create();
   quat.fromLookAt(q, [4, 3, 6], [0, 0, 0], [0, 1, 0]);
   const camera = world
@@ -39,6 +42,7 @@ function fixture() {
   update();
   return {
     world,
+    assets,
     camera,
     parent,
     target,
@@ -218,5 +222,6 @@ describe('TransformGizmo real Scene/Picking path', () => {
     view.dispose();
     view.dispose();
     expect(t.world.inspect().entityCount).toBe(2);
+    expect(runtimeAssets(t.assets).inspect().assets).toBe(0);
   });
 });

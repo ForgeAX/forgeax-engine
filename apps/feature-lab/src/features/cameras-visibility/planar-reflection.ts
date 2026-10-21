@@ -1,6 +1,8 @@
+import { AssetRegistry } from '@forgeax/engine/assets-runtime';
+import { createPrimitiveMesh } from '@forgeax/engine/geometry';
 import { Materials, MeshRenderer, PlanarReflection } from '@forgeax/engine/render';
 import { CheckList, defineFeature } from '../../lab/feature';
-import { MESH, material, spawnMesh, spawnStage, standard, unlit } from '../../lab/stage';
+import { material, spawnMesh, spawnStage, standard, unlit } from '../../lab/stage';
 import { serial } from './support/serial';
 import { readTarget, sampledTarget, TARGET_2D } from './support/target';
 
@@ -21,9 +23,17 @@ export default defineFeature({
   expect:
     'ON: the monitor panel on the right shows the upside-down mirrored red cube from the y=0 plane. OFF: PlanarReflection is removed and the panel is plain grey.',
   setup({ app, world, frames }) {
+    const primitiveAssets = world.assets;
+    if (!(primitiveAssets instanceof AssetRegistry))
+      throw new Error('Scene requires its runtime asset owner');
+
+    const stageCube = primitiveAssets.create(createPrimitiveMesh('cube').unwrap()).unwrap();
+
+    const stageQuad = primitiveAssets.create(createPrimitiveMesh('quad').unwrap()).unwrap();
+
     const { camera } = spawnStage(world, { eye: [0, 2, 6], target: [0, 0.5, 0] });
     const made = sampledTarget(app, TARGET_2D, '2d');
-    spawnMesh(world, MESH.cube, standard(world, { baseColor: [1, 0.05, 0.05, 1] }), {
+    spawnMesh(world, stageCube, standard(world, { baseColor: [1, 0.05, 0.05, 1] }), {
       pos: [-0.8, 1, 0],
     });
     if (made === undefined)
@@ -39,7 +49,7 @@ export default defineFeature({
       Materials.unlit([1, 1, 1, 1], { baseColorTexture: made.sourceRef as never }),
     );
     const grey = unlit(world, [0.4, 0.4, 0.4, 1]);
-    const panel = spawnMesh(world, MESH.quad, screen, {
+    const panel = spawnMesh(world, stageQuad, screen, {
       pos: [1.6, 1.3, 0.5],
       scale: [1.8, 1.8, 1],
     });

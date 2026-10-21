@@ -74,14 +74,8 @@ export interface ExecutionFault {
   readonly retryable: boolean;
 }
 
-export interface ExecutionAudioReport {
-  readonly cache?: AudioState['cache'];
-  readonly preparation?: AudioState['preparation'];
-  readonly music?: AudioState['music'];
-  readonly streaming?: AudioState['streaming'];
+export interface ExecutionAudioReport extends Omit<AudioState, 'lastError'> {
   readonly owner: 'host';
-  readonly contextState: 'running' | 'suspended' | 'closed';
-  readonly activeSourceCount: number;
   readonly lastError: {
     readonly code: string;
     readonly expected: string;
@@ -193,7 +187,8 @@ export interface ExecutionOptions {
   /** Bounds initialization and the first source frame; null waits until completion or cancellation. */
   readonly startupTimeoutMs?: number | null;
   /** Bounds source frame admission after the first source completion. */
-  readonly frameTimeoutMs?: number;
+  /** Subsequent frame admission deadline; omit for 2 seconds, null waits for completion or disposal. */
+  readonly frameTimeoutMs?: number | null;
 }
 
 /** Structured-cloneable diagnostics switches shared by main and Worker hosts. */
@@ -214,6 +209,8 @@ export interface ExecutionDiagnosticsOptions {
   readonly rhiCapture?: boolean;
   /** Construct bounded GPU pass timing inside the Renderer-owning realm. */
   readonly gpuPassTiming?: GpuPassTimingOptions;
+  /** Default-off receipt-owned CPU shadow workload, without additional GPU operations. */
+  readonly shadowWorkload?: boolean;
 }
 
 export type ExecutionBootstrapValue =

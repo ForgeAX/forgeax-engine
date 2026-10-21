@@ -4,6 +4,7 @@ import { join } from 'node:path';
 import type { Worker } from 'node:worker_threads';
 import { scanInventory } from '@forgeax/engine-pack/scanner';
 import { createScriptablePackSourceSnapshot } from '@forgeax/engine-pack/source-node';
+import type { Result } from '@forgeax/engine-types';
 import { err } from '@forgeax/engine-types';
 import { expect, it, vi } from 'vitest';
 import { produceBuildAssets } from '../../../../import/src/build-production.js';
@@ -12,7 +13,7 @@ import { discoverPluginAssets } from '../plugin-assets.js';
 
 interface OwnedExecutor {
   readonly worker: Worker;
-  readonly compileRootReady: Promise<string>;
+  readonly compileRootReady: Promise<Result<string, unknown>>;
 }
 
 const owned = vi.hoisted(() => new Set<OwnedExecutor>());
@@ -53,7 +54,7 @@ it.each([
       await writeFile(
         join(root, `assets/${index}.pack.ts`),
         `import { retained } from './${index}-retained.js';
-          export default { schemaVersion: '2.0.0', packageId: new Uint8Array(16).fill(${index + 1}),
+          export default { schemaVersion: '2.0.0', plugins: true, packageId: new Uint8Array(16).fill(${index + 1}),
             build() {
               if (retained[0] !== ${index + 0.5}) throw new Error('source closure value changed');
               return { ok: true, value: {} };
@@ -116,7 +117,8 @@ it.each([
     // Retain the failure; clean only Workers and directories acquired by this fixture.
     for (const executor of owned) {
       await executor.worker.terminate();
-      await rm(await executor.compileRootReady, { recursive: true, force: true });
+      const allocated = await executor.compileRootReady;
+      if (allocated.ok) await rm(allocated.value, { recursive: true, force: true });
     }
     owned.clear();
     await rm(root, { recursive: true, force: true });

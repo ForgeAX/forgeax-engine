@@ -16,7 +16,7 @@
 
 LO §1.5 的核心论点是「在 CPU 端用 `glm::mat4` 累乘 translate / rotate / scale，每帧把 4×4 矩阵作为 uniform 上传到 vertex shader」。forgeax 把同样的语义切成三层（charter P4 + AC-04）：
 
-1. **磁盘 GUID-寻址 cube** — `assets/cube-mesh.stub.meta.json` (`kind=external-asset-package`，`subAssets[0]={kind:'mesh', sourceIndex:0, guid:UUIDv7}`) 把磁盘端的 GUID 映射到引擎内置 `HANDLE_CUBE` 程序化 cube；运行时通过 `loadByGuid<MeshAsset>(CUBE_MESH_GUID)` 单入口寻址（charter P5 producer / consumer split + AC-15 (c)）
+1. **运行时几何与材质** — 纹理通过 `assets.load(textureGuid, 'texture')` 载入；`createBoxGeometry(1, 1, 1)` 的结果与材质声明分别交给 `assets.create`，实体直接引用返回的句柄。
 2. **ECS 实体 + Transform 数组列** — `world.spawn({Transform, MeshFilter{cube}, MeshRenderer{material}})`；`Transform` 是 `pos`/`quat`/`scale` 三条 array<f32,N> 列，LO `glm::mat4(1.0f)` 的 identity 基线对应 `pos=[0,0,0], quat=[0,0,0,1], scale=[1,1,1]`
 3. **逐帧 system fn 写 row view** — `world.addSystem(Update, { queries: [{ write: [Transform], with: [MeshFilter] }], fn: (_world, queries) => { for (const row of queries[0]) row.mut(Transform).quat.set(...); } })`；rAF 循环里调用 `world.update(deltaSeconds)` 触发该 system；引擎 `RenderSystem` 在 `draw(world)` 里读取最新的列并组装 `mat4`
 
@@ -27,7 +27,7 @@ LO §1.5 的核心论点是「在 CPU 端用 `glm::mat4` 累乘 translate / rota
 
 ```mermaid
 flowchart LR
-  Disk["assets/cube-mesh.stub.meta.json<br/>(GUID -> HANDLE_CUBE)"] --> RT["loadByGuid<MeshAsset>"]
+  Geometry["createBoxGeometry(1, 1, 1)"] --> RT["assets.create(mesh)"]
   RT --> Reg["AssetRegistry"]
   Reg --> Spawn["world.spawn<br/>Transform + MeshFilter + MeshRenderer"]
   AddSys["world.addSystem(Update, system)<br/>fn: write quat / scale lanes"] --> Tick
@@ -41,75 +41,28 @@ flowchart LR
 
 ## 引擎用法
 
+资产调用摘自 [src/index.ts](src/index.ts) 的启动流程；`assets` 和 `world` 来自已经创建的 App，`textureGuid` 是已校验的纹理 GUID，`materialEntry.payload` 是示例 Pack 中的材质声明。
+
 ```ts
-// 来自 src/index.ts 的关键片段（三段式注释 AC-06）。
-
-// 1. engine usage - 引擎公开符号集
-import { Update, World } from '@forgeax/engine-ecs';
-import { AssetGuid } from '@forgeax/engine-pack/guid';
-import { createRenderer, EngineEnvironmentError } from '@forgeax/engine-runtime';
-import { Camera, MeshRenderer, MeshFilter } from '@forgeax/engine-render';
+import { createBoxGeometry } from '@forgeax/engine-geometry';
+import { MeshFilter, MeshRenderer } from '@forgeax/engine-render';
 import { Transform } from '@forgeax/engine-scene';
-import { HANDLE_CUBE } from '@forgeax/engine-assets-runtime';
-import type { Handle, MaterialAsset, MeshAsset } from '@forgeax/engine-types';
 
-// 2. example-specific glue - LO §1.5 GLM 累乘的 forgeax 等价
-const CUBE_MESH_GUID     = '019e3968-6007-71ae-856e-1fd6c9728cfb';
-const CUBE_MATERIAL_GUID = '019e4906-23d4-72f8-bca5-7f18f5465e9a';
-const ROTATION_RADIANS_PER_SECOND = 1.0;
-const SCALE_MIN = 0.5;
-const SCALE_MAX = 1.0;
-const SCALE_PULSE_RADIANS_PER_SECOND = 1.5;
-
-// 3. bootstrap - loadByGuid + spawn + addSystem + rAF
-const renderer = await createRenderer(canvas, { /* clearColor / shaderManifestUrl */ });
-const assets = renderer.assets;
 configureRuntimeAssetCatalog(assets, runtimeBinding);
-
-// pre-register cube + material via GUID; loadByGuid resolves on Map fast path
-assets.registerWithGuid<MeshAsset>(cubeGuid, cubeAsset.value);
-assets.registerWithGuid<MaterialAsset>(matGuid, { kind: 'material', shadingModel: 'unlit', baseColor: [1.0, 0.5, 0.2, 1.0] });
-
-const cubeHandleRes = await assets.loadByGuid<MeshAsset>(cubeGuid);
-const matHandleRes  = await assets.loadByGuid<MaterialAsset>(matGuid);
-
-// spawn cube at identity
-const world = new World();
+const texture = (await assets.load(textureGuid, 'texture')).unwrap();
+const cube = assets.create(createBoxGeometry(1, 1, 1).unwrap()).unwrap();
+const material = assets.create({
+  ...materialEntry.payload,
+  values: { ...materialEntry.payload.values, baseColorTexture: texture },
+}).unwrap();
 world.spawn(
-  { component: Transform, data: { pos: [0, 0, 0], quat: [0, 0, 0, 1], scale: [1, 1, 1] } },
-  { component: MeshFilter, data: { assetHandle: cubeHandleRes.value } },
-  { component: MeshRenderer, data: { material: matHandleRes.value } },
-);
-
-// register per-frame Transform animation system (LO 1.5 GLM idiom -> forgeax ECS)
-world.addSystem(Update, {
-  name: 'transformations-animate-cube',
-  queries: [{ write: [Transform], with: [MeshFilter] }],
-  fn: (_world, queries) => {
-    const t = (performance.now() - animationStartMs) * 0.001;
-    const angle = t * ROTATION_RADIANS_PER_SECOND;
-    const halfAngle = angle * 0.5;
-    const sinH = Math.sin(halfAngle);
-    const cosH = Math.cos(halfAngle);
-    const pulse = SCALE_MIN + (SCALE_MAX - SCALE_MIN) * (Math.sin(t * SCALE_PULSE_RADIANS_PER_SECOND) * 0.5 + 0.5);
-    for (const row of queries[0]) {
-      const transform = row.mut(Transform);
-      transform.quat.set([0, 0, sinH, cosH]);
-      transform.scale.set([pulse, pulse, pulse]);
-    }
-  },
-});
-
-// rAF 主循环：每帧先跑 schedule（system fn 写 Transform SoA 列）再 draw
-const tick = (): void => {
-  world.update(1 / 60);
-  renderer.draw([world], { cameraOwner: 0, resourceOwner: 0 });
-  requestAnimationFrame(tick);
-};
-requestAnimationFrame(tick);
+  { component: Transform, data: { pos: [0, 0, 0] } },
+  { component: MeshFilter, data: { assetHandle: cube } },
+  { component: MeshRenderer, data: { materials: [material] } },
+).unwrap();
 ```
 
-`assets/cube-mesh.stub.meta.json` 是一个空文件 `cube-mesh.stub` 的同名 sidecar（同 §1.4 同型 procedural 形态）；`subAssets[0].guid` 由 `forgeax asset import` 一次性铸造（reimport byte-identical）。runtime 阶段 `loadByGuid` 不感知物理路径——它只认 GUID，pack-index 把 GUID 翻译成 URL 或回落到 `registerWithGuid` 的内存表。
+纹理通过 Catalog 的 GUID 加载；几何与材质直接由 `assets.create` 建立运行时身份。相机和 Update 系统保持在示例自己的 ECS 装配中，最后由 `app.start()` 驱动帧循环。运行时修改材质使用 `assets.update(material, { values: { baseColor: [1, 0.5, 0.2, 1] } }).unwrap()`，版本和渲染更新由资产 owner 维护。
 
 ## 与 LO 原版的差异
 
@@ -132,7 +85,6 @@ requestAnimationFrame(tick);
 | 文件 | 行数 | 角色 |
 |:--|---:|:--|
 | `src/index.ts` | ~340 | 三段式（引擎使用 + 示例胶水 + 启动）+ cube spawn + `world.addSystem(Update, system)` 动画 fn + capture hook |
-| `assets/cube-mesh.stub.meta.json` | ~15 | cube 别名 sidecar（GUID 映射到引擎内置 HANDLE_CUBE） |
 | `src/__tests__/transformations.browser.test.ts` | ~140 | vitest browser e2e（AC-04 + AC-05 + AC-06 + AC-22 三段断言：3-section markers / cube-mesh.stub.meta.json schema / Engine WebGPU path） |
 | `scripts/bench-screenshot.mjs` | ~180 | playwright + chrome-beta 录制 round-5-transformations.png 入 forgeax-engine-assets/ submodule |
 

@@ -1,3 +1,5 @@
+import { AssetRegistry } from '@forgeax/engine-assets-runtime';
+import { runtimeAssetRegistry } from '@forgeax/engine-assets-runtime/internal';
 import type { EntityHandle } from '@forgeax/engine-ecs';
 import { createWorldContext, World } from '@forgeax/engine-ecs';
 import { ChildOf, MorphWeights, Name, scenePlugin, Transform } from '@forgeax/engine-scene';
@@ -30,10 +32,10 @@ function weightsClip(): AnimationClip {
 async function setupTarget(
   withWeights: boolean,
 ): Promise<{ world: World; player: EntityHandle; target: EntityHandle }> {
-  const world = new World();
+  const world = new World({ assets: new AssetRegistry() });
   await createWorldContext(world, [scenePlugin()]);
   await createWorldContext(world, [animationPlugin()]);
-  const clip = world.allocSharedRef('AnimationClip', weightsClip());
+  const clip = runtimeAssetRegistry(world.assets).create(weightsClip()).unwrap();
   const player = world.spawn({ component: Transform, data: {} }).unwrap() as EntityHandle;
   world.addComponent(player, { component: Name, data: { value: 'Root' } }).unwrap();
   world

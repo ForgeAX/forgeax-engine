@@ -105,7 +105,7 @@ export function createWorkloadOptions(): WorkloadResult<WorkloadOptions> {
 export function workloadFingerprint(options: WorkloadOptions): string {
   const bounds = `${VOLUME_MIN.join(',')}..${VOLUME_MAX.join(',')}`;
   const directional = `dir(${DIRECTIONAL_LIGHT_DIRECTION.join(',')}),color(${DIRECTIONAL_LIGHT_COLOR.join(',')}),intensity(${DIRECTIONAL_LIGHT_INTENSITY}),shadow(${DIRECTIONAL_LIGHT_CAST_SHADOW ? 1 : 0})`;
-  const identity = `perf-10k-cubes-lights/v${WORKLOAD_VERSION}|seed=${PERF_WORKLOAD_SEED}|bounds=${bounds}|mesh=HANDLE_CUBE|material=shared-standard-pbr|camera=center-yaw|directional=${directional}|punctualDecay=${PUNCTUAL_DECAY_EXPONENT}|cubes=${options.cubeCount}|pointLights=${options.pointLightCount}|spotLights=${options.spotLightCount}`;
+  const identity = `perf-10k-cubes-lights/v${WORKLOAD_VERSION}|seed=${PERF_WORKLOAD_SEED}|bounds=${bounds}|mesh=shared-unit-cube|material=shared-standard-pbr|camera=center-yaw|directional=${directional}|punctualDecay=${PUNCTUAL_DECAY_EXPONENT}|cubes=${options.cubeCount}|pointLights=${options.pointLightCount}|spotLights=${options.spotLightCount}`;
   return `${identity}|hash=${fnv1a32(identity)}`;
 }
 

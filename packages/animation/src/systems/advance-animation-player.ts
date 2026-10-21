@@ -1,5 +1,7 @@
+import { runtimeAssets } from '@forgeax/engine-assets-runtime/internal';
 import { FixedTime, FixedUpdate, type ScheduleToken, Time, Update } from '@forgeax/engine-ecs';
 import { sampleChannel } from '../sample-channel';
+
 // @forgeax/engine-animation — advanceAnimationPlayer system (variable N-way blend).
 //
 // Per-tick: scans the variable-length SoA columns on each AnimationPlayer; for
@@ -58,8 +60,7 @@ import {
   type StateProjection,
 } from '@forgeax/engine-ecs/projection';
 import { MorphWeights, Transform } from '@forgeax/engine-scene';
-import type { AnimationChannel, AnimationClip } from '@forgeax/engine-types';
-import { toShared } from '@forgeax/engine-types';
+import type { AnimationClip, AnimationTransformChannel } from '@forgeax/engine-types';
 import {
   emitAnimationDiagnostic,
   isAnimationDevMode,
@@ -253,9 +254,7 @@ function collectActiveSlotsAndAdvanceTimes(
   for (let i = 0; i < count; i++) {
     const clipHandleRaw = ap.clips[i] ?? 0;
     if (clipHandleRaw === 0) continue;
-    const clipLookup = world.sharedRefs.resolve<'AnimationClip', AnimationClip>(
-      toShared<'AnimationClip'>(clipHandleRaw),
-    );
+    const clipLookup = runtimeAssets(world.assets).resolveAsset<AnimationClip>(clipHandleRaw);
     if (!clipLookup.ok) throw clipLookup.error;
     const clip = clipLookup.value;
     const mask = resolveAnimationMask(world, ap.masks[i] ?? 0);
@@ -311,7 +310,10 @@ interface TargetMap {
   /** Null marks an ambiguous ID; each unique ID retains its binding snapshot. */
   readonly bindings: ReadonlyMap<string, ResolvedTarget | null>;
   readonly hasStaleTarget: boolean;
-  readonly resolvedClips: WeakMap<AnimationClip, readonly (ResolvedTarget | undefined)[]>;
+  readonly resolvedClips: WeakMap<
+    AnimationClip['channels'],
+    readonly (ResolvedTarget | undefined)[]
+  >;
 }
 
 interface TargetBinding {
@@ -577,7 +579,7 @@ function resolveClipTargets(
   slot: ActiveSlot,
   targetMap: TargetMap,
 ): readonly (ResolvedTarget | undefined)[] {
-  const cached = targetMap.resolvedClips.get(slot.clip);
+  const cached = targetMap.resolvedClips.get(slot.clip.channels);
   if (cached !== undefined) return cached;
 
   const targets = slot.clip.channels.map((channel, channelIndex) =>
@@ -594,7 +596,7 @@ function resolveClipTargets(
           targetMap,
         ),
   );
-  targetMap.resolvedClips.set(slot.clip, targets);
+  targetMap.resolvedClips.set(slot.clip.channels, targets);
   return targets;
 }
 
@@ -604,7 +606,7 @@ function resolveChannelTarget(
   clip: number,
   channel: number,
   targetId: string,
-  property: ChannelKind,
+  property: AnimationTransformChannel['property'],
   expectedWeightCount: number | undefined,
   targetMap: TargetMap,
 ): ResolvedTarget | undefined {
@@ -705,14 +707,13 @@ function resolveChannelTarget(
 }
 
 /** Target/kind coverage retains each slot's first channel as a diagnostic anchor. */
-type ChannelKind = Exclude<AnimationChannel['property'], 'property'>;
-type SlotCoverage = Map<string, Map<ChannelKind, Map<number, number>>>;
+type SlotCoverage = Map<string, Map<AnimationTransformChannel['property'], Map<number, number>>>;
 
 function recordSlotCoverage(
   cov: SlotCoverage,
   slot: number,
   targetId: string,
-  kind: ChannelKind,
+  kind: AnimationTransformChannel['property'],
   channel: number,
 ): void {
   let perTarget = cov.get(targetId);
@@ -798,7 +799,7 @@ function emitMissingOnSomeSlotWarns(
  */
 function foldChannelIntoAccumulator(
   acc: JointAccumulator,
-  property: ChannelKind,
+  property: AnimationTransformChannel['property'],
   sampled: number[],
   weight: number,
 ): void {

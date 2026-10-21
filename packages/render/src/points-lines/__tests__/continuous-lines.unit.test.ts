@@ -7,7 +7,7 @@ import { describe, expect, it } from 'vitest';
 import { Materials } from '../../materials';
 import { admitPointsLines } from '../admission';
 import { PointsLinesExpansionCache } from '../expansion-cache';
-import { createPointsLinesSnapshot } from '../snapshot';
+import { createPreparedPointsLinesSnapshot as createPointsLinesSnapshot } from './snapshot-fixture';
 import threeDistances from './three-line-distances.json';
 
 function mesh(topology: 'line-list' | 'line-strip', indexed = false): MeshAsset {

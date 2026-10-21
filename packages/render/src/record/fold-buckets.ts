@@ -1,18 +1,18 @@
-import { HANDLE_NINESLICE_QUAD, resolveAssetHandle } from '@forgeax/engine-assets-runtime';
 import { deriveVertexCount } from '@forgeax/engine-geometry';
 import { RhiError } from '@forgeax/engine-rhi';
-import type { MeshAsset } from '@forgeax/engine-types';
-import { handleSlot, toShared } from '@forgeax/engine-types';
+import type { AssetHandle, MeshAsset } from '@forgeax/engine-types';
 import type { MeshGpuHandles } from '../device/gpu-residency';
-import { materialBindingKey } from '../gpu-driven/material-bindings';
 import { GpuBuffer } from '../gpu-resource';
 import { GPU_BUFFER_USAGE_COPY_DST, GPU_BUFFER_USAGE_VERTEX } from '../gpu-usage';
 import { disposeTransientInstanceBuffers } from '../instance-buffer-cache';
+import { type MaterialResource, materialUsesSpriteGeometry } from '../material-resource';
 import type { RenderResourceScope } from '../publication/resource-scope';
-import { renderAssetByGuid } from '../publication/resource-scope';
-import type { DispatchEntry, MaterialSnapshot, RenderableSnapshot } from '../render-system-extract';
+import { renderAsset } from '../publication/resource-scope';
+import type { DispatchList, MaterialSnapshot, RenderableSnapshot } from '../render-system-extract';
+import type { FrameList } from '../scene/frame-list';
+import { meshDrawSnapshot } from '../scene/mesh-draw';
+import type { MeshFrame } from '../scene/mesh-frame';
 import {
-  getTransparentSortConfig,
   TRANSPARENT_SORT_MODE_LAYER_Y,
   TRANSPARENT_SORT_MODE_LAYER_Z,
 } from '../systems/transparent-sort-config';
@@ -23,6 +23,8 @@ import {
   type ValidatedRenderable,
   worldEntityKey,
 } from './frame-snapshot';
+import { materialGeometry } from './material-geometry';
+import { prepareMaterialUniformFrame } from './material-uniforms';
 import {
   buildFoldDispatchPlan,
   cleanPerEntityCache,
@@ -44,11 +46,20 @@ import {
  * A frame-local material table. Repeated snapshot objects share one UBO slot;
  * each renderable keeps only the slot index used by each authored material.
  */
+export interface MaterialBinding {
+  readonly material: MaterialResource;
+  readonly resourceClass: string;
+  readonly world?: RenderResourceScope;
+  /** Present only when native resources are tied to an actual draw (video/probe selection). */
+  readonly entityKey?: number;
+}
+
 export interface MaterialSlotPlan<T extends object> {
   readonly slotIndices: readonly (readonly number[])[];
   readonly slots: readonly T[];
   /** Index of the first renderable that referenced each slot. */
   readonly slotOwners: readonly number[];
+  readonly resourceClasses: readonly string[];
 }
 
 /**
@@ -91,7 +102,7 @@ export function buildMaterialSlotPlan<T extends object>(
   const slotIndices = materialGroups.map((materials, ownerIndex) =>
     materials.map(intern, ownerIndex),
   );
-  return { slotIndices, slots, slotOwners };
+  return { slotIndices, slots, slotOwners, resourceClasses };
 }
 
 /**
@@ -146,14 +157,16 @@ export function validateRenderables(
   // resource-owner) is retained as the fallback for renderables whose worldId
   // is out of range (defensive; extractFrames always stamps a valid index).
   worlds: readonly RenderResourceScope[],
-  pipelineState: PipelineState,
+  _pipelineState: PipelineState,
   frameState: RenderFrameState,
-  renderables: readonly RenderableSnapshot[],
-  transparentDispatch: readonly DispatchEntry[],
+  renderables: FrameList<RenderableSnapshot>,
+  transparentDispatch: DispatchList,
   excludedEntityKeys: ReadonlySet<number> = new Set<number>(),
   worldKeys?: readonly number[],
   profilePhase?: RecordProfileRunner,
   retainedOverlays?: DispatchOverlays,
+  materials?: import('../scene/material-dispatch').MaterialFrame,
+  meshes?: MeshFrame,
 ): ValidatedRenderable[] {
   // One captured overlay per index preserves last-dispatch authority for all
   // three fields. Capture before residency callbacks can edit borrowed entries.
@@ -163,58 +176,49 @@ export function validateRenderables(
       : captureDispatchOverlays(transparentDispatch).values;
   const validated: ValidatedRenderable[] = [];
   for (let rIdx = 0; rIdx < renderables.length; rIdx++) {
-    const r = renderables[rIdx];
-    if (r === undefined) continue;
+    const input = renderables.at(rIdx);
+    if (input === undefined) continue;
+    const r = meshes === undefined ? input : meshDrawSnapshot(input, meshes);
     if (excludedEntityKeys.has(worldEntityKey(worldKeys?.[r.worldId] ?? r.worldId, r.entityKey)))
       continue;
-    // feat-20260709-editor-world-partition ENGINE-fix-round2 (defect 2): resolve
-    // this renderable's mesh against the world it was EXTRACTED from
-    // (worlds[r.worldId]) — NOT the single resource-owner `world`. Builtin mesh
-    // slots (< BUILTIN_BASE) resolve process-statically regardless of world, so
-    // the per-world pick only matters for user-tier handles, but selecting it
-    // unconditionally keeps a single code path. Falls back to the resource-owner
-    // world if worldId is out of range (defensive; extractFrames always stamps
-    // a valid index into worlds[]).
     const renderableWorld = worlds[r.worldId] ?? world;
+    if (r.generatedMesh === undefined && r.assetHandle === undefined) continue;
     const assetRes = runRecordProfilePhase(profilePhase, 'record/validation/asset', () =>
-      resolveAssetHandle<MeshAsset>(renderableWorld, toShared<'MeshAsset'>(r.assetHandle)),
+      r.generatedMesh === undefined
+        ? renderableWorld.resolveAsset<MeshAsset>(r.assetHandle as AssetHandle<'mesh'>)
+        : { ok: true as const, value: r.generatedMesh },
     );
     if (!assetRes.ok) {
       internals.errorRegistry.fire(
         new RhiError({
           code: 'asset-not-registered',
           expected: 'MeshFilter.assetHandle in AssetRegistry',
-          hint: 'use HANDLE_CUBE / HANDLE_TRIANGLE imports; custom mesh register path: feat-future-asset-system',
-          detail: { assetHandle: r.assetHandle },
+          hint: 'bind a live mesh created or loaded by the World asset service',
+          detail: { assetHandle: r.assetHandle ?? 0 },
         }),
       );
       continue;
     }
-    // feat-20260601-device/gpu-residency-extraction M1 (D-1): builtin meshes
-    // (slots through HANDLE_NINESLICE_QUAD) keep the createRenderer step-3
-    // direct-upload + `pipelineState.meshes` path -- they are NOT routed
-    // through `ensureResident`. User-registered meshes pull through the store
-    // on first access (the register->upload push was severed in this M1);
-    // the POD fetched above (assetRes.value) is passed in, store holds no
-    // registry ref (D-2). A first-access miss builds the GPU buffers; later
-    // frames hit the O(1) cache.
-    const meshAssetHandle = toShared<'MeshAsset'>(r.assetHandle);
-    let meshHandles = internals.gpuStore.getMeshGpuHandles(meshAssetHandle, renderableWorld);
+    const meshAssetHandle = r.assetHandle as AssetHandle<'mesh'>;
+    let meshHandles =
+      r.generatedMesh === undefined
+        ? internals.gpuStore.getMeshGpuHandles(meshAssetHandle, renderableWorld)
+        : undefined;
     const lodMeshes = runRecordProfilePhase(profilePhase, 'record/validation/lod-assets', () =>
-      r.lods?.map((lod) =>
-        renderAssetByGuid<MeshAsset>(renderableWorld, internals.assets, lod.mesh),
-      ),
+      r.lods?.map((lod) => renderAsset<MeshAsset>(renderableWorld, lod.mesh)),
     );
     const resolvedLodMeshes = lodMeshes?.map((lod) => (lod?.kind === 'mesh' ? lod : undefined));
-    if (meshHandles === undefined && r.assetHandle > handleSlot(HANDLE_NINESLICE_QUAD)) {
+    if (meshHandles === undefined) {
       const residentRes = runRecordProfilePhase(profilePhase, 'record/validation/residency', () =>
-        internals.gpuStore.ensureResident(
-          meshAssetHandle,
-          assetRes.value,
-          renderableWorld,
-          resolvedLodMeshes,
-          profilePhase,
-        ),
+        r.generatedMesh !== undefined
+          ? internals.gpuStore.ensureGeneratedMesh(r.generatedMesh)
+          : internals.gpuStore.ensureResident(
+              meshAssetHandle,
+              assetRes.value,
+              renderableWorld,
+              resolvedLodMeshes,
+              profilePhase,
+            ),
       );
       if (residentRes.ok) {
         meshHandles = residentRes.value;
@@ -222,56 +226,23 @@ export function validateRenderables(
         internals.errorRegistry.fire(residentRes.error);
       }
     }
-    meshHandles = meshHandles ?? pipelineState.meshes.get(r.assetHandle);
     if (meshHandles === undefined) {
       internals.errorRegistry.fire(
         new RhiError({
           code: 'asset-not-registered',
           expected: 'GPU mesh buffers uploaded for assetHandle',
           hint: 'await renderer.initialization before draw([world], { cameraOwner: 0, resourceOwner: 0 }); ensure AssetRegistry.configureGpuDevice ran so user meshes are uploaded',
-          detail: { assetHandle: r.assetHandle },
+          detail: { assetHandle: r.assetHandle ?? 0 },
         }),
       );
       continue;
     }
-    // feat-20260527-sprite-nineslice M2 / w11 (plan-strategy section D-2):
-    // sprite branch with non-zero `slicesAndMode` (post-w12 paramSnapshot
-    // entry name) overrides the user-supplied mesh handle (typically
-    // HANDLE_QUAD = 3) with the 16-vertex / 54-index HANDLE_NINESLICE_QUAD
-    // (id=5) topology so the vertex shader sees the 4x4 grid required for
-    // 9-region anchor mapping. Default slicesAndMode ([0, 0, 0, 0]) keeps
-    // the legacy HANDLE_QUAD path; a flip from zero to non-zero on the
-    // same entity routes here per-frame so AI users can toggle 9-slice
-    // on the fly without re-spawning the entity (charter F1 minimum
-    // surface). The HANDLE_NINESLICE_QUAD GPU buffers are seeded by
-    // createRenderer step-3.
-    //
-    // feat-20260625-refactor-sprite-as-transparent-mesh M3 / w13: judgement
-    // key migrated from `shadingModel === 'sprite'` to
-    // `materialShaderId === 'forgeax::sprite'` (plan-strategy D-10); slices
-    // sourced from `paramSnapshot.slicesAndMode` (post-w12 UBO-aligned
-    // overlay path).
-    //
-    // feat-20260624-sprite-lit-shading-model-pure-2d-lighting M1' / t7:
-    // sprite-lit shares the sprite paramSchema (5 fields, t4 mirror) so
-    // the 9-slices mesh swap applies identically.
-    let effectiveMeshHandles = meshHandles;
-    if (
-      r.material.materialShaderId === 'forgeax::sprite' ||
-      r.material.materialShaderId === 'forgeax::sprite-lit'
-    ) {
-      const slicesArr = r.material.paramSnapshot?.slicesAndMode as readonly number[] | undefined;
-      if (
-        slicesArr !== undefined &&
-        slicesArr.length >= 4 &&
-        (slicesArr[0] !== 0 || slicesArr[1] !== 0 || slicesArr[2] !== 0 || slicesArr[3] !== 0)
-      ) {
-        const nineSliceHandles = pipelineState.meshes.get(handleSlot(HANDLE_NINESLICE_QUAD));
-        if (nineSliceHandles !== undefined) {
-          effectiveMeshHandles = nineSliceHandles;
-        }
-      }
-    }
+    const material =
+      materials === undefined ? r.material.snapshot : materials.get(r.material)?.snapshot;
+    if (material === undefined) throw new Error('Geometry preparation has no accepted material');
+    let effectiveMeshHandles = materialGeometry(meshHandles, material, () =>
+      internals.gpuStore.ensureNineSliceGeometry().unwrap(),
+    );
     if (r.morph !== undefined) {
       const morphed = prepareMorphMesh(
         internals,
@@ -285,6 +256,7 @@ export function validateRenderables(
     }
     const overlay = overlays.get(rIdx);
     validated.push({
+      meshSlot: rIdx,
       source: r,
       world: renderableWorld,
       mesh: effectiveMeshHandles,
@@ -408,34 +380,48 @@ function prepareMorphMesh(
 export function buildDispatchPlan(
   internals: RenderSystemInternals,
   validated: readonly ValidatedRenderable[],
-  transparentDispatch: readonly DispatchEntry[],
+  transparentDispatch: DispatchList,
   foldBuckets: readonly FoldBucket[],
   shadowValidated: readonly ValidatedRenderable[] = [],
   materialBindingClasses?: ReadonlyMap<string, string>,
   shadowGeometryGpuOwned = false,
-  ownedBindingClasses = false,
+  sharedMaterials?: {
+    readonly bindings: readonly import('../gpu-driven/production-raster').GpuDrivenMaterialBinding[];
+    readonly worlds: readonly RenderResourceScope[];
+    readonly frame: import('../scene/material-dispatch').MaterialFrame;
+  },
+  meshDraws?: import('../scene/render-scene').PersistentShadowCasterProjection['meshDraws'],
 ): {
   validatedOrdered: readonly ValidatedRenderable[];
   shadowValidatedOrdered: readonly ValidatedRenderable[];
   foldDispatchPlan: FoldDispatchPlan | null;
   materialSlotIndices: readonly (readonly number[])[];
   materialSlots: readonly MaterialSnapshot[];
-  materialSlotOwners: readonly ValidatedRenderable[];
+  materialBindings: readonly MaterialBinding[];
   materialSlotCount: number;
 } {
+  meshDraws?.beginMeshDrawFrame([...validated, ...shadowValidated].map((row) => row.source));
+  const sharedUniformSlots =
+    sharedMaterials === undefined
+      ? undefined
+      : prepareMaterialUniformFrame(internals, sharedMaterials.frame);
   // A production GPU-owned frame has no CPU validated rows by design. The
   // dispatch list can still contain one entry per authored entity, but no
   // CPU plan, material table, or fold bucket is consumed in that lane. Return
   // the empty plan without walking that list so a steady 100k scene remains
   // bounded by the persistent GPU batches rather than per-entity record work.
-  if (validated.length === 0 && shadowValidated.length === 0) {
+  if (
+    validated.length === 0 &&
+    shadowValidated.length === 0 &&
+    (sharedMaterials?.bindings.length ?? 0) === 0
+  ) {
     return {
       validatedOrdered: [],
       shadowValidatedOrdered: [],
       foldDispatchPlan: null,
       materialSlotIndices: [],
       materialSlots: [],
-      materialSlotOwners: [],
+      materialBindings: [],
       materialSlotCount: 0,
     };
   }
@@ -448,7 +434,7 @@ export function buildDispatchPlan(
   // spawn order ahead of their sorted view entries.
   let dispatchOrderMatchesValidated = true;
   let viewEntries = 0;
-  for (const de of transparentDispatch) {
+  for (const de of validated.length === 0 ? [] : transparentDispatch) {
     if (de.tags.LightMode === 'ShadowCaster') continue;
     if (de.renderableIndex !== validated[viewEntries]?.renderableIndex) {
       dispatchOrderMatchesValidated = false;
@@ -460,7 +446,7 @@ export function buildDispatchPlan(
   let validatedOrdered: readonly ValidatedRenderable[] = dispatchOrderMatchesValidated
     ? validated
     : [...validated];
-  if (transparentDispatch.length > 0 && !dispatchOrderMatchesValidated) {
+  if (validated.length > 0 && transparentDispatch.length > 0 && !dispatchOrderMatchesValidated) {
     const validatedByRenderableIdx = new Map<number, ValidatedRenderable>();
     const seen = new Set<number>();
     for (const v of validated) {
@@ -484,65 +470,120 @@ export function buildDispatchPlan(
     validatedOrdered = ordered;
   }
 
+  const snapshot = (material: MaterialResource): MaterialSnapshot => {
+    if (sharedMaterials === undefined) return material.snapshot;
+    const accepted = sharedMaterials.frame.get(material);
+    if (accepted === undefined)
+      throw new RhiError({
+        code: 'rhi-descriptor-invalid',
+        expected: 'a fixed material version for every prepared binding',
+        hint: 'prepare materials and geometry from the same accepted Scene publication',
+      });
+    return accepted.snapshot;
+  };
+
   // Shadow-only/off-camera CPU residuals consume the same material UBO as
   // visible draws. Their preparation must not depend on main-view visibility.
   const materialRows = [...validatedOrdered, ...shadowValidated];
-  const materialGroups = materialRows.map((entry): readonly MaterialSnapshot[] => {
-    const shaderId = entry.source.material.materialShaderId;
-    if (shaderId === 'forgeax::sprite' || shaderId === 'forgeax::sprite-lit') {
+  const materialGroups = materialRows.map((entry): readonly MaterialResource[] => {
+    if (materialUsesSpriteGeometry(snapshot(entry.source.material))) {
       return [entry.source.material];
     }
     return entry.source.materials.length > 0 ? entry.source.materials : [entry.source.material];
   });
-  // The stock frame just built this detached string map. Index its sparse
-  // per-object classes once, instead of allocating a composite key for every
-  // material occurrence. Raw/custom inputs retain their exact get() observations.
-  let classesByRow: (ReadonlyMap<string, string> | undefined)[] | undefined;
-  if (ownedBindingClasses) {
-    const byObject = new Map<string, Map<string, string>>();
-    for (const [key, value] of materialBindingClasses ?? []) {
-      const split = key.lastIndexOf(':');
-      const owner = key.slice(0, split);
-      let materials = byObject.get(owner);
-      if (materials === undefined) {
-        materials = new Map();
-        byObject.set(owner, materials);
-      }
-      materials.set(key.slice(split + 1), value);
-    }
-    classesByRow = materialRows.map(({ source }) =>
-      byObject.get(`${source.worldId}:${source.entityKey}`),
-    );
-  }
-  const materialSlotPlan = buildMaterialSlotPlan(materialGroups, (material, owner) => {
-    if (classesByRow !== undefined)
-      return classesByRow[owner]?.get(String(material.materialHandle ?? -1)) ?? '';
-    const row = materialRows[owner];
-    return row === undefined
-      ? ''
-      : (materialBindingClasses?.get(
-          materialBindingKey(row.source, material.materialHandle ?? -1),
-        ) ?? '');
+  const materialSlotPlan = buildMaterialSlotPlan(materialGroups, (_material, owner) => {
+    const source = materialRows[owner]?.source;
+    const resourceClass =
+      source === undefined
+        ? ''
+        : (materialBindingClasses?.get(`${source.worldId}:${source.entityKey}`) ?? '');
+    return resourceClass;
   });
   let materialSlotIndices = materialSlotPlan.slotIndices;
-  let materialSlots = materialSlotPlan.slots;
-  let materialSlotOwners = materialSlotPlan.slotOwners.map((index) => {
-    const owner = materialRows[index];
-    if (owner === undefined) throw new Error('material slot has no validated owner');
-    return owner;
-  });
+  let materialSlots = materialSlotPlan.slots.map(snapshot);
   let materialSlotCount = materialSlots.length;
+  let materialBindings: MaterialBinding[] = materialSlotPlan.slots.map((material, slot) => {
+    const owner = materialRows[materialSlotPlan.slotOwners[slot] ?? -1];
+    if (owner === undefined) throw new Error('material binding has no resource scope');
+    return {
+      material,
+      resourceClass: materialSlotPlan.resourceClasses[slot] ?? '',
+      ...(owner.world === undefined ? {} : { world: owner.world }),
+      entityKey: owner.source.entityKey,
+    };
+  });
+
+  if (sharedMaterials !== undefined) {
+    const slots = new Map<MaterialResource, Map<string, number>>();
+    for (let index = 0; index < materialBindings.length; index++) {
+      const binding = materialBindings[index];
+      if (binding === undefined) continue;
+      let classes = slots.get(binding.material);
+      if (classes === undefined) {
+        classes = new Map();
+        slots.set(binding.material, classes);
+      }
+      classes.set(binding.resourceClass, index);
+    }
+    for (const binding of sharedMaterials.bindings) {
+      let classes = slots.get(binding.material);
+      if (classes?.has(binding.resourceClass)) continue;
+      if (classes === undefined) {
+        classes = new Map();
+        slots.set(binding.material, classes);
+      }
+      const world = sharedMaterials.worlds[binding.worldId];
+      if (world === undefined)
+        throw new RhiError({
+          code: 'rhi-descriptor-invalid',
+          expected: 'the asset scope for every shared material',
+          hint: 'keep prepared World indices aligned with the frame resource scopes',
+        });
+      classes.set(binding.resourceClass, materialSlots.length);
+      materialSlots.push(snapshot(binding.material));
+      materialBindings.push({
+        material: binding.material,
+        resourceClass: binding.resourceClass,
+        world,
+      });
+    }
+    materialSlotCount = materialSlots.length;
+  }
 
   // Mesh rows include independent shadow transforms; material rows refer to the
   // interned table. Neither demand is a capacity estimate for the other stream.
   const shadowMeshRows = shadowGeometryGpuOwned ? [] : shadowValidated;
   let shadowValidatedOrdered = shadowMeshRows;
-  const capacity = ensureMeshSsboCapacity(
-    internals,
-    validatedOrdered.length + shadowMeshRows.length,
-    materialSlotCount,
-  );
+  if (meshDraws !== undefined) {
+    for (const entry of validatedOrdered) meshDraws.meshDrawSlot(entry.source);
+    for (const entry of shadowMeshRows) meshDraws.meshDrawSlot(entry.source);
+  }
+  let meshRowDemand = validatedOrdered.length + shadowMeshRows.length;
+  if (meshDraws !== undefined) {
+    meshRowDemand = 0;
+    for (const entry of validatedOrdered)
+      meshRowDemand = Math.max(meshRowDemand, meshDraws.meshDrawSlot(entry.source) + 1);
+    for (const entry of shadowMeshRows)
+      meshRowDemand = Math.max(meshRowDemand, meshDraws.meshDrawSlot(entry.source) + 1);
+  }
+  const uniformSlotCount = sharedUniformSlots ?? materialSlotCount;
+  const capacity = ensureMeshSsboCapacity(internals, meshRowDemand, uniformSlotCount);
   if (!capacity.ok) {
+    if (meshDraws !== undefined)
+      throw new RhiError({
+        code: 'rhi-not-available',
+        expected: 'capacity for every physical draw address in the submission',
+        hint: 'increase the draw buffer budget before submitting independent pass rosters',
+      });
+    if (
+      (sharedMaterials?.bindings.length ?? 0) > 0 &&
+      capacity.degradedTo.materialSlotCount < uniformSlotCount
+    )
+      throw new RhiError({
+        code: 'rhi-not-available',
+        expected: 'capacity for the complete GPU material binding table',
+        hint: 'increase the material budget or reduce distinct bindings before submitting the scene',
+      });
     const materialPrefix = findRenderablePrefixForSlotCapacity(
       materialSlotIndices,
       capacity.degradedTo.materialSlotCount,
@@ -566,9 +607,13 @@ export function buildDispatchPlan(
       ...materialSlotIndices.slice(0, retainedPrimaryCount),
       ...materialSlotIndices.slice(primaryCount, primaryCount + retainedShadowCount),
     ];
-    materialSlotCount = materialSlotCountForPrefix(materialSlotIndices, materialSlotIndices.length);
+    if ((sharedMaterials?.bindings.length ?? 0) === 0)
+      materialSlotCount = materialSlotCountForPrefix(
+        materialSlotIndices,
+        materialSlotIndices.length,
+      );
     materialSlots = materialSlots.slice(0, materialSlotCount);
-    materialSlotOwners = materialSlotOwners.slice(0, materialSlotCount);
+    materialBindings = materialBindings.slice(0, materialSlotCount);
     validatedOrdered = validatedOrdered.slice(0, retainedPrimaryCount);
     shadowValidatedOrdered = shadowMeshRows.slice(0, retainedShadowCount);
   }
@@ -629,7 +674,7 @@ export function buildDispatchPlan(
           filteredHeads.delete(headIdx);
           filteredCount -= 1;
           for (let j = 1; j < bucket.entries.length; j++) {
-            const memberEntry = bucket.entries[j];
+            const memberEntry = bucket.entries.at(j);
             if (memberEntry === undefined) continue;
             const memberValidatedIdx = renderableToValidatedIdx.get(memberEntry.renderableIndex);
             if (memberValidatedIdx !== undefined) {
@@ -646,21 +691,57 @@ export function buildDispatchPlan(
         };
       }
     }
-
-    // feat-20260622-chunk-gpu-instancing-sprite-tilemap M3 / w13 (D-3 +
-    // AC-06): increment `render.instancing.foldedDraws` once per fold-
-    // eligible head bucket retained after the cap-fallback filter above.
-    // The metric tracks instanced drawIndexed call count for this frame
-    // — cap-overrun buckets routed through the per-entity fallback exit
-    // are removed from `foldDispatchPlan` and therefore not counted, by
-    // construction (M2 / w11 cap-fallback + plan-strategy D-3 semantics).
-    // Singleton buckets (mode-bypass under D-5, or non-foldable under
-    // mode 0) carry `bucketSize === 1` and never enter `headBuckets`, so
-    // the per-entity drawIndexed path correctly does not count.
-    // SSOT helper lives in this record owner — engine code never
-    // hardcodes the metric key string.
-    incrementFoldedDrawsMetric(foldDispatchPlan, internals.metrics);
   }
+
+  // A compact pass roster never owns physical transform addresses. Native
+  // scenes retain their allocations until source retirement; explicit borrowed
+  // frames reserve one submission's source, shadow and folded ranges here.
+  let transientSlot = 0;
+  let sourceCapacity = 0;
+  const sourceAddress = (entry: ValidatedRenderable): ValidatedRenderable => {
+    const meshSlot = meshDraws?.meshDrawSlot(entry.source) ?? transientSlot++;
+    sourceCapacity = Math.max(sourceCapacity, meshSlot + 1);
+    if (entry.meshSlot === meshSlot && entry.foldedMeshSlot === undefined) return entry;
+    const { foldedMeshSlot: _previousFold, ...source } = entry;
+    return { ...source, meshSlot };
+  };
+  // Allocate all ordinary rows first. An optional fold can then fall back
+  // without moving the ordinary addresses needed by independent captures.
+  validatedOrdered = validatedOrdered.map(sourceAddress);
+  shadowValidatedOrdered = shadowValidatedOrdered.map(sourceAddress);
+  const ordinaryOrdered = validatedOrdered;
+  let physicalDemand = sourceCapacity;
+  if ((foldDispatchPlan?.headBuckets.size ?? 0) > 0) {
+    validatedOrdered = validatedOrdered.map((entry, index) => {
+      if (!foldDispatchPlan?.headBuckets.has(index)) return entry;
+      const foldedMeshSlot = meshDraws?.meshDrawSlot(entry.source, true) ?? transientSlot++;
+      physicalDemand = Math.max(physicalDemand, foldedMeshSlot + 1);
+      return { ...entry, foldedMeshSlot };
+    });
+  }
+  const physicalCapacity = ensureMeshSsboCapacity(
+    internals,
+    physicalDemand,
+    sharedUniformSlots ?? materialSlotCount,
+  );
+  if (!physicalCapacity.ok) {
+    if (
+      foldDispatchPlan !== null &&
+      sourceCapacity <= physicalCapacity.degradedTo.meshSlotCount &&
+      (sharedUniformSlots ?? materialSlotCount) <= physicalCapacity.degradedTo.materialSlotCount
+    ) {
+      foldDispatchPlan = null;
+      validatedOrdered = ordinaryOrdered;
+      meshDraws?.beginMeshDrawFrame();
+    } else {
+      throw new RhiError({
+        code: 'rhi-not-available',
+        expected: 'capacity for every physical draw address in the submission',
+        hint: 'increase the draw buffer budget before submitting independent pass rosters',
+      });
+    }
+  }
+  if (foldDispatchPlan !== null) incrementFoldedDrawsMetric(foldDispatchPlan, internals.metrics);
 
   return {
     validatedOrdered,
@@ -668,7 +749,7 @@ export function buildDispatchPlan(
     foldDispatchPlan,
     materialSlotIndices,
     materialSlots,
-    materialSlotOwners,
+    materialBindings,
     materialSlotCount,
   };
 }
@@ -793,14 +874,14 @@ export function cleanPerFrameCaches(
 export function computeFoldBuckets(
   world: RenderResourceScope,
   frameState: RenderFrameState,
-  transparentDispatch: readonly DispatchEntry[],
-  renderables: readonly RenderableSnapshot[],
+  transparentDispatch: DispatchList,
+  renderables: readonly import('./mesh-ssbo').FoldRenderableLike[],
 ): readonly FoldBucket[] {
   if (transparentDispatch.length === 0) {
     frameState.lastFoldBucketCount = 0;
     return [];
   }
-  const transparentSortCfg = getTransparentSortConfig(world);
+  const transparentSortCfg = world.transparentSort;
 
   // Only layer-Z / layer-Y modes can produce non-singleton fold buckets.
   // The other modes make one inert singleton per entry, which is discarded by
@@ -822,8 +903,16 @@ export function computeFoldBuckets(
   // helper keeps its testable semantics while record avoids work whose result
   // is provably discarded.
   let transparentCount = 0;
+  const drawn = new Set<number>();
   for (const entry of transparentDispatch) {
-    if (renderables[entry.renderableIndex]?.material.transparent === true) {
+    // A fold replaces one source draw. Multiple authored passes for a source
+    // retain their separate commands and cannot share a row-level skip flag.
+    if (drawn.has(entry.renderableIndex)) {
+      frameState.lastFoldBucketCount = 0;
+      return [];
+    }
+    drawn.add(entry.renderableIndex);
+    if (renderables[entry.renderableIndex]?.material?.transparent === true) {
       transparentCount += 1;
     }
   }
@@ -835,7 +924,7 @@ export function computeFoldBuckets(
     transparentCount === transparentDispatch.length
       ? transparentDispatch
       : transparentDispatch.filter(
-          (entry) => renderables[entry.renderableIndex]?.material.transparent === true,
+          (entry) => renderables[entry.renderableIndex]?.material?.transparent === true,
         );
   const foldBuckets = foldDispatchBuckets(foldCandidates, transparentSortCfg.mode, renderables);
   // Count only fold-eligible buckets (bucketSize > 1) so the metric

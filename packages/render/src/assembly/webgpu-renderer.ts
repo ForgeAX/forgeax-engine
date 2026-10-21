@@ -5,7 +5,6 @@ import {
   adaptDynamicTextureDevice,
   DynamicTextureStore,
 } from '@forgeax/engine-assets-runtime';
-import { audioLoader } from '@forgeax/engine-audio-webaudio';
 import type { World } from '@forgeax/engine-ecs';
 import { createRenderReadLease, type RenderReadLease } from '@forgeax/engine-ecs/projection';
 import {
@@ -79,6 +78,7 @@ import {
 } from './material/prepared-pipeline-owner';
 import { resolveFeatureShaderSource } from './material-shader-policy';
 import { createPublishedMeshResidencyHost } from './published-mesh-residency';
+import { captureShadowWorkload } from './shadow-workload';
 import { createUiCompositor } from './ui-compositor';
 
 export type { MaterialShaderManifestEntry } from '@forgeax/engine-shader';
@@ -195,6 +195,7 @@ import {
 import {
   findStandardPbrEntry,
   isEngineOwnedMaterialShader,
+  isSharedLayoutMaterialShader,
   resolveMaterialPipelineGroup2Contract,
   resolveMaterialPipelineShaderId,
   resolveMaterialPipelineVertexEntry,
@@ -622,12 +623,11 @@ async function makeWebGPURenderer(
     return state.shaderInstance;
   };
   const shaderCatalog = getShader();
-  const assets = new AssetRegistry(
-    shaderCatalog,
-    internals.importTransport,
-    [audioLoader],
-    postSpawnResolveJoints,
-  );
+  const assets = new AssetRegistry({
+    shaderRegistry: shaderCatalog,
+    importTransport: internals.importTransport,
+    postSpawnHook: postSpawnResolveJoints,
+  });
   // feat-20260601-device/gpu-residency-extraction M1: the GPU residency layer
   // lives in a standalone store; `assets` keeps the CPU POD registry only.
   let gpuStore = new GpuResidencyCache();
@@ -778,25 +778,8 @@ async function makeWebGPURenderer(
   // (buildPipelineContext + getMaterialShaderPipeline) to drive the clamp-to-last
   // alias; naga reflection can be stale for engine-shipped modules, so the
   // count is asserted explicitly. Missing mesh sets are clamp-to-last aliases.
-  // feat-20260601-device/gpu-residency-extraction M1 (D-3 / D-8): device +
-  // shader-module factory + cube-POD register relay are wired onto the store
-  // together. feat-20260614 M8 (D-15 / D-17): `registerCube` is the wire-layer
-  // closure `(world, pod) => world.allocSharedRef('EquirectAsset', pod)` --
-  // the runtime-minted cube POD lands in the draw-time world's user-tier
-  // SharedRefStore (the AssetRegistry owns no handles). feat-20260630 M2 / w11:
-  // the retired cube-texture asset kind is gone; the relay mints an EquirectAsset
-  // shared ref as the cubemap GPU residency's identity token.
-  gpuStore.configureGpuDevice(
-    internals.device,
-    internals.pack.createShaderModule,
-    (world, pod, source) => {
-      // The accepted equirect identity already owns this renderer-local GPU projection.
-      if ('resolveAsset' in world) return ok(source);
-      const handle = world.allocSharedRef('EquirectAsset', pod);
-      return ok(handle);
-    },
-    internals.device.caps,
-  );
+  const packShaderFactory = internals.pack.createShaderModule;
+  gpuStore.configureGpuDevice(internals.device, packShaderFactory, internals.device.caps);
   gpuStore.configureIblDevice(
     internals.device,
     internals.pack.createShaderModule === undefined
@@ -1054,7 +1037,7 @@ async function makeWebGPURenderer(
   };
   const ready: Promise<Result<void, RhiError>> = Promise.resolve()
     .then(async () => {
-      await prepareMaterialShaders(internals.device, getShader, assets, materialShaderUvSetCounts);
+      await prepareMaterialShaders(internals.device, getShader, materialShaderUvSetCounts);
       if (disposed) throw new Error('Renderer disposed during scene preparation');
       materialShaderUvSetCounts.set('forgeax::default-standard-pbr', 8);
       materialShaderUvSetCounts.set(SKIN_MATERIAL_SHADER_ID, 8);
@@ -1105,7 +1088,7 @@ async function makeWebGPURenderer(
     const usesSharedBootMaterialLayout =
       !gpuClustered &&
       materialShaderId !== undefined &&
-      isEngineOwnedMaterialShader(materialShaderId);
+      isSharedLayoutMaterialShader(materialShaderId);
     // Built-in layouts are assembled at boot; authored layouts must not bypass
     // the HDRP group(2) selector or bind the URP mesh BGL to a cluster PSO.
     const perShaderLayout =
@@ -1639,7 +1622,7 @@ async function makeWebGPURenderer(
         ?.variants.find((variant) => materialShaderSourceEquals(variant, pbrEntry.wgsl));
       const fallbackModuleLabel =
         preparedVariant === undefined
-          ? `module-fallback-pbr#${getShader().materialProgram(pbrEntry.wgsl).identity}`
+          ? `module-fallback-pbr#${getShader().materialProgram(pbrEntry.wgsl, pbrEntry.entryPoints).identity}`
           : `module-forgeax::default-standard-pbr#${preparedVariant.definesKey}`;
       return buildAndCachePipeline(
         cacheKey,
@@ -1727,7 +1710,10 @@ async function makeWebGPURenderer(
             // derive(paramSchema).bglEntries on demand.
             shaderEntry = {
               source: variant.composedWgsl,
-              program: registry.materialProgram(variant.composedWgsl),
+              program: registry.materialProgram(
+                variant.composedWgsl,
+                variant.entryPoints ?? variant.receipt?.entryPoints,
+              ),
               paramSchema: lookup.value.paramSchema,
               paramSchemaProjection: lookup.value.paramSchemaProjection,
             };
@@ -2015,6 +2001,7 @@ async function makeWebGPURenderer(
     },
     ssrIdentity: internals.options?.ssrIdentity,
     captureReflectionFallbackReadback: internals.options?.captureReflectionFallbackReadback,
+    shadowWorkload: internals.options?.shadowWorkload,
     get standardProfile() {
       return activeProfile;
     },
@@ -2863,6 +2850,10 @@ async function makeWebGPURenderer(
         frameContinuations.delete(continuation);
       });
       const captures = observationCaptureOwner.consume(receiptFrameId);
+      const observationDomains =
+        pendingObservationDomains === undefined
+          ? undefined
+          : Object.freeze(captures.map((capture) => capture.domain));
       pendingObservationDomains = undefined;
       const receiptGraphGeneration =
         timingHost.observationGraphGeneration ??
@@ -2872,6 +2863,7 @@ async function makeWebGPURenderer(
         deviceGeneration: receiptGeneration,
         presentation: receiptPresentation,
         ...(presentationPendingReason === undefined ? {} : { presentationPendingReason }),
+        ...(observationDomains === undefined ? {} : { observationDomains }),
         backendId: internals.device.caps.backendKind,
         graphGeneration: receiptGraphGeneration,
         ...(uiOnlyFrame ||
@@ -2880,6 +2872,19 @@ async function makeWebGPURenderer(
           ? {}
           : { barrelDistortion: renderSystem.lastSuccessfulBarrelDistortion }),
         completed,
+        ...(internals.options?.shadowWorkload !== true
+          ? {}
+          : {
+              shadowWorkload: captureShadowWorkload(
+                {
+                  frameId: receiptFrameId,
+                  deviceGeneration: receiptGeneration,
+                  graphGeneration: receiptGraphGeneration,
+                },
+                cameraViews.lastLodObservationCapture,
+                uiOnlyFrame,
+              ),
+            }),
       });
       renderTargetHost.onFrameSubmitted(completed, receipt);
       latestReceipt = receipt;
@@ -3335,7 +3340,7 @@ async function makeWebGPURenderer(
       }
       if (attachedWorlds.has(world)) return ok(undefined);
       try {
-        transformReleases.set(world, registerRenderSourceSystems(world, assets, gpuStore));
+        transformReleases.set(world, registerRenderSourceSystems(world));
         attachedWorlds.add(world);
         return ok(undefined);
       } catch (cause) {
@@ -3871,6 +3876,15 @@ async function makeWebGPURenderer(
         }
       } catch (cause) {
         const error = wrapDisposeError(cause, 'featureHost.dispose');
+        cleanupFailures.push(error);
+        internals.errorRegistry.fire(error);
+      }
+      // This Registry is created by this host. Borrowed World asset owners
+      // remain with their callers; only the host's own content retires here.
+      try {
+        assets.dispose();
+      } catch (cause) {
+        const error = wrapDisposeError(cause, 'assets.dispose');
         cleanupFailures.push(error);
         internals.errorRegistry.fire(error);
       }

@@ -483,6 +483,13 @@ export function pluginProgramsBuild(options: PluginProgramBuildOptions): Plugin 
   return {
     name: 'forgeax:plugin-programs',
     enforce: 'pre',
+    options(input) {
+      // Selected public plugin chunks preserve their own strict signatures.
+      // Internal app facades may expose the shared closure used by grouping.
+      if (options.delivery !== 'native' && hasRoots && input.preserveEntrySignatures === 'strict')
+        return { ...input, preserveEntrySignatures: 'allow-extension' };
+      return null;
+    },
     closeBundle() {
       if (command === 'serve') {
         dev?.inventory.sourceSnapshot.releaseResolvers();
@@ -794,6 +801,7 @@ export function pluginProgramsBuild(options: PluginProgramBuildOptions): Plugin 
       if (command === 'build') archive.preserveModules(this);
     },
     async buildEnd(error) {
+      if (!error) archive.prepareGroups(this);
       if (!error && command === 'build' && archive.entries.size) {
         const engineManifest = await this.resolve('@forgeax/engine/package.json', undefined, {
           skipSelf: true,
@@ -830,6 +838,9 @@ export function pluginProgramsBuild(options: PluginProgramBuildOptions): Plugin 
           ? { code: output.toString(), map: output.generateMap({ hires: true }) }
           : null;
       },
+    },
+    outputOptions(output) {
+      return options.delivery === 'native' ? output : archive.groupedOutput(output);
     },
     augmentChunkHash(chunk) {
       if (Object.keys(chunk.modules).some((id) => id.startsWith(`\0${modulePrefix}`)))

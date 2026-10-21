@@ -1,6 +1,7 @@
 // Mesh, texture, and material asset primitives.
 /// <reference types="@webgpu/types" />
 import type { AssetCodec, Integrity } from './asset.js';
+import type { AssetHandle } from './asset-handle.js';
 import type { AssetGuid } from './image-pack-contracts.js';
 import type { VertexAttributeMap } from './media-contracts.js';
 import type { MeshDistanceField } from './mesh-distance-field.js';
@@ -159,7 +160,7 @@ export interface MeshMaterialSlot {
   /** Producer-owned stable identity used to preserve slot indices on reimport. */
   readonly sourceKey?: string;
   /** Missing means the slot intentionally inherits the neutral engine material. */
-  readonly defaultMaterial?: AssetGuid;
+  readonly defaultMaterial?: AssetGuid | AssetHandle<'material'>;
 }
 
 /** JSON-safe producer topology persisted beside an imported Mesh output. */

@@ -123,7 +123,7 @@ for (const [name, query] of selected) {
     filteredPlans: `${num(gpu.filteredPlanBuilds?.p50)}/${num(gpu.filteredPlanBuilds?.max)}`,
     rows: num(gpu.projectionRowsWritten?.p50),
     rowKiB: kib(gpu.projectionBytesWritten?.p50),
-    candidateKiB: kib(gpu.candidateUploadBytes.p50),
+    sharedInputKiB: kib(gpu.sharedInputUploadBytes.p50),
     sceneKiB: kib(gpu.sceneTableUploadBytes.p50),
     ...Object.fromEntries(
       Object.entries(result.summary.frameCacheHitRates).map(([cache, { rate }]) => [

@@ -5,6 +5,7 @@ import { type AssetError, ok, type Result } from '@forgeax/engine-types';
 import { BufferAttribute, BufferGeometry } from 'three';
 import { formatFailure } from './errors.js';
 import { geometryToMesh, type ImportedMesh } from './geometry.js';
+import { runMeshWorker } from './worker.js';
 
 const require = createRequire(import.meta.url);
 
@@ -61,68 +62,41 @@ export async function svgWorker(
       parentPort.postMessage({ output });
     })().catch(error => parentPort.postMessage({ error: error.message }));
   `;
-  return new Promise((resolve) => {
-    const worker = new Worker(source, {
-      eval: true,
-      workerData: {
-        text,
-        segments: curveSegments,
-        dom: pathToFileURL(require.resolve('linkedom')).href,
-        loader: pathToFileURL(require.resolve('three/addons/loaders/SVGLoader.js')).href,
-        three: pathToFileURL(require.resolve('three')).href,
-      },
-    });
-    const timer = setTimeout(() => {
-      void worker.terminate();
-      resolve(formatFailure('SVG', 'parse exceeded thirty seconds'));
-    }, 30_000);
-    worker.once('error', (error) => {
-      clearTimeout(timer);
-      resolve(formatFailure('SVG', error.message));
-    });
-    worker.once('exit', (code) => {
-      clearTimeout(timer);
-      if (code !== 0) resolve(formatFailure('SVG', `worker exited with ${code}`));
-    });
-    worker.once(
-      'message',
-      (result: {
-        error?: string;
-        output?: {
-          name: string;
-          attributes: Record<string, Float32Array>;
-          indices?: Uint16Array | Uint32Array;
-        }[];
-      }) => {
-        clearTimeout(timer);
-        void worker.terminate();
-        if (
-          result.error !== undefined ||
-          result.output === undefined ||
-          result.output.length === 0
-        ) {
-          resolve(formatFailure('SVG', result.error ?? 'no visible paths'));
-          return;
-        }
-        const meshes: ImportedMesh[] = [];
-        for (const entry of result.output) {
-          const geometry = new BufferGeometry();
-          for (const [key, values] of Object.entries(entry.attributes))
-            geometry.setAttribute(
-              key,
-              new BufferAttribute(values, key === 'uv' ? 2 : key === 'color' ? 4 : 3),
-            );
-          if (entry.indices !== undefined) geometry.setIndex(new BufferAttribute(entry.indices, 1));
-          const mesh = geometryToMesh(geometry);
-          geometry.dispose();
-          if (!mesh.ok) {
-            resolve(mesh);
-            return;
-          }
-          meshes.push({ name: entry.name, mesh: mesh.value });
-        }
-        resolve(ok(meshes));
-      },
-    );
+  const worker = new Worker(source, {
+    eval: true,
+    workerData: {
+      text,
+      segments: curveSegments,
+      dom: pathToFileURL(require.resolve('linkedom')).href,
+      loader: pathToFileURL(require.resolve('three/addons/loaders/SVGLoader.js')).href,
+      three: pathToFileURL(require.resolve('three')).href,
+    },
   });
+  const result = await runMeshWorker<{
+    error?: string;
+    output?: {
+      name: string;
+      attributes: Record<string, Float32Array>;
+      indices?: Uint16Array | Uint32Array;
+    }[];
+  }>(worker, 'SVG', 'parse exceeded thirty seconds');
+  if (!result.ok) return result;
+  const { output, error } = result.value;
+  if (error !== undefined || output === undefined || output.length === 0)
+    return formatFailure('SVG', error ?? 'no visible paths');
+  const meshes: ImportedMesh[] = [];
+  for (const entry of output) {
+    const geometry = new BufferGeometry();
+    for (const [key, values] of Object.entries(entry.attributes))
+      geometry.setAttribute(
+        key,
+        new BufferAttribute(values, key === 'uv' ? 2 : key === 'color' ? 4 : 3),
+      );
+    if (entry.indices !== undefined) geometry.setIndex(new BufferAttribute(entry.indices, 1));
+    const mesh = geometryToMesh(geometry);
+    geometry.dispose();
+    if (!mesh.ok) return mesh;
+    meshes.push({ name: entry.name, mesh: mesh.value });
+  }
+  return ok(meshes);
 }

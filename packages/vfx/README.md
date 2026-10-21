@@ -7,6 +7,8 @@ Runtime-safe contract for code-first GPU particle effects. Authors write emitter
 
 ## Ownership
 
+Cooked stage reflection derives its source metadata from `ParticleStageSource`; renderer reflection derives shared source fields and makes normalized defaults required. GPU program and asset contracts inherit the portable runtime payload, retaining only fields that cooking narrows or adds.
+
 The machine-readable asset boundary is
 [`schemas/asset-authority.schema.json`](../../schemas/asset-authority.schema.json). Author source
 and its WGSL module are authoritative; native cook produces the Pack payload and
@@ -21,12 +23,38 @@ artifact must be cold-cooked instead of being treated as current.
 | `@forgeax/engine-vfx-compiler` | WGSL composition, import resolution, Naga validation, reflection, deterministic cook |
 | `@forgeax/engine-vfx-render` | Persistent GPU state, compute passes, fixed-bounds culling, billboard/mesh projection, indirect draws |
 
-Each queued tick retains its exact immutable effect definition. The per-World
-`VfxGpuRuntime` owns one acquired SharedRef grant per definition used by current
-Players, pending ticks or retained submitted emitters. Submission, Player removal,
-program replacement, recovery and plugin disposal release unused grants; replaced
-emitter IDs are removed from retained state without dropping queued old-version ticks.
-An unchanged GUID therefore never redirects pending work to a newer fingerprint.
+`AssetRegistry.load` and `create` return the reference bound to `ParticleEffectPlayer.effect`.
+The asset owner retains exact definition versions for Players, queued ticks and submitted
+emitters. A managed definition edit is adopted at the next FixedUpdate: playback starts a
+new cycle and rebuilds its reflected instance. Existing queued ticks retain their previous
+definition and parameter bytes until acknowledgement. Unchanged paused Players retain their
+accepted definition without polling assets; resume, replay, or an explicit Player change adopts
+the current definition at FixedUpdate and keeps a pending reset for the next dispatch.
+
+Queue acknowledgement transfers or releases a version lease directly. Replaced emitter IDs
+leave retained state while their queued ticks remain ordered. Recovery, Player removal and
+plugin disposal release the corresponding leases; there is no scan to infer live definitions
+and no consumer-created asset identity. Render publication sends each held `(asset, revision)`
+once, separately from current asset rows, and retires it after its last queued or retained use.
+Code-created and loaded effects have the same capture and lifetime rules. At admission,
+renderer Material/Mesh and vector-field Texture references resolve to this asset owner's handles;
+the effect holds those dependencies through updates and replacement. Player-local Mesh sources
+remain an explicit instance binding. Writes to creator input or public copies do not change
+playback; use managed updates or replacement. The installed decoder synchronously validates
+`assets.create`, `update` and `replace`, links references, and derives emitter summaries and
+program/layout fingerprints; callers never maintain those derived fields. Source loading first
+checks cooked artifact integrity through `prepareVfxGpuEffect`, then uses the same admission.
+Admission checks descriptor consistency against canonical compiler-produced WGSL, including
+complete reflected binding coverage; it does not compile or prove arbitrary authored shader
+semantics. WGSL compilation stays build-time, and native GPU preparation validates execution.
+Runtime caches source digests and declaration scans within
+128 entries / 16 MiB, so numeric edits process metadata without rehashing unchanged WGSL.
+
+Player membership and controls use World change evidence. Unchanged paused fixed steps do not
+query Players or asset versions; active Players read their selected definition during simulation.
+The intent queue indexes sequences by Player, so capacity checks, replay and removal never walk
+other Players' queued work. Acknowledgement directly removes the named sequences; an explicit
+prefix acknowledgement consumes only that ordered prefix.
 
 ## Author source
 
@@ -72,8 +100,8 @@ preparation instead of silently drawing another submesh.
 
 For geometry produced by the World, author `mesh: { source: 'player' }` and put
 the existing `MeshFilter` on the `ParticleEffectPlayer` entity. The filter's
-shared Mesh handle is the geometry authority; different Players can bind
-different meshes to the same immutable cooked effect. `RuntimeMeshVertices`
+runtime Mesh reference is the geometry authority; different Players can bind
+different meshes to the same immutable cooked effect. `assets.writeRange`
 updates use the ordinary asset projection. A missing filter or unresolved handle
 fails extraction with the owning component/asset error. The authored bounds must
 enclose the selected geometry, and `submesh` retains its usual meaning.
@@ -115,6 +143,10 @@ vocabulary; `camera`, single-sample `scene-depth`, and `noise` are
 generation-owned resources and must be supplied by the renderer host.
 Scene-depth is intentionally accepted only with `sampleCount: 1`; no implicit
 MSAA resolve is performed.
+
+`resolveVfxDataInterfaces` returns the accepted generation and resources on
+`Result.ok`. Missing, mismatched or stale providers return the structured error
+branch; there is no additional readiness flag on a successful resolution.
 
 Mesh renderers expose semantic Quaternion/Scale3 attributes and Standard
 lighting/shadow intent. Mesh and billboard both support `none`, `view-depth`,
@@ -197,14 +229,14 @@ import { loadVfxGpuEffect, ParticleEffectPlayer } from '@forgeax/engine-vfx';
 const loaded = await loadVfxGpuEffect(assets, EFFECT_GUID);
 if (!loaded.ok) return loaded;
 
-const effect = world.allocSharedRef('ParticleEffectAsset', loaded.value);
+const effect = loaded.value;
 world.spawn({
   component: ParticleEffectPlayer,
   data: { effect, playing: true, seed: 42, timeScale: 1 },
 });
 ```
 
-Install `createVfxRuntimeHost` from `@forgeax/engine-vfx-render`, attach each World once, and register `host.feature` with the Renderer. The host installs the loader and FixedUpdate intent producer.
+Install `createVfxRuntimeHost` from `@forgeax/engine-vfx-render`, attach each World once, and register `host.feature` with the Renderer. The host installs the decoder and FixedUpdate intent producer. Successful ECS binding retains its own reference; release the caller grant with `assets.release(effect)`.
 
 ## Authoring projection
 
@@ -230,7 +262,7 @@ const descriptor = describeVfxGpuEffect(payload);
 The descriptor is immutable, UI-neutral and versioned. It preserves the authored
 WGSL module ID in each cooked emitter, but intentionally omits WGSL bytes and
 compiler objects. `isVfxGpuEffectAsset` owns the stable cooked discriminator at
-the producer boundary; detailed artifact validation remains the Pack loader's
+the producer boundary; detailed artifact validation remains the asset decoder's
 responsibility.
 
 > [!IMPORTANT]
@@ -334,6 +366,18 @@ No stale handle or CPU particle mirror survives recovery.
 | Coordinates | World field transform; emitter local/world policy retains its existing Scene authority; nonuniform scale transforms vector magnitude |
 | Sampling | Nodes span [-1,1], x fastest; nearest rounds nodes; trilinear mixes eight nodes |
 | Bounds | At most 16 MiB of metadata plus samples per emitter; invalid source/payload/transform returns a closed structured field error |
+
+Source declarations use texture GUIDs; an adopted or code-created definition can
+bind an `AssetHandle<'texture'>`. The effect holds those references, and changing
+texture bytes is adopted by the next simulation tick without restarting playback.
+Queued ticks retain exact texture versions, alongside definition and parameter
+inputs; rendering cannot substitute a later field. Fixed-version publication keeps
+sample bytes outside ordinary tick messages. A byte-range edit revalidates and stages only the
+changed f32-aligned spans. GPU preparation copies the accepted previous field buffer and patches
+those spans into a new version, allowing old/new queued ticks in one submission. Initial use,
+whole replacement, absent predecessor evidence and device recovery upload the complete field.
+The real 8³-field regression measures 8,368 bytes initially, 16 bytes for one voxel edit, and
+zero field bytes on subsequent unchanged frames.
 
 The source descriptor and particle output producer include vector texture GUIDs in normal dependency closure. Catalog replacement preserves the GUID and produces a new payload; VFX does not own a second asset registry, texture format or CPU particle simulation. See the ordinary `hello-boss-lightning/assets/fields.pack.ts` producer and `fields.html` consumer.
 

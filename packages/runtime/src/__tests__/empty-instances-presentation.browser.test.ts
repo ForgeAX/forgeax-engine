@@ -13,6 +13,7 @@ import { registerPropagateTransforms, Transform } from '@forgeax/engine-scene';
 import { expect, it, vi } from 'vitest';
 import testQuality from '../../../../scripts/test/render-quality.json' with { type: 'json' };
 import { constructRuntimeRendererHost } from '../renderer-host';
+import { testAssets } from './helpers/runtime-assets';
 
 it('presents empty, populated, then empty instance holders across completed frames', async () => {
   const canvas = document.createElement('canvas');
@@ -32,8 +33,12 @@ it('presents empty, populated, then empty instance holders across completed fram
     const renderer = host.value.renderer;
     const world = new World();
     const transforms = registerPropagateTransforms(world);
-    const mesh = world.allocSharedRef('MeshAsset', createBoxGeometry(1, 1, 1).unwrap());
-    const material = world.allocSharedRef('MaterialAsset', Materials.unlit([1, 0, 0, 1]));
+    const mesh = testAssets(world)
+      .create(createBoxGeometry(1, 1, 1).unwrap())
+      .unwrap();
+    const material = testAssets(world)
+      .create(Materials.unlit([1, 0, 0, 1]))
+      .unwrap();
     const holder = world
       .spawn(
         { component: Transform, data: {} },

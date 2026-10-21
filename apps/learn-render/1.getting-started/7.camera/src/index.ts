@@ -1,3 +1,4 @@
+import { createBoxGeometry } from '@forgeax/engine-geometry';
 import { configureRuntimeAssetCatalog, createRuntimeAssetImportTransport, runtimeBinding } from '@forgeax/apps-shared/asset-runtime-config';
 import { Time, Update } from '@forgeax/engine-ecs';
 // apps/learn-render/1.getting-started/7.camera/src/index.ts
@@ -63,7 +64,7 @@ import {
 } from '@forgeax/engine-input';
 import { quat, vec3 } from '@forgeax/engine-math';
 import { AssetGuid } from '@forgeax/engine-pack/guid';
-import { HANDLE_CUBE, resolveAssetHandle } from '@forgeax/engine-assets-runtime';
+
 import { Transform } from '@forgeax/engine-scene';
 
 import { Camera, MeshFilter, MeshRenderer } from '@forgeax/engine-render';
@@ -71,8 +72,8 @@ import { perspective } from '@forgeax/engine-render';
 import { captureCanvasPixels } from '@forgeax/apps-shared/canvas-capture';
 import { EngineEnvironmentError } from '@forgeax/engine-runtime';
 
-import type { MaterialAsset, MeshAsset, TextureAsset } from '@forgeax/engine-types';
-import { unwrapHandle } from '@forgeax/engine-types';
+import type { MaterialAsset } from '@forgeax/engine-types';
+
 import { forgeaxBundlerAdapter } from 'virtual:forgeax/bundler';
 import materialPackJson from '../assets/material-container.pack.json';
 import {
@@ -229,7 +230,7 @@ async function bootstrap(target: HTMLCanvasElement): Promise<void> {
   // untextured baseColor material so the first-person system + AC-07
   // capture hook still install (charter P3 explicit failure: log code
   // /hint, do not abort bootstrap).
-  const containerHandleRes = await assets.loadByGuid<TextureAsset>(containerGuidRes.value);
+  const containerHandleRes = await assets.load(containerGuidRes.value, 'texture');
   if (!containerHandleRes.ok) {
     console.warn(
       '[learn-render 1.7 camera] container texture loadByGuid failed (continuing untextured):',
@@ -248,12 +249,12 @@ async function bootstrap(target: HTMLCanvasElement): Promise<void> {
     }
   }
 
-  const cubeAssetRes = resolveAssetHandle<MeshAsset>(world, HANDLE_CUBE);
+  const cubeAssetRes = createBoxGeometry(1, 1, 1);
   if (!cubeAssetRes.ok) {
     console.error('[learn-render 1.7 camera] HANDLE_CUBE asset unavailable');
     return;
   }
-  assets.catalog<MeshAsset>(cubeGuidRes.value, cubeAssetRes.value);
+
 
   const matPack = materialPackJson as unknown as MaterialPackFile;
   const matEntry = matPack.assets.find((a) => a.kind === 'material');
@@ -266,7 +267,7 @@ async function bootstrap(target: HTMLCanvasElement): Promise<void> {
   // loadByGuid returns the texture PAYLOAD (M8 D-17); mint a user-tier column
   // handle so the baseColorTexture slot carries a resolved numeric Handle.
   const containerTexHandle = containerHandleRes.ok
-    ? unwrapHandle(world.allocSharedRef('TextureAsset', containerHandleRes.value))
+    ? Number(containerHandleRes.value)
     : undefined;
   const cubeMaterial: MaterialAsset = {
     kind: 'material',
@@ -276,10 +277,10 @@ async function bootstrap(target: HTMLCanvasElement): Promise<void> {
       ...(containerTexHandle !== undefined ? { baseColorTexture: containerTexHandle } : {}),
     },
   };
-  assets.catalog<MaterialAsset>(matGuidRes.value, cubeMaterial);
 
-  const cubeHandleRes = await assets.loadByGuid<MeshAsset>(cubeGuidRes.value);
-  const matHandleRes = await assets.loadByGuid<MaterialAsset>(matGuidRes.value);
+
+  const cubeHandleRes = assets.create(cubeAssetRes.value);
+  const matHandleRes = assets.create(cubeMaterial);
   if (!cubeHandleRes.ok || !matHandleRes.ok) {
     console.error(
       '[learn-render 1.7 camera] loadByGuid failed:',
@@ -289,8 +290,8 @@ async function bootstrap(target: HTMLCanvasElement): Promise<void> {
     return;
   }
   // loadByGuid returns payloads (M8 D-17); mint user-tier column handles.
-  const cubeHandle = world.allocSharedRef('MeshAsset', cubeHandleRes.value);
-  const matHandle = world.allocSharedRef('MaterialAsset', matHandleRes.value);
+  const cubeHandle = cubeHandleRes.value;
+  const matHandle = matHandleRes.value;
 
   // Spawn the 10 cubes (LO 7.3 cubePositions[i] + per-index axis-angle
   // rotation around (1, 0.3, 0.5)). The axis-angle is baked into the

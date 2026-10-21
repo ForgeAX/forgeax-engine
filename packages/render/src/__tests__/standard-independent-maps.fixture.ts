@@ -16,7 +16,10 @@ import samplingSource from '../../../shader/src/surface-sampling.wgsl?raw';
 import normalSource from '../../../shader/src/tbn.wgsl?raw';
 import coordinatesSource from '../../../shader/src/texture-coordinates.wgsl?raw';
 import { generateParameterModule } from '../../../shader-compiler/src/material/cook';
-import { lowerStandardPhysicalBindings } from '../../../shader-compiler/src/material/lower-standard-contract';
+import {
+  lowerStandardPhysicalBindings,
+  standardMaterialDefines,
+} from '../../../shader-compiler/src/material/lower-standard-contract';
 import { packMaterialProgramRow } from '../material-row';
 import { buildPbrMaterialUserRegionEntries } from '../pbr-pipeline';
 import { materialStandardTextureMask } from '../render-system-extract';
@@ -41,20 +44,16 @@ const schema = [
   ),
 ];
 const derived = derive(schema);
-// Every texture and alpha-hash block is live; the raster fixture has no ray
-// context and no projection fields in its contract.
-const UNDEFINED = new Set([
-  'RAY_SURFACE_CONTEXT',
-  'TRIPLANAR_PROJECTION_AVAILABLE',
-  'OBJECT_SPACE_NORMAL_AVAILABLE',
-]);
+// Use the production declaration rules: absent optional fields must never
+// enable their shader branches. This raster fixture has no ray context.
+const defines = standardMaterialDefines(schema);
 function preprocess(text: string): string {
   const live: boolean[] = [];
   return text
     .split('\n')
     .filter((line) => {
       const ifdef = /^#ifdef\s+(\w+)/.exec(line);
-      if (ifdef) live.push(!UNDEFINED.has(ifdef[1] as string));
+      if (ifdef) live.push(defines[ifdef[1] as string] === true);
       else if (line.startsWith('#else')) live.push(!(live.pop() as boolean));
       else if (line.startsWith('#endif')) live.pop();
       return !line.startsWith('#') && live.every(Boolean);
@@ -254,6 +253,7 @@ export async function verifyIndependentMaps(observeDevice: (device: RhiDevice) =
       const payload = packMaterialProgramRow(
         schema,
         {
+          passes: [],
           baseColor: vec3.create(1, 1, 1),
           metallic: 0.8,
           roughness: 0.6,

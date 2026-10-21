@@ -129,6 +129,23 @@ describe('DevSession state machine', () => {
     await session.close();
   });
 
+  it('names a staged startup failure by the stage it reports', async () => {
+    const session = createDevSession({
+      generation: 1,
+      productionSession: productionSession(),
+      startup: async () => {
+        throw Object.assign(new Error('commit rejected'), { detail: { stage: 'commit' } });
+      },
+    });
+
+    await session.start();
+    expect(session.state()).toMatchObject({
+      status: 'failed',
+      error: { code: 'commit-failed', detail: { stage: 'commit' } },
+    });
+    await session.close();
+  });
+
   it('keeps the accepted snapshot visible during rebuild failure and closes with 410', async () => {
     const session = createDevSession({
       generation: 3,

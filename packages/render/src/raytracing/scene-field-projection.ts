@@ -1,10 +1,9 @@
 import {
   type AssetRegistry,
   type MaterialRenderProjection,
-  resolveAssetHandle,
   runtimeMaterialShaderId,
-  walkMaterialPassesOverSharedRefs,
 } from '@forgeax/engine-assets-runtime';
+
 import {
   MESH_VISIBILITY_DISTANCE_FIELD_CODEC,
   meshDistanceFieldSource,
@@ -12,21 +11,26 @@ import {
 } from '@forgeax/engine-geometry';
 import { mat4 } from '@forgeax/engine-math';
 import { admitRayMaterialValues, DEFAULT_STANDARD_SURFACE_MODULE } from '@forgeax/engine-shader';
+import type { AssetHandle } from '@forgeax/engine-types';
 import {
   type MaterialAsset,
   type MaterialPass,
   type MeshAsset,
   ok,
   type Result,
-  toShared,
 } from '@forgeax/engine-types';
 import { gpuDrivenSourceDrawItemIndex } from '../extract/gpu-driven';
+import type { MaterialResource } from '../material-resource';
 import type { RenderResourceScope } from '../publication/resource-scope';
 import {
   type InstancesSnapshot,
   type MaterialSnapshot,
   materialStandardTextureMask,
 } from '../render-system-extract';
+import type { FrameList } from '../scene/frame-list';
+import type { MaterialFrame } from '../scene/material-dispatch';
+import type { MeshFrame } from '../scene/mesh-frame';
+import { effectiveMeshMaterials, meshMaterialGeometry } from '../scene/mesh-materials';
 import type { RenderSceneRecord, RenderSceneSlot } from '../scene/render-scene-types';
 import { standardDisplacementRadius } from '../standard-displacement-bounds';
 import { type RayReferenceError, rayReferenceFailure } from './scene';
@@ -48,16 +52,17 @@ type MaterialFacts = Pick<
 export interface SceneFieldSource extends RenderSceneRecord {
   readonly scope: RenderResourceScope;
   readonly assetHandle: number;
+  readonly assetRevision: number;
   readonly mesh: MeshAsset;
   readonly field: AttachedField;
   readonly fieldSnapshot: AttachedField;
   readonly firstInstance: number;
   readonly instances: Omit<InstancesSnapshot, 'transforms' | 'dirtyRanges'> | undefined;
   readonly materials: readonly {
+    readonly resource: MaterialResource;
     readonly materialSlot: number;
     readonly handle: number;
     readonly payload: MaterialAsset;
-    readonly effectivePayload: MaterialAsset;
     readonly projection: MaterialRenderProjection | undefined;
     /** MASK retains sampled geometry only; the field does not evaluate alpha. */
     readonly alphaCoverageOmitted: boolean;
@@ -132,10 +137,11 @@ export interface SceneFieldDeformingSource {
 
 /** Complete CPU projection only: no camera filtering, device work, cache or publication. */
 export function projectSceneFields(
-  slots: readonly RenderSceneSlot[],
+  slots: FrameList<RenderSceneSlot>,
   worlds: readonly RenderResourceScope[],
   budget: { readonly maxInstances: number; readonly maxFieldBytes: number },
-  assets: Pick<AssetRegistry, 'getMaterialProjectionForPayload' | 'lookup'>,
+  assets: Pick<AssetRegistry, 'getMaterialProjectionForPayload'>,
+  frame?: { readonly materials: MaterialFrame; readonly meshes: MeshFrame },
 ): Result<
   {
     readonly instances: readonly SdfMeshInstance[];
@@ -156,6 +162,14 @@ export function projectSceneFields(
   let fieldBytes = 0;
   for (const slot of [...slots].sort((a, b) => a.slot - b.slot)) {
     const source = slot.snapshot;
+    if (source.glyph !== undefined) continue;
+    if (source.assetHandle === undefined)
+      return rayReferenceFailure('retained field has no Mesh source');
+    const geometry = frame?.meshes.get(slot.worldId, source.assetHandle);
+    const bindings =
+      geometry === undefined
+        ? source
+        : effectiveMeshMaterials(source, geometry, meshMaterialGeometry(source));
     if (source.authorVisible === false) continue;
     if (
       ![slot.slot, slot.generation, slot.worldId, slot.entityKey].every(
@@ -172,8 +186,9 @@ export function projectSceneFields(
     const scope = worlds[slot.worldId];
     if (scope === undefined)
       return rayReferenceFailure('retained field has no matching resource scope');
-    const resolved = resolveAssetHandle<MeshAsset>(scope, toShared(source.assetHandle));
-    if (!resolved.ok || resolved.value.kind !== 'mesh')
+    const assetRevision = scope.assetRevision(source.assetHandle);
+    const resolved = scope.resolveAsset<MeshAsset>(source.assetHandle);
+    if (assetRevision === undefined || !resolved.ok || resolved.value.kind !== 'mesh')
       return rayReferenceFailure(
         'retained field mesh handle must resolve in its exact resource scope',
       );
@@ -273,8 +288,9 @@ export function projectSceneFields(
       draws.set(section, draw);
     }
     for (const [sectionIndex, section] of mesh.submeshes.entries()) {
-      const material = source.materials[section.materialSlot],
-        handle = material?.materialHandle;
+      const resource = bindings.materials[section.materialSlot] ?? bindings.material;
+      const material = frame?.materials.get(resource)?.snapshot ?? resource.snapshot,
+        handle = material.materialHandle;
       if (
         !Number.isInteger(section.materialSlot) ||
         section.materialSlot < 0 ||
@@ -284,32 +300,21 @@ export function projectSceneFields(
         return rayReferenceFailure(
           'every actual mesh section must resolve its effective material slot',
         );
-      const shared = toShared<'MaterialAsset'>(handle);
-      const raw =
-        'resolveAsset' in scope
-          ? resolveAssetHandle<MaterialAsset>(scope, shared)
-          : scope.sharedRefs.resolve<'MaterialAsset', MaterialAsset>(shared);
-      const payload = raw.ok ? raw : resolveAssetHandle<MaterialAsset>(scope, shared);
+      const shared = handle as AssetHandle<'material'>;
+      const payload = scope.resolveAsset<MaterialAsset>(shared);
       if (!payload.ok || payload.value.kind !== 'material')
         return rayReferenceFailure(
           'retained field material handle is unavailable in its resource scope',
         );
       const projection = assets.getMaterialProjectionForPayload(payload.value);
-      const current = resolveAssetHandle<MaterialAsset>(scope, shared);
-      if (!current.ok || current.value.kind !== 'material')
-        return rayReferenceFailure('retained field effective material is unavailable');
-      const effective = !('resolveAsset' in scope)
-        ? walkMaterialPassesOverSharedRefs(scope, shared, assets)
-        : current;
       if (
-        !effective.ok ||
-        !isNativePlacementMaterial(material, projection, effective.value) ||
+        !isNativePlacementMaterial(material, projection, payload.value) ||
         (material.surfaceModel !== undefined && material.surfaceModel !== 'standard')
       )
         return rayReferenceFailure(
           'retained field requires accepted native Standard material provenance',
         );
-      const passes = projection?.passes ?? effective.value.passes ?? [];
+      const passes = projection?.passes ?? payload.value.passes ?? [];
       const color = passes.filter(
         (pass) =>
           !/shadow|depth/i.test(
@@ -321,13 +326,12 @@ export function projectSceneFields(
       );
       const values = {
         ...Object.fromEntries(
-          (effective.value.parameters ?? []).map((parameter) => [
+          (payload.value.parameters ?? []).map((parameter) => [
             parameter.name,
-            parameter.default,
+            'default' in parameter ? parameter.default : undefined,
           ]),
         ),
-        ...projection?.runtimeValues,
-        ...effective.value.values,
+        ...payload.value.values,
       };
       const coverage = admitRayMaterialValues(values, String(handle), 'retained-mesh-field');
       if (!coverage.ok) return rayReferenceFailure(coverage.error.detail.requirement);
@@ -347,7 +351,7 @@ export function projectSceneFields(
         {
           ...material,
           standardTextureMask: materialStandardTextureMask(
-            effective.value.parameters,
+            payload.value.parameters,
             'forgeax::default-standard-pbr',
             values,
           ),
@@ -405,10 +409,10 @@ export function projectSceneFields(
         textureCoordinates,
       } = material;
       materials.push({
+        resource,
         materialSlot: section.materialSlot,
         handle,
         payload: payload.value,
-        effectivePayload: current.value,
         projection,
         alphaCoverageOmitted: alphaCutoff > 0,
         snapshot: material,
@@ -464,6 +468,7 @@ export function projectSceneFields(
       generation: slot.generation,
       scope,
       assetHandle: source.assetHandle,
+      assetRevision,
       mesh,
       field,
       fieldSnapshot,
@@ -476,39 +481,6 @@ export function projectSceneFields(
     });
   }
   return ok({ instances, sources, deforming });
-}
-
-/** Re-resolve current producer identities without copying or rescanning mesh fields.
- * Supported changes replace owner payloads/projections; arbitrary in-place array
- * mutation outside the producer publication is not a proven source transition. */
-export function sceneFieldSourcesCurrent(
-  sources: readonly SceneFieldSource[],
-  assets: Pick<AssetRegistry, 'getMaterialProjectionForPayload'>,
-): boolean {
-  for (const source of sources) {
-    const mesh = resolveAssetHandle<MeshAsset>(source.scope, toShared(source.assetHandle));
-    if (!mesh.ok || mesh.value !== source.mesh || mesh.value.distanceField !== source.field)
-      return false;
-    for (const material of source.materials) {
-      const handle = toShared<'MaterialAsset'>(material.handle);
-      const scope = source.scope;
-      const raw =
-        'resolveAsset' in scope
-          ? resolveAssetHandle<MaterialAsset>(scope, handle)
-          : scope.sharedRefs.resolve<'MaterialAsset', MaterialAsset>(handle);
-      const payload = raw.ok ? raw : resolveAssetHandle<MaterialAsset>(scope, handle);
-      const effective = resolveAssetHandle<MaterialAsset>(scope, handle);
-      if (
-        !payload.ok ||
-        payload.value !== material.payload ||
-        !effective.ok ||
-        effective.value !== material.effectivePayload ||
-        assets.getMaterialProjectionForPayload(payload.value) !== material.projection
-      )
-        return false;
-    }
-  }
-  return true;
 }
 
 /** Qualify accepted producer provenance, never a cooked hash or ABI resemblance. */

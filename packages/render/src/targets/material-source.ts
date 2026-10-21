@@ -39,7 +39,8 @@ interface RenderTargetMaterialSourceExpectation {
   readonly mipLevel: number;
 }
 
-const sourceBindings = new WeakMap<object, RenderTargetMaterialSourceBinding>();
+// Each Renderer owns exactly one table; disposal removes it in one operation.
+const sourceBindings = new Map<string, Map<number, RenderTargetMaterialSourceBinding>>();
 const targetIdentities = new WeakMap<object, number>();
 let nextTargetIdentity = 1;
 
@@ -53,15 +54,15 @@ function targetIdentity(target: RenderTarget): number {
   return identity;
 }
 
-function sourceToken(): RenderTargetTextureSource {
-  return Object.freeze({}) as RenderTargetTextureSource;
+export function retireRenderTargetMaterialSources(owner: string): void {
+  sourceBindings.delete(owner);
 }
 
 /** Resolve a source only inside the renderer-owned material projection. */
 export function resolveRenderTargetMaterialSource(
   source: RenderTargetTextureSource,
 ): RenderTargetMaterialSourceBinding | undefined {
-  return sourceBindings.get(source as object);
+  return sourceBindings.get(source.owner)?.get(source.id);
 }
 
 /**
@@ -100,7 +101,10 @@ function invalid(
 export function createRenderTargetMaterialSource(
   target: RenderTarget,
   descriptor: RenderTargetDescriptor,
-  options: RenderTargetTextureSourceOptions & { readonly generation: number },
+  options: RenderTargetTextureSourceOptions & {
+    readonly generation: number;
+    readonly source: RenderTargetTextureSource;
+  },
 ): RenderResult<RenderTargetMaterialSourceBinding, RenderError> {
   if (options.aspect !== 'color') return invalid('aspect', options.aspect, 'color');
   if (options.dimension !== descriptor.shape) {
@@ -116,7 +120,7 @@ export function createRenderTargetMaterialSource(
   const result: RenderResult<RenderTargetMaterialSourceBinding, RenderError> = {
     ok: true,
     value: Object.freeze({
-      source: sourceToken(),
+      source: options.source,
       target,
       generation: options.generation,
       shape: descriptor.shape,
@@ -128,7 +132,12 @@ export function createRenderTargetMaterialSource(
       }),
     }),
   };
-  sourceBindings.set(result.value.source as object, result.value);
+  let owned = sourceBindings.get(options.source.owner);
+  if (owned === undefined) {
+    owned = new Map();
+    sourceBindings.set(options.source.owner, owned);
+  }
+  owned.set(options.source.id, result.value);
   return result;
 }
 

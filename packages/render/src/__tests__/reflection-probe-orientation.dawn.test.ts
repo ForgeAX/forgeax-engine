@@ -12,9 +12,8 @@ import {
   GPU_BUFFER_USAGE_COPY_DST,
   GPU_BUFFER_USAGE_MAP_READ,
   GPU_BUFFER_USAGE_UNIFORM,
-  GPU_BUFFER_USAGE_VERTEX,
 } from '../gpu-usage';
-import { CAPTURE_VIEW_PROJS, CUBEMAP_FACE_VERTICES } from '../ibl/IblPipelineCache';
+import { pmremExtent, pmremViewport } from '../ibl/pmrem';
 
 // Independent WebGPU cube lookup coordinates, sampled away from face seams.
 function direction(face: number, x: number, y: number, size: number) {
@@ -33,16 +32,17 @@ function direction(face: number, x: number, y: number, size: number) {
   return vector.map((value) => value / length);
 }
 
-async function shader(file: string) {
+async function shader(file: string, suffix = '') {
   const compiler = await import(
     /* @vite-ignore */ new URL('../../../shader-compiler/dist/index.mjs', import.meta.url).href
   );
   const source = (name: string) => readFileSync(`packages/shader/src/${name}`, 'utf8');
-  const compiled = await compiler.compileShader(source(file), {
+  const compiled = await compiler.compileShader(source(file) + suffix, {
     id: `forgeax::reflection-orientation-${file}`,
     imports: {
       'forgeax_pbr::brdf': source('brdf.wgsl'),
       'forgeax_pbr::ibl_shared': source('ibl-shared.wgsl'),
+      'forgeax_pbr::pmrem': source('ibl-pmrem.wgsl'),
     },
   });
   if (!compiled.ok) throw compiled.error;
@@ -72,6 +72,16 @@ it('preserves asymmetric world directions through cube capture, PMREM and probe 
     'rgba16float',
     GPU_TEXTURE_USAGE_RENDER_ATTACHMENT | GPU_TEXTURE_USAGE_TEXTURE_BINDING,
   );
+  const atlas = device.createTexture({
+    size: pmremExtent(size),
+    format: 'rgba16float',
+    usage: GPU_TEXTURE_USAGE_RENDER_ATTACHMENT | GPU_TEXTURE_USAGE_TEXTURE_BINDING,
+  });
+  const scratch = device.createTexture({
+    size: pmremExtent(size),
+    format: 'rgba16float',
+    usage: GPU_TEXTURE_USAGE_TEXTURE_BINDING,
+  });
   const filtered = cube(
     'rgba16float',
     GPU_TEXTURE_USAGE_RENDER_ATTACHMENT | GPU_TEXTURE_USAGE_COPY_SRC,
@@ -89,17 +99,9 @@ it('preserves asymmetric world directions through cube capture, PMREM and probe 
     size: 256 * 6,
     usage: GPU_BUFFER_USAGE_UNIFORM | GPU_BUFFER_USAGE_COPY_DST,
   });
-  const faceUniforms = device.createBuffer({
+  const filterUniforms = device.createBuffer({
     size: 256 * 6,
     usage: GPU_BUFFER_USAGE_UNIFORM | GPU_BUFFER_USAGE_COPY_DST,
-  });
-  const filterUniforms = device.createBuffer({
-    size: 16,
-    usage: GPU_BUFFER_USAGE_UNIFORM | GPU_BUFFER_USAGE_COPY_DST,
-  });
-  const vertices = device.createBuffer({
-    size: CUBEMAP_FACE_VERTICES.byteLength,
-    usage: GPU_BUFFER_USAGE_VERTEX | GPU_BUFFER_USAGE_COPY_DST,
   });
   try {
     const background = device.createShaderModule({
@@ -125,9 +127,6 @@ it('preserves asymmetric world directions through cube capture, PMREM and probe 
       vertex: {
         module: prefilter,
         entryPoint: 'cubemap_vs',
-        buffers: [
-          { arrayStride: 12, attributes: [{ shaderLocation: 0, offset: 0, format: 'float32x3' }] },
-        ],
       },
       fragment: {
         module: prefilter,
@@ -135,6 +134,37 @@ it('preserves asymmetric world directions through cube capture, PMREM and probe 
         targets: [{ format: 'rgba16float' }],
       },
       primitive: { cullMode: 'none' },
+    });
+    // Sample the production CubeUV lookup with independent WebGPU directions.
+    const lookup = device.createShaderModule({
+      code: await shader(
+        'ibl-pmrem.wgsl',
+        `
+@group(0) @binding(0) var atlas: texture_2d<f32>;
+@group(0) @binding(1) var atlasSampler: sampler;
+@group(0) @binding(2) var<uniform> params: vec4<f32>;
+@vertex fn lookup_vs(@builtin(vertex_index) i: u32) -> @builtin(position) vec4<f32> {
+  return vec4<f32>(select(-1.0, 3.0, i == 1u), select(-1.0, 3.0, i == 2u), 0.0, 1.0);
+}
+@fragment fn lookup_fs(@builtin(position) pixel: vec4<f32>) -> @location(0) vec4<f32> {
+  let p = pixel.xy * 2.0 / ${size}.0 - vec2<f32>(1.0);
+  var d = vec3<f32>(-p.x, -p.y, -1.0);
+  switch u32(params.y) {
+    case 0u: { d = vec3<f32>(1.0, -p.y, -p.x); }
+    case 1u: { d = vec3<f32>(-1.0, -p.y, p.x); }
+    case 2u: { d = vec3<f32>(p.x, 1.0, p.y); }
+    case 3u: { d = vec3<f32>(p.x, -1.0, -p.y); }
+    case 4u: { d = vec3<f32>(p.x, -p.y, 1.0); }
+    default: {}
+  }
+  return vec4<f32>(samplePmrem(atlas, atlasSampler, normalize(d), 0.0), 1.0);
+}`,
+      ),
+    });
+    const lookupPipeline = await device.createRenderPipelineAsync({
+      layout: 'auto',
+      vertex: { module: lookup, entryPoint: 'lookup_vs' },
+      fragment: { module: lookup, entryPoint: 'lookup_fs', targets: [{ format: 'rgba16float' }] },
     });
     const sampler = device.createSampler({
       magFilter: 'linear',
@@ -149,10 +179,9 @@ it('preserves asymmetric world directions through cube capture, PMREM and probe 
       entries: [
         { binding: 0, resource: rawView },
         { binding: 1, resource: sampler },
+        { binding: 2, resource: scratch.createView() },
       ],
     });
-    device.queue.writeBuffer(vertices, 0, CUBEMAP_FACE_VERTICES);
-    device.queue.writeBuffer(filterUniforms, 0, new Float32Array([0, size, 1, 1]));
     const views = buildCubeCameraFaceViews({ position: [3, 5, -7], near: 0.1, far: 100 });
     const encoder = device.createCommandEncoder();
     for (let face = 0; face < 6; face++) {
@@ -197,7 +226,7 @@ it('preserves asymmetric world directions through cube capture, PMREM and probe 
           0,
         ]),
       );
-      device.queue.writeBuffer(faceUniforms, face * 256, CAPTURE_VIEW_PROJS[face] ?? mat4.create());
+      device.queue.writeBuffer(filterUniforms, face * 256, new Float32Array([0, face, 1, 0]));
       const group = device.createBindGroup({
         layout: capturePipeline.getBindGroupLayout(0),
         entries: [
@@ -234,8 +263,35 @@ it('preserves asymmetric world directions through cube capture, PMREM and probe 
       const group = device.createBindGroup({
         layout: filterPipeline.getBindGroupLayout(0),
         entries: [
-          { binding: 0, resource: { buffer: faceUniforms, offset: face * 256, size: 64 } },
-          { binding: 1, resource: { buffer: filterUniforms } },
+          { binding: 1, resource: { buffer: filterUniforms, offset: face * 256, size: 16 } },
+        ],
+      });
+      const pass = encoder.beginRenderPass({
+        colorAttachments: [
+          {
+            view: atlas.createView(),
+            loadOp: face === 0 ? 'clear' : 'load',
+            storeOp: 'store',
+            clearValue: [0, 0, 0, 1],
+          },
+        ],
+      });
+      pass.setPipeline(filterPipeline);
+      pass.setBindGroup(0, group);
+      pass.setBindGroup(1, filterGroup);
+      const viewport = pmremViewport(size, 0, face);
+      pass.setViewport(viewport.x, viewport.y, viewport.width, viewport.height, 0, 1);
+      pass.setScissorRect(viewport.x, viewport.y, viewport.width, viewport.height);
+      pass.draw(3);
+      pass.end();
+    }
+    for (let face = 0; face < 6; face++) {
+      const group = device.createBindGroup({
+        layout: lookupPipeline.getBindGroupLayout(0),
+        entries: [
+          { binding: 0, resource: atlas.createView() },
+          { binding: 1, resource: sampler },
+          { binding: 2, resource: { buffer: filterUniforms, offset: face * 256, size: 16 } },
         ],
       });
       const pass = encoder.beginRenderPass({
@@ -252,11 +308,9 @@ it('preserves asymmetric world directions through cube capture, PMREM and probe 
           },
         ],
       });
-      pass.setPipeline(filterPipeline);
+      pass.setPipeline(lookupPipeline);
       pass.setBindGroup(0, group);
-      pass.setBindGroup(1, filterGroup);
-      pass.setVertexBuffer(0, vertices);
-      pass.draw(6, 1, face * 6);
+      pass.draw(3);
       pass.end();
     }
     encoder.copyTextureToBuffer(
@@ -289,12 +343,12 @@ it('preserves asymmetric world directions through cube capture, PMREM and probe 
       source,
       raw,
       filtered,
+      atlas,
+      scratch,
       depth,
       readback,
       captureUniforms,
-      faceUniforms,
       filterUniforms,
-      vertices,
     ])
       resource.destroy();
     device.destroy();

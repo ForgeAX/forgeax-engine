@@ -44,10 +44,11 @@ export {
   type AudioBus,
   type AudioBusSend,
   DEFAULT_AUDIO_BUSES,
-  validateAudioBuses,
+  prepareAudioBuses,
 } from './audio-buses';
 export {
   type AudioIntent,
+  type AudioIntentBackend,
   type AudioIntentBackendOptions,
   audioIntentErrorState,
   createAudioIntentBackend,
@@ -55,17 +56,18 @@ export {
 export { admitAudioStream, validAudioStream } from './audio-stream';
 export {
   audioTickSystem,
-  createClipResolver,
   detectEdge,
   detectRemovedEntities,
   type EdgeAction,
   listenerPoseFromWorldMatrix,
   sourcePoseFromWorldMatrix,
 } from './audio-tick-system';
+export type { AudioClipIdentity } from './clip-publication';
 export { AudioListener, AudioSource } from './components';
 export {
   isMusicState,
   loadMusicScore,
+  MUSIC_LIMITS,
   type MusicCommand,
   type MusicFailure,
   type MusicFailureCode,
@@ -74,7 +76,8 @@ export {
   type MusicScore,
   type MusicState,
   musicFailure,
-  validMusicTiming,
+  validMusicBpm,
+  validMusicScore,
 } from './music';
 export { AUDIO_TICK_SYSTEM_NAME, audioPlugin } from './plugin-factory';
 export { audioBackendPlugin } from './plugin-service';

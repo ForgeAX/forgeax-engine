@@ -31,8 +31,13 @@
 //   - `[smoke] probes=<json>`
 
 import { readFileSync } from 'node:fs';
+import { drawReadyFrame } from '../../../../scripts/test/ready-render-frame.mjs';
 import { fileURLToPath } from 'node:url';
 import { dirname, resolve } from 'node:path';
+import { AssetRegistry } from '@forgeax/engine-assets-runtime';
+
+import { createPrimitiveMesh } from '@forgeax/engine-geometry';
+
 
 // ── env knobs ────────────────────────────────────────────────────────────────
 const MIN_FRAMES = Number.parseInt(process.env.SMOKE_MIN_FRAMES ?? '60', 10);
@@ -151,26 +156,47 @@ const mockCanvas = {
 // ── build worlds (mirror src/main.ts; owner camera carries the clearColor) ────
 const { World } = await import('@forgeax/engine-ecs');
 const { Camera, DirectionalLight, MeshFilter, MeshRenderer } = await import('@forgeax/engine-render');
-const { constructRuntimeRendererHost } = await import('@forgeax/engine-runtime/internal/renderer-host');
+const { constructRuntimeRendererHost, createPublicationAssets } = await import('@forgeax/engine-runtime/internal/renderer-host');
 const { Materials } = await import('@forgeax/engine-render');
 const { perspective } = await import('@forgeax/engine-render');
 const { Transform } = await import('@forgeax/engine-scene');
-const {
-  HANDLE_CUBE,
-} = await import('@forgeax/engine-assets-runtime');
+
 
 function spawnLitBox(world, color, x, y) {
-  const mat = world.allocSharedRef('MaterialAsset', Materials.standard({ baseColor: color, metallic: 0, roughness: 0.5 }));
+const sceneAssets = world.assets;
+if (!(sceneAssets instanceof AssetRegistry)) throw new Error('Scene requires its runtime asset owner');
+
+const primitiveCube = sceneAssets.create(createPrimitiveMesh('cube').unwrap()).unwrap();
+
+  const mat = world.assets.create(Materials.standard({ baseColor: color, metallic: 0, roughness: 0.5 })).unwrap();
   world
     .spawn(
       { component: Transform, data: { pos: [x, y, 0], scale: [1.4, 1.4, 1.4] } },
-      { component: MeshFilter, data: { assetHandle: HANDLE_CUBE } },
+      { component: MeshFilter, data: { assetHandle: primitiveCube } },
       { component: MeshRenderer, data: { materials: [mat] } },
     )
     .unwrap();
 }
 
-const worldA = new World();
+// ── renderer + shader manifest ────────────────────────────────────────────────
+const here = dirname(fileURLToPath(import.meta.url));
+const manifestPath = resolve(here, '..', 'dist', 'shaders', 'manifest.json');
+const manifestUrl = `data:application/json,${encodeURIComponent(readFileSync(manifestPath, 'utf8'))}`;
+
+let renderer;
+let assets;
+try {
+  const constructed = await constructRuntimeRendererHost(mockCanvas, {}, { shaderManifestUrl: manifestUrl });
+  if (!constructed.ok) throw constructed.error;
+  renderer = constructed.value.renderer;
+  assets = constructed.value.assets;
+} catch (err) {
+  console.error(`[smoke] FAIL - createRenderer threw: ${err instanceof Error ? err.message : String(err)}`);
+  process.exit(1);
+} finally {
+  globalThis.navigator.gpu.requestAdapter = ambientRequestAdapter;
+}
+const worldA = new World({ assets });
 spawnLitBox(worldA, A_GREEN, -BOX_X, 0);
 worldA
   .spawn(
@@ -191,26 +217,10 @@ worldA
   })
   .unwrap();
 
-const worldB = new World();
+const worldB = new World({ assets: await createPublicationAssets({ shaderManifestUrl: manifestUrl }) });
 spawnLitBox(worldB, B_RED, BOX_X, 0);
 spawnLitBox(worldB, B_BLUE, BOX_X, BOX_X);
 
-// ── renderer + shader manifest ────────────────────────────────────────────────
-const here = dirname(fileURLToPath(import.meta.url));
-const manifestPath = resolve(here, '..', 'dist', 'shaders', 'manifest.json');
-const manifestUrl = `data:application/json,${encodeURIComponent(readFileSync(manifestPath, 'utf8'))}`;
-
-let renderer;
-try {
-  const constructed = await constructRuntimeRendererHost(mockCanvas, {}, { shaderManifestUrl: manifestUrl });
-  if (!constructed.ok) throw constructed.error;
-  renderer = constructed.value.renderer;
-} catch (err) {
-  console.error(`[smoke] FAIL - createRenderer threw: ${err instanceof Error ? err.message : String(err)}`);
-  process.exit(1);
-} finally {
-  globalThis.navigator.gpu.requestAdapter = ambientRequestAdapter;
-}
 const worldAttachment1 = renderer.attach(worldA);
 if (!worldAttachment1.ok) throw worldAttachment1.error;
 const worldAttachment2 = renderer.attach(worldB);
@@ -230,20 +240,11 @@ let frames = 0;
 for (let i = 0; i < targetFrames; i++) {
   worldB.update().unwrap();
   worldA.update().unwrap();
-  const r = renderer.draw({
+  await drawReadyFrame(renderer, {
     leases: [worldAttachment1.value, worldAttachment2.value],
     camera: { lease: worldAttachment1.value },
     environment: { lease: worldAttachment1.value },
   });
-  if (!r.ok) {
-    console.error(`[smoke] draw frame ${i} error: ${r.error.code}`);
-    process.exit(1);
-  }
-  const completed = await r.value.completed;
-  if (!completed.ok) {
-    console.error(`[smoke] frame ${i} completion error: ${completed.error.code}`);
-    process.exit(1);
-  }
   frames++;
 }
 const device = sharedDevice;

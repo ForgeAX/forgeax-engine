@@ -11,19 +11,14 @@ import * as SceneOwner from '@forgeax/engine-scene';
 //   - currentFrame + accumDt ← spriteAnimationTickSystem (sprite-animation-tick.ts:255-256)
 //   - VideoPlayer.currentTime: NO ECS rebuild system (D-R2); playback head on host HTMLVideoElement
 
-import { AssetRegistry } from '@forgeax/engine-assets-runtime';
 import { type EntityHandle, World } from '@forgeax/engine-ecs';
 import { VideoPlayer } from '@forgeax/engine-graphics-extras';
 import { SpriteAnimation } from '@forgeax/engine-render/authoring';
 import type { SceneEntity } from '@forgeax/engine-types';
 import { describe, expect, it } from 'vitest';
 import { rootsToSceneAsset } from '../collect-scene-asset';
-import { makeMockShaderRegistry } from './helpers/mock-shader-registry';
 import { registerRuntimeComponents } from './helpers/register-runtime-components';
-
-function makeRegistry(): AssetRegistry {
-  return new AssetRegistry(makeMockShaderRegistry());
-}
+import { testAssets } from './helpers/runtime-assets';
 
 function compField(entity: SceneEntity, compName: string, fieldName: string): unknown {
   const comp = (entity.components as Record<string, Record<string, unknown>>)[compName];
@@ -44,7 +39,7 @@ describe('w1 — AC-07 transient exclusion (SpriteAnimation, VideoPlayer)', () =
     });
     if (!e.ok) return expect(e.ok).toBe(true);
 
-    const reg = makeRegistry();
+    const reg = testAssets(world);
     const collected = rootsToSceneAsset(reg, world, [e.value]);
     expect(collected.ok).toBe(true);
     if (!collected.ok) return;
@@ -75,7 +70,7 @@ describe('w1 — AC-07 transient exclusion (SpriteAnimation, VideoPlayer)', () =
     });
     if (!e.ok) return expect(e.ok).toBe(true);
 
-    const reg = makeRegistry();
+    const reg = testAssets(world);
     const collected = rootsToSceneAsset(reg, world, [e.value]);
     expect(collected.ok).toBe(true);
     if (!collected.ok) return;
@@ -112,7 +107,7 @@ describe('w2 — AC-08 round-trip tests (SpriteAnimation, VideoPlayer)', () => {
     });
     if (!e.ok) return expect(e.ok).toBe(true);
 
-    const reg = makeRegistry();
+    const reg = testAssets(world);
     const collected = rootsToSceneAsset(reg, world, [e.value]);
     expect(collected.ok).toBe(true);
     if (!collected.ok) return;
@@ -126,7 +121,7 @@ describe('w2 — AC-08 round-trip tests (SpriteAnimation, VideoPlayer)', () => {
     expect(compField(entity, 'SpriteAnimation', 'accumDt')).toBeUndefined();
 
     // Round-trip: instantiate the collected scene → read ECS state directly.
-    const handle = world.allocSharedRef('SceneAsset', collected.value);
+    const handle = reg.create(collected.value).unwrap();
     const inst = SceneOwner.worldInstantiateScene(
       world,
       handle as Parameters<typeof SceneOwner.worldInstantiateScene>[1],
@@ -168,7 +163,7 @@ describe('w2 — AC-08 round-trip tests (SpriteAnimation, VideoPlayer)', () => {
     });
     if (!e.ok) return expect(e.ok).toBe(true);
 
-    const reg = makeRegistry();
+    const reg = testAssets(world);
     const collected = rootsToSceneAsset(reg, world, [e.value]);
     expect(collected.ok).toBe(true);
     if (!collected.ok) return;
@@ -181,7 +176,7 @@ describe('w2 — AC-08 round-trip tests (SpriteAnimation, VideoPlayer)', () => {
     expect(compField(entity, 'VideoPlayer', 'currentTime')).toBeUndefined();
 
     // Round-trip: instantiate the collected scene → read ECS state directly.
-    const handle = world.allocSharedRef('SceneAsset', collected.value);
+    const handle = reg.create(collected.value).unwrap();
     const inst = SceneOwner.worldInstantiateScene(
       world,
       handle as Parameters<typeof SceneOwner.worldInstantiateScene>[1],

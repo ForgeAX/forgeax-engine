@@ -1,4 +1,4 @@
-import { HANDLE_CUBE } from '@forgeax/engine-assets-runtime';
+
 import type { GameHost } from '@forgeax/engine-app';
 import type { Context } from '@forgeax/engine-plugin';
 import type { EntityHandle } from '@forgeax/engine-ecs';
@@ -13,8 +13,12 @@ import {
   PointLightShadow,
   Skylight,
 } from '@forgeax/engine-render';
-import type { MaterialAsset } from '@forgeax/engine-runtime';
+
 import { Transform } from '@forgeax/engine-scene';
+import { AssetRegistry } from '@forgeax/engine-assets-runtime';
+
+import { createPrimitiveMesh } from '@forgeax/engine-geometry';
+
 
 export interface DeepAgentFeedbackBootstrapOptions {
   readonly uiRoot?: GameHost['uiRoot'];
@@ -23,6 +27,11 @@ export interface DeepAgentFeedbackBootstrapOptions {
 
 /** Build the focused scene selected by the URL fixture. */
 export function bootstrap(world: World, options: DeepAgentFeedbackBootstrapOptions = {}): () => void {
+const sceneAssets = world.assets;
+if (!(sceneAssets instanceof AssetRegistry)) throw new Error('Scene requires its runtime asset owner');
+
+const primitiveCube = sceneAssets.create(createPrimitiveMesh('cube').unwrap()).unwrap();
+
   const owned: EntityHandle[] = [];
   let witness: HTMLElement | undefined;
   const uiRoot = options.uiRoot;
@@ -33,26 +42,32 @@ export function bootstrap(world: World, options: DeepAgentFeedbackBootstrapOptio
     witness.textContent = 'Focused Agent feedback: Engine Skylight witness mounted.';
     uiRoot.appendChild(witness);
   }
-  const material = world.allocSharedRef<'MaterialAsset', MaterialAsset>(
-    'MaterialAsset',
-    Materials.standard({
+  const material = sceneAssets.create(Materials.standard({
       baseColor: [0.78, 0.24, 0.08, 1],
       metallic: 0.1,
       roughness: 0.3,
-    }),
-  );
+    })).unwrap();
+  const dispose = (): void => {
+    const failures: unknown[] = [];
+    for (const entity of owned.splice(0).reverse()) {
+      try { world.despawn(entity).unwrap(); } catch (cause) { failures.push(cause); }
+    }
+    sceneAssets.release(material).unwrap();
+    witness?.remove();
+    if (failures.length) throw new AggregateError(failures, 'scene cleanup failed');
+  };
   try {
   owned.push(world
     .spawn(
       { component: Transform, data: { pos: [0, 0, 0], scale: [1.35, 1.35, 1.35] } },
-      { component: MeshFilter, data: { assetHandle: HANDLE_CUBE } },
+      { component: MeshFilter, data: { assetHandle: primitiveCube } },
       { component: MeshRenderer, data: { materials: [material] } },
     )
     .unwrap());
   owned.push(world
     .spawn(
       { component: Transform, data: { pos: [0, -1.7, 0], scale: [3.5, 0.15, 3.5] } },
-      { component: MeshFilter, data: { assetHandle: HANDLE_CUBE } },
+      { component: MeshFilter, data: { assetHandle: primitiveCube } },
       { component: MeshRenderer, data: { materials: [material] } },
     )
     .unwrap());
@@ -86,15 +101,7 @@ export function bootstrap(world: World, options: DeepAgentFeedbackBootstrapOptio
     try { dispose(); } catch (cleanup) { throw new AggregateError([cause, cleanup], 'scene creation and cleanup failed'); }
     throw cause;
   }
-  function dispose(): void {
-    const failures: unknown[] = [];
-    for (const entity of owned.splice(0).reverse()) {
-      try { world.despawn(entity).unwrap(); } catch (cause) { failures.push(cause); }
-    }
-    world.sharedRefs.release(material).unwrap();
-    witness?.remove();
-    if (failures.length) throw new AggregateError(failures, 'scene cleanup failed');
-  }
+
   let disposed = false;
   return () => { if (!disposed) { disposed = true; dispose(); } };
 

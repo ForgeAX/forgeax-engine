@@ -107,3 +107,15 @@ assembly root resolution and disposal ownership remain separate.
 return a Promise for remote lease release. Owners await that Promise before
 removing a carrier or closing its parent transport. A borrower never closes a
 connection owned by another native Fiber.
+
+WebSocket connection setup settles on open, error or close and releases all setup
+listeners. An active connection has one terminal cleanup path for socket error,
+remote close and explicit close: it retires physical listeners, closes the socket,
+rejects pending requests, releases abort handlers and withdraws subscriptions.
+
+The in-process transport’s accepted client set owns connection liveness. Closing
+removes membership before aborting work, so cancellation callbacks observe the
+same connection state, identity admission, and connected-client count.
+
+Each service disposer retains its registered record. It withdraws only that exact
+record, independently of the numeric generation carried by requests.

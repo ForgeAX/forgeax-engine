@@ -110,6 +110,7 @@ export function preparedShadowFixture({
   const bundleRecording = captureShadowBundles(device);
   const shadowView = preparedShadowView(device, buffer);
   const context = {
+    validatedOrdered: [],
     runtime: {
       device,
       getMaterialShaderPipeline: pipelineLookup,

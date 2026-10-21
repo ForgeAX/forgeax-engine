@@ -1,3 +1,4 @@
+import { testAssets } from '../helpers/runtime-assets';
 // user-mesh-upload.dawn.test.ts - feat-20260518-pbr-direct-lighting-mvp
 // M5 / w22.5 (TDD red): user-registered MeshAsset GPU upload path.
 //
@@ -26,9 +27,8 @@
 import { World } from '@forgeax/engine-ecs';
 import { createBoxGeometry, PROCEDURAL_FLOATS_PER_VERTEX } from '@forgeax/engine-geometry';
 import { mat4 } from '@forgeax/engine-math';
-import { ok } from '@forgeax/engine-rhi';
 import { rhi } from '@forgeax/engine-rhi-webgpu';
-import type { EquirectAsset, MaterialAsset, MeshAsset } from '@forgeax/engine-types';
+import type { MaterialAsset, MeshAsset } from '@forgeax/engine-types';
 import { describe, expect, it } from 'vitest';
 import { GpuResidencyCache } from '../../../../render/src/device/gpu-residency';
 
@@ -87,14 +87,9 @@ describe('w22.5 user-registered mesh GPU upload (AC-13, dawn)', () => {
 
       const store = new GpuResidencyCache();
       const world = new World();
-      store.configureGpuDevice(
-        device,
-        undefined,
-        (w: World, pod: EquirectAsset) => ok(w.allocSharedRef('EquirectAsset', pod)),
-        mockCaps,
-      );
+      store.configureGpuDevice(device, undefined, mockCaps);
 
-      const handle = world.allocSharedRef('MeshAsset', asset);
+      const handle = testAssets(world).create(asset).unwrap();
 
       // Pull-model: explicit ensureResident uploads the GPU buffers; thereafter
       // getMeshGpuHandles returns a non-undefined record.
@@ -137,7 +132,7 @@ describe('w22.5 user-registered mesh GPU upload (AC-13, dawn)', () => {
 
       const store = new GpuResidencyCache();
       const world = new World();
-      const handle = world.allocSharedRef('MeshAsset', asset);
+      const handle = testAssets(world).create(asset).unwrap();
       // Before any ensureResident the store has no GPU residency for the handle.
       const before = store.getMeshGpuHandles(handle);
       expect(before).toBeUndefined();
@@ -147,12 +142,7 @@ describe('w22.5 user-registered mesh GPU upload (AC-13, dawn)', () => {
       const deviceResult = await adapterResult.value.requestDevice();
       if (!deviceResult.ok) return;
       const device = deviceResult.value;
-      store.configureGpuDevice(
-        device,
-        undefined,
-        (w: World, pod: EquirectAsset) => ok(w.allocSharedRef('EquirectAsset', pod)),
-        mockCaps,
-      );
+      store.configureGpuDevice(device, undefined, mockCaps);
 
       // Explicit pull uploads the GPU buffers; getMeshGpuHandles now surfaces them.
       const residentRes = store.ensureResident(handle, asset);
@@ -173,19 +163,14 @@ describe('w22.5 user-registered mesh GPU upload (AC-13, dawn)', () => {
 
       const store = new GpuResidencyCache();
       const world = new World();
-      store.configureGpuDevice(
-        device,
-        undefined,
-        (w: World, pod: EquirectAsset) => ok(w.allocSharedRef('EquirectAsset', pod)),
-        mockCaps,
-      );
+      store.configureGpuDevice(device, undefined, mockCaps);
 
       const handles: number[] = [];
       const seenVbos = new Set<unknown>();
       for (let i = 0; i < 16; i++) {
         const meshRes = createBoxGeometry(1 + i * 0.1, 1, 1);
         if (!meshRes.ok) continue;
-        const handle = world.allocSharedRef('MeshAsset', meshRes.value);
+        const handle = testAssets(world).create(meshRes.value).unwrap();
         const residentRes = store.ensureResident(handle, meshRes.value);
         expect(residentRes.ok).toBe(true);
         const gpu = store.getMeshGpuHandles(handle);

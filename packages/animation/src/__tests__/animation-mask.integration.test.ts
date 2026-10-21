@@ -1,3 +1,5 @@
+import { AssetRegistry } from '@forgeax/engine-assets-runtime';
+import { runtimeAssetRegistry } from '@forgeax/engine-assets-runtime/internal';
 import { createWorldContext, defineSystem, Update, World } from '@forgeax/engine-ecs';
 import { ChildOf, MorphWeights, Transform } from '@forgeax/engine-scene';
 import { type AnimationClip, toShared } from '@forgeax/engine-types';
@@ -46,12 +48,9 @@ function clip(lower: number, upper: number): AnimationClip {
 }
 
 async function fixture() {
-  const world = new World();
-  const clips = new Map([
-    ['base', clip(0, 0)],
-    ['overlay', clip(10, 10)],
-  ]);
-  const context = await createWorldContext(world, [animationPlugin((guid) => clips.get(guid))]);
+  const world = new World({ assets: new AssetRegistry() });
+  const clips = [clip(0, 0), clip(10, 10)] as const;
+  const context = await createWorldContext(world, [animationPlugin()]);
   const upper = defineAnimationMask([{ targetId: upperId, weight: 1 }]).unwrap();
   const mask = world.allocSharedRef('AnimationMask', upper);
   const player = world
@@ -59,8 +58,8 @@ async function fixture() {
       component: AnimationPlayer,
       data: {
         clips: [
-          world.allocSharedRef('AnimationClip', clips.get('base')),
-          world.allocSharedRef('AnimationClip', clips.get('overlay')),
+          runtimeAssetRegistry(world.assets).create(clips[0]).unwrap(),
+          runtimeAssetRegistry(world.assets).create(clips[1]).unwrap(),
         ],
         times: [0, 0],
         speeds: [1, 1],
@@ -88,6 +87,29 @@ async function fixture() {
 }
 
 describe('reusable target masks on the ordinary AnimationPlayer path', () => {
+  it('freezes the validated target values before publishing the mask definition', async () => {
+    let reads = 0;
+    class Target {
+      get targetId() {
+        return upperId;
+      }
+      get weight() {
+        return reads++ === 0 ? 0.5 : Number.NaN;
+      }
+    }
+    const definition = defineAnimationMask([new Target()]).unwrap();
+    expect(definition.targets).toEqual([{ targetId: upperId, weight: 0.5 }]);
+    const { world, context, player, target } = await fixture();
+    try {
+      const mask = world.allocSharedRef('AnimationMask', JSON.parse(JSON.stringify(definition)));
+      world.set(player, AnimationPlayer, { masks: [0, mask] }).unwrap();
+      world.update(0).unwrap();
+      expect(world.get(target, Transform).unwrap().pos[0]).toBeCloseTo(6);
+    } finally {
+      await context.fiber.dispose();
+    }
+  });
+
   it('keeps lower-body motion separate from an upper-body overlay without splitting clips', async () => {
     const { world, context, player, lower, target, mask } = await fixture();
     const diagnostics: string[] = [];
@@ -133,11 +155,13 @@ describe('reusable target masks on the ordinary AnimationPlayer path', () => {
     const { world, context, player, lower, target, mask } = await fixture();
     try {
       const graph = defineAnimationGraph((b) =>
-        b.blend([b.clip('base'), b.clip('overlay')]),
+        b.blend(
+          Array.from(world.get(player, AnimationPlayer).unwrap().clips, (clip) => b.clip(clip)),
+        ),
       ).unwrap();
       world
         .set(player, AnimationPlayer, {
-          graph: world.allocSharedRef('AnimationGraph', graph),
+          graph: runtimeAssetRegistry(world.assets).create(graph).unwrap(),
           nodeWeights: [0.25, 0.75, 1],
           nodeSpeeds: [1, 1, 0],
           nodeMasks: [0, mask],
@@ -204,8 +228,8 @@ describe('reusable target masks on the ordinary AnimationPlayer path', () => {
       world
         .set(player, AnimationPlayer, {
           clips: [
-            world.allocSharedRef('AnimationClip', short),
-            world.allocSharedRef('AnimationClip', long),
+            runtimeAssetRegistry(world.assets).create(short).unwrap(),
+            runtimeAssetRegistry(world.assets).create(long).unwrap(),
           ],
           masks: [],
           speeds: [0, 0],
@@ -283,8 +307,8 @@ describe('reusable target masks on the ordinary AnimationPlayer path', () => {
       world
         .set(player, AnimationPlayer, {
           clips: [
-            world.allocSharedRef('AnimationClip', curves(0)),
-            world.allocSharedRef('AnimationClip', curves(10)),
+            runtimeAssetRegistry(world.assets).create(curves(0)).unwrap(),
+            runtimeAssetRegistry(world.assets).create(curves(10)).unwrap(),
           ],
           masks: [0, half],
         })
@@ -311,11 +335,13 @@ describe('reusable target masks on the ordinary AnimationPlayer path', () => {
     const { world, context, player, target, mask } = await fixture();
     try {
       const graph = defineAnimationGraph((b) =>
-        b.blend([b.clip('base'), b.clip('overlay')]),
+        b.blend(
+          Array.from(world.get(player, AnimationPlayer).unwrap().clips, (clip) => b.clip(clip)),
+        ),
       ).unwrap();
       world
         .set(player, AnimationPlayer, {
-          graph: world.allocSharedRef('AnimationGraph', graph),
+          graph: runtimeAssetRegistry(world.assets).create(graph).unwrap(),
           nodeTimes: [0, 0, 0],
           nodeSpeeds: [1, 1, 0],
           nodeMasks: [0, 0, mask],

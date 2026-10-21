@@ -4,9 +4,11 @@ import type {
   AssetDecoderLease,
   AssetKind,
   AssetLoadError,
+  AssetPreparationContext,
   Result,
 } from '@forgeax/engine-types';
-import { err, ok } from '@forgeax/engine-types';
+import { AssetError, err, ok } from '@forgeax/engine-types';
+import { copyAssetData } from './asset-data';
 import { freezeRuntimePayload } from './immutable-payload.js';
 
 interface DecoderEntry {
@@ -34,6 +36,14 @@ export class DecoderRegistry {
 
   install<P, K extends string>(kind: AssetKind<P, K>, decoder: AssetDecoder<P>): AssetDecoderLease {
     if (this.disposed) throw new TypeError('asset runtime decoder registry is disposed');
+    if (typeof kind.kind !== 'string' || kind.kind.trim().length === 0)
+      throw new TypeError('asset decoder kind must be a non-empty string');
+    if (typeof decoder.decode !== 'function')
+      throw new TypeError(`asset decoder for "${kind.kind}" must provide decode(input)`);
+    if (decoder.prepare !== undefined && typeof decoder.prepare !== 'function')
+      throw new TypeError(
+        `asset decoder for "${kind.kind}" must provide synchronous prepare(value, context)`,
+      );
     const normalizedDecoder = decoder as AssetDecoder<unknown>;
     const existing = this.dispatch.get(kind.kind);
     if (existing !== undefined) {
@@ -72,6 +82,41 @@ export class DecoderRegistry {
 
   has<P, K extends string>(kind: AssetKind<P, K>): boolean {
     return this.dispatch.has(kind.kind);
+  }
+
+  canPrepare(kind: string): boolean {
+    return this.dispatch.get(kind)?.decoder.prepare !== undefined;
+  }
+
+  prepare(
+    kind: string,
+    value: unknown,
+    context: AssetPreparationContext,
+  ): Result<unknown, AssetError> {
+    const entry = this.dispatch.get(kind);
+    const prepare = entry?.decoder.prepare;
+    const invalid = (expected: string) =>
+      new AssetError({
+        code: 'asset-invalid-value',
+        expected,
+        hint: 'install a live owner decoder with synchronous runtime preparation for this kind',
+      });
+    if (this.disposed || prepare === undefined)
+      return err(invalid(`active runtime preparation for kind "${kind}"`));
+    try {
+      // Extension code may retain both its input and result. Neither can alias
+      // accepted current content, including binary data unchanged by a patch.
+      const result = prepare(copyAssetData(value), context);
+      if (this.disposed || this.dispatch.get(kind) !== entry)
+        return err(invalid(`the preparation lease for kind "${kind}" to remain active`));
+      if (result === null || typeof result !== 'object' || typeof result.ok !== 'boolean')
+        return err(invalid('synchronous preparation returning a Result'));
+      return result.ok ? ok(copyAssetData(result.value)) : result;
+    } catch (cause) {
+      return err(
+        cause instanceof AssetError ? cause : invalid('plain validated runtime asset data'),
+      );
+    }
   }
 
   load<P, K extends string>(
@@ -132,7 +177,7 @@ export class DecoderRegistry {
         return err(supersededError(input.envelope.guid, kind));
       }
       if (input.signal.aborted) return err(cancelledError(input.envelope.guid));
-      return result.ok ? ok(freezeRuntimePayload(result.value)) : result;
+      return result.ok ? ok(freezeRuntimePayload(copyAssetData(result.value))) : result;
     } catch {
       return err({
         code: 'asset-decode-failed',

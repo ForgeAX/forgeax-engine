@@ -1,5 +1,7 @@
 #!/usr/bin/env node
 import { encodePng } from '@forgeax/engine-image/png';
+import { constructRuntimeRendererHost } from '@forgeax/engine-runtime/internal/renderer-host';
+let smokeAssets;
 import testQuality from '../../../../scripts/test/render-quality.json' with { type: 'json' };
 import { createSmokeRenderer, drawSmokeFrame, rendererBackend, subscribeSmokeErrors } from "../../scripts/renderer-smoke.mjs";
 // Dawn smoke for Bevy's 3d/transparency_3d example.
@@ -79,7 +81,9 @@ const mockCanvas = {
   removeEventListener() {},
 };
 
+const { AssetRegistry } = await import('@forgeax/engine-assets-runtime');
 const { World } = await import('@forgeax/engine-ecs');
+const { registerPropagateTransforms } = await import('@forgeax/engine-scene');
 const { createRenderer } = await import('@forgeax/engine-runtime');
 const { buildTransparencyWorld, stepTransparencyAlpha } = await import(resolve(root, 'src', 'transparency-3d.ts'));
 const manifest = readFileSync(resolve(root, 'dist', 'shaders', 'manifest.json'), 'utf8');
@@ -87,7 +91,9 @@ const manifestUrl = `data:application/json,${encodeURIComponent(manifest)}`;
 
 let renderer;
 try {
-  renderer = await createSmokeRenderer(createRenderer, mockCanvas, {}, { shaderManifestUrl: manifestUrl });
+  const hostResult = await constructRuntimeRendererHost(mockCanvas, {}, { shaderManifestUrl: manifestUrl });
+if (!hostResult.ok) throw hostResult.error;
+({ renderer, assets: smokeAssets } = hostResult.value);
 } catch (error) {
   console.error(`[smoke] FAIL - createRenderer: ${error instanceof Error ? error.message : String(error)}`);
   process.exit(1);
@@ -96,10 +102,12 @@ try {
 }
 subscribeSmokeErrors(renderer, (error) => errors.push(error));
 
-const world = new World();
+const assets = smokeAssets;
+const world = new World({ assets });
+registerPropagateTransforms(world);
 const worldAttachment1 = renderer.attach(world);
 if (!worldAttachment1.ok) throw worldAttachment1.error;
-const scene = buildTransparencyWorld(world, WIDTH / HEIGHT);
+const scene = buildTransparencyWorld(world, assets, WIDTH / HEIGHT);
 const captures = [];
 const bytesPerRow = Math.ceil((WIDTH * 4) / 256) * 256;
 
@@ -129,7 +137,7 @@ async function capture(label) {
 
 for (let frame = 0; frame < FRAME_COUNT; frame += 1) {
   const elapsed = process.env.FALSIFY === 'freeze-alpha' ? 0 : frame * FIXED_DT;
-  stepTransparencyAlpha(world, scene, elapsed);
+  stepTransparencyAlpha(assets, scene, elapsed);
   world.update().unwrap();
   const draw = await drawSmokeFrame(renderer, world);
   if (!draw.ok) errors.push(draw.error);

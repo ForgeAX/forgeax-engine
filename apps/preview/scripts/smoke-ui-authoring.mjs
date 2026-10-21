@@ -168,7 +168,7 @@ try {
           if (!host) return false;
           if (!host.getCaptureTarget()) {
             const opened = await host.open(scenario);
-            if (!opened.ok) throw new Error(`scenario failed: ${opened.error.code}`);
+            if (!opened.ok) throw new Error(`scenario failed: ${JSON.stringify(opened.error)}`);
           }
           const target = host.getCaptureTarget();
           if (!(target instanceof HTMLElement) || !target.isConnected) return false;
@@ -245,7 +245,7 @@ try {
       if (!host) throw new Error('preview authoring host is unavailable');
       if (!host.getCaptureTarget()) {
         const opened = await host.open(scenario);
-        if (!opened.ok) throw new Error(`scenario failed: ${opened.error.code}`);
+        if (!opened.ok) throw new Error(`scenario failed: ${JSON.stringify(opened.error)}`);
       }
       const mountedHost = () => host.getCaptureTarget()?.shadowRoot;
       return host.capture({
@@ -276,7 +276,7 @@ try {
     }
     const before = await host.validate();
     const opened = await host.open('default');
-    if (!opened.ok) throw new Error(`default scenario failed: ${opened.error.code}`);
+    if (!opened.ok) throw new Error(`default scenario failed: ${JSON.stringify({ error: opened.error, validation: before })}`);
     const invalid = await host.repair({ html: '<script>bad</script>', css: '' });
     if (invalid.ok) throw new Error('invalid authoring source unexpectedly passed');
     const failure = host.getLastRefreshError();

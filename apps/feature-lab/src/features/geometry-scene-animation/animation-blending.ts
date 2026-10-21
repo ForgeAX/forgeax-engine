@@ -8,6 +8,7 @@ import {
   defineAnimationMask,
   deriveAnimationTargetId,
 } from '@forgeax/engine/animation';
+import { AssetRegistry } from '@forgeax/engine/assets-runtime';
 import { defineSystem, Update } from '@forgeax/engine/ecs';
 import { Transform } from '@forgeax/engine/scene';
 import type { AnimationClip } from '@forgeax/engine/types';
@@ -59,15 +60,19 @@ export default defineFeature({
   expect:
     'ON: cyan blends at speed 0.75, orange blends at (0.25, 0.5), and the green overlay bends only the upper joint. OFF: cyan/orange use their first sample, and the green overlay affects the lower joint too.',
   setup({ world, app, hud }) {
+    const sceneAssets = world.assets;
+    if (!(sceneAssets instanceof AssetRegistry))
+      throw new Error('Scene requires its runtime asset owner');
+
     spawnStage(world, { eye: [0.4, 2, 12], target: [0.4, 1.3, 0] });
     const rigs = [
       spawnAnimatedRig(world, -2.7, 1.4, [0.1, 0.8, 1, 1]),
       spawnAnimatedRig(world, 0, 1.4, [1, 0.45, 0.08, 1]),
       spawnAnimatedRig(world, 2.7, 1.4, [0.55, 1, 0.25, 1]),
     ] as const;
-    const baseClips = angles.map((angle) => world.allocSharedRef('AnimationClip', pose(0, angle)));
+    const baseClips = angles.map((angle) => sceneAssets.create(pose(0, angle)).unwrap());
     const layeredClips = [pose(-0.2, -0.2), pose(0.9, -1.2)].map((clip) =>
-      world.allocSharedRef('AnimationClip', clip),
+      sceneAssets.create(clip).unwrap(),
     );
     for (let i = 0; i < rigs.length; i++) {
       const rig = rigs[i];

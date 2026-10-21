@@ -1,18 +1,28 @@
 import { AssetRegistry } from '@forgeax/engine-assets-runtime';
 import { type EntityHandle, World } from '@forgeax/engine-ecs';
-import { ChildOf, Children, Name, Transform, worldDespawnScene } from '@forgeax/engine-scene';
-import type { ShaderRegistry } from '@forgeax/engine-shader';
+import {
+  ChildOf,
+  Children,
+  Name,
+  sceneAssetContribution,
+  Transform,
+  worldDespawnScene,
+} from '@forgeax/engine-scene';
 import {
   Skin,
   SkinAssetUnresolvedError,
   SkinJointPathUnresolvedError,
+  skeletonContribution,
+  skinContribution,
 } from '@forgeax/engine-skinning';
-import type { SceneAsset, SceneEntity, SkeletonAsset } from '@forgeax/engine-types';
+import type { Asset, SceneEntity } from '@forgeax/engine-types';
 import { describe, expect, it } from 'vitest';
+import { publishRuntimeAssets } from '../../../assets-runtime/src/__tests__/fixtures/runtime-publication';
 import { SceneInstance } from '../components/scene-instance';
 import { postSpawnResolveJoints } from '../scene-instances/post-spawn-resolve-joints';
 
 const skeletonGuid = '01a11254-2400-7000-9000-000000000001';
+const sceneGuid = '01a11254-2400-7000-9000-000000000003';
 const skinGuid = '01a11254-2400-7000-9000-000000000002';
 
 describe('ordinary Scene explicit Skin bindings', () => {
@@ -21,36 +31,45 @@ describe('ordinary Scene explicit Skin bindings', () => {
     ['anchor', true],
     ['flat', false],
     ['flat', true],
-  ] as const)('preserves canonical automatic Skin failure and rollback: %s / metadata=%s', (mode, withSkinAsset) => {
+  ] as const)('preserves canonical automatic Skin failure and rollback: %s / metadata=%s', async (mode, withSkinAsset) => {
     const world = new World();
     for (const component of [ChildOf, Children, Name, Transform, Skin, SceneInstance])
       world.components.register(component).unwrap();
-    const registry = new AssetRegistry(
-      {} as ShaderRegistry,
-      undefined,
-      undefined,
-      postSpawnResolveJoints,
-    );
+    const registry = new AssetRegistry({
+      postSpawnHook: postSpawnResolveJoints,
+    });
+    world.bindAssets(registry).unwrap();
+    registry.installDecoder(skeletonContribution.kind, skeletonContribution.decoder);
+    registry.installDecoder(skinContribution.kind, skinContribution.decoder);
+    registry.installDecoder(sceneAssetContribution.kind, sceneAssetContribution.decoder);
     const inverseBindMatrices = new Float32Array(16);
     for (const diagonal of [0, 5, 10, 15]) inverseBindMatrices[diagonal] = 1;
-    registry
-      .catalog(skeletonGuid, {
-        kind: 'skeleton',
-        jointCount: 1,
-        inverseBindMatrices,
-      } satisfies SkeletonAsset)
-      .unwrap();
-    if (withSkinAsset)
-      registry
-        .catalog(skinGuid, { kind: 'skin', skeletonGuid, jointPaths: ['missing-joint'] })
-        .unwrap();
-    const handle = world.allocSharedRef<'SceneAsset', SceneAsset>('SceneAsset', {
-      kind: 'scene',
-      entities: {
-        surface: { components: { Transform: {}, Skin: { skeleton: skeletonGuid, joints: [] } } },
+    publishRuntimeAssets(registry, [
+      { guid: skeletonGuid, asset: { kind: 'skeleton', jointCount: 1, inverseBindMatrices } },
+      ...(withSkinAsset
+        ? [
+            {
+              guid: skinGuid,
+              asset: { kind: 'skin', skeletonGuid, jointPaths: ['missing-joint'] } as Asset,
+            },
+          ]
+        : []),
+      {
+        guid: sceneGuid,
+        asset: {
+          kind: 'scene',
+          ...(withSkinAsset ? { skinGuids: [skinGuid] } : {}),
+          entities: {
+            surface: {
+              components: { Transform: {}, Skin: { skeleton: skeletonGuid, joints: [] } },
+            },
+          },
+        },
+        refs: [skeletonGuid, ...(withSkinAsset ? [skinGuid] : [])],
       },
-    });
-    const before = world.sharedRefs._liveCount();
+    ]);
+    const handle = (await registry.load(sceneGuid, 'scene')).unwrap();
+    const before = registry.inspect();
     const result =
       mode === 'anchor'
         ? registry.instantiate(handle, world)
@@ -71,43 +90,30 @@ describe('ordinary Scene explicit Skin bindings', () => {
       expect(failure).toBe(result.error);
     }
     expect(world.inspect().entityCount).toBe(0);
-    expect(world.sharedRefs._liveCount()).toBe(before);
-    world.sharedRefs.release(handle).unwrap();
-    expect(world.sharedRefs._liveCount()).toBe(0);
-    registry.invalidateAll();
+    expect(registry.inspect()).toEqual(before);
+    expect(registry.read(handle).ok).toBe(true);
+    registry.release(handle).unwrap();
+    registry.dispose();
+    expect(registry.validate(handle, 'scene').ok).toBe(false);
   });
 
   it.each([
     false,
     true,
-  ])('retains distinct authored chains with optional SkinAsset=%s', (withSkinAsset) => {
+  ])('retains distinct authored chains with optional SkinAsset=%s', async (withSkinAsset) => {
     const world = new World();
     for (const component of [ChildOf, Children, Name, Transform, Skin, SceneInstance])
       world.components.register(component).unwrap();
-    const registry = new AssetRegistry(
-      {} as ShaderRegistry,
-      undefined,
-      undefined,
-      postSpawnResolveJoints,
-    );
+    const registry = new AssetRegistry({
+      postSpawnHook: postSpawnResolveJoints,
+    });
+    world.bindAssets(registry).unwrap();
+    registry.installDecoder(skeletonContribution.kind, skeletonContribution.decoder);
+    registry.installDecoder(skinContribution.kind, skinContribution.decoder);
+    registry.installDecoder(sceneAssetContribution.kind, sceneAssetContribution.decoder);
     const inverseBindMatrices = new Float32Array(32);
     for (let joint = 0; joint < 2; joint++)
       for (const diagonal of [0, 5, 10, 15]) inverseBindMatrices[joint * 16 + diagonal] = 1;
-    registry
-      .catalog(skeletonGuid, {
-        kind: 'skeleton',
-        jointCount: 2,
-        inverseBindMatrices,
-      } satisfies SkeletonAsset)
-      .unwrap();
-    if (withSkinAsset)
-      registry
-        .catalog(skinGuid, {
-          kind: 'skin',
-          skeletonGuid,
-          jointPaths: ['joint-0', 'joint-1'],
-        })
-        .unwrap();
     const entities: Record<string, SceneEntity> = {};
     for (const actor of ['a', 'b']) {
       entities[actor] = { components: { Transform: {}, Name: { value: actor } } };
@@ -134,11 +140,24 @@ describe('ordinary Scene explicit Skin bindings', () => {
         },
       };
     }
-    const scene = world.allocSharedRef<'SceneAsset', SceneAsset>('SceneAsset', {
-      kind: 'scene',
-      entities,
-    });
-    const baseline = world.sharedRefs._liveCount();
+    publishRuntimeAssets(registry, [
+      { guid: skeletonGuid, asset: { kind: 'skeleton', jointCount: 2, inverseBindMatrices } },
+      ...(withSkinAsset
+        ? [
+            {
+              guid: skinGuid,
+              asset: { kind: 'skin', skeletonGuid, jointPaths: ['joint-0', 'joint-1'] } as Asset,
+            },
+          ]
+        : []),
+      {
+        guid: sceneGuid,
+        asset: { kind: 'scene', entities, ...(withSkinAsset ? { skinGuids: [skinGuid] } : {}) },
+        refs: [skeletonGuid, ...(withSkinAsset ? [skinGuid] : [])],
+      },
+    ]);
+    const scene = (await registry.load(sceneGuid, 'scene')).unwrap();
+    const baseline = registry.inspect();
     const root = registry.instantiate(scene, world).unwrap();
     try {
       const surfaces = Array.from(world.query({ read: [Skin, Name] }).unwrap(), (row) => ({
@@ -167,8 +186,9 @@ describe('ordinary Scene explicit Skin bindings', () => {
     } finally {
       worldDespawnScene(world, root).unwrap();
       expect(world.inspect().entityCount).toBe(0);
-      expect(world.sharedRefs._liveCount()).toBe(baseline);
-      world.sharedRefs.release(scene).unwrap();
+      expect(registry.inspect()).toEqual(baseline);
+      registry.release(scene).unwrap();
+      registry.dispose();
     }
   });
 });

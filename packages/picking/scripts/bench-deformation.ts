@@ -1,6 +1,7 @@
 import { mkdirSync, writeFileSync } from 'node:fs';
 import { cpus } from 'node:os';
 import type { EntityHandle } from '@forgeax/engine-ecs';
+import { createMeshBuilder } from '@forgeax/engine-geometry';
 import { mat4 } from '@forgeax/engine-math';
 import { MeshFilter } from '@forgeax/engine-render';
 import { MorphWeights, Transform, propagateTransforms } from '@forgeax/engine-scene';
@@ -12,7 +13,7 @@ for (const [segments, jointCount] of [
   [64, 2],
   [1024, 64],
   [4096, 256],
-]) {
+] as const) {
   const scene = skinScene(segments),
     world = scene.world;
   const joints = new Uint32Array(jointCount);
@@ -21,13 +22,13 @@ for (const [segments, jointCount] of [
     joints[j] = world.spawn({ component: Transform, data: {} }).unwrap();
     ibm.set(mat4.identity(mat4.create()), j * 16);
   }
-  const skeleton = world.allocSharedRef('SkeletonAsset', {
+  const skeleton = scene.assets.create({
     kind: 'skeleton',
     jointCount,
     inverseBindMatrices: ibm,
     jointPaths: Array.from({ length: jointCount }, (_, i) => 'joint-' + i),
     bounds: new Float32Array([-2, -2, -1, 2, 2, 1]),
-  });
+  }).unwrap();
   const positions = scene.mesh.attributes.position as Float32Array;
   const skinIndex = scene.mesh.attributes.skinIndex as Uint16Array,
     skinWeight = scene.mesh.attributes.skinWeight as Float32Array;
@@ -37,9 +38,9 @@ for (const [segments, jointCount] of [
   }
   const delta = new Float32Array(positions.length);
   for (let v = 0; v < positions.length; v += 3) delta[v] = 0.5;
-  const mesh = { ...scene.mesh, morphTargets: [{ position: delta }, { position: delta }] };
+  const mesh = { ...createMeshBuilder(scene.mesh).build().unwrap(), morphTargets: [{ position: delta }, { position: delta }] };
   world
-    .set(scene.entity, MeshFilter, { assetHandle: world.allocSharedRef('MeshAsset', mesh) })
+    .set(scene.entity, MeshFilter, { assetHandle: scene.assets.create(mesh).unwrap() })
     .unwrap();
   world.set(scene.entity, Skin, { skeleton, joints }).unwrap();
   world
@@ -48,7 +49,7 @@ for (const [segments, jointCount] of [
       data: { weights: new Float32Array([0, 0]) },
     })
     .unwrap();
-  const raw = [];
+  const raw: { morph: boolean; frame: number; cpuMs: number; point: number[] }[] = [];
   let frame = 0;
   for (const morph of [false, true, true, false]) {
     globalThis.gc?.();

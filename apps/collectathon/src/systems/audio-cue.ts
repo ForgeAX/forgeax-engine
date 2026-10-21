@@ -1,3 +1,5 @@
+import type { AssetHandle } from '@forgeax/engine-types';
+
 // apps/collectathon -- audio-cue: 3D spatial audio for the four game cues
 // (AC-10 footstep / pickup / Guardian / BGM, dual sfx+music bus, F-07
 // AudioSource/AudioListener/spatialBlend).
@@ -32,12 +34,11 @@
 // false next frame). The loops (footstep cadence, BGM) hold playing per their
 // own gating.
 
+import { AssetRegistry } from '@forgeax/engine-assets-runtime';
 import { AudioSource } from '@forgeax/engine-audio';
 import type { EntityHandle, SystemHandle, World } from '@forgeax/engine-ecs';
 import { defineSystem } from '@forgeax/engine-ecs';
 import { AssetGuid } from '@forgeax/engine-pack/guid';
-import type { AudioClipAsset, Handle } from '@forgeax/engine-types';
-
 import { GAME_PROGRESS_KEY, type GameProgress } from '../resources';
 import { readDt } from './frame-time';
 import type { PlayerMoveSignal } from './player-move';
@@ -61,30 +62,29 @@ export const AUDIO_GUIDS = {
 export interface AudioCueEntities {
   /** One footstep emitter (round-robins through the loaded variant clips). */
   readonly footstep: EntityHandle;
-  readonly footstepClips: ReadonlyArray<Handle<'AudioClipAsset', 'shared'>>;
+  readonly footstepClips: ReadonlyArray<AssetHandle<'audio'>>;
   readonly pickup: EntityHandle;
   readonly guardian: EntityHandle;
   readonly bgm: EntityHandle;
 }
 
-type ClipHandle = Handle<'AudioClipAsset', 'shared'>;
+type ClipHandle = AssetHandle<'audio'>;
 const HANDLE_NONE = 0 as unknown as ClipHandle;
 
-interface AudioRegistry {
-  loadByGuid<T>(guid: AssetGuid): Promise<{ ok: true; value: T } | { ok: false }>;
-}
-
 /**
- * Resolve an audio GUID through the shared asset registry and mint the World
- * column handle consumed by AudioSource. A failed cue remains silent without
+ * Load the source audio handle consumed by AudioSource. A failed cue remains silent without
  * making the whole game unplayable.
  */
-async function loadClip(world: World, assets: AudioRegistry, guid: string): Promise<ClipHandle> {
+async function loadClip(world: World, assets: AssetRegistry, guid: string): Promise<ClipHandle> {
+  const sceneAssets = world.assets;
+  if (!(sceneAssets instanceof AssetRegistry) || sceneAssets !== assets)
+    throw new Error('Scene requires its runtime asset owner');
+
   const parsed = AssetGuid.parse(guid);
   if (!parsed.ok) return HANDLE_NONE;
-  const result = await assets.loadByGuid<AudioClipAsset>(parsed.value);
+  const result = await assets.load(parsed.value, 'audio');
   if (!result.ok) return HANDLE_NONE;
-  return world.allocSharedRef('AudioClipAsset', result.value);
+  return result.value;
 }
 
 /**
@@ -95,7 +95,7 @@ async function loadClip(world: World, assets: AudioRegistry, guid: string): Prom
  */
 export async function loadAudioCues(
   world: World,
-  assets: AudioRegistry,
+  assets: AssetRegistry,
 ): Promise<AudioCueEntities> {
   const footstepClips: ClipHandle[] = [];
   for (const guid of AUDIO_GUIDS.footstep) {

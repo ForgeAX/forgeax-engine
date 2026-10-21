@@ -1,3 +1,5 @@
+import { AssetRegistry } from '@forgeax/engine-assets-runtime';
+import { runtimeAssetRegistry } from '@forgeax/engine-assets-runtime/internal';
 import {
   createWorldContext,
   type EntityHandle,
@@ -39,10 +41,13 @@ import {
 } from '../skeletal-motion';
 
 async function fixture(physical = false, installMotion = true) {
-  const world = new World({ time: { fixedDeltaSeconds: 1 / 60, maxStepsPerUpdate: 4 } });
+  const world = new World({
+    assets: new AssetRegistry(),
+    ...{ time: { fixedDeltaSeconds: 1 / 60, maxStepsPerUpdate: 4 } },
+  });
   const context = await createWorldContext(world, [
     scenePlugin(),
-    animationPlugin(undefined, { cadence: 'fixed' }),
+    animationPlugin({ cadence: 'fixed' }),
     ...(physical ? [physicsPlugin('rapier-3d')] : []),
     ...(installMotion ? [skeletalMotionPlugin({ physics: physical })] : []),
   ]);
@@ -143,7 +148,7 @@ describe('managed skeletal motion through World schedules', () => {
   });
 
   it('observes current Scene writers without treating hierarchy and tail inputs as writers', async () => {
-    expect(skeletalMotionWriterEntities(new World())).toEqual([]);
+    expect(skeletalMotionWriterEntities(new World({ assets: new AssetRegistry() }))).toEqual([]);
     const f = await fixture();
     try {
       expect(skeletalMotionWriterEntities(f.world)).toEqual([]);
@@ -304,30 +309,32 @@ describe('managed skeletal motion through World schedules', () => {
   it('hands off actual animated body-offset linear and shortest-arc angular velocity once', async () => {
     const f = await fixture(true);
     try {
-      const clip = f.world.allocSharedRef('AnimationClip', {
-        kind: 'animation-clip',
-        duration: 1,
-        channels: [
-          {
-            targetId: f.ids[0] as AnimationTargetIdValue,
-            property: 'translation',
-            sampler: {
-              interpolation: 'LINEAR',
-              input: new Float32Array([0, 1]),
-              output: new Float32Array([0, 0, 0, 1, 0, 0]),
+      const clip = runtimeAssetRegistry(f.world.assets)
+        .create({
+          kind: 'animation-clip',
+          duration: 1,
+          channels: [
+            {
+              targetId: f.ids[0] as AnimationTargetIdValue,
+              property: 'translation',
+              sampler: {
+                interpolation: 'LINEAR',
+                input: new Float32Array([0, 1]),
+                output: new Float32Array([0, 0, 0, 1, 0, 0]),
+              },
             },
-          },
-          {
-            targetId: f.ids[0] as AnimationTargetIdValue,
-            property: 'rotation',
-            sampler: {
-              interpolation: 'LINEAR',
-              input: new Float32Array([0, 1]),
-              output: new Float32Array([0, 0, 0, 1, 0, 0, Math.SQRT1_2, Math.SQRT1_2]),
+            {
+              targetId: f.ids[0] as AnimationTargetIdValue,
+              property: 'rotation',
+              sampler: {
+                interpolation: 'LINEAR',
+                input: new Float32Array([0, 1]),
+                output: new Float32Array([0, 0, 0, 1, 0, 0, Math.SQRT1_2, Math.SQRT1_2]),
+              },
             },
-          },
-        ],
-      });
+          ],
+        })
+        .unwrap();
       f.world
         .set(f.player, AnimationPlayer, { clips: [clip], times: [0], weights: [1], speeds: [1] })
         .unwrap();
@@ -765,30 +772,32 @@ describe('managed skeletal motion through World schedules', () => {
           1,
         ).unwrap(),
       );
-      const clip = f.world.allocSharedRef('AnimationClip', {
-        kind: 'animation-clip',
-        duration: 1,
-        channels: [
-          {
-            targetId: sourceIds[0] as AnimationTargetIdValue,
-            property: 'translation',
-            sampler: {
-              interpolation: 'LINEAR',
-              input: new Float32Array([0, 1]),
-              output: new Float32Array([0, 0, 0, 0, 1, 0]),
+      const clip = runtimeAssetRegistry(f.world.assets)
+        .create({
+          kind: 'animation-clip',
+          duration: 1,
+          channels: [
+            {
+              targetId: sourceIds[0] as AnimationTargetIdValue,
+              property: 'translation',
+              sampler: {
+                interpolation: 'LINEAR',
+                input: new Float32Array([0, 1]),
+                output: new Float32Array([0, 0, 0, 0, 1, 0]),
+              },
             },
-          },
-          {
-            targetId: sourceIds[1] as AnimationTargetIdValue,
-            property: 'rotation',
-            sampler: {
-              interpolation: 'LINEAR',
-              input: new Float32Array([0, 1]),
-              output: new Float32Array([0, 0, 0, 1, 0, 0, Math.sin(0.3), Math.cos(0.3)]),
+            {
+              targetId: sourceIds[1] as AnimationTargetIdValue,
+              property: 'rotation',
+              sampler: {
+                interpolation: 'LINEAR',
+                input: new Float32Array([0, 1]),
+                output: new Float32Array([0, 0, 0, 1, 0, 0, Math.sin(0.3), Math.cos(0.3)]),
+              },
             },
-          },
-        ],
-      });
+          ],
+        })
+        .unwrap();
       f.world
         .set(sourcePlayer, AnimationPlayer, {
           clips: [clip],
@@ -831,21 +840,23 @@ describe('managed skeletal motion through World schedules', () => {
     const f = await fixture();
     try {
       const rootId = f.ids[0] as AnimationTargetIdValue;
-      const clip = f.world.allocSharedRef('AnimationClip', {
-        kind: 'animation-clip',
-        duration: 1,
-        channels: [
-          {
-            targetId: rootId,
-            property: 'translation',
-            sampler: {
-              interpolation: 'LINEAR',
-              input: new Float32Array([0, 1]),
-              output: new Float32Array([0, 0, 0, 1, 0, 0]),
+      const clip = runtimeAssetRegistry(f.world.assets)
+        .create({
+          kind: 'animation-clip',
+          duration: 1,
+          channels: [
+            {
+              targetId: rootId,
+              property: 'translation',
+              sampler: {
+                interpolation: 'LINEAR',
+                input: new Float32Array([0, 1]),
+                output: new Float32Array([0, 0, 0, 1, 0, 0]),
+              },
             },
-          },
-        ],
-      });
+          ],
+        })
+        .unwrap();
       f.world
         .set(f.player, AnimationPlayer, { clips: [clip], times: [0], speeds: [1], weights: [1] })
         .unwrap();

@@ -28,6 +28,7 @@ import { page } from 'vitest/browser';
 import { boxPoints } from '../../../../scripts/test/convex-geometry-fixture.mjs';
 import testQuality from '../../../../scripts/test/render-quality.json' with { type: 'json' };
 import { createRenderer } from '../createRenderer';
+import { testAssets } from './helpers/runtime-assets';
 
 // Deterministic external geometry output: four boxes form an aperture.
 // The Engine consumes an ordinary MeshAsset, without a voxel renderer.
@@ -104,18 +105,16 @@ it('atomically publishes colored physics and PBR apertures with matching shadow 
   world.insertResource('PhysicsWorld', physics);
   const releasePhysics = registerPhysicsSystems(world);
   try {
-    const material = world.allocSharedRef(
-      'MaterialAsset',
-      Materials.standard({ baseColor: [1, 1, 1, 1], metallic: 0.15, roughness: 0.45 }),
-    );
-    const gray = world.allocSharedRef(
-      'MaterialAsset',
-      Materials.standard({ baseColor: [0.55, 0.6, 0.65, 1], metallic: 0, roughness: 0.8 }),
-    );
+    const material = testAssets(world)
+      .create(Materials.standard({ baseColor: [1, 1, 1, 1], metallic: 0.15, roughness: 0.45 }))
+      .unwrap();
+    const gray = testAssets(world)
+      .create(Materials.standard({ baseColor: [0.55, 0.6, 0.65, 1], metallic: 0, roughness: 0.8 }))
+      .unwrap();
     const closedMesh = colored(createBoxGeometry(2, 2, 0.5).unwrap());
     const openMesh = colored(aperture());
-    const closedHandle = world.allocSharedRef('MeshAsset', closedMesh);
-    const openHandle = world.allocSharedRef('MeshAsset', openMesh);
+    const closedHandle = testAssets(world).create(closedMesh).unwrap();
+    const openHandle = testAssets(world).create(openMesh).unwrap();
     const parent = world
       .spawn(
         { component: Transform, data: {} },
@@ -130,7 +129,9 @@ it('atomically publishes colored physics and PBR apertures with matching shadow 
         { component: MeshRenderer, data: { materials: [material] } },
       )
       .unwrap();
-    const floor = world.allocSharedRef('MeshAsset', createBoxGeometry(7, 0.2, 7).unwrap());
+    const floor = testAssets(world)
+      .create(createBoxGeometry(7, 0.2, 7).unwrap())
+      .unwrap();
     world
       .spawn(
         { component: Transform, data: { pos: [0, -1.25, 0] } },
@@ -247,7 +248,6 @@ it('atomically publishes colored physics and PBR apertures with matching shadow 
         world,
         entity,
         physicsEntity: parent,
-        mesh: openMesh,
         meshHandle: openHandle,
         revision: 2,
       })
@@ -308,7 +308,6 @@ it('atomically publishes colored physics and PBR apertures with matching shadow 
         world,
         entity,
         physicsEntity: parent,
-        mesh: closedMesh,
         meshHandle: closedHandle,
         materialIdentity: String(material),
         revision: 3,
@@ -338,7 +337,6 @@ it('atomically publishes colored physics and PBR apertures with matching shadow 
         world,
         entity,
         physicsEntity: parent,
-        mesh: closedMesh,
         meshHandle: closedHandle,
         revision: 4,
       })
@@ -372,7 +370,6 @@ it('atomically publishes colored physics and PBR apertures with matching shadow 
         world,
         entity,
         physicsEntity: parent,
-        mesh: openMesh,
         meshHandle: openHandle,
         revision: 5,
       })
@@ -433,7 +430,6 @@ it('atomically publishes colored physics and PBR apertures with matching shadow 
           entity,
           physicsEntity: parent,
           revision: parentRevision,
-          mesh: openParent ? openMesh : closedMesh,
           meshHandle: openParent ? openHandle : closedHandle,
         })
         .unwrap(),
@@ -443,7 +439,6 @@ it('atomically publishes colored physics and PBR apertures with matching shadow 
           entity: peerMesh,
           physicsEntity: peer,
           revision: peerRevision,
-          mesh: openParent ? closedMesh : openMesh,
           meshHandle: openParent ? closedHandle : openHandle,
           materialIdentity: String(material),
         })

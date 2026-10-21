@@ -217,7 +217,12 @@ export async function verifyTaaStabilityFeedback(
         const value = clippingCycle ? (frame >= 528 ? 0 : Number(frame % 8 !== 2)) : frame % 2;
         const settled = Math.max(0, Math.min(1, (frame - 16 - 64) / 64));
         const steadyWeight = 0.95 + 0.04 * settled * settled * (3 - 2 * settled);
-        const weight = Math.min(steadyWeight, frame / (frame + 1));
+        // The frame-16 rejection starts a fresh local sample cycle. A global
+        // frame index must not retain moving/invalid history during its first
+        // eight accepted stationary samples; keep the independent Karis oracle.
+        const localAge = frame - 16;
+        const sampleAge = localAge < 8 ? Math.max(localAge, 1) : frame;
+        const weight = Math.min(steadyWeight, sampleAge / (sampleAge + 1));
         const a = (1 - weight) / (1 + value);
         const b = weight / (1 + reference);
         reference = frame === 16 ? value : (value * a + reference * b) / (a + b);
@@ -304,10 +309,10 @@ export async function verifyTaaStabilityFeedback(
         if (frame === 529) {
           const half = result[0];
           if (half === undefined) throw new Error('Missing post-motion color');
-          const actual = (1 + (half & 1023) / 1024) * 2 ** ((half >>> 10) - 15);
-          // A fresh white sample after reactive black must use fast 0.95
-          // feedback, not the previously settled 0.99 history weight.
-          expect(actual).toBeCloseTo(0.025 / 0.975, 4);
+          // One accepted white and one reactive black sample have equal
+          // temporal weight; Karis luminance weighting yields 1/3. Stochastic
+          // FP16 rounding admits only its two neighboring encodings.
+          expect([0x3555, 0x3556]).toContain(half);
         }
         const expectedAge = Math.min(frame - 528, 128);
         expect(

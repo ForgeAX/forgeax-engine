@@ -1,7 +1,9 @@
-import { AssetRegistry } from '@forgeax/engine-assets-runtime';
 import { ImporterRegistry, type RunImportMeta, runImport } from '@forgeax/engine-import';
-import type { MeshAsset } from '@forgeax/engine-types';
 import { describe, expect, it } from 'vitest';
+import {
+  importedMesh,
+  importedSource,
+} from '../../../import/src/__tests__/fixtures/runtime-import';
 import { fbxImporter } from '../fbx-importer.js';
 import { initFbxWasm, parseFbx } from '../index.js';
 
@@ -52,26 +54,21 @@ describe('real FBX BlendShape import through ufbx WASM', () => {
     if (!result.ok || 'skipped' in result.value) throw new Error('expected FBX DDC pack');
     const entry = result.value.pack.assets.find((asset) => asset.guid === MESH_GUID);
     expect(entry?.kind).toBe('mesh');
-    const payload = entry?.payload as {
-      readonly vertices: readonly number[];
-      readonly morphTargets?: readonly { readonly position?: readonly number[] }[];
-      readonly morphWeights?: readonly number[];
-    };
+    if (!entry) throw new Error('missing mesh');
+    expect(entry.payload).toEqual({ kind: 'mesh' });
+    const payload = importedMesh(entry);
     expect(payload.morphTargets).toHaveLength(2);
     expect(payload.morphTargets?.map((target) => target.position?.length)).toEqual([9, 9]);
-    expect(payload.morphWeights).toEqual([0.25, 0.5]);
+    expect(Array.from(payload.morphWeights ?? [])).toEqual([0.25, 0.5]);
     expect(payload.vertices.length).toBe(3 * 12);
 
-    const runtime = new AssetRegistry({} as never);
-    const parsedMesh = runtime.parseAssetPayload('mesh', entry?.payload ?? {});
-    expect(parsedMesh).toMatchObject({ kind: 'mesh' });
-    expect(runtime.catalog(MESH_GUID, parsedMesh as never).ok).toBe(true);
-    const loaded = await runtime.loadByGuid<MeshAsset>(runtime.parseGuid(MESH_GUID));
-    expect(loaded.ok).toBe(true);
-    if (!loaded.ok) return;
-    expect(loaded.value.kind).toBe('mesh');
-    expect(Array.from(loaded.value.morphWeights ?? [])).toEqual([0.25, 0.5]);
-    expect(loaded.value.morphTargets).toHaveLength(2);
+    const { assets } = importedSource(result.value.pack);
+    const handle = (await assets.load(MESH_GUID, 'mesh')).unwrap();
+    const loaded = assets.read(handle).unwrap();
+    expect(loaded.kind).toBe('mesh');
+    expect(Array.from(loaded.morphWeights ?? [])).toEqual([0.25, 0.5]);
+    expect(loaded.morphTargets).toHaveLength(2);
+    assets.dispose();
   });
 
   it('records that this real fixture has no imported animation clip', async () => {

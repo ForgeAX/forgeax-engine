@@ -767,6 +767,8 @@ async function createBenchmarkFixture(exactBuild) {
 
   const shim = await setupGpuShim({ width: 200, height: 150, rerunCmd: 'pnpm --filter @forgeax/hello-lod-occlusion bench:json' });
   const { constructRuntimeRendererHost } = await import('@forgeax/engine-runtime/internal/renderer-host');
+  const { defaultAssetDecoderContributions } = await import('@forgeax/engine-runtime');
+  const { AssetRegistry } = await import('@forgeax/engine-assets-runtime');
   const { createWorldContext, World } = await import('@forgeax/engine-ecs');
   const { AssetGuid } = await import('@forgeax/engine-pack/guid');
   const { Camera, DirectionalLight, Materials, MeshFilter, MeshRenderer, renderComponentsPlugin } = await import('@forgeax/engine-render');
@@ -797,32 +799,9 @@ async function createBenchmarkFixture(exactBuild) {
   renderer.subscribe((event) => {
     if (event.kind === 'error') rendererErrors.push(event.error);
   });
-  assets.configurePackIndex('/pack-index.json');
   const meta = JSON.parse(readFileSync(resolve(appRoot, 'assets/lod-scene.gltf.meta.json'), 'utf8'));
   const sceneGuid = parseGuid(AssetGuid, guidFor(meta, 'scene'));
   const rootGuid = parseGuid(AssetGuid, guidFor(meta, 'mesh', 0));
-  const scene = await assets.loadByGuid(sceneGuid);
-  if (!scene.ok) throw new Error(`scene load failed: ${scene.error.code}`);
-  const rootMesh = await assets.loadByGuid(rootGuid);
-  if (!rootMesh.ok) throw new Error(`root mesh load failed: ${rootMesh.error.code}`);
-
-  const { lods: _lods, lodHysteresis: _lodHysteresis, ...plainMesh } = rootMesh.value;
-  void _lods;
-  void _lodHysteresis;
-  const firstImportedLod = rootMesh.value.lods?.[0];
-  if (firstImportedLod === undefined) throw new Error('LOD fixture has no imported lower level');
-  if (1 + (rootMesh.value.lods?.length ?? 0) !== BENCHMARK_LOD_LEVEL_SLOTS) {
-    throw new Error(`LOD fixture must carry ${BENCHMARK_LOD_LEVEL_SLOTS} levels`);
-  }
-  // The LOD0-only control keeps one real imported relation so it exercises the
-  // same GPU candidate path, but its first transition is below every
-  // positive projected height in the locked view. The shared CPU/GPU selector
-  // therefore selects root geometry on every frame while retaining valid,
-  // strictly decreasing coverage metadata.
-  const rootPinnedMesh = {
-    ...rootMesh.value,
-    lods: [{ ...firstImportedLod, screenCoverage: 1e-6 }],
-  };
   const benchmarkMaterial = Materials.standard({
     baseColor: [0.2, 0.6, 0.95, 1],
     roughness: 0.5,
@@ -835,7 +814,8 @@ async function createBenchmarkFixture(exactBuild) {
 
   function populateBenchmarkWorld(
     world,
-    meshAsset,
+    meshHandle,
+    plainMesh,
     {
       includeOccluder = true,
       candidateCount = BENCHMARK_CANDIDATES,
@@ -846,14 +826,13 @@ async function createBenchmarkFixture(exactBuild) {
       candidateScale = BENCHMARK_CANDIDATE_SCALE,
     } = {},
   ) {
-    const meshHandle = world.allocSharedRef('MeshAsset', meshAsset);
-    const materialHandle = world.allocSharedRef('MaterialAsset', benchmarkMaterial);
+    const materialHandle = world.assets.create(benchmarkMaterial).unwrap();
     // The occluder is deliberately the same imported root payload with its
     // LOD policy stripped. It remains real geometry, but is not itself a LOD
     // candidate, so the inspection workload is exactly the locked candidate count.
     if (includeOccluder) {
-      const occluderMeshHandle = world.allocSharedRef('MeshAsset', plainMesh);
-      const occluderMaterialHandle = world.allocSharedRef('MaterialAsset', occluderMaterial);
+      const occluderMeshHandle = world.assets.create(plainMesh).unwrap();
+      const occluderMaterialHandle = world.assets.create(occluderMaterial).unwrap();
       world
         .spawn(
           // The locked hidden band is central (x≈[-0.2,0.2], y≈[-0.3,0.3]).
@@ -866,6 +845,8 @@ async function createBenchmarkFixture(exactBuild) {
           { component: MeshRenderer, data: { materials: [occluderMaterialHandle] } },
         )
         .unwrap();
+      world.assets.release(occluderMeshHandle).unwrap();
+      world.assets.release(occluderMaterialHandle).unwrap();
     }
     for (let index = 0; index < candidateCount; index += 1) {
       const visible =
@@ -894,6 +875,7 @@ async function createBenchmarkFixture(exactBuild) {
         { component: MeshRenderer, data: { materials: [materialHandle] } },
       ).unwrap();
     }
+    world.assets.release(materialHandle).unwrap();
     const cameraEntity = world.spawn(
       { component: Transform, data: { pos: [0, 0, 12] } },
       { component: Camera, data: { fov: Math.PI / 4, aspect: 4 / 3, near: 0.1, far: 100 } },
@@ -902,27 +884,55 @@ async function createBenchmarkFixture(exactBuild) {
     return cameraEntity;
   }
 
-  async function createBenchmarkWorld(meshAsset, options = {}, targetRenderer = renderer) {
-    const world = new World();
+  async function createBenchmarkWorld({ lod0Only = false, ...options } = {}) {
+    // Worlds share shader descriptions and the Renderer, but own their complete
+    // runtime source closures: a mesh's LOD references belong to the same owner.
+    const worldAssets = new AssetRegistry({ shaderRegistry: assets.shaderRegistry });
+    for (const contribution of defaultAssetDecoderContributions)
+      worldAssets.installDecoder(contribution.kind, contribution.decoder);
+    const world = new World({ assets: worldAssets });
     await createWorldContext(world, [renderComponentsPlugin(), scenePlugin()]);
-    const cameraEntity = populateBenchmarkWorld(world, meshAsset, options);
+    worldAssets.configurePackIndex('/pack-index.json');
+    const scene = await worldAssets.load(sceneGuid, 'scene');
+    if (!scene.ok) throw new Error(`scene load failed: ${JSON.stringify(scene.error)}`, { cause: scene.error });
+    const rootMesh = await worldAssets.load(rootGuid, 'mesh');
+    if (!rootMesh.ok) throw new Error(`root mesh load failed: ${JSON.stringify(rootMesh.error)}`, { cause: rootMesh.error });
+    worldAssets.release(scene.value).unwrap();
+    const rootMeshValue = worldAssets.read(rootMesh.value).unwrap();
+    const { lods, lodHysteresis: _lodHysteresis, ...plainMesh } = rootMeshValue;
+    void _lodHysteresis;
+    if (lods?.[0] === undefined) throw new Error('LOD fixture has no imported lower level');
+    if (1 + lods.length !== BENCHMARK_LOD_LEVEL_SLOTS) {
+      throw new Error(`LOD fixture must carry ${BENCHMARK_LOD_LEVEL_SLOTS} levels`);
+    }
+    // Keep the imported relation on the LOD0 control, with its transition below
+    // every positive projected height in the locked view.
+    const meshHandle = lod0Only
+      ? worldAssets.create({
+          ...rootMeshValue,
+          lods: [{ ...lods[0], screenCoverage: 1e-6 }],
+        }).unwrap()
+      : rootMesh.value;
+    const cameraEntity = populateBenchmarkWorld(world, meshHandle, plainMesh, options);
     void cameraEntity;
-    const attachment = targetRenderer.attach(world);
+    worldAssets.release(rootMesh.value).unwrap();
+    if (lod0Only) worldAssets.release(meshHandle).unwrap();
+    const attachment = renderer.attach(world);
     if (!attachment.ok) throw attachment.error;
     return { world, lease: attachment.value };
   }
 
-  const treatment = await createBenchmarkWorld(rootMesh.value);
+  const treatment = await createBenchmarkWorld();
   // Baseline is the root-pinned LOD0 control: it keeps the authored relation
   // and candidate path but selects root geometry on every frame, with no
   // occluder. This makes the CPU A/B comparison isolate the visibility work
   // instead of measuring the selector's fixed bookkeeping twice. The
   // occlusion-only probe below uses the same root-pinned policy while adding
   // the real imported occluder.
-  const baseline = await createBenchmarkWorld(rootPinnedMesh, { includeOccluder: false });
+  const baseline = await createBenchmarkWorld({ lod0Only: true, includeOccluder: false });
   // Calibration is only needed before the production A/B. Keep it out of the
   // long-lived renderer/world set once the sentinel result is recorded.
-  let calibration = await createBenchmarkWorld(rootMesh.value, {
+  let calibration = await createBenchmarkWorld({
     candidateCount: 2,
     placement: 'calibration',
     includeOccluder: true,
@@ -941,8 +951,8 @@ async function createBenchmarkFixture(exactBuild) {
       return auxiliaryWorlds;
     }
     const startedAt = performance.now();
-    auxiliaryWorlds.lodOnly = await createBenchmarkWorld(rootMesh.value, { includeOccluder: false });
-    auxiliaryWorlds.occlusionOnly = await createBenchmarkWorld(rootPinnedMesh, { includeOccluder: true });
+    auxiliaryWorlds.lodOnly = await createBenchmarkWorld({ includeOccluder: false });
+    auxiliaryWorlds.occlusionOnly = await createBenchmarkWorld({ lod0Only: true, includeOccluder: true });
     logProducerPhase('fixture', 'auxiliary-ready', {
       elapsedMs: Number((performance.now() - startedAt).toFixed(1)),
       worlds: ['lodOnly', 'occlusionOnly'],
@@ -987,6 +997,7 @@ async function createBenchmarkFixture(exactBuild) {
       const world = fixture[name];
       if (world === undefined) return;
       debugDrawHost.detachScene(world.world);
+      world.world.assets.dispose();
       fixture[name] = undefined;
     },
     treatment,
@@ -1001,6 +1012,7 @@ async function createBenchmarkFixture(exactBuild) {
       // by constructRuntimeRendererHost instead of reaching for a method that
       // does not exist on the public wrapper.
       debugDrawHost.detachScene(calibration.world);
+      calibration.world.assets.dispose();
       calibration = undefined;
     },
     async ensureAuxiliaryWorlds() {
@@ -1013,6 +1025,7 @@ async function createBenchmarkFixture(exactBuild) {
       const world = fixture[name];
       if (world === undefined) return;
       debugDrawHost.detachScene(world.world);
+      world.world.assets.dispose();
       fixture[name] = undefined;
       auxiliaryWorlds[name] = undefined;
     },
@@ -1861,6 +1874,11 @@ async function producePerformanceEvidence(exactBuild) {
     failure = error instanceof Error ? error.message : String(error);
   } finally {
     try {
+      await fixture.releaseCalibration();
+      fixture.releasePrimaryWorld('baseline');
+      fixture.releasePrimaryWorld('treatment');
+      fixture.releaseAuxiliaryWorld('lodOnly');
+      fixture.releaseAuxiliaryWorld('occlusionOnly');
       const disposed = await fixture.renderer.dispose();
       if (!disposed.ok) failure ??= `renderer dispose failed: ${disposed.error.code}`;
       fixture.shim.renderTarget?.destroy?.();

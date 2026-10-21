@@ -1,14 +1,15 @@
-import type { DispatchEntry, RenderableSnapshot } from '../render-system-extract';
+import type { DispatchEntry, DispatchList, RenderableSnapshot } from '../render-system-extract';
 import { renderableDrawKey } from '../scene/draw-key';
+import type { FrameList } from '../scene/frame-list';
 
 /** One retained index domain for auxiliary views and the display's selected draws. */
 export function projectCaptureScene(
   retained: {
-    readonly renderables: readonly RenderableSnapshot[];
-    readonly dispatch: readonly DispatchEntry[];
+    readonly renderables: FrameList<RenderableSnapshot>;
+    readonly dispatch: DispatchList;
   },
-  visible: readonly RenderableSnapshot[],
-  displayDispatch: readonly DispatchEntry[],
+  visible: FrameList<RenderableSnapshot>,
+  displayDispatch: DispatchList,
 ) {
   const renderables: RenderableSnapshot[] = [];
   const retainedIndices = new Map<number, number>();
@@ -19,19 +20,19 @@ export function projectCaptureScene(
     identityIndices.set(renderableDrawKey(row), renderables.length);
     renderables.push(row);
   }
-  const remap = (
-    entries: readonly DispatchEntry[],
-    indexFor: (index: number) => number | undefined,
-  ) =>
-    entries.flatMap((entry) => {
+  const remap = (entries: DispatchList, indexFor: (index: number) => number | undefined) => {
+    const result: DispatchEntry[] = [];
+    for (const entry of entries) {
       const index = indexFor(entry.renderableIndex);
-      return index === undefined ? [] : [{ ...entry, renderableIndex: index }];
-    });
+      if (index !== undefined) result.push({ ...entry, renderableIndex: index });
+    }
+    return result;
+  };
   return {
     renderables,
     captureDispatch: remap(retained.dispatch, (index) => retainedIndices.get(index)),
     displayDispatch: remap(displayDispatch, (index) => {
-      const row = visible[index];
+      const row = visible.at(index);
       return row === undefined ? undefined : identityIndices.get(renderableDrawKey(row));
     }),
   };

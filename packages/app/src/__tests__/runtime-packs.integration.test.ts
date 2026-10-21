@@ -77,7 +77,7 @@ it.each([
         independentConsumers: true,
         inheritedAnchor: true,
         recovered: mode.length > 0,
-        sharedRefsAfterClose: 0,
+        assetsAfterClose: 0,
       });
     }
   } finally {

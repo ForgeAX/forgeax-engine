@@ -3,10 +3,10 @@ import { materialProgramContextForPass } from '@forgeax/engine-pack/material-coo
 import {
   createMaterialProgramArtifactReceipt,
   GPU_DRIVEN_MATERIAL_ROW_BYTES,
-  type MaterialShaderArtifactReceipt,
 } from '@forgeax/engine-shader';
 import type {
   MaterialParameter,
+  MaterialProgramAbi,
   MaterialSurfaceProgramAbi,
   ParamSchemaEntry,
   ResolvedMaterial,
@@ -21,6 +21,7 @@ import {
   err,
   inferMaterialParameterKind,
   MATERIAL_NUMERIC_LAYOUT,
+  MATERIAL_SURFACE_MODEL_PASSES,
   MATERIAL_TEXTURE_LAYOUT,
   type MaterialError,
   type MaterialParameterProjection,
@@ -41,6 +42,7 @@ import { validateMaterialProgramBindings } from './resource-contract.js';
 import { lowerSceneMaterialAddresses } from './scene-material-address.js';
 import type { MaterialSourceCatalog } from './source-catalog.js';
 import { deriveSurfaceShadowPasses } from './surface-shadow';
+import { terrainProgramSource } from './terrain-program.js';
 import {
   DEFAULT_MATERIAL_VARIANT_CONTEXT,
   lowerMaterialVariantContext,
@@ -71,7 +73,7 @@ export interface MaterialCookedPass {
   readonly sceneCompile?: CompileResult;
   readonly layoutIdentity: string;
   /** Reflected direct ABI; a scene-index entry exists only when separately compiled. */
-  readonly abi: MaterialShaderArtifactReceipt;
+  readonly abi: MaterialProgramAbi;
   /**
    * Whether the composed Surface reads `SurfaceInput.vertexColor`. Omitted
    * for programs without a Surface slot, whose consumption is unknown.
@@ -109,7 +111,7 @@ function surfaceProgramAbi(
         : 'SurfaceInput',
     outputAbi:
       declaration.model === 'single-layer-medium' ? 'SingleLayerMediumSurfaceData' : 'SurfaceData',
-    passes: declaration.model === 'single-layer-medium' ? ['nearest-layer', 'color'] : ['color'],
+    passes: MATERIAL_SURFACE_MODEL_PASSES[declaration.model],
     ...(layout === undefined
       ? {}
       : {
@@ -298,7 +300,7 @@ export function generateParameterModule(
       } else {
         declarations.set(
           resource.binding,
-          `@group(1) @binding(${resource.binding}) var ${resource.name} : array<u32>;`,
+          `@group(1) @binding(${resource.binding}) var<storage, read> ${resource.name} : array<vec4<u32>>;`,
         );
       }
     }
@@ -761,12 +763,27 @@ export async function cookMaterialAsset(
   const resolvedAsset = deriveSurfaceShadowPasses(
     selectMaterialStaticContract(resolved.value.asset),
   );
-  for (const pass of resolvedAsset.passes ?? []) {
+  // Fixed Engine Terrain identities survive publication and runtime admission.
+  // Only compilation expands their Standard template and Surface composition.
+  const passes = resolvedAsset.passes?.map((pass) => {
+    const terrain = terrainProgramSource(pass.program.module);
+    return terrain === undefined
+      ? pass
+      : {
+          ...pass,
+          program: {
+            ...pass.program,
+            module: terrain.module,
+            moduleSlots: { surface: terrain.surface, ...pass.program.moduleSlots },
+          },
+        };
+  });
+  for (const pass of passes ?? []) {
     const outputs = validateMaterialOutputs(pass.outputs, request.material, pass.name);
     if (!outputs.ok) return outputs;
   }
   const parameters = resolvedAsset.parameters ?? [];
-  const loweredContract = lowerStandardContract(parameters, resolvedAsset.passes, request.material);
+  const loweredContract = lowerStandardContract(parameters, passes, request.material);
   if (!loweredContract.ok) return loweredContract;
   const { layerPlan } = loweredContract.value;
   const schema = ok(loweredContract.value.paramSchema);
@@ -775,13 +792,13 @@ export async function cookMaterialAsset(
   const generatedModule = generateParameterModule(schema.value);
   const cooked: MaterialCookedPass[] = [];
   const materialHasSceneIndex =
-    resolvedAsset.passes?.some((pass) => {
+    passes?.some((pass) => {
       if (pass.program.module === 'forgeax::default-shadow-caster') return false;
       const source = request.sources.get(pass.program.module);
       return source.ok && sceneIndexEntry(source.value.source) !== undefined;
     }) === true;
 
-  for (const pass of resolvedAsset.passes ?? []) {
+  for (const pass of passes ?? []) {
     const tags = pass.renderState?.tags as Readonly<Record<string, unknown>> | undefined;
     const lightMode = tags?.LightMode ?? pass.name;
     const context = materialProgramContextForPass(
@@ -820,8 +837,7 @@ export async function cookMaterialAsset(
       standardTemplate ||
       (shadowTemplate &&
         (pass.program.moduleSlots?.surface !== undefined ||
-          resolvedAsset.passes?.some((entry) => isStandardRootModule(entry.program.module)) ===
-            true));
+          passes?.some((entry) => isStandardRootModule(entry.program.module)) === true));
     const sceneSurfaceTemplate =
       standardSurfaceTemplate || mediumSurfaceTemplate || (shadowTemplate && materialHasSceneIndex);
     const usesSurfaceSlot = sourceRecord.value.slots.includes('surface');
@@ -1184,87 +1200,92 @@ export async function cookMaterialAsset(
         },
       });
     }
-    let abi: MaterialShaderArtifactReceipt | undefined;
-    // Cooked Standard and shadow programs publish their selected schema and
-    // actual entry inputs. The fixed-layout Engine shader receipt is not their
-    // ABI: static features and Surface coverage can remove fields and streams.
-    if (sceneSurfaceTemplate && hasSceneIndexEntry && mediumSurface) {
-      try {
-        const sceneReflection = sceneCompiled ?? compiled.value;
-        const storageFailure = validateSceneIndexStorage(
-          undefined,
-          {
-            boundGlobals: sceneReflection.reflection.boundGlobals,
-            bindings: sceneReflection.bindings,
-          },
-          sceneRowStride,
-          visibleItemsBinding,
-        );
-        if (storageFailure !== undefined) throw sceneIndexAbiError(storageFailure);
-        const directVertexInputs = materialVertexInputs(
-          compiled.value.wgsl,
-          pass.program.vertexEntry ?? 'vs_main',
-        );
-        const sceneVertexInputs = materialVertexInputs(
-          sceneCompiled?.wgsl ?? compiled.value.wgsl,
-          declaredSceneIndexEntry ?? 'vs_scene_index',
-        );
-        if (!sameVertexInputs(directVertexInputs, sceneVertexInputs)) {
-          throw new Error('direct and scene-index vertex inputs differ');
-        }
-        const publishedSurface = surfaceProgramAbi(resolved.value.asset);
-        if (publishedSurface === undefined) {
-          throw new Error('single-layer medium material must publish a Surface ABI');
-        }
-        abi = createMaterialProgramArtifactReceipt({
-          schema: schema.value,
-          directEntry: pass.program.vertexEntry ?? 'vs_main',
-          sceneIndexEntry: declaredSceneIndexEntry ?? 'vs_scene_index',
-          vertexInputs: directVertexInputs,
-          rowStride: sceneRowStride,
-          surface: publishedSurface,
-        });
-      } catch (error) {
-        if (error instanceof ShaderError) return err(error);
-        return err(
-          new ShaderError({
-            code: 'shader-compile-failed',
-            expected: `single-layer medium scene-index material with a ${GPU_DRIVEN_MATERIAL_ROW_BYTES}-byte opaque GPU Scene row`,
-            message: error instanceof Error ? error.message : String(error),
-            hint: 'keep the medium template scene-index declarations and both nearest-layer/color Surface passes intact',
-          }),
+    const abiKind =
+      sceneSurfaceTemplate && hasSceneIndexEntry && mediumSurface
+        ? 'medium'
+        : standardSurfaceTemplate && !mediumSurface
+          ? 'standard'
+          : hasSceneIndexEntry
+            ? 'custom-scene'
+            : 'direct';
+    const directEntry = pass.program.vertexEntry ?? 'vs_main';
+    let abi: MaterialProgramAbi;
+    try {
+      if (
+        abiKind === 'custom-scene' &&
+        !hasSceneIndexMaterialAccess(
+          `${loweredSource}\n${Object.values(compileImports).join('\n')}`,
+        )
+      ) {
+        throw new Error(
+          'scene-index entry must read visibleItems and sceneMaterials through the published GPU Scene indices',
         );
       }
-    } else if (standardSurfaceTemplate && !mediumSurface) {
-      const directEntry = pass.program.vertexEntry ?? 'vs_main';
-      const vertexInputs = materialVertexInputs(compiled.value.wgsl, directEntry);
+      // Generic direct programs retain reflected stream names. Every other
+      // family uses the same paired-entry geometry and storage admission.
+      let vertexInputs =
+        abiKind === 'standard' ? materialVertexInputs(compiled.value.wgsl, directEntry) : undefined;
       if (sceneCompiled !== undefined) {
         const storageFailure = validateSceneIndexStorage(
-          derived,
-          {
-            boundGlobals: sceneCompiled.reflection.boundGlobals,
-            bindings: sceneCompiled.bindings,
-          },
+          abiKind === 'medium' ? undefined : derived,
+          { boundGlobals: sceneCompiled.reflection.boundGlobals, bindings: sceneCompiled.bindings },
           sceneRowStride,
           visibleItemsBinding,
         );
         if (storageFailure !== undefined) return err(sceneIndexAbiError(storageFailure));
+      }
+      vertexInputs ??= materialVertexInputs(compiled.value.wgsl, directEntry, abiKind !== 'direct');
+      if (sceneCompiled !== undefined) {
         if (
           !sameVertexInputs(
             vertexInputs,
             materialVertexInputs(sceneCompiled.wgsl, 'vs_scene_index'),
           )
-        )
+        ) {
+          if (abiKind === 'standard')
+            return err(
+              new ShaderError({
+                code: 'shader-compile-failed',
+                expected: 'matching direct and scene-index vertex inputs',
+                message: 'Standard direct and scene-index vertex inputs differ',
+                hint: 'keep the selected Surface geometry contract identical across address modes',
+              }),
+            );
+          throw new Error('direct and scene-index vertex inputs differ');
+        }
+      }
+      const publishedSurface =
+        abiKind === 'direct' ? undefined : surfaceProgramAbi(resolved.value.asset);
+      if (abiKind === 'medium' && publishedSurface === undefined)
+        throw new Error('single-layer medium material must publish a Surface ABI');
+      let skinPaletteAddress: MaterialProgramAbi['skinPaletteAddress'];
+      if (abiKind === 'direct') {
+        const palette = compiled.value.reflection.boundGlobals.find(
+          (global) => global.group === 2 && global.binding === 1,
+        );
+        const usesSkin = vertexInputs.some((input) => input.semantic === 'skinIndex');
+        if (usesSkin && palette?.elementStride !== 64)
           return err(
             new ShaderError({
               code: 'shader-compile-failed',
-              expected: 'matching direct and scene-index vertex inputs',
-              message: 'Standard direct and scene-index vertex inputs differ',
-              hint: 'keep the selected Surface geometry contract identical across address modes',
+              expected: 'the reflected material joint palette with a 64-byte matrix stride',
+              message: `invalid reflected palette stride: ${palette?.elementStride}`,
+              hint: 'repair the producer vertex and palette declarations before publication',
             }),
           );
-      }
-      const publishedSurface = surfaceProgramAbi(resolved.value.asset);
+        if (usesSkin && palette?.elementStride !== undefined)
+          skinPaletteAddress = {
+            group: palette.group,
+            binding: palette.binding,
+            stride: palette.elementStride,
+          };
+      } else if (
+        (abiKind === 'standard' && vertexInputs.some((input) => input.semantic === 'skinIndex')) ||
+        (abiKind === 'custom-scene' &&
+          context.geometry === 'skinned' &&
+          /\bpalette\b/.test(compiled.value.wgsl))
+      )
+        skinPaletteAddress = { group: 2, binding: 1, stride: 64 };
       abi = createMaterialProgramArtifactReceipt({
         schema: schema.value,
         directEntry,
@@ -1272,117 +1293,40 @@ export async function cookMaterialAsset(
         ...(declaredSceneIndexEntry === undefined
           ? {}
           : { sceneIndexEntry: declaredSceneIndexEntry, rowStride: sceneRowStride }),
-        ...(schema.value.some((parameter) => parameter.name === 'alphaCutoff') &&
+        ...(abiKind === 'standard' &&
+        schema.value.some((parameter) => parameter.name === 'alphaCutoff') &&
         composedSurfaceModule !== 'forgeax_material::opaque_surface'
           ? { alphaMask: { cutoff: 'alphaCutoff', source: 'baseColor.a' } }
           : {}),
-        ...(vertexInputs.some((input) => input.semantic === 'skinIndex')
-          ? { skinPaletteAddress: { group: 2, binding: 1, stride: 64 } }
-          : {}),
+        ...(skinPaletteAddress === undefined ? {} : { skinPaletteAddress }),
         ...(publishedSurface === undefined ? {} : { surface: publishedSurface }),
       });
-    } else if (hasSceneIndexEntry) {
-      try {
-        if (
-          !hasSceneIndexMaterialAccess(
-            `${loweredSource}\n${Object.values(compileImports).join('\n')}`,
-          )
-        ) {
-          throw new Error(
-            'scene-index entry must read visibleItems and sceneMaterials through the published GPU Scene indices',
-          );
-        }
-        const sceneReflection = sceneCompiled ?? compiled.value;
-        const storageFailure = validateSceneIndexStorage(
-          derived,
-          {
-            boundGlobals: sceneReflection.reflection.boundGlobals,
-            bindings: sceneReflection.bindings,
-          },
-          sceneRowStride,
-          visibleItemsBinding,
-        );
-        if (storageFailure !== undefined) throw sceneIndexAbiError(storageFailure);
-        const directVertexInputs = materialVertexInputs(
-          compiled.value.wgsl,
-          pass.program.vertexEntry ?? 'vs_main',
-        );
-        const sceneVertexInputs = materialVertexInputs(
-          sceneCompiled?.wgsl ?? compiled.value.wgsl,
-          declaredSceneIndexEntry ?? 'vs_scene_index',
-        );
-        if (!sameVertexInputs(directVertexInputs, sceneVertexInputs)) {
-          throw new Error('direct and scene-index vertex inputs differ');
-        }
-        const publishedSurface = surfaceProgramAbi(resolved.value.asset);
-        abi = createMaterialProgramArtifactReceipt({
-          schema: schema.value,
-          directEntry: pass.program.vertexEntry ?? 'vs_main',
-          sceneIndexEntry: declaredSceneIndexEntry ?? 'vs_scene_index',
-          vertexInputs: directVertexInputs,
-          ...(context.geometry === 'skinned' && /\bpalette\b/.test(compiled.value.wgsl)
-            ? { skinPaletteAddress: { group: 2, binding: 1, stride: 64 } }
-            : {}),
-          rowStride: sceneRowStride,
-          ...(publishedSurface === undefined ? {} : { surface: publishedSurface }),
-        });
-      } catch (error) {
-        if (error instanceof ShaderError) return err(error);
-        return err(
-          new ShaderError({
-            code: 'shader-compile-failed',
-            expected: `custom scene-index material schema that fits the ${GPU_DRIVEN_MATERIAL_ROW_BYTES}-byte GPU Scene row`,
-            message: error instanceof Error ? error.message : String(error),
-            hint: 'reduce the published parameter schema or keep this material on its direct/specialized lane',
-          }),
-        );
-      }
-    }
-    // Every selected direct entry publishes actual vertex and parameter facts.
-    // Mixing a custom direct pass with an Engine shadow must not leave a
-    // partial modern publication. No scene-index entry is inferred here.
-    if (abi === undefined) {
-      // Generic direct programs own their reflected stream names. Optional
-      // particle lanes do not decide whether location 4 means joint indices.
-      const vertexInputs = materialVertexInputs(
-        compiled.value.wgsl,
-        pass.program.vertexEntry ?? 'vs_main',
-        false,
+    } catch (error) {
+      if (abiKind !== 'medium' && abiKind !== 'custom-scene') throw error;
+      if (error instanceof ShaderError) return err(error);
+      return err(
+        new ShaderError({
+          code: 'shader-compile-failed',
+          expected:
+            abiKind === 'medium'
+              ? `single-layer medium scene-index material with a ${GPU_DRIVEN_MATERIAL_ROW_BYTES}-byte opaque GPU Scene row`
+              : `custom scene-index material schema that fits the ${GPU_DRIVEN_MATERIAL_ROW_BYTES}-byte GPU Scene row`,
+          message: error instanceof Error ? error.message : String(error),
+          hint:
+            abiKind === 'medium'
+              ? 'keep the medium template scene-index declarations and both nearest-layer/color Surface passes intact'
+              : 'reduce the published parameter schema or keep this material on its direct/specialized lane',
+        }),
       );
-      const palette = compiled.value.reflection.boundGlobals.find(
-        (global) => global.group === 2 && global.binding === 1,
-      );
-      const usesSkin = vertexInputs.some((input) => input.semantic === 'skinIndex');
-      if (usesSkin && palette?.elementStride !== 64) {
-        return err(
-          new ShaderError({
-            code: 'shader-compile-failed',
-            expected: 'the reflected material joint palette with a 64-byte matrix stride',
-            message: `invalid reflected palette stride: ${palette?.elementStride}`,
-            hint: 'repair the producer vertex and palette declarations before publication',
-          }),
-        );
-      }
-      abi = createMaterialProgramArtifactReceipt({
-        schema: schema.value,
-        directEntry: pass.program.vertexEntry ?? 'vs_main',
-        vertexInputs,
-        ...(usesSkin && palette?.elementStride !== undefined
-          ? {
-              skinPaletteAddress: {
-                group: palette.group,
-                binding: palette.binding,
-                stride: palette.elementStride,
-              },
-            }
-          : {}),
-      });
     }
 
     const bindingFailure = validateMaterialProgramBindings(pass.program, compiled.value.bindings);
     if (bindingFailure !== undefined) return err(bindingFailure);
     abi = {
       ...abi,
+      ...(compiled.value.reflection.entryPoints === undefined
+        ? {}
+        : { entryPoints: compiled.value.reflection.entryPoints }),
       ...(pass.program.bindings === undefined ? {} : { bindings: pass.program.bindings }),
       ...(pass.program.sceneDepth === undefined ? {} : { sceneDepth: pass.program.sceneDepth }),
     };

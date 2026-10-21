@@ -5,6 +5,7 @@ import { bytesToHex, utf8ToBytes } from '@noble/hashes/utils.js';
 import { deriveInstancesUnionBounds } from '../instances-derived-bounds';
 import { computeViewMatrix } from '../record/helpers';
 import type { CameraSnapshot } from '../render-contract';
+import type { MaterialSnapshot } from '../render-system-extract';
 import type { PersistentGpuDrivenState } from '../scene/render-scene';
 import type { GpuDrivenBatch } from './batch-topology';
 
@@ -142,6 +143,7 @@ export function gbufferBatchDepth(
   slotAt: PersistentGpuDrivenState['slotAt'],
   view: Float32Array,
   reject?: (reason: string, source: Readonly<Record<string, unknown>>) => void,
+  material: MaterialSnapshot | undefined = undefined,
 ): number | undefined {
   let near = Infinity;
   let far = -Infinity;
@@ -159,20 +161,21 @@ export function gbufferBatchDepth(
       });
       return undefined;
     }
-    const material = source.materials[batch.key.materialSlot] ?? source.material;
+    const selectedMaterial =
+      material ?? (source.materials[batch.key.materialSlot] ?? source.material).snapshot;
     if (
-      typeof material.paramSnapshot?.displacementScale === 'number' &&
-      material.paramSnapshot.displacementScale !== 0
+      typeof selectedMaterial.paramSnapshot?.displacementScale === 'number' &&
+      selectedMaterial.paramSnapshot.displacementScale !== 0
     ) {
       reject?.('displacement', {
         primitiveIndex: candidate.primitiveIndex,
-        displacementScale: material.paramSnapshot.displacementScale,
-        displacementBias: material.paramSnapshot.displacementBias ?? null,
-        standardTextureMask: material.standardTextureMask ?? null,
-        materialHandle: material.materialHandle ?? null,
-        materialShaderId: material.materialShaderId ?? null,
+        displacementScale: selectedMaterial.paramSnapshot.displacementScale,
+        displacementBias: selectedMaterial.paramSnapshot.displacementBias ?? null,
+        standardTextureMask: selectedMaterial.standardTextureMask ?? null,
+        materialHandle: selectedMaterial.materialHandle ?? null,
+        materialShaderId: selectedMaterial.materialShaderId ?? null,
         displacementSchema:
-          material.materialParamSchema?.some(
+          selectedMaterial.materialParamSchema?.some(
             (entry) => entry.name === 'displacementTexture' && entry.type === 'texture2d',
           ) ?? false,
       });
@@ -189,9 +192,9 @@ export function gbufferBatchDepth(
         localAabb: source.localAabb === undefined ? null : Array.from(source.localAabb),
         world: Array.from(source.transform.world),
         instanceTransformLength: source.instances?.transforms.length ?? null,
-        materialHandle: material.materialHandle ?? null,
-        displacementScale: material.paramSnapshot?.displacementScale ?? null,
-        standardTextureMask: material.standardTextureMask ?? null,
+        materialHandle: selectedMaterial.materialHandle ?? null,
+        displacementScale: selectedMaterial.paramSnapshot?.displacementScale ?? null,
+        standardTextureMask: selectedMaterial.standardTextureMask ?? null,
       });
       return undefined;
     }

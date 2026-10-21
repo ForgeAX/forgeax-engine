@@ -17,15 +17,11 @@
 //          @forgeax/engine-image -- the build-time decoder reads the
 //          sidecar GUID + colorSpace + mipmap settings, returns
 //          DecodedImage POD.
-//      (b) catalog<TextureAsset>(woodGuid, texAsset) and mint the ECS handle;
+//      (b) assets.create(texture) returns the managed texture handle;
 //          the Standard host owns GPU residency and upload.
-//      (c) catalog<MeshAsset>(cubeGuid, cubeMesh) -- mirror of
-//          hello-room cube-mesh.stub.meta.json + cube-mesh.pack.json
-//          handle ordering.
-//      (d) catalog<MaterialAsset>(matGuid, unlitMat) carrying
-//          baseColorTexture: woodHandle reference.
-//      (e) await loadByGuid<MaterialAsset>(matGuid) + spawn entity +
-//          renderer.draw 300x.
+//      (c) assets.create(mesh) creates the cube geometry.
+//      (d) assets.create(material) binds baseColorTexture: woodHandle.
+//      (e) spawn the entity and complete the required render frames.
 //   4. copyTextureToBuffer + mapAsync multi-pixel grid (5 sites) +
 //      verdict: (a) backend=webgpu (b) frames>=60 (c) at least one
 //      meshed site distance to clear-color > eps (d) Renderer.onError
@@ -46,6 +42,10 @@ import { existsSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
 import { fileURLToPath } from 'node:url';
+import { AssetRegistry } from '@forgeax/engine-assets-runtime';
+
+import { createPrimitiveMesh } from '@forgeax/engine-geometry';
+
 
 const SMOKE_DURATION_MS = Number.parseInt(process.env.SMOKE_DURATION_MS ?? '5000', 10);
 const SMOKE_MIN_FRAMES = Number.parseInt(process.env.SMOKE_MIN_FRAMES ?? '60', 10);
@@ -200,9 +200,7 @@ const { constructRuntimeRendererHost } = await import('@forgeax/engine-runtime/i
 const { createShaderModule, rhi } = await import('@forgeax/engine-rhi-webgpu');
 const { Camera, DirectionalLight, MeshFilter, MeshRenderer } = await import('@forgeax/engine-render');
 const { Transform } = await import('@forgeax/engine-scene');
-const {
-  HANDLE_CUBE,
-} = await import('@forgeax/engine-assets-runtime');
+
 const { unwrapHandle } = await import('@forgeax/engine-types');
 
 const decodeRes = await decodeImageFromFile(CONTAINER_SRC_PATH);
@@ -260,36 +258,36 @@ const woodTexAsset = {
   colorSpace: woodDecoded.colorSpace,
   mips: woodDecoded.mipmap ? { kind: 'generate' } : { kind: 'none' },
 };
-assets.catalog(woodMeta.guid, woodTexAsset);
 
-const world = new World();
+const world = new World({ assets: assets });
+const sceneAssets = world.assets;
+if (!(sceneAssets instanceof AssetRegistry)) throw new Error('Scene requires its runtime asset owner');
+
+const primitiveCube = sceneAssets.create(createPrimitiveMesh('cube').unwrap()).unwrap();
+
 const worldAttachment1 = renderer.attach(world);
 if (!worldAttachment1.ok) throw worldAttachment1.error;
 const lease = worldAttachment1.value;
-// Mint a user-tier column handle for the wood texture (M8 D-17); the
-// baseColorTexture slot carries the resolved numeric Handle via unwrapHandle.
-const woodTexHandle = unwrapHandle(world.allocSharedRef('TextureAsset', woodTexAsset));
-console.log(`[learn-render-textures] minted wood texture handle id=${woodTexHandle}`);
+// Create the managed texture handle consumed by baseColorTexture.
+const woodTexHandle = unwrapHandle(world.assets.create(woodTexAsset).unwrap());
+console.log(`[learn-render-textures] created wood texture handle id=${woodTexHandle}`);
 
-// Build the world: cube + camera + directional light. The cube uses
-// the engine builtin HANDLE_CUBE mesh + an unlit MeshRenderer
-// pointing at a MaterialAsset whose baseColorTexture is the wood
-// handle. RenderSystem materialBindGroup picks up baseColorTexture
-// via AssetRegistry.getTextureGpuView (research F-6 fix).
-const woodMaterial = world.allocSharedRef('MaterialAsset', {
+// Build the World from the managed cube mesh, an unlit material referencing
+// the wood texture, a camera and a directional light.
+const woodMaterial = world.assets.create({
   kind: 'material',
   passes: [
     { name: 'Forward', program: { module: 'forgeax::default-unlit' }, renderState: { tags: { LightMode: 'Forward' } }, queue: 2000 },
   ],
   values: { baseColor: [1.0, 1.0, 1.0, 1.0], baseColorTexture: woodTexHandle },
-});
+}).unwrap();
 world.spawn(
   {
     component: Transform,
     data: {
       pos: [0, 0, 0], quat: [0, 0, 0, 1], scale: [1, 1, 1],},
   },
-  { component: MeshFilter, data: { assetHandle: HANDLE_CUBE } },
+  { component: MeshFilter, data: { assetHandle: primitiveCube } },
   {
     component: MeshRenderer,
     data: { materials: [woodMaterial] },

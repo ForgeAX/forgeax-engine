@@ -22,7 +22,7 @@ export interface RetainedEmitterResources {
   readonly views: Map<string, Map<number, RetainedProjectionResources>>;
 }
 
-export interface RetainedProjectionResources {
+interface RetainedProjectionResources {
   readonly batch?: VfxComputeBatchProgram;
   readonly program: string;
   readonly token: RenderFeatureNativeResourceDomain;

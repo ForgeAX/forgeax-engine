@@ -87,12 +87,12 @@ export async function scene(
       ? {}
       : { rhiInstrumentation: options.rhiInstrumentation }),
   });
-  const { renderer } = fixture;
+  const { renderer, assets } = fixture;
   const renderErrors: unknown[] = [];
   const offErrors = renderer.subscribe((event) => {
     if (event.kind === 'error') renderErrors.push(event.error);
   });
-  const world = new World();
+  const world = new World({ assets });
   const lease = renderValue(renderer.attach(world));
   const camera = world
     .spawn(
@@ -115,14 +115,15 @@ export async function scene(
       },
     )
     .unwrap();
-  const mesh = world.allocSharedRef('MeshAsset', createPlaneGeometry(1, 1).unwrap());
+  const mesh = assets.create(createPlaneGeometry(1, 1).unwrap()).unwrap();
   const moving = [];
   for (let i = 0; i < 36; i++) {
     const angle = (i % 6) * 0.12 + 0.13;
-    const material = world.allocSharedRef(
-      'MaterialAsset',
-      Materials.unlit([i % 3 === 0 ? 2 : 0.1, i % 3 === 1 ? 1 : 0.1, i % 3 === 2 ? 1 : 0.1, 1]),
-    );
+    const material = assets
+      .create(
+        Materials.unlit([i % 3 === 0 ? 2 : 0.1, i % 3 === 1 ? 1 : 0.1, i % 3 === 2 ? 1 : 0.1, 1]),
+      )
+      .unwrap();
     const entity = world
       .spawn(
         {

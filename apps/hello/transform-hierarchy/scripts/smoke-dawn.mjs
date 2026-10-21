@@ -44,6 +44,10 @@ import { dirname, resolve } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
 import { createReceipt } from './dataflow-receipt.mjs';
 import { smokeFrameBudget } from '../../../shared/scripts/smoke-receipt.mjs';
+import { createPrimitiveMesh } from '@forgeax/engine-geometry';
+const BUILTIN_CUBE = createPrimitiveMesh('cube').unwrap();
+const BUILTIN_SPHERE = createPrimitiveMesh('sphere').unwrap();
+
 
 const FLEET_FRAME_COUNT = smokeFrameBudget();
 
@@ -170,10 +174,7 @@ const { GlobalTransform,
   registerPropagateTransforms,
 } = await import('@forgeax/engine-scene');
 const { setMalformedParentEdge } = await import('./malformed-hierarchy-edge.mjs');
-const {
-  HANDLE_CUBE,
-  HANDLE_SPHERE,
-} = await import('@forgeax/engine-assets-runtime');
+
 
 const MANIFEST_PATH = resolve(here, '..', 'dist', 'shaders', 'manifest.json');
 const MANIFEST_URL = `data:application/json,${encodeURIComponent(readFileSync(MANIFEST_PATH, 'utf8'))}`;
@@ -202,11 +203,13 @@ if (!assets) {
 }
 
 
-// Mint standard PBR material as a user-tier shared ref (same as demo main.ts).
-const world = new World();
+// Create a managed standard PBR material, matching the demo.
+const world = new World({ assets });
+  const cubeHandle = assets.create(BUILTIN_CUBE).unwrap();
+  const sphereHandle = assets.create(BUILTIN_SPHERE).unwrap();
 const worldAttachment1 = renderer.attach(world);
 if (!worldAttachment1.ok) throw worldAttachment1.error;
-const materialHandle = world.allocSharedRef('MaterialAsset', {
+const materialHandle = assets.create({
   kind: 'material',
   passes: [
     {
@@ -220,7 +223,7 @@ const materialHandle = world.allocSharedRef('MaterialAsset', {
     metallic: 0.0,
     roughness: 0.4,
   },
-});
+}).unwrap();
 
 const device = sharedDevice;
 if (!device) {
@@ -244,7 +247,7 @@ const parent = world
       data: {
         pos: [PARENT_X_REST, -0.4, 0], quat: [0, 0, 0, 1], scale: [0.4, 0.4, 0.4],},
     },
-    { component: MeshFilter, data: { assetHandle: HANDLE_CUBE } },
+    { component: MeshFilter, data: { assetHandle: cubeHandle } },
     { component: MeshRenderer, data: { materials: [materialHandle] } },
   )
   .unwrap();
@@ -259,7 +262,7 @@ const child = world
       data: { pos: [0, 2.0, 0], quat: [0, 0, 0, 1], scale: [1, 1, 1]},
     },
     { component: ChildOf, data: { parent } },
-    { component: MeshFilter, data: { assetHandle: HANDLE_CUBE } },
+    { component: MeshFilter, data: { assetHandle: cubeHandle } },
     { component: MeshRenderer, data: { materials: [materialHandle] } },
   )
   .unwrap();
@@ -271,7 +274,7 @@ const staticSphere = world
       component: Transform,
       data: { pos: [1.4, 0.0, 0], quat: [0, 0, 0, 1], scale: [0.4, 0.4, 0.4]},
     },
-    { component: MeshFilter, data: { assetHandle: HANDLE_SPHERE } },
+    { component: MeshFilter, data: { assetHandle: sphereHandle } },
     { component: MeshRenderer, data: { materials: [materialHandle] } },
   )
   .unwrap();

@@ -20,7 +20,7 @@ import {
   currentProjectionFor,
   metaPathForGuid,
 } from '@forgeax/engine-pack/build';
-import { validatePluginAsset } from '@forgeax/engine-pack/runtime';
+import { decodeMaterialProgramWire, validatePluginAsset } from '@forgeax/engine-pack/runtime';
 import { declaredPackAssets, type ScanSourceDeclaration } from '@forgeax/engine-pack/scanner';
 import { projectDirectPackJson } from '@forgeax/engine-pack/source';
 import {
@@ -131,6 +131,36 @@ export function reloadAssetHost(): AssetHostRefreshPolicy {
   return (server) => server.ws?.send({ type: 'full-reload' });
 }
 
+/** @internal Inspect the complete delivered artifact closure before exposing a DDC body. */
+export function persistedArtifactPaths(pack: unknown): readonly string[] | undefined {
+  const decoded = decodeMaterialProgramWire(pack);
+  if (!decoded.ok) return undefined;
+  pack = decoded.value;
+  if (pack === null || typeof pack !== 'object' || !('assets' in pack)) return undefined;
+  const assets = (pack as { readonly assets?: unknown }).assets;
+  if (!Array.isArray(assets)) return undefined;
+  const paths: string[] = [];
+  for (const asset of assets) {
+    if (asset === null || typeof asset !== 'object' || !('artifacts' in asset)) return undefined;
+    const artifacts = (asset as { readonly artifacts?: unknown }).artifacts;
+    if (artifacts === null || typeof artifacts !== 'object' || Array.isArray(artifacts)) {
+      return undefined;
+    }
+    for (const descriptor of Object.values(artifacts)) {
+      if (
+        descriptor === null ||
+        typeof descriptor !== 'object' ||
+        !('path' in descriptor) ||
+        typeof (descriptor as { readonly path?: unknown }).path !== 'string'
+      ) {
+        return undefined;
+      }
+      paths.push((descriptor as { readonly path: string }).path);
+    }
+  }
+  return paths;
+}
+
 export function createPluginPackInternal(
   opts: PluginPackInternalOptions = {},
   internal: Pick<PluginPackInternalOptions, 'transportBase'> = {},
@@ -174,32 +204,6 @@ export function createPluginPackInternal(
     if (!url.startsWith(DEV_PACK_PREFIX) || !url.endsWith('.pack.json')) return undefined;
     const guid = url.slice(DEV_PACK_PREFIX.length, -'.pack.json'.length).toLowerCase();
     return guid.length === 0 || guid.includes('/') ? undefined : guid;
-  }
-
-  function persistedArtifactPaths(pack: unknown): readonly string[] | undefined {
-    if (pack === null || typeof pack !== 'object' || !('assets' in pack)) return undefined;
-    const assets = (pack as { readonly assets?: unknown }).assets;
-    if (!Array.isArray(assets)) return undefined;
-    const paths: string[] = [];
-    for (const asset of assets) {
-      if (asset === null || typeof asset !== 'object' || !('artifacts' in asset)) return undefined;
-      const artifacts = (asset as { readonly artifacts?: unknown }).artifacts;
-      if (artifacts === null || typeof artifacts !== 'object' || Array.isArray(artifacts)) {
-        return undefined;
-      }
-      for (const descriptor of Object.values(artifacts)) {
-        if (
-          descriptor === null ||
-          typeof descriptor !== 'object' ||
-          !('path' in descriptor) ||
-          typeof (descriptor as { readonly path?: unknown }).path !== 'string'
-        ) {
-          return undefined;
-        }
-        paths.push((descriptor as { readonly path: string }).path);
-      }
-    }
-    return paths;
   }
 
   function devArtifactClosureReady(body: string): boolean {
@@ -871,7 +875,15 @@ export function createPluginPackInternal(
           (await ensureMetaPackBody(row.packageUrl, serverLifecycle.runtimeBinding()));
         if (body === undefined)
           throw new TypeError(`${row.guid}: accepted plugin Pack body unavailable`);
-        const pack = JSON.parse(body);
+        const decoded = decodeMaterialProgramWire(JSON.parse(body));
+        if (!decoded.ok) throw new TypeError(`${row.guid}: invalid plugin Pack program table`);
+        const pack = decoded.value as {
+          assets: Array<{ guid: string; payload: unknown; refs: string[] }>;
+          scopeId: string;
+          generation: number;
+          digest: string;
+          outputSetDigest: string;
+        };
         const envelope = pack.assets.find((asset: { guid: string }) => asset.guid === row.guid);
         const asset = validatePluginAsset(envelope?.payload).unwrap();
         const { scopeId, generation, digest, outputSetDigest } = pack;
@@ -885,7 +897,7 @@ export function createPluginPackInternal(
             },
           },
           sourcePath: row.sourcePath,
-          refs: envelope.refs as string[],
+          refs: envelope?.refs ?? [],
         });
       }
       return definitions;

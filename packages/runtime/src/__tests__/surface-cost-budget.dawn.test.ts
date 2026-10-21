@@ -17,7 +17,10 @@ import { createDevImportTransport } from '../dev-import-transport';
 import { constructRuntimeRendererHost } from '../renderer-host';
 import { startSurfaceMaterialPublicationServer } from './material-publication.server';
 import { shaderManifestUrl as createShaderManifestUrl } from './shader-manifest-url.fixture';
-import { populateSurfaceWorld } from './surface-standard-pipeline.runtime-fixture';
+import {
+  loadSurfaceMaterial,
+  populateSurfaceWorld,
+} from './surface-standard-pipeline.runtime-fixture';
 
 const WATER_BLOCK_COUNTS = [2, 4, 8] as const;
 const EVENT_K_VALUES = [1, 2, 4] as const;
@@ -134,7 +137,7 @@ interface CostSample {
   readonly worldEntitiesScanned: number;
   readonly validatedGpuOwnedRows: number;
   readonly gpuOwnedEntityCount: number;
-  readonly candidateUploadBytes: number;
+  readonly sharedInputUploadBytes: number;
   readonly batchUploadBytes: number;
   readonly viewConstantsUploadBytes: number;
   readonly sceneTableUploadBytes: number;
@@ -173,7 +176,7 @@ function createBudgetCanvas(initial: Resolution): BudgetCanvas {
         configure(descriptor: { readonly device: GPUDevice; readonly format?: GPUTextureFormat }) {
           if (configured?.device !== descriptor.device) {
             canvas.target?.destroy();
-            canvas.target = undefined;
+            delete canvas.target;
             targetSize = { width: 0, height: 0 };
           }
           configured = {
@@ -430,18 +433,13 @@ describe('Surface water bounded cost budget', () => {
     });
     const { assets } = constructed.value;
     assets.configureRuntimeBinding(publicationServer.binding);
-    const catalogDeadline = Date.now() + 60_000;
-    while (!(await assets.refreshCatalog())) {
-      if (Date.now() >= catalogDeadline) throw new Error('surface-cost-budget: catalog timeout');
-      await new Promise<void>((resolve) => setTimeout(resolve, 20));
-    }
     const guid = AssetGuid.parse(publicationServer.guid);
     if (!guid.ok) throw guid.error;
-    const loaded = await assets.loadByGuid<MaterialAsset>(guid.value);
+    const loaded = await loadSurfaceMaterial(assets, guid.value);
     expect(loaded.ok, loaded.ok ? '' : inspectError(loaded.error)).toBe(true);
     if (!loaded.ok) throw loaded.error;
     const material = loaded.value;
-    const catalogRecord = assets.packIndexCache?.get(publicationServer.guid.toLowerCase());
+    const catalogRecord = assets.catalogEntry(publicationServer.guid);
     expect(catalogRecord).toBeDefined();
     const publicationIdentity = {
       guid: publicationServer.guid,
@@ -451,7 +449,7 @@ describe('Surface water bounded cost budget', () => {
       publication: catalogRecord?.publication ?? null,
     };
 
-    const world = new World();
+    const world = new World({ assets });
     const materials = Array.from({ length: 8 }, () => material);
     const { mediumMembers } = populateSurfaceWorld(world, materials);
     // Query rows are a reused mutable facade. The fixture already publishes
@@ -481,6 +479,7 @@ describe('Surface water bounded cost budget', () => {
       resolution: Resolution,
       captureTiming: boolean,
     ): Promise<CostSample> => {
+      if (canvas === undefined) throw new Error('missing Dawn canvas');
       canvas.width = resolution.width;
       canvas.height = resolution.height;
       frameTime += 1 / 60;
@@ -584,7 +583,7 @@ describe('Surface water bounded cost budget', () => {
         worldEntitiesScanned: gpuDriven.worldEntitiesScanned,
         validatedGpuOwnedRows: gpuDriven.validatedGpuOwnedRows,
         gpuOwnedEntityCount: gpuDriven.gpuOwnedEntityCount,
-        candidateUploadBytes: gpuDriven.candidateUploadBytes,
+        sharedInputUploadBytes: gpuDriven.sharedInputUploadBytes,
         batchUploadBytes: gpuDriven.batchUploadBytes,
         viewConstantsUploadBytes: gpuDriven.viewConstantsUploadBytes,
         sceneTableUploadBytes: gpuDriven.sceneTableUploadBytes,
@@ -651,7 +650,7 @@ describe('Surface water bounded cost budget', () => {
           surfaceDynamicInput: transition.dirtyUploadBytes,
           sceneTable: transition.sceneTableUploadBytes,
           palette: transition.paletteUploadBytes,
-          candidate: transition.candidateUploadBytes,
+          candidate: transition.sharedInputUploadBytes,
           batch: transition.batchUploadBytes,
           viewConstants: transition.viewConstantsUploadBytes,
         },
@@ -765,9 +764,15 @@ describe('Surface water bounded cost budget', () => {
     // Coverage, K, and resolution change the dynamic ranges but retain one
     // resource identity in this fixture. A second batch for the same identity
     // would indicate range/page data leaked into resource-class partitioning.
-    expect(measuredResourceClassSamples.every((sample) => sample.resourceClassCount === 1)).toBe(
-      true,
-    );
+    expect(
+      measuredResourceClassSamples.every((sample) => sample.resourceClassCount === 1),
+      JSON.stringify(
+        measuredResourceClassSamples.map(({ resourceClassCount, resourceClassSplits }) => ({
+          resourceClassCount,
+          resourceClassSplits,
+        })),
+      ),
+    ).toBe(true);
     expect(
       measuredResourceClassSamples.every((sample) => {
         const identities = new Set(

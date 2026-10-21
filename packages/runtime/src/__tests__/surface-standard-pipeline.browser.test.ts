@@ -1,6 +1,8 @@
 import { forgeaxBundlerAdapter } from 'virtual:forgeax/bundler';
 import { createRuntimeAssetImportTransport, runtimeBinding } from 'virtual:forgeax/pack-runtime';
+import type { AssetRegistry } from '@forgeax/engine-assets-runtime';
 import { World } from '@forgeax/engine-ecs';
+import { decodeMaterialProgramWire } from '@forgeax/engine-pack/runtime';
 import { type FrameReceipt, LightProbe, type Renderer } from '@forgeax/engine-render';
 import type { MaterialAsset } from '@forgeax/engine-types';
 import { afterEach, describe, expect, it } from 'vitest';
@@ -14,9 +16,11 @@ import {
   createSurfaceHostLossInstrumentation,
   createSurfaceSplashRuntimeHost,
   createSurfaceWaterInstanceTransforms,
+  loadSurfaceMaterial,
   parseSurfaceGuid,
   populateSurfaceWorld,
   runSurfaceAppLifecycle,
+  runSurfaceManagedMediumOracle,
   runSurfaceMsaaEdgeOracle,
   runSurfaceOpticalOracle,
   SURFACE_CASES,
@@ -136,29 +140,13 @@ function samplePresentedPixel(
   return readback.format.startsWith('bgra') ? [raw[2], raw[1], raw[0], raw[3]] : raw;
 }
 
-async function refreshSurfaceCatalog(
-  assets: { refreshCatalog(): Promise<boolean>; listCatalog(): readonly unknown[] },
+async function loadSurfaceCatalog(
+  assets: AssetRegistry,
   expectedGuids: readonly string[],
 ): Promise<readonly unknown[]> {
-  const deadline = Date.now() + 60_000;
-  while (Date.now() < deadline) {
-    await assets.refreshCatalog();
-    const catalog = assets.listCatalog();
-    const observed = new Set(
-      catalog
-        .filter((entry): entry is { guid: string } => {
-          return (
-            typeof entry === 'object' &&
-            entry !== null &&
-            'guid' in entry &&
-            typeof entry.guid === 'string'
-          );
-        })
-        .map((entry) => entry.guid.toLowerCase()),
-    );
-    if (expectedGuids.every((guid) => observed.has(guid.toLowerCase()))) return catalog;
-    await new Promise((resolve) => setTimeout(resolve, 250));
-  }
+  await Promise.all(
+    expectedGuids.map(async (guid) => (await assets.load(guid, 'material')).unwrap()),
+  );
   return assets.listCatalog();
 }
 
@@ -216,7 +204,7 @@ describe('Standard Surface runtime Browser WebGPU provenance', () => {
     renderer = runtimeHost.renderer;
     const assets = runtimeHost.assets;
     assets.configureRuntimeBinding(runtimeBinding);
-    const catalog = (await refreshSurfaceCatalog(
+    const catalog = (await loadSurfaceCatalog(
       assets,
       SURFACE_CASES.map((surfaceCase) => surfaceCase.guid),
     )) as readonly {
@@ -233,14 +221,17 @@ describe('Standard Surface runtime Browser WebGPU provenance', () => {
       expect(row?.packageUrl).toBeTruthy();
       const packageResponse = await fetch(row?.packageUrl ?? '');
       expect(packageResponse.ok).toBe(true);
-      const packageBody = await packageResponse.json();
+      const decoded = decodeMaterialProgramWire(await packageResponse.json());
+      expect(decoded.ok).toBe(true);
+      if (!decoded.ok) throw new Error(decoded.error.expected);
+      const packageBody = decoded.value;
       const publication = packageBody as {
         generation?: unknown;
         digest?: unknown;
       };
       expect(Number.isSafeInteger(publication.generation)).toBe(true);
       expect(typeof publication.digest).toBe('string');
-      const loaded = await assets.loadByGuid<MaterialAsset>(parseSurfaceGuid(surfaceCase.guid));
+      const loaded = await loadSurfaceMaterial(assets, parseSurfaceGuid(surfaceCase.guid));
       expect(loaded.ok).toBe(true);
       if (!loaded.ok) throw loaded.error;
       const material = assertMaterialPayload(surfaceCase, loaded.value);
@@ -261,9 +252,9 @@ describe('Standard Surface runtime Browser WebGPU provenance', () => {
       seenGuids.add(surfaceCase.guid);
     }
     const verifyAppLifecycle = async (queueVfxContinuationDuringLoss = false) => {
+      if (renderer === undefined) throw new Error('surface-standard: renderer unavailable');
       const evidence = await runSurfaceAppLifecycle({
         renderer,
-        materials,
         assets,
         vfxHost,
         hostLossSignals: hostLoss.signals,
@@ -422,7 +413,13 @@ describe('Standard Surface runtime Browser WebGPU provenance', () => {
         ...msaaEdgeEvidence,
       }),
     );
-    const world = new World();
+    const managedMedium = await runSurfaceManagedMediumOracle(renderer, assets);
+    expect(managedMedium).toHaveLength(4);
+    // biome-ignore lint/suspicious/noConsole: browser pixel falsifiers are gate evidence.
+    console.log(
+      JSON.stringify({ kind: 'managed-medium', backend: 'browser', records: managedMedium }),
+    );
+    const world = new World({ assets });
     const { mediumMembers, probeDomains } = populateSurfaceWorld(
       world,
       materials,
@@ -439,7 +436,7 @@ describe('Standard Surface runtime Browser WebGPU provenance', () => {
       if (event.kind === 'error') {
         renderErrors.push({
           code: event.error.code,
-          detail: event.error.detail,
+          detail: 'detail' in event.error ? event.error.detail : undefined,
           hint: event.error.hint,
         });
       }
@@ -627,6 +624,7 @@ describe('Standard Surface runtime Browser WebGPU provenance', () => {
     expect(
       directCommands?.some(
         (command) =>
+          (command.kind === 'draw' || command.kind === 'draw-indexed') &&
           command.surfaceFrameBase > 0 &&
           command.firstInstance === 0 &&
           command.memberIds.some((member) => {
@@ -640,8 +638,12 @@ describe('Standard Surface runtime Browser WebGPU provenance', () => {
     expect(laneReceipts.get(9)?.frameId).toBeGreaterThan(
       msaaEdgeEvidence.resized.fourX.receipt.frameId,
     );
-    expect(laneReceipts.get(19)?.frameId).toBeGreaterThan(laneReceipts.get(9)?.frameId);
-    expect(laneReceipts.get(29)?.frameId).toBeGreaterThan(laneReceipts.get(19)?.frameId);
+    expect(laneReceipts.get(19)?.frameId).toBeGreaterThan(
+      laneReceipts.get(9)?.frameId ?? Number.NaN,
+    );
+    expect(laneReceipts.get(29)?.frameId).toBeGreaterThan(
+      laneReceipts.get(19)?.frameId ?? Number.NaN,
+    );
     const directCold = laneRois.get(9);
     const gpu = laneRois.get(19);
     const directRestored = laneRois.get(29);

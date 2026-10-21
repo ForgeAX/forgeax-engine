@@ -1,7 +1,9 @@
 import { err, RhiError } from '@forgeax/engine-rhi';
 import { rhi } from '@forgeax/engine-rhi-null';
 import { expect, it, vi } from 'vitest';
+import { MaterialResource } from '../../material-resource';
 import type { DispatchEntry } from '../../render-system-extract';
+import { MaterialFrame } from '../../scene/material-dispatch';
 import { makeZeroCameraFallbackSnapshot } from '../frame-snapshot';
 import { recordGeometryDraws } from '../main-pass-geometry';
 import { CPU_SETUP_SHADER, cpuSetupFixture } from './main-pass-cpu-setup-fixture';
@@ -55,7 +57,8 @@ it.each([
       [0, next.mesh.vertexBuffer.handle],
     ]);
     expect(index).toHaveBeenCalledTimes(indexed ? 2 : 0);
-    expect(writes).toHaveBeenCalledTimes(1);
+    expect(writes.mock.calls.filter(([buffer]) => buffer !== f.meshUniformBuffer)).toHaveLength(1);
+    expect(writes.mock.calls.filter(([buffer]) => buffer === f.meshUniformBuffer)).toHaveLength(1);
     expect(draw.mock.calls).toEqual(
       indexed
         ? [
@@ -63,7 +66,7 @@ it.each([
             [3, 1, 0, 0, 0],
           ]
         : [
-            [3, 2, 0, 0],
+            [3, 2, 3, 0],
             [3, 1, 0, 0],
           ],
     );
@@ -78,18 +81,24 @@ it.each([
   }
 });
 
-it('prepares once and draws every submesh when nothing is claimed', async () => {
+it('prepares the retained mesh slot once and draws every submesh when nothing is claimed', async () => {
   const device = (await (await rhi.requestAdapter()).unwrap().requestDevice()).unwrap();
   const module = (await rhi.createShaderModule(device, { code: CPU_SETUP_SHADER })).unwrap();
   const f = cpuSetupFixture(device, module);
-  f.add({ entity: 1, instances: 2 });
+  const entry = f.add({ entity: 1, instances: 2 });
+  Object.assign(entry, { meshSlot: 7 });
   const writes = vi.spyOn(device.queue, 'writeBuffer');
   const pass = device.createCommandEncoder().unwrap().beginRenderPass({ colorAttachments: [] });
   const vertex = vi.spyOn(pass, 'setVertexBuffer');
+  const groups = vi.spyOn(pass, 'setBindGroup');
   try {
     f.record(pass);
     expect(vertex).toHaveBeenCalledTimes(1);
-    expect(writes).toHaveBeenCalledTimes(1);
+    expect(
+      groups.mock.calls.filter(([slot]) => slot === 2).map(([, , offsets]) => offsets),
+    ).toEqual([[7 * 256], [7 * 256], [7 * 256]]);
+    expect(writes.mock.calls.filter(([buffer]) => buffer !== f.meshUniformBuffer)).toHaveLength(1);
+    expect(writes.mock.calls.filter(([buffer]) => buffer === f.meshUniformBuffer)).toHaveLength(1);
     expect(f.receipts.map(({ submesh }) => submesh)).toEqual([0, 1, 2]);
     expect(f.errors).toEqual([]);
   } finally {
@@ -163,8 +172,11 @@ it('preserves the temporal pass eligibility instead of skipping every GPU-claime
   const f = cpuSetupFixture(device, module);
   f.add({ entity: 1, claimed: [0, 1, 2] });
   const lod = f.add({ entity: 2, claimed: [0, 1, 2] });
-  Object.assign(lod.source, { lods: [{ assetHandle: 9 }] });
-  Object.assign(lod.source.material, { materialShaderId: 'forgeax::default-standard-pbr' });
+  f.gpuLodLevels.set(lod.source.material, 2);
+  lod.source.material.adopt({
+    ...lod.source.material.snapshot,
+    materialShaderId: 'forgeax::default-standard-pbr',
+  });
   const pass = device.createCommandEncoder().unwrap().beginRenderPass({ colorAttachments: [] });
   const vertex = vi.spyOn(pass, 'setVertexBuffer');
   try {
@@ -254,6 +266,73 @@ it('restores shared mesh, pipeline and instance state after a Points/Lines draw 
   }
 });
 
+it('keeps Points/Lines parameter addresses distinct across local Pass rosters', async () => {
+  const device = (await (await rhi.requestAdapter()).unwrap().requestDevice()).unwrap();
+  const module = (await rhi.createShaderModule(device, { code: CPU_SETUP_SHADER })).unwrap();
+  const f = cpuSetupFixture(device, module);
+  const rows = [f.add({ entity: 1, submeshes: 1 }), f.add({ entity: 2, submeshes: 1 })];
+  for (const [index, row] of rows.entries()) {
+    const matrix = new Float32Array(row.source.transform.world);
+    matrix[12] = index === 0 ? 2 : -2;
+    Object.assign(row.source, { pointsLines: {}, transform: { world: matrix } });
+  }
+  const viewBuffer = device.createBuffer({ size: 2048, usage: 64 | 8 }).unwrap();
+  Object.assign(f.c.pipelineState, { pointsLinesViewBuffer: viewBuffer });
+  Object.assign(f.c, {
+    camera: makeZeroCameraFallbackSnapshot(),
+    targetW: 32,
+    targetH: 32,
+    pointsLines: {
+      prepare: (row: (typeof rows)[number]) => ({
+        vertexBuffer: row.mesh.vertexBuffer.handle,
+        indexBuffer: row.mesh.indexBuffer?.handle,
+        layoutProjection: row.mesh.layoutProjection,
+        plan: { drawCount: 1, indexCount: 3 },
+      }),
+    },
+  });
+  const uploads: { offset: number; x: number }[] = [];
+  const write = device.queue.writeBuffer.bind(device.queue);
+  const spy = vi
+    .spyOn(device.queue, 'writeBuffer')
+    .mockImplementation((buffer, offset, bytes, ...rest) => {
+      if (buffer === viewBuffer) {
+        const floats = ArrayBuffer.isView(bytes)
+          ? new Float32Array(bytes.buffer, bytes.byteOffset, bytes.byteLength / 4)
+          : new Float32Array(bytes);
+        uploads.push({ offset, x: floats[28] as number });
+      }
+      return write(buffer, offset, bytes, ...rest);
+    });
+  const encoder = device.createCommandEncoder().unwrap();
+  try {
+    for (const row of rows) {
+      const pass = encoder.beginRenderPass({ colorAttachments: [] });
+      const slots = [[row.renderableIndex]];
+      recordGeometryDraws(
+        { ...f.c, validatedOrdered: [row], materialSlotIndices: slots },
+        pass,
+        null,
+        slots,
+        1,
+        f.meshGroup,
+        f.meshGroup,
+        () => f.materialGroup,
+      );
+      pass.end();
+    }
+    expect(uploads).toEqual([
+      { offset: 0, x: 2 },
+      { offset: 256, x: -2 },
+    ]);
+    expect(f.errors).toEqual([]);
+  } finally {
+    spy.mockRestore();
+    f.dispose();
+    device.destroyBuffer(viewBuffer).unwrap();
+  }
+});
+
 it.each([
   'forward',
   'temporal',
@@ -266,7 +345,17 @@ it.each([
   if (secondSubmesh === undefined) throw new Error('Missing second fixture submesh');
   Object.assign(secondSubmesh, { materialSlot: 1 });
   Object.assign(entry.source, {
-    materials: [entry.source.material, { ...entry.source.material, materialHandle: 8 }],
+    materials: [
+      entry.source.material,
+      new MaterialResource({ ...entry.source.material.snapshot, materialHandle: 8 }),
+    ],
+  });
+  const secondMaterial = entry.source.materials[1];
+  if (secondMaterial === undefined) throw new Error('Missing second fixture material');
+  Object.assign(f.c, {
+    materialFrame: new MaterialFrame(undefined).with(entry.source.material).with(secondMaterial),
+    materialSlots: entry.source.materials.map((material) => material.snapshot),
+    materialSlotIndices: [[0, 1]],
   });
   const makeDispatch = (
     materialHandle: number,
@@ -285,7 +374,6 @@ it.each([
     vertexEntry: undefined,
     fragmentEntry: undefined,
     materialShaderId: 'forgeax::default-unlit',
-    paramSnapshot: undefined,
     ...(stencilReference === undefined ? {} : { stencilReference }),
   });
   const dispatch = [
@@ -348,10 +436,11 @@ it('prepares mesh bindings only when a CPU submesh survives GPU ownership', asyn
   });
   const pass = device.createCommandEncoder().unwrap().beginRenderPass({ colorAttachments: [] });
   try {
-    f.record(pass);
+    // Observe recording before the separate submission upload flush reads its buffer owner.
+    f.record(pass, 'forward', f.prepareSelection(), () => expect(pageReads).toBe(0));
     expect(f.receipts).toEqual([]);
-    expect(pageReads).toBe(0);
-    f.claims.clear();
+    pageReads = 0;
+    f.selectedDraws.clear();
     f.record(pass);
     expect(f.receipts).toEqual([0, 1, 2].map((submesh) => ({ entity: 1, submesh })));
     expect(pageReads).toBeGreaterThan(0);

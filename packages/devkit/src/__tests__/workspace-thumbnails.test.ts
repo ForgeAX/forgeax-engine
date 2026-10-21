@@ -224,3 +224,13 @@ it('retires a project while Catalog input is still pending', async () => {
   await Promise.resolve();
   expect(f.createBatch).not.toHaveBeenCalled();
 });
+
+it('admits only bounded unique GUID batches through the advertised tool schema', async () => {
+  const f = await fixture();
+  const parse = f.make().tool.descriptor.argsSchema.parse;
+  const guids = Array.from({ length: 32 }, (_, index) => String(index));
+  expect(parse({ projectId: 'p', guids }).ok).toBe(true);
+  expect(parse({ projectId: 'p', guids: [] }).ok).toBe(false);
+  expect(parse({ projectId: 'p', guids: [...guids, '32'] }).ok).toBe(false);
+  expect(parse({ projectId: 'p', guids: ['first', 'first'] }).ok).toBe(false);
+});

@@ -1,5 +1,7 @@
+import { AssetRegistry } from '@forgeax/engine/assets-runtime';
+import { createPrimitiveMesh } from '@forgeax/engine/geometry';
 import { CheckList, defineFeature } from '../../lab/feature';
-import { MESH, spawnMesh, spawnStage, standard } from '../../lab/stage';
+import { spawnMesh, spawnStage, standard } from '../../lab/stage';
 import { createLabComputeFeature } from './support/compute-feature';
 
 const IDENTITY = 'feature-lab::lkg-fault';
@@ -16,8 +18,14 @@ export default defineFeature({
   expect:
     "All checks pass: during the fault the feature is 'failed' with a structured error while frames keep submitting and the graph stays ready; after repair it returns to 'active'.",
   async setup({ app, world, frames }) {
+    const primitiveAssets = world.assets;
+    if (!(primitiveAssets instanceof AssetRegistry))
+      throw new Error('Scene requires its runtime asset owner');
+
+    const stageSphere = primitiveAssets.create(createPrimitiveMesh('sphere').unwrap()).unwrap();
+
     spawnStage(world);
-    spawnMesh(world, MESH.sphere, standard(world, { baseColor: [1, 0.4, 0.1, 1] }), {
+    spawnMesh(world, stageSphere, standard(world, { baseColor: [1, 0.4, 0.1, 1] }), {
       pos: [0, 0.6, 0],
     });
     await frames(3);

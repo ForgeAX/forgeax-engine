@@ -9,6 +9,7 @@ import type {
 import { RhiError } from '@forgeax/engine-rhi';
 import { err, ok, type Result } from '@forgeax/engine-types';
 import { isBufferOffsetAligned, isBufferRangeWithinLimits } from './buffer-range';
+import { createGlobalSdfBuffers } from './global-sdf-buffers';
 import { type RayReferenceError, rayGeometryKey, rayReferenceFailure } from './scene';
 import {
   packSdfScene,
@@ -235,34 +236,10 @@ export async function createGlobalSdfComposition(
   const prepared = packGlobalSdfComposition(source, grid);
   if (!prepared.ok) return prepared;
   const { grid: frozen, voxelCount: count, sources, data } = prepared.value;
-  const buffers = {} as Record<keyof typeof data, Buffer>,
-    owned: Buffer[] = [];
-  let disposed = false;
-  const dispose = () => {
-    if (disposed) return;
-    disposed = true;
-    for (const b of owned) device.destroyBuffer(b);
-    owned.length = 0;
-  };
-  for (const key of Object.keys(data) as (keyof typeof data)[]) {
-    const bytes = data[key];
-    const made = device.createBuffer({
-      label: `global-sdf.${key}`,
-      size: bytes.byteLength,
-      usage: (key === 'settings' ? 64 : 128) | 12,
-    });
-    if (!made.ok) {
-      dispose();
-      return made;
-    }
-    buffers[key] = made.value;
-    owned.push(made.value);
-    const wrote = device.queue.writeBuffer(made.value, 0, bytes);
-    if (!wrote.ok) {
-      dispose();
-      return wrote;
-    }
-  }
+  const allocated = createGlobalSdfBuffers(device, 'global-sdf', data);
+  if (!allocated.ok) return allocated;
+  const allocation = allocated.value;
+  const { buffers, dispose } = allocation;
   const shader = await compile(device, {
     code: GLOBAL_SDF_COMPOSE_WGSL,
     label: 'global-sdf.compose',
@@ -288,7 +265,7 @@ export async function createGlobalSdfComposition(
     sources,
     buffers,
     record(encoder) {
-      if (disposed) return rayReferenceFailure('global SDF composition is disposed');
+      if (allocation.disposed) return rayReferenceFailure('global SDF composition is disposed');
       const pass = encoder.beginComputePass({ label: 'global-sdf.compose' });
       try {
         return recorder.value.record(pass, input, count);

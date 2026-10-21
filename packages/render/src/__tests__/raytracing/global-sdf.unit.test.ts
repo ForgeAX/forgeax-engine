@@ -12,6 +12,57 @@ import { createSdfQuery, sdfInstanceKey } from '../../raytracing/sdf-query';
 import { queryTestDevice } from './global-sdf-query-device.fixture';
 import { sdfCubeIndices, sdfCubePositions } from './sdf-cards.geometry';
 
+it('releases partial allocations on buffer failures without retiring the borrowed composition', async () => {
+  for (const owner of ['composition', 'query'] as const) {
+    for (const stage of ['allocate', 'upload'] as const) {
+      const device = await queryTestDevice();
+      const grid: GlobalSdfGrid = {
+        origin: [-3, -3, -3],
+        dimensions: [13, 13, 13],
+        spacing: 0.5,
+        maxDistance: 2,
+        coverageDistance: 0.5,
+      };
+      const composition = (
+        await createGlobalSdfComposition(device, createShaderModule, [], grid)
+      ).unwrap();
+      const live = () =>
+        device.bookkeeper.allRecords().filter((r) => r.kind === 'Buffer' && !r.destroyed);
+      const baseline = live();
+      const failure = new RhiError({
+        code: 'rhi-not-available',
+        expected: 'injected second buffer failure',
+        hint: 'retry the operation',
+      });
+      let calls = 0;
+      const create = device.createBuffer.bind(device);
+      const write = device.queue.writeBuffer.bind(device.queue);
+      const injected =
+        stage === 'allocate'
+          ? vi
+              .spyOn(device, 'createBuffer')
+              .mockImplementation((...args) => (++calls === 2 ? err(failure) : create(...args)))
+          : vi
+              .spyOn(device.queue, 'writeBuffer')
+              .mockImplementation((...args) => (++calls === 2 ? err(failure) : write(...args)));
+      const result =
+        owner === 'composition'
+          ? await createGlobalSdfComposition(device, createShaderModule, [], grid)
+          : await createGlobalSdfQuery(device, createShaderModule, composition, [
+              { origin: [0, 2, 0], direction: [0, -1, 0], tMin: 0, tMax: 2, mask: 255 },
+            ]);
+      expect(result).toEqual(err(failure));
+      expect(live()).toEqual(baseline);
+      injected.mockRestore();
+      const encoder = device.createCommandEncoder({}).unwrap();
+      composition.record(encoder).unwrap();
+      device.queue.submit([encoder.finish().unwrap()]).unwrap();
+      composition.dispose();
+      expect(live()).toHaveLength(0);
+    }
+  }
+});
+
 it('freezes local query identity and cardinality before asynchronous compilation', async () => {
   const device = (await (await rhi.requestAdapter()).unwrap().requestDevice()).unwrap();
   const field = (

@@ -5,6 +5,7 @@ import type {
   AnimationClip,
   AnimationGraph,
   AssetGuid as AssetGuidType,
+  AssetHandle,
   AssetRef,
   AudioClipAsset,
   EquirectAsset,
@@ -27,6 +28,7 @@ import type {
   VideoAsset,
 } from '@forgeax/engine-types';
 import {
+  canonicalJson,
   deriveTextureLayout,
   err,
   ImportError,
@@ -63,24 +65,13 @@ function formatGuid(value: AssetGuidType | string): string {
   return AssetGuid.format(value);
 }
 
-function canonical(value: unknown): string {
-  if (Array.isArray(value)) return `[${value.map(canonical).join(',')}]`;
-  if (value !== null && typeof value === 'object') {
-    return `{${Object.entries(value as Record<string, unknown>)
-      .sort(([left], [right]) => left.localeCompare(right))
-      .map(([key, child]) => `${JSON.stringify(key)}:${canonical(child)}`)
-      .join(',')}}`;
-  }
-  return JSON.stringify(value) ?? 'null';
-}
-
 function particleProgramArtifact(effect: ParticleEffectAsset): {
   readonly program: ParticleEffectAsset['program'];
   readonly bytes: Uint8Array;
   readonly fingerprint: string;
 } {
   const artifactProgram = { format: effect.program.format, emitters: effect.program.emitters };
-  const bytes = new TextEncoder().encode(canonical(artifactProgram));
+  const bytes = new TextEncoder().encode(canonicalJson(artifactProgram));
   const fingerprint = `sha256:${bytesToHex(sha256(bytes))}`;
   return {
     program: { ...effect.program, fingerprint },
@@ -92,6 +83,14 @@ function particleProgramArtifact(effect: ParticleEffectAsset): {
 function materialProduct(input: AssetOutputInput): AssetOutputProduct {
   if (input.asset.kind !== 'material') throw new TypeError('expected MaterialAsset');
   const material = input.asset as MaterialAsset;
+  const requirePersistableValue = (value: unknown): void => {
+    if (value !== null && typeof value === 'object' && !Array.isArray(value) && 'source' in value) {
+      throw new TypeError(
+        'Pack material textures require source GUIDs; runtime render sources cannot be persisted',
+      );
+    }
+  };
+  for (const parameter of material.parameters ?? []) requirePersistableValue(parameter.default);
   const refs: AssetRef[] = [];
   const addRef = (
     guid: AssetGuidType | string,
@@ -102,7 +101,7 @@ function materialProduct(input: AssetOutputInput): AssetOutputProduct {
   };
 
   const addMaterialRef = (
-    value: MaterialTextureReference,
+    value: MaterialTextureReference | AssetHandle<'sampler'>,
     sourceField: NonNullable<AssetRef['sourceField']>,
   ): number => {
     if (typeof value === 'number') {
@@ -125,6 +124,7 @@ function materialProduct(input: AssetOutputInput): AssetOutputProduct {
   const values: Record<string, unknown> = {};
   for (const fieldName of Object.keys(material.values ?? {}).sort()) {
     const value = material.values?.[fieldName];
+    requirePersistableValue(value);
     if (typeof value === 'string' && textureFields.has(fieldName)) {
       values[fieldName] = {
         texture: addMaterialRef(value, { componentName: '<material>', fieldName }),
@@ -135,7 +135,7 @@ function materialProduct(input: AssetOutputInput): AssetOutputProduct {
       !Array.isArray(value) &&
       'texture' in value
     ) {
-      const texture = value as MaterialTextureValue;
+      const texture = value as MaterialTextureValue & { texture: MaterialTextureReference };
       values[fieldName] = {
         ...texture,
         texture: addMaterialRef(texture.texture, { componentName: '<material>', fieldName }),
@@ -172,6 +172,8 @@ function meshDataProduct(input: AssetOutputInput): AssetOutputProduct {
   for (let slotIndex = 0; slotIndex < mesh.materialSlots.length; slotIndex++) {
     const defaultMaterial = mesh.materialSlots[slotIndex]?.defaultMaterial;
     if (defaultMaterial === undefined) continue;
+    if (typeof defaultMaterial === 'number')
+      throw new TypeError('Pack Mesh material references require source GUIDs');
     refs.push({
       guid: formatGuid(defaultMaterial),
       sourceField: { fieldName: 'materialSlots', arrayIndex: slotIndex },
@@ -179,6 +181,8 @@ function meshDataProduct(input: AssetOutputInput): AssetOutputProduct {
   }
   const seenRefs = new Set(refs.map((reference) => reference.guid.toLowerCase()));
   for (const [lodIndex, lod] of (mesh.lods ?? []).entries()) {
+    if (typeof lod.mesh === 'number')
+      throw new TypeError('Pack Mesh LOD references require source GUIDs');
     const guid = formatGuid(lod.mesh);
     if (seenRefs.has(guid.toLowerCase())) continue;
     seenRefs.add(guid.toLowerCase());
@@ -193,6 +197,9 @@ function meshProduct(input: AssetOutputInput): AssetOutputProduct {
   const refs = prepared.refs;
   return {
     ...prepared,
+    // The binary body owns geometry. Keeping the author arrays in JSON as well
+    // duplicates bytes and creates two competing payloads at runtime admission.
+    payload: { kind: 'mesh' },
     artifacts: {
       body: {
         mediaType: 'application/x-forgeax-mesh',
@@ -366,6 +373,8 @@ function ordinaryPodProduct(input: AssetOutputInput): AssetOutputProduct {
     }
     case 'font': {
       const font = asset as FontAsset;
+      if (typeof font.atlas === 'number' || typeof font.sampler === 'number')
+        throw new TypeError('Font Pack output requires source GUIDs, not runtime asset handles');
       const atlas = ref(font.atlas, 'atlas');
       const sampler = ref(font.sampler, 'sampler');
       return {
@@ -405,6 +414,8 @@ function ordinaryPodProduct(input: AssetOutputInput): AssetOutputProduct {
         ]),
       ];
       const refs = [...new Set(dependencies)].map((guid) => {
+        if (typeof guid !== 'string')
+          throw new TypeError('Pack terrain outputs require source GUIDs, not runtime handles');
         const parsed = AssetGuid.parse(guid);
         if (!parsed.ok) throw parsed.error;
         return ref(parsed.value, 'terrain');
@@ -419,7 +430,11 @@ function ordinaryPodProduct(input: AssetOutputInput): AssetOutputProduct {
     case 'tileset': {
       const tileset = asset as TilesetAsset;
       const refs = tileset.atlases.map((atlas, index) => {
-        const parsed = AssetGuid.parse(atlas);
+        if (typeof atlas === 'number')
+          throw new Error(
+            'Pack Tileset atlases require source GUIDs; runtime handles cannot be persisted',
+          );
+        const parsed = typeof atlas === 'string' ? AssetGuid.parse(atlas) : ok(atlas);
         if (!parsed.ok) throw parsed.error;
         return ref(parsed.value, 'atlases', index);
       });
@@ -476,6 +491,10 @@ function ordinaryPodProduct(input: AssetOutputInput): AssetOutputProduct {
       const refs: AssetRef[] = [];
       const nodes = graph.nodes.map((node, index) => {
         if (node.type !== 'clip') return node;
+        if (typeof node.clip !== 'string')
+          throw new TypeError(
+            'Pack animation graphs require source GUIDs; resolve runtime clip references before persistence',
+          );
         const parsed = AssetGuid.parse(node.clip);
         if (!parsed.ok) throw parsed.error;
         const referenceIndex = refs.push(ref(parsed.value, 'nodes', index)) - 1;
@@ -515,7 +534,11 @@ function ordinaryPodProduct(input: AssetOutputInput): AssetOutputProduct {
       const refs = new Set<string>();
       for (const emitter of cooked.program.emitters) {
         for (const field of emitter.forceFields ?? [])
-          if (field.kind === 'vector') refs.add(formatGuid(field.texture));
+          if (field.kind === 'vector') {
+            if (typeof field.texture === 'number')
+              throw new TypeError('Pack vector fields require source texture GUIDs');
+            refs.add(formatGuid(field.texture));
+          }
         for (const renderer of emitter.renderers) {
           if (!('material' in renderer) || typeof renderer.material !== 'string') {
             throw new Error(`Particle emitter '${emitter.id}' requires a renderer Material GUID`);
@@ -581,7 +604,7 @@ export const materialAssetOutputProducer = createSafeProducer(
 
 export const meshAssetDataProducer = meshProducer('mesh-data/2', meshDataProduct);
 
-export const meshAssetOutputProducer = meshProducer('mesh-binary/6', meshProduct);
+export const meshAssetOutputProducer = meshProducer('mesh-binary/7', meshProduct);
 export const textureAssetOutputProducer = createSafeProducer(
   'texture',
   'texture-pack/1',

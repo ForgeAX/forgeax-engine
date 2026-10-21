@@ -57,6 +57,7 @@ export function assetsWorldPlugin(): Plugin {
     inject: ['world', 'assets'],
     apply(ctx) {
       if (ctx.assets === undefined) return;
+      ctx.world.bindAssets(ctx.assets).unwrap();
       ctx.effect(() => {
         ctx.world.insertResource(ASSET_REGISTRY_RESOURCE_KEY, ctx.assets);
         return () => {

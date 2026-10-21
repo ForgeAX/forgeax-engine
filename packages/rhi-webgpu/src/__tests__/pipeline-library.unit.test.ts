@@ -45,6 +45,66 @@ async function fixture() {
   };
 }
 
+it('reuses build-projected compute closures for ordinary sync/async requests and archive round trips', async () => {
+  const f = await fixture();
+  const manifest: PipelineLibraryManifest = {
+    version: 1,
+    backend: 'webgpu',
+    shaders: [
+      { code: 'scan and effect A' },
+      { code: 'scan and effect B' },
+      { code: 'shared scan' },
+    ],
+    bindGroupLayouts: [],
+    pipelineLayouts: [],
+    renderPipelines: [],
+    computePipelines: [0, 1].map((module) => ({
+      layout: 'auto',
+      compute: { module, entryPoint: 'scan', constants: { count: 4 } },
+    })),
+    computeEntryModules: [0, 1].map((module) => ({
+      module,
+      entryPoint: 'scan',
+      specializedModule: 2,
+    })),
+  };
+  expect((await f.device.pipelineLibrary.prepare(manifest)).ok).toBe(true);
+  expect(f.compute).toHaveBeenCalledTimes(1);
+  const descriptor = (source: string, count = 4) => ({
+    layout: 'auto' as const,
+    compute: { module: f.module(source), entryPoint: 'scan', constants: { count } },
+  });
+  const a = f.device.createComputePipeline(descriptor('scan and effect A')).unwrap();
+  const asyncCreate = f.device.createComputePipelineAsync;
+  if (asyncCreate === undefined) throw new Error('Missing asynchronous compute factory');
+  expect((await asyncCreate(descriptor('scan and effect B'))).unwrap()).toBe(a);
+  expect(f.compute).toHaveBeenCalledTimes(1);
+  await asyncCreate(descriptor('scan and effect B', 8));
+  expect(f.compute).toHaveBeenCalledTimes(2);
+  const exported = f.device.pipelineLibrary.export().unwrap();
+  expect(exported.computeEntryModules).toHaveLength(2);
+  const next = await fixture();
+  expect((await next.device.pipelineLibrary.prepare(exported)).ok).toBe(true);
+  expect(next.compute).toHaveBeenCalledTimes(2);
+});
+
+it('rejects malformed compute projections before native creation', async () => {
+  const f = await fixture(),
+    create = vi.spyOn(f.raw, 'createShaderModule');
+  const manifest: PipelineLibraryManifest = {
+    version: 1,
+    backend: 'webgpu',
+    shaders: [{ code: 'source' }],
+    bindGroupLayouts: [],
+    pipelineLayouts: [],
+    renderPipelines: [],
+    computePipelines: [],
+    computeEntryModules: [{ module: 0, entryPoint: 'scan', specializedModule: 1 }],
+  };
+  expect((await f.device.pipelineLibrary.prepare(manifest)).ok).toBe(false);
+  expect(create).not.toHaveBeenCalled();
+});
+
 it('reuses identical complete pipelines across independently recreated layouts and labels', async () => {
   const f = await fixture();
   const first = f.device.createRenderPipeline(f.descriptor()).unwrap();

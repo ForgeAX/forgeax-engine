@@ -38,25 +38,27 @@ const app = await createApp({
 
 ## Asset loading
 
-The renderer injects this package's Web Audio decoder into `AssetRegistry`, so disk-backed clips use the ordinary GUID path. Configure the pack index, load the payload, then mint the World-owned shared ref consumed by `AudioSource.clip`:
+The Engine installs the Audio domain decoder. Source clips load by GUID into the
+asset owner, and `AudioSource.clip` consumes that managed handle:
 
 ```ts
-import { AssetGuid } from '@forgeax/engine-pack/guid';
-import type { AudioClipAsset } from '@forgeax/engine-types';
-
 assets.configurePackIndex('/pack-index.json');
-const guid = AssetGuid.parse(clipGuid);
-if (!guid.ok) return;
-const loaded = await assets.loadByGuid<AudioClipAsset>(guid.value);
-if (!loaded.ok) return;
-const clip = world.allocSharedRef('AudioClipAsset', loaded.value);
+const loaded = await assets.load(clipGuid, 'audio');
+if (!loaded.ok) return loaded;
+world.spawn({ component: AudioSource, data: { clip: loaded.value, playing: true } }).unwrap();
+assets.release(loaded.value).unwrap();
 ```
 
-Do not fetch a pack-index row or call `loadAudioClipByGuid` at app level. That function remains the decoder implementation used by the injected loader; its decode failure is surfaced by `loadByGuid` as `AssetError('asset-parse-failed')` with the original recovery hint.
+A standalone Registry installs `audioContribution` from `@forgeax/engine-audio`.
+Decode and transport failures follow the ordinary asset error surface. Updating
+clip bytes publishes a new revision automatically; native playback consumes it
+through the same intent producer.
 
 ## Host consumer
 
-`createHostAudioConsumer()` consumes the closed `AudioIntent` union from `@forgeax/engine-audio`. It decodes identical bytes once per `sourceKey`, replaces the decode authority when bytes change under that stable key, fences stale play completions by pending-play identity and source-key entry identity, and reports structured decode failure through its `AudioState`. A failed current decode keeps its bytes available for an explicit retry or a later content replacement; an older pending completion cannot delete or supersede a newer entry. `dispose()` clears the cache and closes the underlying engine exactly once. A `state()` read that observes a closed supplied Context calls that same disposal path, retiring retained publications and pending plays. Asynchronous decode results and failures adopt only the current publication while the consumer remains live.
+`createHostAudioConsumer()` consumes the closed `AudioIntent` union. The Host caches each asset's latest owner/handle/revision, without byte comparison. Pending voices and prepared music retain their fixed old content when a later revision arrives. Late old preparations can finish their own work but cannot replace the latest cache. Source provenance never merges independent copies. Entity stop/replacement and consumer disposal fence late work.
+
+`consume` returns the rejected asset publication when a play cannot be admitted. Return that value from a local `createAudioIntentBackend` emitter; custom remote transports must deliver it to `backend.rejectPublication`. The App already carries these sparse receipts. Explicit replay can then republish the rejected bytes. Native decode failures retain the accepted bytes for retry. A `state()` read observing a closed supplied Context invokes the same disposal path.
 
 `createWebAudioBackend()` is the main-thread adapter over the same consumer. Worker tiers use the intent backend in the Engine Worker and deliver the batch to a Host consumer after each accepted frame credit. No `AudioContext`, `AudioBuffer`, or Web Audio node crosses a realm boundary.
 
@@ -161,19 +163,21 @@ applies to the eventual node. Stop, replacement and disposal invalidate the
 pending play by identity; completed plays leave no Host entity history.
 
 Backend context failures take precedence in `state().lastError`. Host decode
-errors remain associated with their source key; only successful decoding of
-that source clears its error. An unrelated successful clip cannot clear it.
+errors remain associated with their runtime asset and revision; successful decoding
+of the same or a newer revision clears its error. An unrelated successful clip cannot clear it.
 
 | Host option | Default | Unit and scope |
 |:--|--:|:--|
 | `maxCachedBytes` | 67108864 | Shared buffered bytes/float samples, stream indexes, native PCM windows and pending window reservations |
-| `maxCachedSources` | 256 | Source publications retained for byte-free reuse |
+| `maxCachedSources` | 256 | Latest runtime asset versions retained for byte-free reuse |
 | `maxPendingPlays` | 1024 | Entities awaiting decode |
 
 Pass these options as the second argument of `createHostAudioConsumer(engine,
 options)`. Admission beyond a budget reports `decode-failed` with the exhausted
-budget in `detail.reason`. Published source keys stay available until disposal;
-there is no silent eviction that would invalidate byte-free play intents.
+budget in `detail.reason`. The newest accepted version stays available until disposal.
+Replacing it releases cache ownership; pending decode and prepared music keep old
+buffers charged until their actual completion or retirement. Cache reads and
+admission use incrementally maintained byte totals, without scanning sources.
 Native decoder working memory and platform node memory are outside this cache
 budget. Dispose stops nodes, releases cache entries and fences late decoding.
 
@@ -304,11 +308,11 @@ Dev and build finalizers preserve the descriptor and source bytes. GUID loading 
 | Index | Bounded hash array; source publication and per-play metadata conservatively count UTF-16 JSON bytes |
 | Shared admission | Existing 64 MiB/256-source cache budget includes stream reservations and PCM; 1024 pending buffered plays remains unchanged |
 | Cancellation | Seek/rate/pause abort the old read and retire its nodes; rapid controls wait for that task to settle instead of accumulating reads |
-| Worker transfer | First play publishes only the bounded manifest; repeated identical plays reuse sourceKey; changed manifests invalidate old plays |
+| Worker transfer | First play publishes only the bounded manifest; repeated plays reuse the asset version; old plays retain their fixed manifest |
 
 `getStreamState(entityId)` exposes `buffering/playing/paused/ended/failed`, position, `pendingSeek`, byte/read counts, underruns and structured error. Seek rounds to the nearest source frame; while running it completes when a verified node is scheduled, and `playing` waits for its native start. Paused seek changes the retained position without I/O. Rate changes speed and pitch. Loop windows share the native scheduling clock; sufficient buffer permits a gap-free boundary, but network/Host stalls can cause a counted underrun. The playhead freezes during starvation, then resumes with a new verified window. No terminal network/integrity/Range/budget failure retries automatically; repair then seek or replay explicitly. Initial index-admission failure requires a fresh play after repairing the budget: seek/pause/rate cannot revive an uncharged player.
 
-The ten-second window timeout, corrupt/oversized body, unsupported Range and byte admission failures use the closed `stream-failed` detail reasons in Types. `AudioState.streaming` and App reports project aggregate counters; these account for Engine-held buffers and are **not a native process memory cap**. Browser/network/decoder/device memory is measured separately in [the acceptance report](bench/stream/results.md). Short and streamed sources share gain, panner, bus/send, filters, analyser and disposal. Stop/despawn/publication replacement/dispose/Worker rebuild fence late work by source and play generation.
+The ten-second window timeout, corrupt/oversized body, unsupported Range and byte admission failures use the closed `stream-failed` detail reasons in Types. `AudioState.streaming` and App reports project aggregate counters; these account for Engine-held buffers and are **not a native process memory cap**. Browser/network/decoder/device memory is measured separately in [the acceptance report](bench/stream/results.md). Short and streamed sources share gain, panner, bus/send, filters, analyser and disposal. Stop/despawn/entity replacement/dispose/Worker rebuild fence late work by source and play generation.
 
 ## App Host effect assembly
 

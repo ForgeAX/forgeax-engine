@@ -1,6 +1,8 @@
+import { AssetRegistry } from '@forgeax/engine/assets-runtime';
+import { createPrimitiveMesh } from '@forgeax/engine/geometry';
 import { Materials } from '@forgeax/engine/render';
 import { defineFeature } from '../../lab/feature';
-import { MESH, material, spawnMesh, spawnStage } from '../../lab/stage';
+import { material, spawnMesh, spawnStage } from '../../lab/stage';
 import { materialToggle } from './lib/swap';
 
 const RED = 1;
@@ -15,6 +17,14 @@ export default defineFeature({
   expect:
     'ON: the white sphere writes only red (it shows red over the dark clear color) and the green coplanar floor patch is clean. OFF: the sphere is white and the unbiased green patch z-fights with the floor.',
   setup({ world }) {
+    const primitiveAssets = world.assets;
+    if (!(primitiveAssets instanceof AssetRegistry))
+      throw new Error('Scene requires its runtime asset owner');
+
+    const stageSphere = primitiveAssets.create(createPrimitiveMesh('sphere').unwrap()).unwrap();
+
+    const stageQuad = primitiveAssets.create(createPrimitiveMesh('quad').unwrap()).unwrap();
+
     spawnStage(world);
     const masked = material(
       world,
@@ -24,7 +34,7 @@ export default defineFeature({
       world,
       Materials.unlit([1, 1, 1, 1], { renderState: { colorWriteMask: ALL } }),
     );
-    const sphere = spawnMesh(world, MESH.sphere, masked, {
+    const sphere = spawnMesh(world, stageSphere, masked, {
       pos: [-0.9, 1.1, 0],
       scale: [1.2, 1.2, 1.2],
     });
@@ -37,7 +47,7 @@ export default defineFeature({
       );
     const biased = overlay(-1);
     const flat = overlay(0);
-    const patch = spawnMesh(world, MESH.quad, biased, {
+    const patch = spawnMesh(world, stageQuad, biased, {
       pos: [1.1, 0, 0.6],
       scale: [1.8, 1.8, 1],
       rotation: [-Math.SQRT1_2, 0, 0, Math.SQRT1_2],

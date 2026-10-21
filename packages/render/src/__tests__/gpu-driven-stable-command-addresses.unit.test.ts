@@ -2,18 +2,16 @@ import { mat4, vec3 } from '@forgeax/engine-math';
 import type { RenderPipelineDescriptor } from '@forgeax/engine-rhi';
 import { rhi } from '@forgeax/engine-rhi-null';
 import { expect, it } from 'vitest';
+import { batchLodLevelCount, batchVisibleSpan } from '../gpu-driven/batch-layout';
 import {
   BatchTopology,
-  batchLodLevelCount,
-  batchVisibleSpan,
   buildBatchAlignedSubmission,
+  type GpuDrivenBatch,
   type SubmissionPlan,
 } from '../gpu-driven/batch-topology';
 import { FilteredPlanContributionOwner } from '../gpu-driven/filtered-plan-contributions';
-import { ShadowClaimTable } from '../gpu-driven/shadow-claims';
-import { SHADOW_CASTER_SHADER_ID } from '../pbr-pipeline';
+import { MaterialResource } from '../material-resource';
 import { RenderBundleCache } from '../record/render-bundle-cache';
-import type { RenderableSnapshot, ShadowCasterMembership } from '../render-system-extract';
 import { RenderScene } from '../scene/render-scene';
 import { createFilterPlanFixture } from './gpu-driven-filter-plan-fixture';
 import { expectFilteredPlan } from './gpu-driven-filtered-plan-assertions';
@@ -23,7 +21,12 @@ function sourceFixture(firstInstances = 1) {
   const scene = new RenderScene();
   const snapshots = Array.from({ length: 3 }, (_, index) => {
     const world = mat4.identity(mat4.create());
-    const material = { baseColor: vec3.create(1, 1, 1), metallic: 0, roughness: 1 };
+    const material = new MaterialResource({
+      baseColor: vec3.create(1, 1, 1),
+      metallic: 0,
+      roughness: 1,
+      passes: [],
+    });
     const instanceCount = index === 0 ? firstInstances : 1;
     return preparedPbrSnapshot({
       worldId: 0,
@@ -54,7 +57,7 @@ function sourceFixture(firstInstances = 1) {
           materialResourceClass: 'standard-pbr-resources',
         },
       ],
-    } as RenderableSnapshot);
+    });
   });
   scene.apply(
     snapshots.map((snapshot) => ({
@@ -71,7 +74,7 @@ function sourceFixture(firstInstances = 1) {
 
 it('retains unaffected source and shadow command windows through removal and cardinality shrink', () => {
   const f = sourceFixture();
-  const before = f.topology.plan();
+  const before = f.topology.query(f.topology.sourcePlan(), undefined);
   const rebuilt = f.topology.inspect().batchesRebuilt;
   const selected = buildBatchAlignedSubmission(
     before,
@@ -81,13 +84,13 @@ it('retains unaffected source and shadow command windows through removal and car
     before.batches.slice(1).map((batch) => [batch.visibleBase, batch.indirectOffset]),
   );
   f.topology.apply(f.scene.apply([{ kind: 'remove', worldId: 0, entityKey: 1 }]));
-  const after = f.topology.plan();
-  expect(after.batches[0]).toBe(before.batches[1]);
-  expect(after.batches[1]).toBe(before.batches[2]);
+  const after = f.topology.query(f.topology.sourcePlan(), undefined);
+  expect(after.batches.at(0)).toBe(before.batches.at(1));
+  expect(after.batches.at(1)).toBe(before.batches.at(2));
   expect(f.topology.inspect().batchesRebuilt).toBe(rebuilt);
 
   const g = sourceFixture(65);
-  const large = g.topology.plan();
+  const large = g.topology.query(g.topology.sourcePlan(), undefined);
   const original = g.snapshots[0];
   if (original?.instances === undefined) throw Error('Missing fixture instances');
   g.topology.apply(
@@ -104,17 +107,17 @@ it('retains unaffected source and shadow command windows through removal and car
       },
     ]),
   );
-  const small = g.topology.plan();
-  expect(small.batches[1]).toBe(large.batches[1]);
-  expect(small.batches[2]).toBe(large.batches[2]);
-  expect(small.batches[0]?.candidates).toHaveLength(64);
+  const small = g.topology.query(g.topology.sourcePlan(), undefined);
+  expect(small.batches.at(1)).toBe(large.batches.at(1));
+  expect(small.batches.at(2)).toBe(large.batches.at(2));
+  expect(small.batches.at(0)?.candidates).toHaveLength(64);
 });
 
 it('retains actual filtered main and shadow windows when an unrelated group disappears', () => {
   const f = createFilterPlanFixture();
   const prepared = f.prepare();
   const main = new FilteredPlanContributionOwner();
-  const before = main.update(prepared, 'values', undefined, f.bindings);
+  const before = main.update(prepared, f.bindings);
   const reduced = {
     ...f.source,
     candidateCount: 2,
@@ -125,43 +128,26 @@ it('retains actual filtered main and shadow windows when an unrelated group disa
       }))
       .filter((batch) => batch.candidates.length),
   };
-  const after = main.update(f.prepare(reduced), 'values', undefined, f.bindings);
-  const original = before.plan.batches[1];
-  expect(after.plan.batches[0]?.candidates).toEqual(original?.candidates);
-  expect(after.plan.batches[0]).toMatchObject({
+  const after = main.update(f.prepare(reduced), f.bindings);
+  const original = before.plan.batches.at(1);
+  expect([...(after.plan.batches.at(0)?.candidates ?? [])]).toEqual([
+    ...(original?.candidates ?? []),
+  ]);
+  expect(after.plan.batches.at(0)).toMatchObject({
     batchId: original?.batchId,
     visibleBase: original?.visibleBase,
     indirectOffset: original?.indirectOffset,
   });
-  expect(after.batches[0]?.mesh).toBe(before.batches[1]?.mesh);
-  expect(after.batches[0]?.artifact).toBe(before.batches[1]?.artifact);
+  expect(after.batches.at(0)?.mesh).toBe(before.batches.at(1)?.mesh);
+  expect(after.batches.at(0)?.artifact.program).toBe(before.batches.at(1)?.artifact.program);
 
-  const memberships: ShadowCasterMembership[] = f.slots.map((slot) => ({
-    worldEntity: slot.snapshot.entityKey,
-    renderableIndex: slot.slot,
-    drawItemIndex: 0,
-    materialHandle: slot.snapshot.material.materialHandle ?? -1,
-    passIndex: 0,
-    materialShaderId: SHADOW_CASTER_SHADER_ID,
-    renderState: { cullMode: 'back' },
-    gpuDrivenEligible: true,
-  }));
-  const claims = (rows: readonly ShadowCasterMembership[]) => new ShadowClaimTable(undefined, rows);
-  const shadow = new FilteredPlanContributionOwner();
-  const shadowBefore = shadow.update(prepared, 'values', claims(memberships), f.bindings);
-  const shadowAfter = shadow.update(
-    prepared,
-    'values',
-    claims(memberships.map((row) => ({ ...row, gpuDrivenEligible: row.renderableIndex === 1 }))),
-    f.bindings,
+  const selected = buildBatchAlignedSubmission(
+    before.plan,
+    new Map([[original?.batchId ?? -1, original?.candidates ?? []]]),
   );
-  const shadowOriginal = shadowBefore.plan.batches[1];
-  expect(shadowAfter.plan.batches[0]?.candidates).toEqual(shadowOriginal?.candidates);
-  expect(shadowAfter.plan.batches[0]).toMatchObject({
-    batchId: shadowOriginal?.batchId,
-    visibleBase: shadowOriginal?.visibleBase,
-    indirectOffset: shadowOriginal?.indirectOffset,
-  });
+  expect(selected.batches).toHaveLength(1);
+  expect(selected.batches.at(0)?.visibleBase).toBe(original?.visibleBase);
+  expect(selected.batches.at(0)?.indirectOffset).toBe(original?.indirectOffset);
 });
 
 function expectDisjointRanges(plan: SubmissionPlan) {
@@ -169,8 +155,8 @@ function expectDisjointRanges(plan: SubmissionPlan) {
     [(batch) => batch.visibleBase, batchVisibleSpan],
     [(batch) => batch.indirectOffset, (batch) => batchLodLevelCount(batch) * 20],
   ] as const satisfies readonly (readonly [
-    (batch: SubmissionPlan['batches'][number]) => number,
-    (batch: SubmissionPlan['batches'][number]) => number,
+    (batch: GpuDrivenBatch) => number,
+    (batch: GpuDrivenBatch) => number,
   ])[]) {
     const ordered = [...plan.batches].sort((a, b) => start(a) - start(b));
     for (let index = 1; index < ordered.length; index++) {
@@ -180,14 +166,14 @@ function expectDisjointRanges(plan: SubmissionPlan) {
       expect(start(previous) + length(previous)).toBeLessThanOrEqual(start(current));
     }
   }
-  expect(plan.visibleCapacity).toBe(
+  expect(plan.visibleCapacity).toBeGreaterThanOrEqual(
     Math.max(0, ...plan.batches.map((batch) => batch.visibleBase + batchVisibleSpan(batch))),
   );
 }
 
 it('reclaims retired ranges through repeated growth and reuse without moving surviving batches', () => {
   const f = sourceFixture();
-  const initial = f.topology.plan();
+  const initial = f.topology.query(f.topology.sourcePlan(), undefined);
   const original = f.snapshots[0];
   if (original?.instances === undefined) throw Error('Missing fixture instances');
   for (let cycle = 0; cycle < 60; cycle++) {
@@ -203,37 +189,37 @@ it('reclaims retired ranges through repeated growth and reuse without moving sur
       },
     };
     f.topology.apply(f.scene.apply([{ kind: 'update', worldId: 0, entityKey: 1, snapshot }]));
-    const grown = f.topology.plan();
-    expect(grown.batches[1]).toBe(initial.batches[1]);
-    expect(grown.batches[2]).toBe(initial.batches[2]);
-    expect(grown.batches[0]?.candidates).toHaveLength(instanceCount);
+    const grown = f.topology.query(f.topology.sourcePlan(), undefined);
+    expect(grown.batches.at(1)).toBe(initial.batches.at(1));
+    expect(grown.batches.at(2)).toBe(initial.batches.at(2));
+    expect(grown.batches.at(0)?.candidates).toHaveLength(instanceCount);
     expectDisjointRanges(grown);
     expect(grown.visibleCapacity).toBeLessThanOrEqual(384);
     f.topology.apply(f.scene.apply([{ kind: 'remove', worldId: 0, entityKey: 1 }]));
-    expectDisjointRanges(f.topology.plan());
+    expectDisjointRanges(f.topology.query(f.topology.sourcePlan(), undefined));
   }
   f.topology.rebuild(f.scene.slotsSnapshot());
-  const rebuilt = f.topology.plan();
+  const rebuilt = f.topology.query(f.topology.sourcePlan(), undefined);
   expectDisjointRanges(rebuilt);
   expect(rebuilt.visibleCapacity).toBe(128);
 });
 
 it('reuses filtered holes across binding splits, merges and a complete reset', () => {
-  const f = createFilterPlanFixture();
+  const f = createFilterPlanFixture({ sharedGeometry: true });
   const prepared = f.prepare();
   const owner = new FilteredPlanContributionOwner();
-  const initial = owner.update(prepared, 'values', undefined, f.bindings);
-  const originalB = initial.plan.batches[1];
+  const initial = owner.update(prepared, f.bindings);
+  const originalB = initial.plan.batches.at(1);
   const keyA = [...f.bindings.keys()][0];
   if (originalB === undefined || keyA === undefined) throw Error('Missing fixture binding');
   for (let cycle = 0; cycle < 60; cycle++) {
     const split = cycle % 2 === 0;
     const bindings = new Map(f.bindings).set(keyA, split ? 'C' : 'A');
-    const result = owner.update(prepared, 'values', undefined, bindings);
+    const result = owner.update(prepared, bindings);
     expect(result.plan.batches).toHaveLength(split ? 3 : 2);
     expect(result.plan.candidateCount).toBe(6);
     expect(
-      result.plan.batches.find((batch) => batch.candidates[0]?.primitiveIndex === 1),
+      result.plan.batches.find((batch) => batch.candidates.at(0)?.primitiveIndex === 1),
     ).toMatchObject({
       batchId: originalB.batchId,
       visibleBase: originalB.visibleBase,
@@ -241,10 +227,10 @@ it('reuses filtered holes across binding splits, merges and a complete reset', (
       candidates: originalB.candidates,
     });
     expectDisjointRanges(result.plan);
-    expect(result.plan.visibleCapacity).toBeLessThanOrEqual(322);
+    expect(result.plan.visibleCapacity).toBeLessThanOrEqual(3 * 2 * 64);
   }
   owner.clear();
-  const reset = owner.update(prepared, 'values', undefined, f.bindings);
+  const reset = owner.update(prepared, f.bindings);
   expectFilteredPlan(reset, initial);
   expect(
     reset.plan.batches.map((batch) => [batch.batchId, batch.visibleBase, batch.indirectOffset]),

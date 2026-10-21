@@ -63,8 +63,9 @@ flowchart TD
 The authoring smoke uses the real catalog entry
 `019f8354-6386-4386-849d-f2ab4b96229d` from
 `assets/ui-authoring/preview-hud.ui.html`, not the fallback fixture. The host
-loads that GUID through the Preview catalog/import path, preserves invalid
-source edits as an overlay, and reports `preview-load-failed` with the
+installs its UI decoder through App asset assembly. It loads that GUID through
+the Preview catalog/import path, preserves invalid source edits as an overlay,
+and reports `preview-load-failed` with the
 importer's source diagnostics without installing the bad content. A repaired
 source is accepted in the same page and `session.retry()` remounts it; the
 smoke also clicks the repaired action, checks deterministic capture, calls

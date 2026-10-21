@@ -72,8 +72,9 @@ try {
       : '019e4fe2-523b-7506-99e5-ccd39795ecda',
   );
   if (!sceneGuid.ok) throw sceneGuid.error;
-  const scene = (await assets.loadByGuid(sceneGuid.value)).unwrap();
-  assets.instantiate(world.allocSharedRef('SceneAsset', scene), world).unwrap();
+  const scene = (await assets.load(sceneGuid.value, 'scene')).unwrap();
+  assets.instantiate(scene, world).unwrap();
+  assets.release(scene).unwrap();
   const light = world
     .spawn({
       component: DirectionalLight,

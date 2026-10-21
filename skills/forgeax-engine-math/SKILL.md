@@ -30,7 +30,7 @@ Namespaces (`vec3` / `mat4` / `quat` / `color` ...) group pure functions with `o
 | `quat.right/up/forward(out, q)` | `=> Vec3` | Local basis vectors expressed in world space: right=q·+X / up=q·+Y / forward=q·−Z. Matches `mat4.getRight/getUp/getForward` and Bevy `Transform::local_x`/`local_y`/`forward`. Use for movement/aiming along local orientation instead of manual `transformVec3(out, q, [0,0,-1])`; unit quaternion input gives unit vectors. |
 | `color.srgbToLinear/linearToSrgb/fromHex/toHex` | out-param / value | Color-space conversion. |
 | `easing.cubicInOut / smoothstep / smootherstep / elasticInOut(t)` | `=> number` | Scalar time remapping, clamped to [0,1]. `cubicInOut` / `smoothstep` / `smootherstep` ease in/out; `elasticInOut` preserves elastic overshoot, like Bevy `EaseFunction`. Use for animation/UI/camera transitions instead of hand-written polynomials; `easing` is an extensible namespace. |
-| `screenToRay(out, sx, sy, vpW, vpH, view, proj, kind)` | `=> Ray` | Screen coordinates to world ray. |
+| `screenToRay(out, sx, sy, vpW, vpH, view, proj)` | `=> Ray` | Screen coordinates to world ray. |
 | `worldToScreen(out, worldPos, viewProj, canvasW, canvasH)` | `=> { onScreen, behind }` | World coordinates to screen pixels; dual of `screenToRay`. |
 | `rayAabbIntersects(ray, aabb)` | `=> RayAabbResult` | Ray/bounding-box intersection. |
 | `rayTriangleIntersects(r, a, b, c)` | `=> RayTriResult` | Double-sided Moller-Trumbore ray/triangle intersection. |
@@ -80,7 +80,7 @@ vec3.add(pos, pos, tmp);          // pos = pos + tmp (writes into pos, returns i
 ```ts
 import { screenToRay, rayAabbIntersects, ray as rayNs } from '@forgeax/engine-math';
 
-const r = screenToRay(rayNs.create(), mouseX, mouseY, vpW, vpH, viewMat, projMat, 'perspective');
+const r = screenToRay(rayNs.create(), mouseX, mouseY, vpW, vpH, viewMat, projMat);
 const hit = rayAabbIntersects(r, entityAabb); // hit.hit -> boolean
 ```
 

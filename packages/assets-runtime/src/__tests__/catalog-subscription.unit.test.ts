@@ -2,7 +2,7 @@ import { describe, expect, it, vi } from 'vitest';
 import { AssetRegistry } from '../asset-registry';
 
 describe('AssetRegistry.subscribeCatalog', () => {
-  it('isolates throwing listeners and makes unsubscribe idempotent', () => {
+  it('isolates throwing listeners and makes unsubscribe idempotent', async () => {
     let emit: ((delta: { added: []; changed: []; removed: [] }) => void) | undefined;
     const source = {
       enumerate: async () => ({ ok: true as const, value: [] }),
@@ -11,8 +11,9 @@ describe('AssetRegistry.subscribeCatalog', () => {
         return () => {};
       },
     };
-    const assets = new AssetRegistry({} as never);
+    const assets = new AssetRegistry({ shaderRegistry: {} as never });
     assets.setCatalogSource(source as never);
+    (await assets.enumerateCatalog()).unwrap();
     const broken = vi.fn(() => {
       throw new Error('listener failed');
     });
@@ -24,5 +25,6 @@ describe('AssetRegistry.subscribeCatalog', () => {
     expect(received).toHaveBeenCalledTimes(1);
     dispose();
     dispose();
+    assets.dispose();
   });
 });

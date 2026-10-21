@@ -1,4 +1,5 @@
-import { describe, expect, it } from 'vitest';
+import { assert, describe, expect, it } from 'vitest';
+import { MaterialResource } from '../material-resource';
 import {
   createMainPassMaterialSelectionOwner,
   hasSsrSceneInputs,
@@ -9,6 +10,7 @@ import {
   defaultMaterialSnapshot,
   type MaterialSnapshot,
 } from '../render-system-extract';
+import { MaterialDispatch } from '../scene/material-dispatch';
 
 import {
   COLOR_PASS_SELECTOR,
@@ -16,7 +18,8 @@ import {
   FORWARD_PASS_SELECTOR,
 } from '../systems/pass-selector';
 
-type SelectionContext = Parameters<typeof hasSsrSceneInputs>[0];
+type SelectionContext = Parameters<typeof selectMainPassMaterials>[0] &
+  Pick<Parameters<typeof hasSsrSceneInputs>[0], 'materialFrame' | 'renderables'>;
 
 function material(handle: number, options: Partial<MaterialSnapshot> = {}): MaterialSnapshot {
   return { ...defaultMaterialSnapshot(handle), materialShaderId: `cooked:${handle}`, ...options };
@@ -26,9 +29,14 @@ function row(
   index: number,
   materials: readonly MaterialSnapshot[],
 ): SelectionContext['validatedOrdered'][number] {
+  const first = materials[0];
+  assert(first);
   return {
     renderableIndex: index,
-    source: { material: materials[0], materials },
+    source: {
+      material: new MaterialResource(first),
+      materials: materials.map((value) => new MaterialResource(value)),
+    },
   } as unknown as SelectionContext['validatedOrdered'][number];
 }
 
@@ -46,7 +54,6 @@ function pass(index: number, handle: number, lightMode: string): DispatchEntry {
     vertexEntry: undefined,
     fragmentEntry: undefined,
     materialShaderId: undefined,
-    paramSnapshot: undefined,
   };
 }
 
@@ -54,7 +61,31 @@ function context(
   materials: readonly MaterialSnapshot[],
   dispatch: readonly DispatchEntry[],
 ): SelectionContext {
-  return { validatedOrdered: [row(0, materials)], dispatch };
+  return prepare([row(0, materials)], dispatch);
+}
+
+function prepare(
+  validatedOrdered: SelectionContext['validatedOrdered'],
+  dispatch: SelectionContext['dispatch'],
+): SelectionContext {
+  let materialFrame = new MaterialDispatch().materials();
+  const materialSlots: MaterialSnapshot[] = [];
+  const materialSlotIndices = validatedOrdered.map((row) => {
+    materialFrame = materialFrame.with(row.source.material);
+    return row.source.materials.map((resource) => {
+      materialFrame = materialFrame.with(resource);
+      materialSlots.push(resource.snapshot);
+      return materialSlots.length - 1;
+    });
+  });
+  return {
+    validatedOrdered,
+    renderables: validatedOrdered.map((row) => row.source),
+    dispatch,
+    materialSlots,
+    materialSlotIndices,
+    materialFrame,
+  };
 }
 
 function countSetAllocations<T>(run: () => T): { value: T; allocations: number } {
@@ -76,12 +107,10 @@ function countSetAllocations<T>(run: () => T): { value: T; allocations: number }
 
 describe('main-pass material selection allocation', () => {
   it('creates no result sets for rejected renderables', () => {
-    const c: SelectionContext = {
-      validatedOrdered: Array.from({ length: 512 }, (_, i) =>
-        row(i, [material(i, { transparent: true })]),
-      ),
-      dispatch: [],
-    };
+    const c = prepare(
+      Array.from({ length: 512 }, (_, i) => row(i, [material(i, { transparent: true })])),
+      [],
+    );
     const { value, allocations } = countSetAllocations(() =>
       selectMainPassMaterials(c, undefined, 'opaque'),
     );
@@ -90,10 +119,10 @@ describe('main-pass material selection allocation', () => {
   });
 
   it('uses no native hash sets for selected singleton lanes through dispatch and mode selection', () => {
-    const c: SelectionContext = {
-      validatedOrdered: Array.from({ length: 512 }, (_, i) => row(i, [material(i)])),
-      dispatch: Array.from({ length: 512 }, (_, i) => pass(i, i, 'Forward')),
-    };
+    const c = prepare(
+      Array.from({ length: 512 }, (_, i) => row(i, [material(i)])),
+      Array.from({ length: 512 }, (_, i) => pass(i, i, 'Forward')),
+    );
     const { value, allocations } = countSetAllocations(() =>
       selectMainPassMaterials(c, { LightMode: ['Forward'] }, 'opaque'),
     );
@@ -184,15 +213,12 @@ describe('SSR receiver selection', () => {
   });
 
   it('requires at least one receiver across the selected renderables', () => {
-    const c: SelectionContext = {
-      validatedOrdered: [
-        row(0, [material(1, { transparent: true })]),
-        row(1, [material(2, { deferredPass: true })]),
-      ],
-      dispatch: [pass(0, 1, 'Forward'), pass(1, 2, 'Deferred')],
-    };
+    const c = prepare(
+      [row(0, [material(1, { transparent: true })]), row(1, [material(2, { deferredPass: true })])],
+      [pass(0, 1, 'Forward'), pass(1, 2, 'Deferred')],
+    );
     expect(hasSsrSceneInputs(c, 'deferred')).toBe(true);
-    expect(hasSsrSceneInputs({ validatedOrdered: [], dispatch: [] }, 'deferred')).toBe(false);
+    expect(hasSsrSceneInputs(prepare([], []), 'deferred')).toBe(false);
   });
 
   it.each([
@@ -215,14 +241,14 @@ describe('SSR receiver selection', () => {
     ).toBe(false);
     expect(
       hasSsrSceneInputs(
-        {
-          validatedOrdered: [row(0, [canonical]), row(1, [material(2, { transparent: true })])],
-          dispatch: [pass(0, 1, 'Forward'), pass(1, 2, 'Forward')],
-        },
+        prepare(
+          [row(0, [canonical]), row(1, [material(2, { transparent: true })])],
+          [pass(0, 1, 'Forward'), pass(1, 2, 'Forward')],
+        ),
         'forward',
       ),
     ).toBe(false);
-    expect(hasSsrSceneInputs({ validatedOrdered: [], dispatch: [] }, 'forward')).toBe(false);
+    expect(hasSsrSceneInputs(prepare([], []), 'forward')).toBe(false);
   });
 });
 
@@ -288,7 +314,10 @@ describe('record-owned material selections', () => {
     Object.assign(c, { mainPassMaterialSelection: createMainPassMaterialSelectionOwner(c) });
     expect(select(c)?.size).toBe(1);
     const otherMaterial = material(1, { transparent: true });
-    const otherRows = { ...c, validatedOrdered: [row(0, [otherMaterial])] };
+    const otherRows = {
+      ...prepare([row(0, [otherMaterial])], c.dispatch),
+      mainPassMaterialSelection: createMainPassMaterialSelectionOwner(c),
+    };
     expect(select(otherRows)?.size).toBe(0);
     Object.assign(otherMaterial, { transparent: false });
     expect(select(otherRows)?.size).toBe(1);

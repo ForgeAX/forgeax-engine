@@ -3,6 +3,7 @@ import { World } from '@forgeax/engine-ecs';
 import { propagateTransforms, Transform } from '@forgeax/engine-scene';
 import { ShaderRegistry } from '@forgeax/engine-shader';
 import { describe, expect, it } from 'vitest';
+import { samplerContribution } from '../assets/asset-decoders';
 import { Visibility } from '../components/visibility';
 import { ProjectedDecal } from '../decals/component';
 import { extractProjectedDecals } from '../decals/extract';
@@ -11,14 +12,18 @@ import { Materials } from '../materials';
 import { publicationFrameDependencies } from '../publication/dependencies';
 import { prepareExtractContext } from '../render-system-extract';
 import { extractFrames } from '../render-system-extract-tail';
+import { testAssets } from './helpers/runtime-assets';
 
 function setup() {
   const world = new World();
-  const assets = new AssetRegistry(new ShaderRegistry({ manifestUrl: undefined }));
-  const handle = world.allocSharedRef(
-    'MaterialAsset',
-    Materials.standard({ baseColor: [1, 0, 0, 1] }),
-  );
+  const assets = new AssetRegistry({
+    shaderRegistry: new ShaderRegistry({ manifestUrl: undefined }),
+  });
+  world.bindAssets(assets).unwrap();
+  assets.installDecoder(samplerContribution.kind, samplerContribution.decoder);
+  const handle = testAssets(world)
+    .create(Materials.standard({ baseColor: [1, 0, 0, 1] }))
+    .unwrap();
   const entity = world
     .spawn(
       { component: Transform, data: {} },
@@ -67,42 +72,56 @@ describe('projected decal source contract', () => {
     world.set(entity, Transform, { scale: [1, 1, 1] }).unwrap();
     world.set(entity, ProjectedDecal, { opacity: 2 }).unwrap();
     expect(extract).toThrow(/opacity/);
-    const unsupported = world.allocSharedRef(
-      'MaterialAsset',
-      Materials.standard({ baseColor: [1, 1, 1, 1], metallicTexture: 111 }),
-    );
+    const unsupported = testAssets(world)
+      .create(
+        Materials.standard({
+          baseColor: [1, 1, 1, 1],
+          metallicTexture: testAssets(world)
+            .create({
+              kind: 'texture',
+              shape: { viewDimension: '2d', extent: { width: 1, height: 1 } },
+              format: 'rgba8unorm',
+              colorSpace: 'linear',
+              mips: { kind: 'none' },
+              data: new Uint8Array([255, 255, 255, 255]),
+            })
+            .unwrap(),
+        }),
+      )
+      .unwrap();
     world.set(entity, ProjectedDecal, { opacity: 1, material: unsupported }).unwrap();
     expect(extract).toThrow(/metallicTexture/);
   });
   it('publishes the complete texture and sampler closure for a decal-only World', () => {
     const { world, entity, extract } = setup();
-    const color = world.allocSharedRef('TextureAsset', {
-      kind: 'texture',
-      shape: { viewDimension: '2d', extent: { width: 1, height: 1 } },
-      format: 'rgba8unorm',
-      colorSpace: 'linear',
-      mips: { kind: 'none' },
-      data: new Uint8Array([255, 255, 255, 255]),
-    });
-    const sampler = world.allocSharedRef('SamplerAsset', {
-      kind: 'sampler',
-      magFilter: 'nearest',
-      minFilter: 'nearest',
-    });
-    const material = world.allocSharedRef(
-      'MaterialAsset',
-      Materials.standard({
-        baseColor: [1, 1, 1, 1],
-        baseColorTexture: { texture: color, sampler },
-      }),
-    );
+    const color = testAssets(world)
+      .create({
+        kind: 'texture',
+        shape: { viewDimension: '2d', extent: { width: 1, height: 1 } },
+        format: 'rgba8unorm',
+        colorSpace: 'linear',
+        mips: { kind: 'none' },
+        data: new Uint8Array([255, 255, 255, 255]),
+      })
+      .unwrap();
+    const sampler = testAssets(world)
+      .create({
+        kind: 'sampler',
+        magFilter: 'nearest',
+        minFilter: 'nearest',
+      })
+      .unwrap();
+    const material = testAssets(world)
+      .create(
+        Materials.standard({
+          baseColor: [1, 1, 1, 1],
+          baseColorTexture: { texture: color, sampler },
+        }),
+      )
+      .unwrap();
     world.set(entity, ProjectedDecal, { material }).unwrap();
     const decals = extract();
-    const frame = extractFrames(
-      [world],
-      0,
-      new AssetRegistry(new ShaderRegistry({ manifestUrl: undefined })),
-    );
+    const frame = extractFrames([world], 0, testAssets(world));
     expect(decals[0]?.samplers[0]?.magFilter).toBe('nearest');
     expect(publicationFrameDependencies(frame)).toEqual(
       expect.arrayContaining([material, color, sampler]),

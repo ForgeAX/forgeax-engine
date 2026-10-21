@@ -1,11 +1,11 @@
-import { resolveAssetHandle } from '@forgeax/engine-assets-runtime';
+import { runtimeAssets } from '@forgeax/engine-assets-runtime/internal';
+
 import type { World } from '@forgeax/engine-ecs';
 import { routeWorldError, SpawnLightInvalidBoundsError } from '@forgeax/engine-ecs/projection';
 import { type Mat4, mat4, type Vec3, vec3 } from '@forgeax/engine-math';
 import { RhiError } from '@forgeax/engine-rhi';
 import { GlobalTransform, readPresentationWorldMatrix, Transform } from '@forgeax/engine-scene';
-import type { Handle, IesProfileAsset, TextureAsset } from '@forgeax/engine-types';
-import { handleSlot, toShared } from '@forgeax/engine-types';
+import type { AssetHandle, IesProfileAsset, TextureAsset } from '@forgeax/engine-types';
 import { type ExtractedCloudLayer, extractCloudLayer } from '../cloud/extract';
 import {
   Atmosphere,
@@ -31,7 +31,7 @@ import {
   validateLightProbeData,
   validateRectAreaLightData,
 } from '../components/light-helpers';
-import { validateLightingChannels } from '../components/lighting-channels';
+import { validateChannelMask } from '../components/lighting-channels';
 import { validatePointLightDecay } from '../components/point-light';
 import { selectEnvironment } from '../environment/frame';
 import { createLightResourceUnavailable } from '../errors/render';
@@ -135,12 +135,24 @@ export function extractWorldEnvironment(
         shadowFilter: number;
         shadowAngularRadius: number;
         maxPenumbraTexels: number;
+        shadowMapAspect: number;
+        shadowCasterChannels: number;
+        shadowAutoUpdate: boolean;
+        shadowRevision: number;
         staggerCascades: boolean;
+        shadowProjection: number;
+        shadowViewProjection: Float32Array;
+        shadowBiasMode: number;
+        shadowRadius: number;
+        shadowIntensity: number;
+        shadowBlurSamples: number;
       }
     | undefined;
   for (const row of directionalLightQuery) {
     const l = row.get(DirectionalLight);
-    const channelsError = validateLightingChannels(l.lightingChannels);
+    const channelsError =
+      validateChannelMask(l.lightingChannels) ??
+      validateChannelMask(l.shadowCasterChannels, 'shadowCasterChannels');
     if (channelsError !== null) {
       worldInternal._routeError(channelsError, {
         severity: Severity.Error,
@@ -178,7 +190,17 @@ export function extractWorldEnvironment(
         shadowFilter: l.shadowFilter,
         shadowAngularRadius: l.shadowAngularRadius,
         maxPenumbraTexels: l.maxPenumbraTexels,
+        shadowMapAspect: l.shadowMapAspect,
+        shadowCasterChannels: l.shadowCasterChannels,
+        shadowAutoUpdate: l.shadowAutoUpdate,
+        shadowRevision: l.shadowRevision,
         staggerCascades: l.staggerCascades,
+        shadowProjection: l.shadowProjection,
+        shadowViewProjection: new Float32Array(l.shadowViewProjection),
+        shadowBiasMode: l.shadowBiasMode,
+        shadowRadius: l.shadowRadius,
+        shadowIntensity: l.shadowIntensity,
+        shadowBlurSamples: l.shadowBlurSamples,
       };
     }
   }
@@ -201,15 +223,12 @@ export function extractWorldEnvironment(
   }
 
   const iesProfiles = new Map<number, IesProfileSnapshot>();
-  const iesProfile = (
-    handle: Handle<'IesProfileAsset', 'shared'> | undefined,
-    entity: number,
-  ): IesProfileSnapshot => {
+  const iesProfile = (handle: number | undefined, entity: number): IesProfileSnapshot => {
     if (handle === undefined || Number(handle) === 0) return {};
     const key = Number(handle);
     const cached = iesProfiles.get(key);
     if (cached !== undefined) return cached;
-    const resolved = resolveAssetHandle<IesProfileAsset>(world, handle);
+    const resolved = runtimeAssets(world.assets).resolveAsset<IesProfileAsset>(handle);
     let result: IesProfileSnapshot = { iesProfileHandle: key };
     if (
       resolved.ok &&
@@ -263,7 +282,7 @@ export function extractWorldEnvironment(
       });
       continue;
     }
-    const channelsError = validateLightingChannels(p.lightingChannels);
+    const channelsError = validateChannelMask(p.lightingChannels);
     if (channelsError !== null) {
       worldInternal._routeError(channelsError, {
         severity: Severity.Error,
@@ -346,7 +365,9 @@ export function extractWorldEnvironment(
   };
   for (const row of spotLightQuery) {
     const s = row.get(SpotLight);
-    const channelsError = validateLightingChannels(s.lightingChannels);
+    const channelsError =
+      validateChannelMask(s.lightingChannels) ??
+      validateChannelMask(s.shadowCasterChannels, 'shadowCasterChannels');
     if (channelsError !== null) {
       worldInternal._routeError(channelsError, {
         severity: Severity.Error,
@@ -401,18 +422,21 @@ export function extractWorldEnvironment(
     const sNearPlane = s.nearPlane;
     const shadowProjection = resolvePunctualShadowFarPlane(s.range, sNearPlane, s.farPlane);
     const sFarPlane = shadowProjection.ok ? shadowProjection.value : s.farPlane;
+    const cookieHandle = Number(s.cookie) > 0 ? Number(s.cookie) : undefined;
     const cookieAsset =
-      s.cookie === undefined ? undefined : resolveAssetHandle<TextureAsset>(world, s.cookie);
+      cookieHandle === undefined
+        ? undefined
+        : runtimeAssets(world.assets).resolveAsset<TextureAsset>(cookieHandle);
     // Resolve the legacy projector before assigning array slices so the
     // extended-lighting path can reuse its texture transport without losing
     // the old lightViewProj projection semantics.
     const hasProjector = Number(s.projector) > 0;
-    let projectorHandle: Handle<'TextureAsset', 'shared'> | undefined;
+    let projectorHandle: AssetHandle<'texture'> | undefined;
     let projectorAsset: TextureAsset | undefined;
     let projectorGuid: string | undefined;
     if (hasProjector) {
-      const candidate = toShared<'TextureAsset'>(Math.round(Number(s.projector)));
-      const resolvedProjector = resolveAssetHandle<TextureAsset>(world, candidate);
+      const candidate = Math.round(Number(s.projector)) as AssetHandle<'texture'>;
+      const resolvedProjector = runtimeAssets(world.assets).resolveAsset<TextureAsset>(candidate);
       if (!resolvedProjector.ok || resolvedProjector.value.kind !== 'texture') {
         worldInternal._routeError(
           resolvedProjector.ok
@@ -428,7 +452,7 @@ export function extractWorldEnvironment(
       } else {
         projectorHandle = candidate;
         projectorAsset = resolvedProjector.value;
-        projectorGuid = assets?.guidOf(projectorAsset) ?? `handle:${Number(candidate)}`;
+        projectorGuid = assets?.guidOf(candidate) ?? `handle:${Number(candidate)}`;
       }
     }
     const cookieProjection =
@@ -439,10 +463,9 @@ export function extractWorldEnvironment(
     const projectorProjection =
       projectorAsset === undefined ? undefined : prepareCookieProjection(projectorAsset);
     const projectorSource = projectorProjection?.source;
-    const cookieHandle = s.cookie === undefined ? undefined : handleSlot(s.cookie);
     const cookieSlice = lightTextureSlice(cookieHandle, cookieSource);
     const projectorSlice = lightTextureSlice(
-      projectorHandle === undefined ? undefined : handleSlot(projectorHandle),
+      projectorHandle === undefined ? undefined : Number(projectorHandle),
       projectorSource,
     );
     const shadowIntensity = s.shadowIntensity;
@@ -506,10 +529,10 @@ export function extractWorldEnvironment(
       cosInner: degToCos(innerConeDeg),
       cosOuter: degToCos(outerConeDeg),
       ...iesProfile(s.iesProfile, row.entity),
-      ...(s.cookie === undefined
+      ...(cookieHandle === undefined
         ? {}
         : {
-            cookieHandle: handleSlot(s.cookie),
+            cookieHandle,
             ...(cookieSlice === undefined ? {} : { cookieSlice }),
           }),
       ...(cookieSource === undefined ? {} : { cookieSource }),
@@ -520,15 +543,23 @@ export function extractWorldEnvironment(
       rollDeg: s.rollDeg,
       // ── shadow fields ──
       castShadow,
-      lightViewProj,
+      lightViewProj:
+        s.shadowProjection === 1 ? new Float32Array(s.shadowViewProjection) : lightViewProj,
       mapSize: sMapSize,
       nearPlane: sNearPlane,
       farPlane: sFarPlane,
       shadowAtlasTile,
       shadowIntensity,
+      shadowBlurSamples: s.shadowBlurSamples,
       depthBias: s.depthBias,
       normalBias: s.normalBias,
+      shadowMapAspect: s.shadowMapAspect,
+      shadowCasterChannels: s.shadowCasterChannels,
+      shadowAutoUpdate: s.shadowAutoUpdate,
+      shadowRevision: s.shadowRevision,
       pcfKernelSize: s.pcfKernelSize,
+      shadowFilter: s.shadowFilter,
+      shadowBiasMode: s.shadowBiasMode,
       ...(projectorHandle === undefined ||
       projectorAsset === undefined ||
       projectorGuid === undefined
@@ -552,7 +583,7 @@ export function extractWorldEnvironment(
     .unwrap();
   for (const row of rectLightQuery) {
     const light = row.get(RectAreaLight);
-    const channelsError = validateLightingChannels(light.lightingChannels);
+    const channelsError = validateChannelMask(light.lightingChannels);
     if (channelsError !== null) {
       worldInternal._routeError(channelsError, {
         severity: Severity.Error,
@@ -592,7 +623,7 @@ export function extractWorldEnvironment(
     let sourceTextureSlice: number | undefined;
     let sourceTextureSource: LightTextureSource | undefined;
     if (light.sourceTexture !== undefined && Number(light.sourceTexture) > 0) {
-      const resolved = resolveAssetHandle<TextureAsset>(world, light.sourceTexture);
+      const resolved = runtimeAssets(world.assets).resolveAsset<TextureAsset>(light.sourceTexture);
       const projection =
         resolved.ok && resolved.value.kind === 'texture'
           ? prepareCookieProjection(resolved.value)
@@ -611,7 +642,7 @@ export function extractWorldEnvironment(
           { severity: Severity.Error, systemName: 'RenderSystem.extract (rect-source-texture)' },
         );
       }
-      sourceTextureHandle = handleSlot(light.sourceTexture);
+      sourceTextureHandle = Number(light.sourceTexture);
       sourceTextureSource = projection?.source;
       sourceTextureSlice = lightTextureSlice(sourceTextureHandle, sourceTextureSource);
     }
@@ -706,6 +737,15 @@ export function extractWorldEnvironment(
     const sf = firstHitShadowFields;
     if (sf !== undefined) {
       directionalCsmConfig = {
+        ...(sf.shadowProjection === 1 ? { shadowViewProjection: sf.shadowViewProjection } : {}),
+        shadowMapAspect: sf.shadowMapAspect,
+        shadowCasterChannels: sf.shadowCasterChannels,
+        shadowAutoUpdate: sf.shadowAutoUpdate,
+        shadowRevision: sf.shadowRevision,
+        shadowBiasMode: sf.shadowBiasMode,
+        shadowRadius: sf.shadowRadius,
+        shadowIntensity: sf.shadowIntensity,
+        shadowBlurSamples: sf.shadowBlurSamples,
         cascadeCount: sf.cascadeCount,
         splitLambda: sf.splitLambda,
         cascadeBlend: sf.cascadeBlend,
@@ -723,8 +763,8 @@ export function extractWorldEnvironment(
       // need the camera. When csm is null (no camera) leave lightViewProj
       // undefined — the merge layer recomputes. Still surface the split/count
       // metadata so a single-world path keeps its prior fields.
-      cascadeCount = Math.round(sf.cascadeCount);
-      cascadeBlend = sf.cascadeBlend;
+      cascadeCount = csm?.cascadeCount ?? Math.round(sf.cascadeCount);
+      cascadeBlend = csm?.cascadeBlend ?? sf.cascadeBlend;
       shadowMapSize = sf.mapSize;
       if (csm !== null) {
         lightViewProj = csm.lightViewProj;
@@ -770,6 +810,14 @@ export function extractWorldEnvironment(
       .unwrap();
     for (const row of pointShadowQuery) {
       const ps = row.get(PointLightShadow);
+      const channelsError = validateChannelMask(ps.shadowCasterChannels, 'shadowCasterChannels');
+      if (channelsError !== null) {
+        worldInternal._routeError(channelsError, {
+          severity: Severity.Error,
+          systemName: 'RenderSystem.extract (shadow-channels)',
+        });
+        continue;
+      }
       // Read world-space position from GlobalTransform.world (mat4 column-major;
       // translation lives at indices 12..14, mirroring CameraSnapshot.world
       // semantics in this file).
@@ -785,7 +833,8 @@ export function extractWorldEnvironment(
       const px = wRow[12] ?? 0;
       const py = wRow[13] ?? 0;
       const pz = wRow[14] ?? 0;
-      const lightPos = vec3.create(px, py, pz);
+      const lightPos =
+        ps.shadowProjection === 1 ? vec3.clone(ps.shadowPosition) : vec3.create(px, py, pz);
       const mapSize = ps.mapSize;
       const nearPlane = ps.nearPlane;
       const projection = resolvePunctualShadowFarPlane(
@@ -827,6 +876,13 @@ export function extractWorldEnvironment(
         farPlane,
         depthBias: ps.depthBias,
         normalBias: ps.normalBias,
+        shadowCasterChannels: ps.shadowCasterChannels,
+        shadowAutoUpdate: ps.shadowAutoUpdate,
+        shadowRevision: ps.shadowRevision,
+        shadowFilter: ps.shadowFilter,
+        shadowBiasMode: ps.shadowBiasMode,
+        shadowIntensity: ps.shadowIntensity,
+        pcfKernelSize: ps.pcfKernelSize ?? 3,
         shadowAtlasLayer: layer,
         shadowMatrices: packed,
       });
@@ -851,6 +907,7 @@ export function extractWorldEnvironment(
           shadowAtlasLayer: ps.shadowAtlasLayer,
           shadowNear: ps.nearPlane,
           shadowFar: ps.farPlane,
+          pcfKernelSize: ps.pcfKernelSize ?? 3,
         };
       }
     }
@@ -1087,7 +1144,6 @@ export function extractWorldEnvironment(
     environments: environmentCandidates,
     fogs: fog === undefined ? [] : [fog],
     suns: sun,
-    lane: 'direct',
   });
   if (!environmentSelection.ok) {
     routeWorldError(world, environmentSelection.error, {

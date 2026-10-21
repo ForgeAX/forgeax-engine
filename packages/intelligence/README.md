@@ -58,3 +58,13 @@ payloads are checked independently. Either output-character bound terminates
 the affected Activity with one `intelligence-output-overflow` terminal whose
 `detail.bound` is `'output-chars'` and whose `detail.limit` is the
 configured limit, instead of growing an unbounded queue.
+
+The realm client has one ordered receive queue: Host rejections become failed
+activity events when received, so later output cannot overtake them during poll.
+Its transport state is `open`, `closing` or `closed`; terminal messages and send
+failures share one retirement path that clears pending work, releases the port
+and settles any close already in progress.
+
+Runtime and Host-port close tasks revoke admission as soon as closing starts.
+The retained task owns repeated and reentrant close calls; provider cleanup
+begins only after that task has been published.

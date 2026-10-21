@@ -4,7 +4,7 @@
   "private": true,
   "type": "module",
   "license": "Apache-2.0",
-  "description": "Reproduction of Bevy's `translation` example (a cube sliding back and forth along its own local X axis) \u2014 a MOTION demo exercising createApp's managed frame-loop + auto-Time resource + a world.addSystem Update system driving quat.right, the new local-basis accessor mapping Bevy's transform.local_x().",
+  "description": "Reproduction of Bevy's `translation` example (a cube sliding back and forth along its own local X axis) — a MOTION demo exercising createApp's managed frame-loop + auto-Time resource + a world.addSystem Update system driving quat.right, the new local-basis accessor mapping Bevy's transform.local_x().",
   "scripts": {
     "dev": "vite",
     "typecheck": "tsc --noEmit",
@@ -49,7 +49,8 @@
     "@forgeax/engine-math": "workspace:*",
     "@forgeax/engine-runtime": "workspace:*",
     "@forgeax/engine-scene": "workspace:*",
-    "@forgeax/engine-render": "workspace:*"
+    "@forgeax/engine-render": "workspace:*",
+    "@forgeax/engine-geometry": "workspace:*"
   },
   "devDependencies": {
     "@forgeax/engine-image": "workspace:*",

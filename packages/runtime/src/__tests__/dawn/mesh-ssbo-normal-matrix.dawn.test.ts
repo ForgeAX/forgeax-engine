@@ -82,6 +82,7 @@ it.each([
       previous[12] = 17;
       previous[13] = -9;
       const entry = {
+        meshSlot: 0,
         source: {
           transform: { world },
           materials: [],

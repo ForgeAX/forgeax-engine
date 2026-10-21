@@ -31,6 +31,10 @@ import { dirname, resolve } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
 import { fileURLToPath } from 'node:url';
 import { emitSmokeReceipt } from '../../../../shared/scripts/smoke-receipt.mjs';
+import { AssetRegistry } from '@forgeax/engine-assets-runtime';
+
+import { createPrimitiveMesh } from '@forgeax/engine-geometry';
+
 
 const SMOKE_DURATION_MS = Number.parseInt(process.env.SMOKE_DURATION_MS ?? '5000', 10);
 const SMOKE_MIN_FRAMES = Number.parseInt(process.env.SMOKE_MIN_FRAMES ?? '60', 10);
@@ -149,9 +153,7 @@ const { constructRuntimeRendererHost } = await import('@forgeax/engine-runtime/i
 const { Materials } = await import('@forgeax/engine-render');
 const { Camera, MeshFilter, MeshRenderer } = await import('@forgeax/engine-render');
 const { Transform } = await import('@forgeax/engine-scene');
-const {
-  HANDLE_TRIANGLE,
-} = await import('@forgeax/engine-assets-runtime');
+
 
 const { buildEngineShaderManifest } = await import('@forgeax/engine-vite-plugin-shader');
 const ENGINE_MANIFEST = await buildEngineShaderManifest();
@@ -184,21 +186,26 @@ const errors = [];
 renderer.subscribe((event) => { if (event.kind === 'error') errors.push({ code: event.error.code, hint: event.error.hint }); });
 
 
-const world = new World();
+const world = new World({ assets: assets });
+const sceneAssets = world.assets;
+if (!(sceneAssets instanceof AssetRegistry)) throw new Error('Scene requires its runtime asset owner');
+
+const primitiveTriangle = sceneAssets.create(createPrimitiveMesh('triangle').unwrap()).unwrap();
+
 const worldAttachment1 = renderer.attach(world);
 if (!worldAttachment1.ok) throw worldAttachment1.error;
 const lease = worldAttachment1.value;
 // LO 1.2 fragment shader literal: vec4(1.0, 0.5, 0.2, 1.0) flat orange.
 // M8 D-17: mint a user-tier column handle from the unlit MaterialAsset POD.
 if (!CLEAR_ONLY) {
-  const orangeMaterial = world.allocSharedRef('MaterialAsset', Materials.unlit([1.0, 0.5, 0.2, 1.0]));
+  const orangeMaterial = world.assets.create(Materials.unlit([1.0, 0.5, 0.2, 1.0])).unwrap();
   world.spawn(
     {
       component: Transform,
       data: {
         pos: [0, 0, 0], quat: [0, 0, 0, 1], scale: [1, 1, 1],},
     },
-    { component: MeshFilter, data: { assetHandle: HANDLE_TRIANGLE } },
+    { component: MeshFilter, data: { assetHandle: primitiveTriangle } },
     {
       component: MeshRenderer,
       data: { materials: [orangeMaterial] },

@@ -1,22 +1,19 @@
+import type { EntityHandle, World } from '@forgeax/engine-ecs';
+import { mat4, ray, type Vec3Like, vec3 } from '@forgeax/engine-math';
+import { Instances } from '@forgeax/engine-render';
+import type { AssetHandle } from '@forgeax/engine-types';
 import { isTriangleTopology } from '@forgeax/engine-types';
+import { currentMeshPositions, type PoseUnavailableReason } from './current-positions';
+import { transformMeshVertex, visitSubmeshTriangles } from './mesh-triangles';
+import { computeScreenRay, rayHitsMeshBounds } from './pick-core';
+import { meshQueryEntities, queryMesh, queryMeshMatrix } from './query-mesh';
+
 // pick-triangle.ts — precise screen ray / triangle query.
 //
 // This is the precise companion to pick()'s inexpensive world-AABB query. CPU
 // triangle vertices are transformed into world space before testing the shared
 // world ray. That keeps non-uniformly transformed instances and nearest-
 // occluder ordering correct.
-
-import { resolveAssetHandle } from '@forgeax/engine-assets-runtime';
-import type { EntityHandle, World } from '@forgeax/engine-ecs';
-import { mat4, ray, type Vec3Like, vec3 } from '@forgeax/engine-math';
-import { Instances, MeshFilter, MeshRenderer } from '@forgeax/engine-render';
-import { GlobalTransform, Transform } from '@forgeax/engine-scene';
-import { Skin } from '@forgeax/engine-skinning';
-import type { MeshAsset } from '@forgeax/engine-types';
-import { toShared } from '@forgeax/engine-types';
-import { currentMeshPositions, type PoseUnavailableReason } from './current-positions';
-import { transformMeshVertex, visitSubmeshTriangles } from './mesh-triangles';
-import { computeScreenRay, rayHitsMeshBounds, readWorldMatrix } from './pick-core';
 
 export interface TriangleHit {
   readonly entity: EntityHandle;
@@ -28,8 +25,8 @@ export interface TriangleHit {
   readonly distance: number;
   /** Barycentric weights for the triangle's first, second, and third vertices. */
   readonly barycentric: readonly [number, number, number];
-  /** Present when the caller supplied the registry's payload identity resolver. */
-  readonly assetGuid?: string;
+  /** Runtime identity of the queried Mesh asset; resolve provenance through its asset owner. */
+  readonly assetHandle?: AssetHandle<'mesh'>;
   /** Zero-based explicit instance ordinal when the entity owns Instances. */
   readonly instanceIndex?: number;
   readonly precision: 'triangle';
@@ -48,11 +45,6 @@ export type TrianglePickResult =
       readonly reason: TrianglePickUnavailableReason;
       readonly entities: readonly EntityHandle[];
     };
-
-export interface TrianglePickOptions {
-  /** Resolve a loaded MeshAsset payload to its existing Catalog GUID. */
-  readonly assetGuidOf?: (asset: MeshAsset) => string | undefined;
-}
 
 function pointOnRay(screenRay: ray.Ray, point: Vec3Like): number {
   const dx = (point[0] as number) - (screenRay[0] as number);
@@ -77,7 +69,6 @@ export function pickTriangle(
   screenY: number,
   viewportWidth: number,
   viewportHeight: number,
-  options: TrianglePickOptions = {},
 ): TrianglePickResult {
   const screen = computeScreenRay(
     world,
@@ -90,26 +81,18 @@ export function pickTriangle(
   if (screen === undefined) return { status: 'miss', precision: 'triangle' };
 
   const origin = screen.ray;
-  const query = world
-    .query({
-      read: [Transform, GlobalTransform, MeshFilter, MeshRenderer],
-      optional: [Instances, Skin],
-    })
-    .unwrap();
   let best: TriangleHit | undefined;
   let unsupportedReason: TrianglePickUnavailableReason | undefined;
   const unsupportedEntities: EntityHandle[] = [];
 
-  for (const row of query) {
-    const rawHandle = Math.round(row.get(MeshFilter).assetHandle as number);
-    if (rawHandle === 0) continue;
-    const resolved = resolveAssetHandle<MeshAsset>(world, toShared<'MeshAsset'>(rawHandle));
-    if (!resolved.ok) continue;
-    const mesh = resolved.value;
-    const entity = row.entity;
-    const entityWorldMatrix = readWorldMatrix(world, entity);
+  for (const entity of meshQueryEntities(world)) {
+    const value = queryMesh(world, entity);
+    if (value === undefined) continue;
+    const { mesh, assetHandle } = value;
+    const entityWorldMatrix = queryMeshMatrix(world, entity, screen);
     if (entityWorldMatrix === undefined) continue;
-    const instancesData = row.get(Instances);
+    const instancesResult = world.get(entity, Instances);
+    const instancesData = instancesResult.ok ? instancesResult.value : undefined;
     let instanceTransforms: Float32Array | undefined;
     let instanceCount = 1;
     if (instancesData !== undefined) {
@@ -190,14 +173,13 @@ export function pickTriangle(
           (best !== undefined && distance >= best.distance)
         )
           return;
-        const assetGuid = options.assetGuidOf?.(mesh);
         best = {
           entity,
+          ...(assetHandle === undefined ? {} : { assetHandle }),
           triangleIndex: index,
           point: [worldPoint[0], worldPoint[1], worldPoint[2]] as unknown as Vec3Like,
           distance,
           barycentric: [1 - hit.u - hit.v, hit.u, hit.v],
-          ...(assetGuid === undefined ? {} : { assetGuid }),
           ...(instanceTransforms === undefined ? {} : { instanceIndex }),
           precision: 'triangle',
         };

@@ -149,8 +149,10 @@ node artifacts/scene-material-scaling/shadow-bin/scene-material-shadow.js
 | Captures | Planar cadence 4 / 1, cube repeat controls, steady / continuous probes and budget overflow |
 | Shadow | Existing pool explicitly invalidated / ordinary reuse; 100% static, 99% static + 1% movable, and 100% movable; Deferred SSAO toggle validates same-extent graph replacement |
 
-Each uses 16 warm frames (bounded capture/filter startup extends this), four ABBA
+Each uses 16 completed warm frames (bounded capture/filter startup extends this), four ABBA
 groups, eight measured frames per window and one unmeasured transition frame.
+Cold pipeline preparation retries the same World snapshot before sampling. Scene assets use the
+runtime owner; custom materials load the built app Catalog and update ordinary owned values.
 CPU World/draw and completion wait are separate; GPU time is the measured-pass envelope from the existing
 `summarizeGpuPassTimingIntervals` owner, never a sum of overlapping intervals or
 a native outer query. Raw ticks and per-view coverage are retained; incomplete

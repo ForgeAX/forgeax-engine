@@ -1,5 +1,6 @@
 #define_import_path forgeax_material::terrain_id_surface
 #import forgeax_material::surface_v1::{SurfaceInput, SurfaceData}
+#import forgeax_material::terrain_layer_sampling::{terrain_layer}
 #import forgeax_pbr::tbn::{applyTBN}
 
 fn evaluate_surface(input: SurfaceInput) -> SurfaceData {
@@ -34,8 +35,6 @@ fn evaluate_surface(input: SurfaceInput) -> SurfaceData {
       }
     }
   }
-  let dx = dpdx(uv);
-  let dy = dpdy(uv);
   var color = vec4<f32>(0.0);
   var normal = vec3<f32>(0.0);
   var orm = vec3<f32>(0.0);
@@ -48,11 +47,11 @@ fn evaluate_surface(input: SurfaceInput) -> SurfaceData {
       normal += vec3<f32>(0.0,0.0,1.0)*weight;
       orm += vec3<f32>(1.0,0.5,0.0)*weight;
     } else {
-      let layer = i32(ids[slot]);
-      color += textureSampleGrad(terrainColorLayers,terrainColorLayers_sampler,uv,layer,dx,dy)*weight;
-      normal += textureSampleGrad(terrainNormalHeightLayers,terrainNormalHeightLayers_sampler,uv,layer,dx,dy).xyz*weight;
-      orm += textureSampleGrad(terrainOrmLayers,terrainOrmLayers_sampler,uv,layer,dx,dy).xyz*weight;
-      emission += textureSampleGrad(terrainEmissionLayers,terrainEmissionLayers_sampler,uv,layer,dx,dy).xyz*weight;
+      let layer = terrain_layer(i32(ids[slot]),input);
+      color += layer.color*weight;
+      normal += layer.normalHeight.xyz*weight;
+      orm += layer.orm*weight;
+      emission += layer.emission*weight;
     }
   }
   normal = select(vec3<f32>(0.0,0.0,1.0),normalize(normal),dot(normal,normal)>1e-8);

@@ -148,10 +148,19 @@ export function busTopology(trace: AudioGraphTrace): BusTopology | undefined {
       .inputsOf(context.destination)
       .find((node): node is GainNode => node instanceof GainNode);
     if (master === undefined) continue;
-    const buses = trace
-      .inputsOf(master)
-      .filter((node): node is GainNode => node instanceof GainNode);
-    return { context, master, buses };
+    // Each accepted bus has input, dry/wet mix and fader nodes. Follow the
+    // master chain backwards to its input, where the child bus faders join.
+    let input: AudioNode = master;
+    const seen = new Set<AudioNode>();
+    while (!seen.has(input)) {
+      seen.add(input);
+      const parents = trace
+        .inputsOf(input)
+        .filter((node): node is GainNode => node instanceof GainNode);
+      if (parents.length > 1) return { context, master, buses: parents };
+      if (parents[0] === undefined) break;
+      input = parents[0];
+    }
   }
   return undefined;
 }
@@ -163,7 +172,9 @@ export function busOfSource(
 ): { bus: GainNode | undefined; panner: PannerNode | undefined } {
   let node: AudioNode | undefined = source;
   let panner: PannerNode | undefined;
-  for (let depth = 0; depth < 4 && node !== undefined; depth += 1) {
+  const seen = new Set<AudioNode>();
+  while (node !== undefined && !seen.has(node)) {
+    seen.add(node);
     if (topology.buses.includes(node as GainNode)) return { bus: node as GainNode, panner };
     if (node instanceof PannerNode) panner = node;
     node = trace.outputsOf(node).find((next): next is AudioNode => next instanceof AudioNode);

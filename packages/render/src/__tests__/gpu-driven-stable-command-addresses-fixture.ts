@@ -8,8 +8,10 @@ import { BatchTopology } from '../gpu-driven/batch-topology';
 import { ShadowViewStatePool } from '../gpu-driven/shadow-views';
 import { GPU_DRIVEN_VIEW_WGSL } from '../gpu-driven/view-gpu';
 import { GpuScene } from '../gpu-scene';
+import { MaterialResource } from '../material-resource';
 import type { RenderableSnapshot } from '../render-system-extract';
 import { RenderScene } from '../scene/render-scene';
+import { updateShadowView } from './helpers/gpu-input-read-domain';
 import { nativeDeviceFixture } from './native-device-fixture';
 
 export async function stableCommandAddressFrames() {
@@ -30,7 +32,12 @@ export async function stableCommandAddressFrames() {
   const snapshot = (entityKey: number, x: number, instanceCount = 1): RenderableSnapshot => {
     const world = mat4.identity(mat4.create());
     world[12] = x;
-    const material = { baseColor: vec3.create(1, 1, 1), metallic: 0, roughness: 1 };
+    const material = new MaterialResource({
+      passes: [],
+      baseColor: vec3.create(1, 1, 1),
+      metallic: 0,
+      roughness: 1,
+    });
     return {
       worldId: 0,
       entityKey,
@@ -58,6 +65,16 @@ export async function stableCommandAddressFrames() {
           topology: 'triangle-list',
           pipelineClass: 'opaque',
           materialResourceClass: 'plain',
+          geometry: {
+            receipt: {
+              identity: 'stable-window',
+              vertexInputs: [],
+              topology: 'triangle-list',
+              indexed: true,
+            },
+            draw: { kind: 'indexed', first: 0, count: 3, baseVertex: 0, topology: 'triangle-list' },
+            deformation: 'rigid',
+          },
         },
       ],
     };
@@ -69,7 +86,7 @@ export async function stableCommandAddressFrames() {
     snapshot: value,
   });
   apply([update(snapshot(1, -4)), update(snapshot(2, 0)), update(snapshot(3, 4))]);
-  const initial = topology.plan();
+  const initial = topology.query(topology.sourcePlan(), undefined);
   const light = mat4.lookAt(mat4.create(), [0, 0, 10], [0, 0, 0], [0, 1, 0]);
   const views = [
     [-6, 6],
@@ -102,7 +119,7 @@ export async function stableCommandAddressFrames() {
         pool = ShadowViewStatePool.create({ device, shaderModuleFactory }).unwrap();
       }
       if (frame === 48) topology.rebuild(projection.slotsSnapshot());
-      const source = topology.plan();
+      const source = topology.query(topology.sourcePlan(), undefined);
       if (frame < 48) {
         for (const batch of initial.batches.slice(1))
           expect(
@@ -111,7 +128,7 @@ export async function stableCommandAddressFrames() {
       }
       pool.invalidate('view-clipping-changed');
       const current = views.map((view) =>
-        pool.update({ ...view, sourcePlan: source, scene }).unwrap(),
+        updateShadowView(pool, { ...view, sourcePlan: source, scene }).unwrap(),
       );
       for (const view of current)
         for (const batch of view.plan.batches) {

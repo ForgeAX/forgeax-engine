@@ -5,9 +5,47 @@ The CLI and frontend are clients of Engine APIs. The Engine service owns runs,
 project facts, assets, scenes, observation, capture, and termination; View owns
 window resources, tab bindings, and presentation.
 
+## Pack parameters
+
+Select a Pack in Content Browser, enable its Details panel and open Parameters.
+Generation inputs wait for **Generate**; runtime inputs preview immediately.
+Only nonempty parameter groups are shown; a runtime-only Pack does not show a
+generation prompt. **Rebuild source** remains available for TS Packs without
+generation inputs when you change their build code.
+**Save** writes the original source without generating a draft preview. The panel
+shows **Saving…** until Engine has published the saved source, then **Saved**.
+TS values stay in their
+parameter descriptor's `default`, JSON fields stay in JSON, and existing Pack
+instances retain their `values` overrides.
+
+Bound Inspector fields share the same Engine draft, undo history and Save.
+For a TS field controlled by code, **Expose** adds the exact project and preview,
+source revision, reflected field schema, current value and resolved binding path
+to the conversation draft. The reference includes the same Engine's
+`asset.inspect` parameter check and the minimal declaration-editing recipe.
+Unresolved nested fields request source/override resolution instead of inventing
+a binding. **Add parameter with Agent** also remains available when declaration
+parsing fails, carrying that failure with the source context.
+Nothing is submitted automatically. Source conflicts preserve local edits.
+See the authoring design.
+
 ## Start here
 
 Agent guidance: [forgeax-view-start](skills/forgeax-view-start/SKILL.md).
+
+### Published npm SDK
+
+For a game created with the published SDK, use the
+[npm startup workflow](skills/forgeax-view-start/SKILL.md#published-npm-sdk).
+Resolve View's `host.pack.json` from the SDK CLI runtime, then use that same
+installed CLI and backend `--root` for `backend status/start`, `help view`,
+`view status` and `view start --project`. The View commands come from the
+selected Host Pack after backend readiness. Keep the backend's terminal session
+alive until the returned URL is open and the requested project/assets are
+visible. The skill supplies the exact commands, Windows path handling and
+failure sequence; published packages need no local source build.
+
+### Local Engine checkout
 
 For a known game project using a local Engine checkout, one script prepares
 the builds and services and returns the project URL as JSON:
@@ -20,13 +58,16 @@ node skills/forgeax-view-start/scripts/start-view.mjs \
 
 Open its `url` in a browser to load the project. The script leaves the
 browser, Play, and independent AI runs to their separate operations. See the
-[skill](skills/forgeax-view-start/SKILL.md#open-a-project-with-one-script) for
+[skill](skills/forgeax-view-start/SKILL.md#local-engine-checkout-one-script) for
 reuse, restart, and failure behavior.
 
+### Service boundaries
+
 > [!IMPORTANT]
-> This workflow requires an Engine build with `backend start --host-pack`,
-> a built View package, and an Engine workspace root. A running backend must
-> be restarted to change its selected host Pack.
+> View requires an Engine backend started with `--host-pack` and a matching
+> View package. Published npm packages include built outputs; a local checkout
+> requires explicit builds. A running backend must be restarted to change its
+> selected host Pack.
 
 Select View's installed host Pack when starting Engine. The game project does
 not need a View asset or a `forge.json.roots.host` change:
@@ -273,10 +314,16 @@ Engine candidate commit and overlays the proposed View source. Engine's required
 verification. A candidate pass does not authorize an unmerged final gitlink.
 
 The workflow's `FORGEAX_ENGINE_COMMIT` is the paired Engine candidate authority.
+The current pair includes Pack source drafts, live field bindings and source-error
+recovery; View parameter tests must exercise those Engine capabilities.
 CI checks Engine out at the workspace root and overlays View at `tools/view`, so
 Engine's composite build actions resolve their nested actions and source paths.
-Node and pnpm versions come from Engine's `.nvmrc` and `.pnpm-version`; build and
-browser lanes prepare the verified Rapier WASM payload before building Engine.
+Node and pnpm versions come from Engine's `.nvmrc` and `.pnpm-version`. Build and
+browser lanes reuse Engine's `prepare-wgpu-wasm` and `prepare-rapier-wasm` actions
+before building Engine. The wgpu action verifies the current source content key,
+reuses valid local/cache/release bytes, and compiles the pinned source when that
+artifact is unavailable. Its final provenance check remains required; an
+unpublished candidate never falls back to an older WASM payload.
 The diagnostic probe explicitly selects RHI Debug after refresh or service restart;
 its sky oracle samples the outer margin clear of both Game 3D HUD cards, retaining
 the blue/gradient assertions and real frame capture.
@@ -392,26 +439,29 @@ the mesh has no materials. All preserves the raw component fields. Resource link
 independent asset pages and do not replace the Scene surface or control runs.
 
 Scene Tree entities offer **Browse to Asset** and **Edit Asset** for direct asset
-references. A resident optional native query plugin resolves held resources to
-Engine Registry identities, including effective material slots, using existing
-Runtime Pack and ToolApi contracts. It runs in the ordinary Scene and writes no
-entity data. View and game source require no Engine change. A unique primary is
+references. Native Engine `entity.inspect` resolves held resources to Registry
+identities, including effective material slots, through the existing exact-target
+inspection contract. It writes no entity data and requires no View runtime Pack
+or query plugin. A unique primary is
 available directly; without one, the shortcuts stay disabled and direct users
 to exact Inspector reference fields. Scene Tree has no Related Assets submenu.
 Asset names are read-only; separate folder and external-link buttons browse to
 the asset or open its asset viewer. Unsupported reference controls stay visible
 but disabled, and multi-selection continues to address the primary entity.
 
-Dedicated pages retain their previews. Other registered assets open generic
+Dedicated pages consume the exact owner and asset binding returned by Engine and reuse their admitted live preview when the same asset is opened again. Concurrent opens of that asset share one request. New resources show loading progress immediately; a failed open retains the prior successful binding. Switching resource pages preserves their targets. Replacing a resource or closing its page detaches the borrowed surface and awaits cleanup of only its exact preview; cleanup failure keeps the page and error visible and permits retry. Absent optional display or statistics capabilities stay unavailable. Other registered assets open generic
 read-only details without creating a hidden preview; resource tabs use asset
 names. Builtins, uncatalogued resources and stale references remain unavailable.
-The service stays resident across panel/selection/tab changes, and cleans only
-its owned plugin and runtime definition when its Scene binding retires.
-Runtime Content omits that exact tooling package and native installation from
-user controls and saved content; Engine's raw queries still report them. New-page
+Before reuse, asset pages compare the current `source.publication` returned by
+Engine inspection. Runtime inspection facts and a preview's adopted binding
+remain distinct from that Catalog source tuple; reopening never reloads a live
+runtime asset implicitly.
+The frontend service stays resident across panel/selection/tab changes and
+cancels obsolete reads when its Scene binding retires. Runtime Content has no
+internal query Pack to hide or remove from saved content. New-page
 menus keep their registered type labels while open tabs show asset names. Play
-and independent AI runs receive no automatic query plugin. See the
-[design and verification boundaries](docs/2026-10-15-view-resident-asset-references-design.md).
+and independent AI runs retain their existing ownership. See the
+design and verification boundaries.
 
 Content Browser shows only authored source directories from the Engine project's
 `assetRoots`, resolved from `forge.json` (default `["assets"]`). Generated files,

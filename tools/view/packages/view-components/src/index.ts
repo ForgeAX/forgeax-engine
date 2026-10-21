@@ -12,3 +12,5 @@ export * from './theme';
 export * from './tokens';
 export * from './clipboard';
 export * from './panel-visibility';
+export * from './PreviewStatsOverlay';
+export * from './ColorPicker';

@@ -7,7 +7,7 @@ import {
   trackLearnRenderTestBootstrap,
 } from '../../../../shared/src/learn-render-test-lifecycle';
 import { createApp } from '@forgeax/engine-app/browser';
-import { HANDLE_CUBE, HANDLE_SPHERE } from '@forgeax/engine-assets-runtime';
+
 import { World, type EntityHandle } from '@forgeax/engine-ecs';
 import type { RhiDevice, RhiError } from '@forgeax/engine-rhi';
 import type { MaterialAsset } from '@forgeax/engine-types';
@@ -35,6 +35,10 @@ import { Transform } from '@forgeax/engine-scene';
 import { EngineEnvironmentError } from '@forgeax/engine-runtime';
 import { forgeaxBundlerAdapter } from 'virtual:forgeax/bundler';
 import './cube-reflection.wgsl';
+import { AssetRegistry } from '@forgeax/engine-assets-runtime';
+
+import { createPrimitiveMesh } from '@forgeax/engine-geometry';
+
 
 const TARGET_ID = 'target-cube-reflection';
 const CUBE_REFLECTION_SHADER_ID = 'learn_render::6_4_cube_reflection' as const;
@@ -367,10 +371,17 @@ function spawnConsumerScene(
   source: RenderTargetTextureSource,
   reflectionEvidence = false,
 ): { readonly skylight?: EntityHandle; readonly reflectionProbe?: EntityHandle } {
+const sceneAssets = world.assets;
+if (!(sceneAssets instanceof AssetRegistry)) throw new Error('Scene requires its runtime asset owner');
+
+const primitiveCube = sceneAssets.create(createPrimitiveMesh('cube').unwrap()).unwrap();
+
+const primitiveSphere = sceneAssets.create(createPrimitiveMesh('sphere').unwrap()).unwrap();
+
   let skylightEntity: EntityHandle | undefined;
   let reflectionProbeEntity: EntityHandle | undefined;
   const targetHandle = world.allocSharedRef('RenderTarget', target);
-  const sourceHandle = world.allocSharedRef('RenderTargetTextureSource', source);
+  const sourceHandle = { source: source };
   const materialPayload: MaterialAsset = reflectionEvidence
     ? Materials.standard({
         baseColor: [0.8, 0.9, 1, 1],
@@ -399,10 +410,7 @@ function spawnConsumerScene(
           cubeTexture: sourceHandle,
         },
       };
-  const material = world.allocSharedRef(
-    'MaterialAsset',
-    materialPayload,
-  );
+  const material = sceneAssets.create(materialPayload).unwrap();
 
   const panelTransforms: readonly [
     readonly [number, number, number],
@@ -417,10 +425,7 @@ function spawnConsumerScene(
   ];
   if (!reflectionEvidence) {
     for (let faceIndex = 0; faceIndex < CUBE_FACE_COLORS.length; faceIndex += 1) {
-      const panelMaterial = world.allocSharedRef(
-        'MaterialAsset',
-        Materials.unlit(CUBE_FACE_COLORS[faceIndex]!),
-      );
+      const panelMaterial = sceneAssets.create(Materials.unlit(CUBE_FACE_COLORS[faceIndex]!)).unwrap();
       const [position, scale] = panelTransforms[faceIndex]!;
       world
         .spawn(
@@ -428,16 +433,13 @@ function spawnConsumerScene(
             component: Transform,
             data: { pos: position, quat: [0, 0, 0, 1], scale },
           },
-          { component: MeshFilter, data: { assetHandle: HANDLE_CUBE } },
+          { component: MeshFilter, data: { assetHandle: primitiveCube } },
           { component: MeshRenderer, data: { materials: [panelMaterial] } },
         )
         .unwrap();
     }
 
-    const neutralAccentMaterial = world.allocSharedRef(
-      'MaterialAsset',
-      Materials.unlit([0.45, 0.45, 0.45, 1]),
-    );
+    const neutralAccentMaterial = sceneAssets.create(Materials.unlit([0.45, 0.45, 0.45, 1])).unwrap();
     const accentColumns: readonly [
       readonly [number, number, number],
       readonly [number, number, number],
@@ -453,16 +455,13 @@ function spawnConsumerScene(
             component: Transform,
             data: { pos: position, quat: [0, 0, 0, 1], scale },
           },
-          { component: MeshFilter, data: { assetHandle: HANDLE_CUBE } },
+          { component: MeshFilter, data: { assetHandle: primitiveCube } },
           { component: MeshRenderer, data: { materials: [neutralAccentMaterial] } },
         )
         .unwrap();
     }
 
-    const markerMaterial = world.allocSharedRef(
-      'MaterialAsset',
-      Materials.unlit([1, 1, 1, 1]),
-    );
+    const markerMaterial = sceneAssets.create(Materials.unlit([1, 1, 1, 1])).unwrap();
     const plusZMarkerParts: readonly [
       readonly [number, number, number],
       readonly [number, number, number],
@@ -477,7 +476,7 @@ function spawnConsumerScene(
             component: Transform,
             data: { pos: position, quat: [0, 0, 0, 1], scale },
           },
-          { component: MeshFilter, data: { assetHandle: HANDLE_CUBE } },
+          { component: MeshFilter, data: { assetHandle: primitiveCube } },
           { component: MeshRenderer, data: { materials: [markerMaterial] } },
         )
         .unwrap();
@@ -518,7 +517,7 @@ function spawnConsumerScene(
           scale: [1.7, 1.7, 1.7],
         },
       },
-      { component: MeshFilter, data: { assetHandle: HANDLE_SPHERE } },
+      { component: MeshFilter, data: { assetHandle: primitiveSphere } },
       { component: MeshRenderer, data: { materials: [material] } },
     )
     .unwrap();
@@ -543,17 +542,14 @@ function spawnConsumerScene(
         },
       )
       .unwrap();
-    const outsideMaterial = world.allocSharedRef(
-      'MaterialAsset',
-      Materials.standard({ baseColor: [1, 0.12, 0.04, 1], metallic: 0.1, roughness: 0.35 }),
-    );
+    const outsideMaterial = sceneAssets.create(Materials.standard({ baseColor: [1, 0.12, 0.04, 1], metallic: 0.1, roughness: 0.35 })).unwrap();
     world
       .spawn(
         {
           component: Transform,
           data: { pos: [2.25, 0, 0], quat: [0, 0, 0, 1], scale: [0.45, 0.45, 0.45] },
         },
-        { component: MeshFilter, data: { assetHandle: HANDLE_CUBE } },
+        { component: MeshFilter, data: { assetHandle: primitiveCube } },
         { component: MeshRenderer, data: { materials: [outsideMaterial] } },
       )
       .unwrap();
@@ -935,9 +931,9 @@ async function bootstrap(canvas: HTMLCanvasElement): Promise<void> {
       const committedProbe = inspection.reflectionFallbacks?.find((row) => row.source === 'probe');
       return (
         inspection.rawFacesCaptured === 6 &&
-        inspection.filteredStepsCompleted === 30 &&
+        inspection.filteredStepsCompleted === 54 &&
         inspection.activeCount > 0 &&
-        inspection.filteredMipLevels.length === 5 &&
+        inspection.filteredMipLevels.length === 9 &&
         fallbackReadback?.readbackStatus === 'complete' &&
         fallbackReadback.linearHdr.slice(0, 3).some(
           (value) => Number.isFinite(value) && value !== 0,
@@ -978,10 +974,10 @@ async function bootstrap(canvas: HTMLCanvasElement): Promise<void> {
     const rawFaces = owner.rawFacesCaptured;
     const filteredSteps = owner.filteredStepsCompleted;
     const mipLevels = owner.filteredMipLevels;
-    if (rawFaces !== 6 || filteredSteps !== 30) {
+    if (rawFaces !== 6 || filteredSteps !== 54) {
       throw new Error(`ReflectionProbe owner counters rawFaces=${rawFaces}, filteredSteps=${filteredSteps}`);
     }
-    if (mipLevels.length !== 5 || mipLevels[0] !== 0 || mipLevels[4] !== 4) {
+    if (mipLevels.length !== 9 || mipLevels[0] !== 0 || mipLevels[8] !== 8) {
       throw new Error(`ReflectionProbe owner mip levels=${JSON.stringify(mipLevels)}`);
     }
     const fallbackReadback = owner.reflectionFallbackReadback;

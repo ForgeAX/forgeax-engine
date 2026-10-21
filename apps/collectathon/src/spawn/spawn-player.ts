@@ -1,3 +1,4 @@
+import type { AssetHandle } from '@forgeax/engine-types';
 // apps/collectathon -- player assembly with parent/child separation (AC-04, D-1).
 //
 // The player is TWO entities, not one, because two systems each want to own a
@@ -25,7 +26,7 @@ import {
   AnimationTargetId,
   bindAnimationTargets,
 } from '@forgeax/engine-animation';
-import type { AssetRegistry } from '@forgeax/engine-assets-runtime';
+import { AssetRegistry } from '@forgeax/engine-assets-runtime';
 import { ENTITY_NULL_RAW, type EntityHandle, type World } from '@forgeax/engine-ecs';
 import {
   CharacterController,
@@ -38,7 +39,6 @@ import {
 import { MeshRenderer, SceneInstance } from '@forgeax/engine-render';
 import { ChildOf, Transform } from '@forgeax/engine-scene';
 import { Skin } from '@forgeax/engine-skinning';
-import type { Handle, MaterialAsset, SceneAsset } from '@forgeax/engine-types';
 
 import { PLAYER_GROUPS } from '../collision-groups';
 
@@ -62,8 +62,8 @@ export const FBX_CM_TO_WORLD_SCALE = 1 / 90;
 // its center.
 const CHILD_FEET_OFFSET_Y = -CHAR_HALF_TOTAL;
 
-type ClipHandle = Handle<'AnimationClip', 'shared'>;
-type SceneHandle = Handle<'SceneAsset', 'shared'>;
+type ClipHandle = AssetHandle<'animation-clip'>;
+type SceneHandle = AssetHandle<'scene'>;
 
 export interface PlayerHandles {
   /** KCC parent entity -- player-move drives this Transform via moveAndSlide. */
@@ -87,7 +87,7 @@ export type SpawnPlayerResult =
  * @param assets the App-owned AssetRegistry -- used to
  *   instantiate the humanoid scene hierarchy
  * @param sceneHandle a user-tier SceneAsset handle for humanoid.fbx (minted via
- *   world.allocSharedRef after assets.loadByGuid in main.ts)
+ *   assets.load in main.ts)
  * @param locomotionClip the run clip handle, played on the AnimationPlayer slots
  * @param spawnXZ planar spawn position; the parent rests at PLAYER_SPAWN_Y
  */
@@ -98,6 +98,10 @@ export function spawnPlayer(
   locomotionClip: ClipHandle,
   spawnXZ: { readonly x: number; readonly z: number } = { x: 0, z: 0 },
 ): SpawnPlayerResult {
+  const sceneAssets = world.assets;
+  if (!(sceneAssets instanceof AssetRegistry))
+    throw new Error('Scene requires its runtime asset owner');
+
   // 1. KCC parent: kinematic capsule + CharacterController. player-move resolves
   //    moveAndSlide against the world and writes this entity's Transform.local.
   const parentRes = world.spawn(
@@ -136,7 +140,7 @@ export function spawnPlayer(
 
   // 2. Child visual: instantiate the humanoid scene. instantiate returns the
   //    synthetic scene root; the Skin entity is a descendant found via mapping.
-  const instRes = assets.instantiate<SceneAsset>(sceneHandle, world);
+  const instRes = assets.instantiate(sceneHandle, world);
   if (!instRes.ok) {
     return {
       ok: false,
@@ -196,17 +200,19 @@ export function spawnPlayer(
   // the working apps/hello/fbx-skin reference. The app runs URP (forward), whose
   // main pass selector is {LightMode:['Forward']}. world.set replaces the
   // MeshRenderer material list on the Skin-bearing descendant.
-  const playerMat = world.allocSharedRef<'MaterialAsset', MaterialAsset>('MaterialAsset', {
-    kind: 'material',
-    passes: [
-      {
-        name: 'Forward',
-        program: { module: 'forgeax::pbr-skin' },
-        renderState: { tags: { LightMode: 'Forward' }, queue: 2000 },
-      },
-    ],
-    values: { baseColor: [0.1, 0.6, 0.85, 1], metallic: 0.05, roughness: 0.55 },
-  });
+  const playerMat = sceneAssets
+    .create({
+      kind: 'material',
+      passes: [
+        {
+          name: 'Forward',
+          program: { module: 'forgeax::pbr-skin' },
+          renderState: { tags: { LightMode: 'Forward' }, queue: 2000 },
+        },
+      ],
+      values: { baseColor: [0.1, 0.6, 0.85, 1], metallic: 0.05, roughness: 0.55 },
+    })
+    .unwrap();
   world.set(skin, MeshRenderer, { materials: [playerMat] });
 
   return { ok: true, value: { parent, animationPlayer: sceneRoot, skin, sceneRoot } };

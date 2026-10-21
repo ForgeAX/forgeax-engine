@@ -71,7 +71,20 @@ export type AssetLoadError =
     >
   | AssetLoadErrorBase<'asset-package-invalid', { readonly guid: string; readonly reason: string }>
   | AssetLoadErrorBase<'asset-decoder-missing', { readonly kind: string }>
-  | AssetLoadErrorBase<'asset-decode-failed', { readonly guid: string; readonly kind: string }>
+  | AssetLoadErrorBase<
+      'asset-decode-failed',
+      {
+        readonly guid: string;
+        readonly kind: string;
+        /** Domain owners retain their own diagnostic vocabulary across this boundary. */
+        readonly cause?: {
+          readonly code: string;
+          readonly expected: string;
+          readonly hint: string;
+          readonly detail?: unknown;
+        };
+      }
+    >
   | AssetLoadErrorBase<
       'asset-dependency-failed',
       { readonly guid: string; readonly dependencyGuid: string }

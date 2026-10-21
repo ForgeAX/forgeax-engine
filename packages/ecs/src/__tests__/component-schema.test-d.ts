@@ -108,7 +108,7 @@ describe('component schema --- 4-probe quintet (w3, AC-09)', () => {
     type Sample =
       | 'buffer<128>'
       | 'unique<MaterialAsset>'
-      | 'shared<MeshAsset>'
+      | 'asset<mesh>'
       | 'entity'
       | 'array<f32, 16>'
       | 'array<u32>'

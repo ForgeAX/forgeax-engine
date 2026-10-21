@@ -8,7 +8,7 @@
 //   - `time_passed(2.0)` -> the same World-owned Time resource drives the gate;
 //     no app-side clock or callback loop is introduced.
 
-import { HANDLE_CUBE } from '@forgeax/engine-assets-runtime';
+
 import {
   Time,
   Update,
@@ -18,8 +18,12 @@ import {
   type EntityHandle,
 } from '@forgeax/engine-ecs';
 import { Camera, Materials, MeshFilter, MeshRenderer, orthographic } from '@forgeax/engine-render';
-import type { MaterialAsset } from '@forgeax/engine-runtime';
+
 import { Transform } from '@forgeax/engine-scene';
+import { AssetRegistry } from '@forgeax/engine-assets-runtime';
+
+import { createPrimitiveMesh } from '@forgeax/engine-geometry';
+
 
 export const RUN_CONDITION_STATE = 'bevyRunConditionsState';
 export const UNLOCK_SECONDS = 2;
@@ -59,14 +63,16 @@ function spawnMarker(
   pos: readonly [number, number, number],
   color: readonly [number, number, number, number],
 ): EntityHandle {
-  const material = world.allocSharedRef<'MaterialAsset', MaterialAsset>(
-    'MaterialAsset',
-    Materials.unlit(color),
-  );
+const sceneAssets = world.assets;
+if (!(sceneAssets instanceof AssetRegistry)) throw new Error('Scene requires its runtime asset owner');
+
+const primitiveCube = sceneAssets.create(createPrimitiveMesh('cube').unwrap()).unwrap();
+
+  const material = sceneAssets.create(Materials.unlit(color)).unwrap();
   return world
     .spawn(
       { component: Transform, data: { pos, quat: [0, 0, 0, 1], scale: [72, 72, 1] } },
-      { component: MeshFilter, data: { assetHandle: HANDLE_CUBE } },
+      { component: MeshFilter, data: { assetHandle: primitiveCube } },
       { component: MeshRenderer, data: { materials: [material] } },
       { component: marker, data: {} },
     )

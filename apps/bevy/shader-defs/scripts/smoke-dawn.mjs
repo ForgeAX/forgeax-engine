@@ -1,5 +1,7 @@
 #!/usr/bin/env node
 import { encodePng } from '@forgeax/engine-image/png';
+import { constructRuntimeRendererHost } from '@forgeax/engine-runtime/internal/renderer-host';
+let smokeAssets;
 import { createSmokeRenderer, drawSmokeFrame, rendererBackend, subscribeSmokeErrors } from "../../scripts/renderer-smoke.mjs";
 
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
@@ -103,7 +105,9 @@ const { Transform } = await import('@forgeax/engine-scene');
 
 let renderer;
 try {
-  renderer = await createSmokeRenderer(createRenderer, canvas, {}, { shaderManifestUrl: manifestUrl });
+  const hostResult = await constructRuntimeRendererHost(canvas, {}, { shaderManifestUrl: manifestUrl });
+if (!hostResult.ok) throw hostResult.error;
+({ renderer, assets: smokeAssets } = hostResult.value);
 } catch (error) {
   console.error(`[smoke] FAIL - createRenderer threw: ${error instanceof Error ? error.message : String(error)}`);
   process.exit(1);
@@ -137,11 +141,11 @@ if (!geometry.ok) {
   console.error(`[smoke] FAIL - createBoxGeometry failed: ${geometry.error.code}`);
   process.exit(1);
 }
-const world = new World();
+const world = new World({ assets: smokeAssets });
 const worldAttachment1 = renderer.attach(world);
 if (!worldAttachment1.ok) throw worldAttachment1.error;
-const mesh = world.allocSharedRef('MeshAsset', geometry.value);
-const texture = world.allocSharedRef('TextureAsset', {
+const mesh = world.assets.create(geometry.value).unwrap();
+const texture = world.assets.create({
   kind: 'texture',
   shape: { viewDimension: '2d', extent: { width: 2, height: 2 } },
   format: 'rgba8unorm',
@@ -153,15 +157,15 @@ const texture = world.allocSharedRef('TextureAsset', {
   ]),
   colorSpace: 'linear',
   mips: { kind: 'none' },
-});
-const makeMaterial = (sourceMaterial, baseColor) => world.allocSharedRef('MaterialAsset', {
+}).unwrap();
+const makeMaterial = (sourceMaterial, baseColor) => world.assets.create({
   ...sourceMaterial,
   passes: sourceMaterial.passes.map((pass) => ({
     ...pass,
     renderState: { tags: { LightMode: 'Forward' }, queue: 2000 },
   })),
   values: { baseColor: [...baseColor, 1], time: 0, speed: 1, baseColorTexture: texture },
-});
+}).unwrap();
 const blue = makeMaterial(material, [0.05, 0.25, 1]);
 const red = makeMaterial(redMaterial, [0.05, 1, 0.1]);
 world.spawn(

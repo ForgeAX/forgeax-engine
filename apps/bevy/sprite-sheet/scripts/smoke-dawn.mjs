@@ -1,5 +1,6 @@
 #!/usr/bin/env node
 import { encodePng } from '@forgeax/engine-image/png';
+import { constructRuntimeRendererHost } from '@forgeax/engine-runtime/internal/renderer-host';
 import { createSmokeRenderer, drawSmokeFrame, rendererBackend, subscribeSmokeErrors } from "../../scripts/renderer-smoke.mjs";
 // Dawn smoke for Bevy `sprite_sheet`: only source-sheet frames 1 through 6 animate.
 
@@ -30,20 +31,21 @@ const { World } = await import('@forgeax/engine-ecs');
 const { createRenderer } = await import('@forgeax/engine-runtime');
 const { SpriteAnimation } = await import('@forgeax/engine-render/authoring');
 const { propagateTransforms } = await import('@forgeax/engine-scene');
-const { unwrapHandle } = await import('@forgeax/engine-types');
 const { animationRegions, buildSpriteSheetWorld, makeSpriteSheetPixels, SHEET_HEIGHT, SHEET_WIDTH, tickSpriteSheet, ANIMATION_FRAME_COUNT, FIRST_ANIMATION_FRAME, LAST_ANIMATION_FRAME } = await import(resolve(here, '..', 'src', 'sprite-sheet.ts'));
 const manifestPath = resolve(here, '..', 'dist', 'shaders', 'manifest.json');
-const renderer = await createSmokeRenderer(createRenderer, canvas, {}, { shaderManifestUrl: `data:application/json,${encodeURIComponent(readFileSync(manifestPath, 'utf8'))}` });
+const hostResult = await constructRuntimeRendererHost(canvas, {}, { shaderManifestUrl: `data:application/json,${encodeURIComponent(readFileSync(manifestPath, 'utf8'))}` });
+if (!hostResult.ok) throw hostResult.error;
+const { renderer, assets: smokeAssets } = hostResult.value;
 gpu.requestAdapter = originalRequestAdapter;
 const errors = [];
 subscribeSmokeErrors(renderer, (error) => errors.push(error));
-const world = new World();
+const world = new World({ assets: smokeAssets });
 const worldAttachment1 = renderer.attach(world);
 if (!worldAttachment1.ok) throw worldAttachment1.error;
 const pixels = makeSpriteSheetPixels();
 const texture = { kind: 'texture', shape: { viewDimension: '2d', extent: { width: SHEET_WIDTH, height: SHEET_HEIGHT } }, format: 'rgba8unorm-srgb', data: pixels, colorSpace: 'srgb', mips: { kind: 'none' } };
-const textureHandle = world.allocSharedRef('TextureAsset', texture);
-buildSpriteSheetWorld(world, unwrapHandle(textureHandle));
+const textureHandle = world.assets.create(texture).unwrap();
+buildSpriteSheetWorld(world, textureHandle);
 const query = world.query({ with: [SpriteAnimation] }).unwrap();
 const animationEntities = [];
 for (const row of query) animationEntities.push(row.entity);

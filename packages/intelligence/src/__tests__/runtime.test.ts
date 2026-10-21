@@ -865,3 +865,22 @@ describe('IntelligenceRuntime', () => {
     ]);
   });
 });
+
+it('shares the closing task with reentrant provider cleanup and closes admission immediately', async () => {
+  let calls = 0;
+  let reentered: Promise<void> | undefined;
+  const controlled = controlledProvider();
+  const runtime = createIntelligenceRuntime({
+    ...controlled.provider,
+    async close() {
+      calls += 1;
+      if (calls === 1) reentered = runtime.close();
+    },
+  });
+  const closing = runtime.close();
+  expect(runtime.submit({ input: 'late' }).ok).toBe(false);
+  await closing;
+  expect(calls).toBe(1);
+  expect(reentered).toBe(closing);
+  expect(runtime.close()).toBe(closing);
+});

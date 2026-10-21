@@ -1,14 +1,17 @@
+import type { AssetHandle } from '@forgeax/engine-types';
 import { defineComponent, type EntityHandle, type World } from '@forgeax/engine-ecs';
 import { AudioListener, AudioSource } from '@forgeax/engine-audio';
 import { createBoxGeometry } from '@forgeax/engine-geometry';
 import { Collider, ColliderShapeValue, CollidingEntities, RigidBody, RigidBodyTypeValue } from '@forgeax/engine-physics';
 import { Camera, DirectionalLight, Materials, MeshFilter, MeshRenderer } from '@forgeax/engine-render';
 import { ChildOf, Transform } from '@forgeax/engine-scene';
-import type { Handle, MaterialAsset } from '@forgeax/engine-types';
+
+import { AssetRegistry } from '@forgeax/engine-assets-runtime';
+
 
 export const CapstoneMarker = defineComponent('M8CapstoneMarker', { value: 'u32' });
 export const CapstoneVelocity = defineComponent('M8CapstoneVelocity', { x: 'f32' });
-const EMPTY_CLIP = 0 as unknown as Handle<'AudioClipAsset', 'shared'>;
+const EMPTY_CLIP = 0 as unknown as AssetHandle<'audio'>;
 
 export interface CapstoneScene {
   root: EntityHandle;
@@ -17,16 +20,19 @@ export interface CapstoneScene {
   actor: EntityHandle;
   cursor: EntityHandle;
   emitter: EntityHandle;
-  material: Handle<'MaterialAsset', 'shared'>;
-  highlightMaterial: Handle<'MaterialAsset', 'shared'>;
+  material: AssetHandle<'material'>;
+  highlightMaterial: AssetHandle<'material'>;
 }
 
 export function buildCapstoneScene(world: World): CapstoneScene {
+const sceneAssets = world.assets;
+if (!(sceneAssets instanceof AssetRegistry)) throw new Error('Scene requires its runtime asset owner');
+
   const box = createBoxGeometry(1, 1, 1);
   if (!box.ok) throw new Error(`m8-capstone: shared cube geometry failed: ${box.error.code}`);
-  const cubeMesh = world.allocSharedRef('MeshAsset', box.value);
-  const material = world.allocSharedRef<'MaterialAsset', MaterialAsset>('MaterialAsset', Materials.unlit([0.12, 0.62, 0.95, 1]));
-  const highlightMaterial = world.allocSharedRef<'MaterialAsset', MaterialAsset>('MaterialAsset', Materials.unlit([0.95, 0.26, 0.12, 1]));
+  const cubeMesh = sceneAssets.create(box.value).unwrap();
+  const material = sceneAssets.create(Materials.unlit([0.12, 0.62, 0.95, 1])).unwrap();
+  const highlightMaterial = sceneAssets.create(Materials.unlit([0.95, 0.26, 0.12, 1])).unwrap();
   const root = world.spawn(
     { component: Transform, data: { pos: [0, 0, 0] } },
     { component: MeshFilter, data: { assetHandle: cubeMesh } },

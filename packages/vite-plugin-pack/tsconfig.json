@@ -9,20 +9,49 @@
     "outDir": "./dist",
     "rootDir": "./src",
     "tsBuildInfoFile": "./dist/.tsbuildinfo",
-    "types": ["node"]
+    "types": [
+      "node"
+    ]
   },
-  "include": ["src/**/*"],
+  "include": [
+    "src/**/*"
+  ],
   "references": [
-    { "path": "../codec" },
-    { "path": "../ddc" },
-    { "path": "../fbx" },
-    { "path": "../gltf" },
-    { "path": "../image" },
-    { "path": "../pack" },
-    { "path": "../types" },
-    { "path": "../import" },
-    { "path": "../ui" },
-    { "path": "../vfx-compiler" },
-    { "path": "../vfx-render" }
+    {
+      "path": "../codec"
+    },
+    {
+      "path": "../ddc"
+    },
+    {
+      "path": "../fbx"
+    },
+    {
+      "path": "../gltf"
+    },
+    {
+      "path": "../image"
+    },
+    {
+      "path": "../pack"
+    },
+    {
+      "path": "../types"
+    },
+    {
+      "path": "../import"
+    },
+    {
+      "path": "../ui"
+    },
+    {
+      "path": "../vfx-compiler"
+    },
+    {
+      "path": "../vfx-render"
+    }
+  ],
+  "exclude": [
+    "src/**/__tests__/**/*.ts"
   ]
 }

@@ -1,26 +1,17 @@
 import type { CatalogDiagnosticCause } from '@forgeax/engine-types';
-export type PluginPackFailureStage =
-  | 'config'
-  | 'scan'
-  | 'produce'
-  | 'finalize'
-  | 'commit'
-  | 'emit'
-  | 'watch'
-  | 'route'
-  | 'cleanup';
+export const PLUGIN_PACK_FAILURE_STAGES = [
+  'config',
+  'scan',
+  'produce',
+  'commit',
+  'watch',
+  'route',
+  'cleanup',
+] as const;
 
-export type PluginPackFailureCode =
-  | 'config-failed'
-  | 'scan-failed'
-  | 'produce-failed'
-  | 'finalize-failed'
-  | 'commit-failed'
-  | 'emit-failed'
-  | 'watch-failed'
-  | 'route-failed'
-  | 'cleanup-failed'
-  | 'stale-generation';
+export type PluginPackFailureStage = (typeof PLUGIN_PACK_FAILURE_STAGES)[number];
+
+export type PluginPackFailureCode = `${PluginPackFailureStage}-failed` | 'stale-generation';
 
 interface PluginPackFailureDetail {
   readonly stage: PluginPackFailureStage;

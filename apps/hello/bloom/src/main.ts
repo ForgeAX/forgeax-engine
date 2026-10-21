@@ -6,7 +6,7 @@ import { INPUT_SNAPSHOT_RESOURCE_KEY, type InputSnapshot } from '@forgeax/engine
 // What this demo exercises end-to-end (charter F1 progressive disclosure):
 //   - createApp(canvas, opts) -- one-screen takeoff with rAF + auto
 //     input-attach + Time resource (feat-20260518-app-shell-game-loop).
-//   - HANDLE_SPHERE + HANDLE_CUBE -- builtin mesh handles with
+//   - BUILTIN_SPHERE + BUILTIN_CUBE -- builtin mesh handles with
 //     default-standard-pbr material and emissiveIntensity > 1.0 to
 //     drive HDR-bright pixels above the bloom threshold.
 //   - Space toggle runtime: reads InputSnapshot.keyboard.down(' '),
@@ -28,8 +28,8 @@ import { INPUT_SNAPSHOT_RESOURCE_KEY, type InputSnapshot } from '@forgeax/engine
 // Recipe (charter P1 progressive disclosure):
 //   (1) createApp(canvas, {}, { shaderManifestUrl }) + spawn Camera with clear* fields
 //   (2) define the 5 standard components via defineComponent (globally live)
-//   (3) world.allocSharedRef('MaterialAsset', standard PBR) -> materialHandle for non-emissive
-//   (4) world.allocSharedRef('MaterialAsset', standard PBR emissive) -> emissiveHandle for emissive
+//   (3) assets.create(standard PBR) -> materialHandle for non-emissive
+//   (4) assets.create(standard PBR emissive) -> emissiveHandle for emissive
 //   (5) world.spawn emissive sphere + cube, DirectionalLight, Camera (save entity)
 //   (6) world.addSystem press-edge toggle + HUD sync
 //   (7) app.start()
@@ -37,7 +37,7 @@ import { INPUT_SNAPSHOT_RESOURCE_KEY, type InputSnapshot } from '@forgeax/engine
 import { createApp } from '@forgeax/engine/app/browser';
 import type { CanvasAppError } from '@forgeax/engine/app';
 
-import { HANDLE_CUBE, HANDLE_SPHERE } from '@forgeax/engine/assets-runtime';
+
 import { Transform } from '@forgeax/engine/scene';
 
 import {
@@ -54,6 +54,10 @@ import { EngineEnvironmentError } from '@forgeax/engine/runtime';
 
 import type { MaterialAsset } from '@forgeax/engine/types';
 import { forgeaxBundlerAdapter } from 'virtual:forgeax/bundler';
+import { createPrimitiveMesh } from '@forgeax/engine-geometry';
+const BUILTIN_CUBE = createPrimitiveMesh('cube').unwrap();
+const BUILTIN_SPHERE = createPrimitiveMesh('sphere').unwrap();
+
 
 const canvas = document.querySelector<HTMLCanvasElement>('#app');
 if (!canvas) {
@@ -78,6 +82,10 @@ async function bootstrap(target: HTMLCanvasElement): Promise<void> {
     return;
   }
   const app = appRes.value;
+  const assets = app.assets;
+  if (assets === undefined) throw new Error('Demo requires the host AssetRegistry');
+  const cubeMesh = assets.create(BUILTIN_CUBE).unwrap();
+  const sphereMesh = assets.create(BUILTIN_SPHERE).unwrap();
   console.warn(`[bloom] backend=${app.renderer.inspect().capabilities.backendKind}`);
 
 
@@ -102,10 +110,8 @@ async function bootstrap(target: HTMLCanvasElement): Promise<void> {
     }
   });
 
-  // Step 2: alloc standard PBR material for non-emissive geometry.
-  // feat-20260614 M8 (D-18): material handles are minted per-World via
-  // world.allocSharedRef (the AssetRegistry no longer holds handles).
-  const materialHandle = world.allocSharedRef<'MaterialAsset', MaterialAsset>('MaterialAsset', {
+  // Step 2: create standard PBR material in this World's asset owner.
+  const materialHandle = assets.create({
     kind: 'material',
     passes: [
       { name: 'Forward', program: { module: 'forgeax::default-standard-pbr' }, renderState: { tags: { LightMode: 'Forward' }, queue: 2000 } },
@@ -115,12 +121,12 @@ async function bootstrap(target: HTMLCanvasElement): Promise<void> {
       metallic: 0.0,
       roughness: 0.4,
     },
-  } as MaterialAsset);
+  } as MaterialAsset).unwrap();
 
   // Step 3: alloc emissive PBR material (emissiveIntensity > 1.0).
   // The default-standard-pbr emissive factor produces >1.0 HDR values
   // that Bloom extracts (threshold 1.0).
-  const emissiveHandle = world.allocSharedRef<'MaterialAsset', MaterialAsset>('MaterialAsset', {
+  const emissiveHandle = assets.create({
     kind: 'material',
     passes: [
       { name: 'Forward', program: { module: 'forgeax::default-standard-pbr' }, renderState: { tags: { LightMode: 'Forward' }, queue: 2000 } },
@@ -132,7 +138,7 @@ async function bootstrap(target: HTMLCanvasElement): Promise<void> {
       emissive: [1.0, 0.7, 0.3],
       emissiveIntensity: 2.0,
     },
-  } as MaterialAsset);
+  } as MaterialAsset).unwrap();
 
   // Step 4: spawn emissive sphere (left) and non-emissive cube (right).
   // The sphere produces HDR-bright pixels for bloom; the cube stays
@@ -143,7 +149,7 @@ async function bootstrap(target: HTMLCanvasElement): Promise<void> {
       data: {
         pos: [-0.6, 0.2, 0], quat: [0, 0, 0, 1], scale: [0.6, 0.6, 0.6],},
     },
-    { component: MeshFilter, data: { assetHandle: HANDLE_SPHERE } },
+    { component: MeshFilter, data: { assetHandle: sphereMesh } },
     { component: MeshRenderer, data: { materials: [emissiveHandle] } },
   ).unwrap();
 
@@ -153,7 +159,7 @@ async function bootstrap(target: HTMLCanvasElement): Promise<void> {
       data: {
         pos: [0.6, 0, 0], quat: [0, 0, 0, 1], scale: [0.4, 0.4, 0.4],},
     },
-    { component: MeshFilter, data: { assetHandle: HANDLE_CUBE } },
+    { component: MeshFilter, data: { assetHandle: cubeMesh } },
     { component: MeshRenderer, data: { materials: [materialHandle] } },
   ).unwrap();
 

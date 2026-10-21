@@ -1,6 +1,6 @@
 import { createWorldContext } from '@forgeax/engine-ecs';
 import type { Renderer } from '@forgeax/engine-render';
-import { createRenderer } from '@forgeax/engine-runtime';
+import { constructRuntimeRendererHost } from '@forgeax/engine-runtime/internal/renderer-host';
 import { scenePlugin } from '@forgeax/engine-scene';
 import { afterEach, describe, expect, it } from 'vitest';
 import { page } from 'vitest/browser';
@@ -166,12 +166,12 @@ describe('entity visibility browser visual red test', () => {
         canvas.style.height = `${CANVAS_HEIGHT}px`;
         document.body.append(canvas);
 
-        const created = await createRenderer(canvas, {}, { shaderManifestUrl: '/shaders/manifest.json' });
+        const created = await constructRuntimeRendererHost(canvas, {}, { shaderManifestUrl: '/shaders/manifest.json' });
         if (!created.ok) {
           throw new Error(`createRenderer failed: ${describeStructuredError(created.error)}`);
         }
-        renderer = created.value;
-        const activeRenderer = created.value;
+        renderer = created.value.renderer;
+        const activeRenderer = created.value.renderer;
         unsubscribeLost = renderer.subscribe((event) => {
           if (event.kind === 'state-changed' && event.current === 'device-lost') {
             lostReason = 'device-lost';
@@ -181,7 +181,7 @@ describe('entity visibility browser visual red test', () => {
             lostMessage = describeStructuredError(event.error);
           }
         });
-        const scene = createVisibilityDemoWorld();
+        const scene = createVisibilityDemoWorld(created.value.assets);
         const attached = renderer.attach(scene.world);
         if (!attached.ok)
           throw new Error(`renderer.attach failed: ${describeStructuredError(attached.error)}`);

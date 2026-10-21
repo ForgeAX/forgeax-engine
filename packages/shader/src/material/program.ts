@@ -2,6 +2,7 @@ import {
   findUndeclaredSampledTextures,
   fnv1aUtf16,
   type ParamSchemaEntry,
+  type ShaderEntryPointReads,
   stripWgslComments,
 } from '@forgeax/engine-types';
 
@@ -11,6 +12,7 @@ export type PipelineGroup2Contract = 'mesh' | 'skin' | 'cluster' | 'skin-cluster
 
 /** Immutable facts about one composed source, shared across material passes and GPU devices. */
 export interface MaterialShaderProgram {
+  readonly entryPoints?: readonly ShaderEntryPointReads[];
   readonly source: string;
   /** User-region texture names sampled by this exact source, before schema validation. */
   readonly sampledUserTextureFields: readonly string[];
@@ -109,7 +111,63 @@ function materialBindings(source: string): readonly number[] | undefined {
     : undefined;
 }
 
-export function createMaterialShaderProgram(source: string): MaterialShaderProgram {
+/** Reflection may arrive after source warmup; retain the already admitted source facts. */
+export function withMaterialShaderEntryPoints(
+  program: MaterialShaderProgram,
+  entryPoints?: readonly ShaderEntryPointReads[],
+): MaterialShaderProgram {
+  if (entryPoints === undefined || program.entryPoints === entryPoints) return program;
+  if (program.entryPoints !== undefined) {
+    const same =
+      program.entryPoints.length === entryPoints.length &&
+      program.entryPoints.every((entry, index) => {
+        const other = entryPoints[index];
+        return (
+          other !== undefined &&
+          entry.name === other.name &&
+          entry.stage === other.stage &&
+          entry.bindings.length === other.bindings.length &&
+          entry.bindings.every((binding, index) => {
+            const candidate = other.bindings[index];
+            return (
+              candidate !== undefined &&
+              binding.group === candidate.group &&
+              binding.binding === candidate.binding &&
+              (binding.fields === candidate.fields ||
+                (binding.fields !== undefined &&
+                  candidate.fields !== undefined &&
+                  binding.fields.length === candidate.fields.length &&
+                  binding.fields.every((field, index) => field === candidate.fields?.[index])))
+            );
+          })
+        );
+      });
+    if (!same)
+      throw new Error(
+        'ShaderRegistry: conflicting shader entry read contract for immutable source',
+      );
+    return program;
+  }
+  const reads = entryPoints.map((entry) =>
+    Object.freeze({
+      ...entry,
+      bindings: Object.freeze(
+        entry.bindings.map((binding) =>
+          Object.freeze({
+            ...binding,
+            ...(binding.fields === undefined ? {} : { fields: Object.freeze([...binding.fields]) }),
+          }),
+        ),
+      ),
+    }),
+  );
+  return Object.freeze({ ...program, entryPoints: Object.freeze(reads) });
+}
+
+export function createMaterialShaderProgram(
+  source: string,
+  entryPoints?: readonly ShaderEntryPointReads[],
+): MaterialShaderProgram {
   const code = stripWgslComments(source);
   const bindings = [...code.matchAll(/@group\s*\(\s*2\s*\)\s*@binding\s*\(\s*(\d+)\s*\)/gu)].map(
     (match) => Number(match[1]),
@@ -117,19 +175,22 @@ export function createMaterialShaderProgram(source: string): MaterialShaderProgr
   const skin = bindings.includes(1) || bindings.includes(2);
   const cluster = bindings.some((binding) => binding >= 3);
   const hash = fnv1aUtf16(source);
-  return Object.freeze({
-    source,
-    sampledUserTextureFields: Object.freeze(
-      findUndeclaredSampledTextures(source, NO_TEXTURE_DECLARATIONS),
-    ),
-    identity: `${source.length}:${hash >>> 0}`,
-    group2: skin ? (cluster ? 'skin-cluster' : 'skin') : cluster ? 'cluster' : 'mesh',
-    probeBlendRecordRequired:
-      /@group\s*\(\s*3\s*\)\s*@binding\s*\(\s*1\s*\)\s*var\s*<\s*storage\s*(?:,\s*read\s*)?>\s*\w+\s*:\s*array\s*<\s*vec4\s*<\s*f32\s*>\s*>/u.test(
-        code,
+  return withMaterialShaderEntryPoints(
+    Object.freeze({
+      source,
+      sampledUserTextureFields: Object.freeze(
+        findUndeclaredSampledTextures(source, NO_TEXTURE_DECLARATIONS),
       ),
-    ...vertexInputs(code),
-    materialUniformRequired: materialUniformRequired(code),
-    materialBindings: materialBindings(code),
-  });
+      identity: `${source.length}:${hash >>> 0}`,
+      group2: skin ? (cluster ? 'skin-cluster' : 'skin') : cluster ? 'cluster' : 'mesh',
+      probeBlendRecordRequired:
+        /@group\s*\(\s*3\s*\)\s*@binding\s*\(\s*1\s*\)\s*var\s*<\s*storage\s*(?:,\s*read\s*)?>\s*\w+\s*:\s*array\s*<\s*vec4\s*<\s*f32\s*>\s*>/u.test(
+          code,
+        ),
+      ...vertexInputs(code),
+      materialUniformRequired: materialUniformRequired(code),
+      materialBindings: materialBindings(code),
+    }),
+    entryPoints,
+  );
 }

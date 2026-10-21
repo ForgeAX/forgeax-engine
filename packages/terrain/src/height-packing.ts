@@ -7,46 +7,22 @@ import type {
   TerrainSource,
 } from '@forgeax/engine-types';
 import { numMipLevels, resolveMaterialAsset } from '@forgeax/engine-types';
+import { encodeTerrainHeight, terrainHeightAtlas, terrainHeightMipOffset } from './height-atlas.js';
 import { terrainSourceHeightRange } from './height-bounds.js';
 import { cookTerrainIds } from './material-id.js';
 import { terrainSampleHeight } from './query.js';
 import { terrainTextureGuid } from './texture-binding.js';
 import { terrainDerivedLayoutValid } from './validation.js';
 
-/** Preserve the actual maximum without subtract/add cancellation; constant fields retain an encoding span. */
-export function terrainHeightRange(min: number, max: number): readonly [number, number] {
-  return [min, Math.max(max, min + 1e-6)];
-}
-
-/** Shared producer/acceptance encoding; RG is height and BA is the source normal XZ. */
+/** Shared producer/acceptance encoding retains the sampled f32 exactly. */
 export function terrainHeightTexel(
   source: TerrainSource,
   fx: number,
   fz: number,
-  min: number,
-  range: number,
 ): readonly number[] {
-  const h = terrainSampleHeight(source, fx, fz);
-  if (h === undefined) throw new RangeError('terrain cook sample escaped the author grid');
-  const packed = Math.round(Math.max(0, Math.min(1, (h - min) / range)) * 65535);
-  const left = Math.max(0, fx - 1),
-    right = Math.min(fx + 1, source.columns - 1);
-  const top = Math.max(0, fz - 1),
-    bottom = Math.min(fz + 1, source.rows - 1);
-  const dx =
-    ((terrainSampleHeight(source, right, fz) ?? h) - (terrainSampleHeight(source, left, fz) ?? h)) /
-    ((right - left) * source.spacing);
-  const dz =
-    ((terrainSampleHeight(source, fx, bottom) ?? h) - (terrainSampleHeight(source, fx, top) ?? h)) /
-    ((bottom - top) * source.spacing);
-  const length = Math.hypot(dx, 1, dz);
-
-  return [
-    packed >>> 8,
-    packed & 255,
-    Math.round((0.5 - (dx / length) * 0.5) * 255),
-    Math.round((0.5 - (dz / length) * 0.5) * 255),
-  ];
+  const height = terrainSampleHeight(source, fx, fz);
+  if (height === undefined) throw new RangeError('terrain cook sample escaped the author grid');
+  return encodeTerrainHeight(height);
 }
 
 export function terrainWeightTexel(
@@ -90,11 +66,16 @@ export function terrainDerivedGeometryValid(
       ? cookTerrainIds(root, root.materialEncoding.maxWeightError)
       : undefined;
   if (ids && !ids.ok) return false;
-  const textures = root.sections.map((section) => closure.get(section.heightTexture.toLowerCase()));
-  const controls = root.sections.map((section) => closure.get(section.weightTexture.toLowerCase()));
-  const grids = root.grids.map((guid) => closure.get(guid.toLowerCase()));
+  const textures = root.sections.map((section) =>
+    closure.get(String(section.heightTexture).toLowerCase()),
+  );
+  const controls = root.sections.map((section) =>
+    closure.get(String(section.weightTexture).toLowerCase()),
+  );
+  const grids = root.grids.map((guid) => closure.get(String(guid).toLowerCase()));
   if (
     textures.some((asset) => asset?.kind !== 'texture') ||
+    textures.some((asset) => asset !== textures[0]) ||
     controls.some((asset) => asset?.kind !== 'texture') ||
     grids.some((asset) => asset?.kind !== 'mesh')
   )
@@ -103,12 +84,12 @@ export function terrainDerivedGeometryValid(
     [...closure].filter((row): row is [string, MaterialAsset] => row[1].kind === 'material'),
   );
   for (const section of root.sections) {
-    const material = resolveMaterialAsset(section.material, materialTable);
+    const material = resolveMaterialAsset(String(section.material), materialTable);
     if (!material.ok) return false;
     const height = material.value.asset.values?.terrainHeightTexture,
       control = material.value.asset.values?.terrainWeightTexture;
     if (
-      terrainTextureGuid(height) !== section.heightTexture ||
+      terrainTextureGuid(height) !== String(section.heightTexture) ||
       (typeof control === 'object' && control !== null && 'texture' in control
         ? control.texture
         : control) !== section.weightTexture
@@ -135,8 +116,9 @@ export function terrainDerivedGeometryValid(
     const actual = actualAsset?.kind === 'mesh' ? actualAsset : undefined;
     if (
       actual === undefined ||
-      !(actual.indices instanceof Uint32Array) ||
-      !equalBytes(actual.indices, expected.indices) ||
+      !(actual.indices instanceof Uint16Array || actual.indices instanceof Uint32Array) ||
+      actual.indices.length !== expected.indices?.length ||
+      actual.indices.some((value, index) => value !== expected.indices?.[index]) ||
       !equalBytes(actual.vertices, expected.vertices) ||
       !equalBytes(actual.aabb, expected.aabb) ||
       actual.morphTargets?.length
@@ -166,14 +148,15 @@ export function terrainDerivedGeometryValid(
         return false;
     }
   }
-  const { min, max, span: range } = terrainSourceHeightRange(root.heights);
+  const { min, max } = terrainSourceHeightRange(root.heights);
   if (
-    root.heightRange[0] !== min ||
-    root.heightRange[1] !== terrainHeightRange(min, max)[1] ||
+    root.heightRange[0] > min ||
+    root.heightRange[1] < max ||
     textures.length !== root.sections.length ||
     controls.length !== root.sections.length
   )
     return false;
+  const atlas = terrainHeightAtlas(root);
   const n = root.subsectionVertices,
     nx = (root.columns - 1) / (n - 1);
   for (const [index, section] of root.sections.entries()) {
@@ -196,8 +179,8 @@ export function terrainDerivedGeometryValid(
       tex.format !== 'rgba8unorm' ||
       tex.colorSpace !== 'linear' ||
       tex.shape.viewDimension !== '2d' ||
-      tex.shape.extent.width !== n ||
-      tex.shape.extent.height !== n ||
+      tex.shape.extent.width !== atlas.width ||
+      tex.shape.extent.height !== atlas.height ||
       tex.mips.kind !== 'packed' ||
       tex.mips.levelCount !== numMipLevels({ width: n, height: n })
     )
@@ -227,7 +210,7 @@ export function terrainDerivedGeometryValid(
       activeLayers.some((layer, i) => section.activeLayers[i] !== layer)
     )
       return false;
-    if (section.minHeight !== sectionMin || section.maxHeight !== sectionMax) return false;
+    if (section.minHeight > sectionMin || section.maxHeight < sectionMax) return false;
     let offset = 0;
     for (let size = n; size >= 1; size /= 2) {
       for (let z = 0; z < size; z++)
@@ -237,9 +220,16 @@ export function terrainDerivedGeometryValid(
             fz =
               Math.floor(index / nx) * (n - 1) +
               (size === 1 ? (n - 1) / 2 : (z * (n - 1)) / (size - 1));
-          const expected = terrainHeightTexel(root, fx, fz, min, range),
+          const expected = terrainHeightTexel(root, fx, fz),
             i = offset + (z * size + x) * 4;
-          if (expected.some((byte, c) => tex.data[i + c] !== byte)) return false;
+          const mip = Math.log2(n / size);
+          const pixel =
+            terrainHeightMipOffset(atlas.width, atlas.height, mip) +
+            ((Math.floor(index / atlas.tileColumns) * size + z) * atlas.tileColumns * size +
+              (index % atlas.tileColumns) * size +
+              x) *
+              4;
+          if (expected.some((byte, c) => tex.data[pixel + c] !== byte)) return false;
           if (ids && size !== n) continue;
           const weights = ids?.ok
             ? (ids.value[index]?.subarray(i, i + 4) ?? [])
@@ -248,7 +238,10 @@ export function terrainDerivedGeometryValid(
         }
       offset += size * size * 4;
     }
-    if (offset !== tex.data.length || (ids ? n * n * 4 : offset) !== control.data.length)
+    if (
+      terrainHeightMipOffset(atlas.width, atlas.height, Math.log2(n) + 1) !== tex.data.length ||
+      (ids ? n * n * 4 : offset) !== control.data.length
+    )
       return false;
   }
   return true;

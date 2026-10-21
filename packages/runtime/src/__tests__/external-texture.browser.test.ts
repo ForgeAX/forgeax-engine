@@ -1,5 +1,5 @@
-import { HANDLE_QUAD } from '@forgeax/engine-assets-runtime';
 import { createWorldContext, World } from '@forgeax/engine-ecs';
+import { createPrimitiveMesh } from '@forgeax/engine-geometry';
 import {
   Camera,
   type ExternalTexture,
@@ -17,10 +17,11 @@ import {
 } from '@forgeax/engine-rhi-debug';
 import * as webgpu from '@forgeax/engine-rhi-webgpu';
 import { scenePlugin, Transform } from '@forgeax/engine-scene';
-import { type MaterialAsset, ok } from '@forgeax/engine-types';
+import { ok } from '@forgeax/engine-types';
 import { expect, it } from 'vitest';
 import { commands, page } from 'vitest/browser';
 import { constructRuntimeRendererHost } from '../renderer-host';
+import { testAssets } from './helpers/runtime-assets';
 import { renderValue } from './standard-gbuffer-replay.fixture';
 
 const SIZE = 128;
@@ -131,8 +132,8 @@ async function createHarness(label: string) {
   });
   assets.configurePackIndex('/__external-texture-material/pack-index.json');
   const materialGuid = assets.parseGuid(MATERIAL_GUID);
-  (await assets.loadByGuid<MaterialAsset>(materialGuid)).unwrap();
-  const world = new World();
+  (await assets.load(materialGuid, 'material')).unwrap();
+  const world = new World({ assets });
   const owner = await createWorldContext(world, [scenePlugin()]);
   world
     .spawn(
@@ -171,17 +172,23 @@ async function createHarness(label: string) {
     }
   };
   const bind = (texture: ExternalTexture, ordinary = false) => {
-    const source = world.allocSharedRef('ExternalTextureSource', texture.source);
-    const material = world.allocSharedRef(
-      'MaterialAsset',
-      ordinary
-        ? Materials.unlit([1, 1, 1, 1], { baseColorTexture: source })
-        : { kind: 'material', parent: materialGuid, values: { videoTexture: source } },
-    );
+    const source = { source: texture.source };
+    const material = testAssets(world)
+      .create(
+        ordinary
+          ? Materials.unlit([1, 1, 1, 1], { baseColorTexture: source })
+          : { kind: 'material', parent: materialGuid, values: { videoTexture: source } },
+      )
+      .unwrap();
     return world
       .spawn(
         { component: Transform, data: { pos: [0, 0, 0], scale: [3, 3, 1] } },
-        { component: MeshFilter, data: { assetHandle: HANDLE_QUAD } },
+        {
+          component: MeshFilter,
+          data: {
+            assetHandle: testAssets(world).create(createPrimitiveMesh('quad').unwrap()).unwrap(),
+          },
+        },
         { component: MeshRenderer, data: { materials: [material] } },
       )
       .unwrap();
@@ -205,10 +212,11 @@ async function createHarness(label: string) {
     expectColor(sample(data, 64, 96), bottom, `${name} bottom`);
     return data;
   };
-  const dispose = () => {
-    lease.release?.();
-    renderer.dispose();
-    owner.dispose?.();
+  const dispose = async () => {
+    lease.dispose();
+    renderValue(await renderer.dispose());
+    await owner.fiber.dispose();
+    assets.dispose();
     display.remove();
   };
   return {
@@ -349,7 +357,7 @@ it('imports a caller GPUTexture into texture_external and ordinary slots through
     expect(h.validation).toEqual([]);
     expect(h.other).toEqual([]);
   } finally {
-    h.dispose();
+    await h.dispose();
   }
 }, 120_000);
 
@@ -529,7 +537,7 @@ it('zero-copies a live HTMLVideoElement and per-frame VideoFrames, rejecting an 
   } finally {
     video.pause();
     video.remove();
-    h.dispose();
+    await h.dispose();
   }
 }, 120_000);
 
@@ -556,6 +564,6 @@ it('copies video for ordinary slots and keeps texture_external slots unflipped',
     renderValue(handle.release());
   } finally {
     frame.close();
-    h.dispose();
+    await h.dispose();
   }
 }, 120_000);

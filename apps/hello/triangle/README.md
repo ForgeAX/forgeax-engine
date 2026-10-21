@@ -4,10 +4,10 @@ The canonical ECS render bootstrap. The app and its Dawn smoke share one
 five-component World recipe:
 
 ```text
-World.spawn -> await renderer.ready -> renderer.draw(world)
+createRenderer + AssetRegistry -> assets.create(mesh) -> World.spawn -> renderer.attach -> renderer.draw
 ```
 
-The smoke uses `HANDLE_TRIANGLE`, a real shader manifest, a 60-frame Dawn
+The smoke creates a managed triangle with `assets.create(createPrimitiveMesh('triangle').unwrap())`, uses a real shader manifest, and runs a 60-frame Dawn
 loop, and three pixel samples. It is a focused first-render and renderer
 bootstrap oracle; it is not a gameplay template.
 
@@ -37,7 +37,7 @@ criteria. Failure output has `FAIL`, `rerun`, and `hint` lines for recovery.
 ## Shader and asset boundary
 
 The Vite shader plugin emits the manifest consumed by `createRenderer`. The
-triangle geometry comes from the public `HANDLE_TRIANGLE` asset path, while
+triangle geometry comes from Geometry and is admitted through `assets.create`, while
 the three WGSL files remain build-time composition inputs. Keep this split so
 the smoke exercises the same runtime contract as a browser build.
 

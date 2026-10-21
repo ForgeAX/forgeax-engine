@@ -1,3 +1,4 @@
+import { AssetRegistry } from '@forgeax/engine-assets-runtime';
 // apps/hello/oit - weighted blended order-independent transparency exemplar.
 //
 // Three translucent planes interpenetrate at the origin, so no object order
@@ -36,11 +37,12 @@ async function bootstrap(target: HTMLCanvasElement): Promise<void> {
     return;
   }
   const renderer = rendererResult.value;
-  const world = new World();
+  const assets = new AssetRegistry();
+  const world = new World({ assets });
   const attached = renderer.attach(world);
   if (!attached.ok) throw attached.error;
   const lease = attached.value;
-  const scene = spawnOitScene(world);
+  const scene = spawnOitScene(world, assets);
 
   let mode: 'sorted' | 'weighted-blended' = 'weighted-blended';
   let reversed = false;

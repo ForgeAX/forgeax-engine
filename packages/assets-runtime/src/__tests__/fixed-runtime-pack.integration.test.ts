@@ -1,3 +1,4 @@
+import { meshAssetContribution } from '@forgeax/engine-geometry';
 import { serializeCookedMaterialRecord } from '@forgeax/engine-pack';
 import { createRuntimePackPublication } from '@forgeax/engine-pack/runtime';
 import { ShaderRegistry } from '@forgeax/engine-shader';
@@ -9,12 +10,14 @@ import {
   RuntimePackProducer,
 } from '../../../import/src/runtime-pack.js';
 import { parseRuntimePackSnapshot } from '../../../import/src/runtime-pack-content.js';
+import { materialContribution } from '../../../render/src/assets/asset-decoders';
 import { AssetRegistry } from '../asset-registry.js';
 import { captureAssetPublication } from '../capture-publication.js';
 import { createCatalogSource } from '../catalog-source.js';
 import { validateAssetPublication } from '../validate-publication.js';
 import { defined } from './assert-defined.js';
 import { materialRecordFixture } from './fixtures/material-publication.js';
+import { loadFixtureAsset, runtimePackDecoders } from './fixtures/runtime-pack-decoders';
 
 const root = '01900000-0000-7000-8000-000000000961';
 const middle = '01900000-0000-7000-8000-000000000962';
@@ -26,7 +29,7 @@ async function material(guid: string, parent?: string | readonly string[], gener
   const record = { ...original, refs: { ...original.refs, parent: refs } };
   const packageUrl = `https://fixed.invalid/${guid}/pack.json`;
   const publication = createRuntimePackPublication({
-    scopeId: 'original',
+    scopeId: 'restored',
     sourcePath: guid,
     sourceRevision: 'original',
     packageUrl,
@@ -94,7 +97,10 @@ function producer(current: readonly CatalogEntry[] = []) {
       },
     },
     validate: (state, fetcher, dependencies) =>
-      validateAssetPublication(state.rows, fetcher, undefined, { dependencies }),
+      validateAssetPublication(state.rows, fetcher, undefined, {
+        ...{ dependencies },
+        decoders: runtimePackDecoders,
+      }),
   });
 }
 
@@ -134,7 +140,10 @@ it('shares fixed rebuilds and reuses owned dependencies only while their full cl
     },
     validate: (state, fetcher, dependencies) => {
       validations.push(...state.rows.map((row) => row.guid));
-      return validateAssetPublication(state.rows, fetcher, undefined, { dependencies });
+      return validateAssetPublication(state.rows, fetcher, undefined, {
+        ...{ dependencies },
+        decoders: runtimePackDecoders,
+      });
     },
   });
   try {
@@ -263,7 +272,7 @@ it('uses native fingerprint hashing when capturing and restoring fixed dependenc
     Reflect.set(source.fixed.pack, 'scopeId', 'mutated-after-capture');
     const snapshot = await pending;
     const saved = Object.values(snapshot.closure?.recipes ?? {})[0];
-    expect(saved && 'fixed' in saved && saved.fixed.pack.scopeId).toBe('original');
+    expect(saved && 'fixed' in saved && saved.fixed.pack.scopeId).toBe('restored');
     expect(fingerprints).toBeGreaterThan(0);
     fingerprints = 0;
     expect((await target.restore(snapshot)).ok).toBe(true);
@@ -357,7 +366,12 @@ it('restores a missing transitive reference while reusing the matching middle pu
     ]),
   );
   const target = producer([b.row]);
-  const registry = new AssetRegistry(new ShaderRegistry({ manifestUrl: undefined }));
+  const registry = new AssetRegistry({
+    scopeId: 'restored',
+    shaderRegistry: new ShaderRegistry({ manifestUrl: undefined }),
+  });
+  registry.installDecoder(meshAssetContribution.kind, meshAssetContribution.decoder);
+  registry.installDecoder(materialContribution.kind, materialContribution.decoder);
   try {
     const result = await target.restore(JSON.parse(JSON.stringify(saved)));
     expect(result.ok, JSON.stringify(result)).toBe(true);
@@ -374,7 +388,8 @@ it('restores a missing transitive reference while reusing the matching middle pu
         return response.status === 404 ? b.fetcher(url, init) : response;
       },
     );
-    expect((await registry.loadByGuid(registry.parseGuid(root))).ok).toBe(true);
+    const loaded = await loadFixtureAsset(registry, root, 'material');
+    expect(loaded.ok, JSON.stringify(loaded)).toBe(true);
   } finally {
     registry.clearCatalogSource();
     target.dispose();

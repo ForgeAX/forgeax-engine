@@ -13,41 +13,44 @@
 //     bounds derived from Bevy's FixedVertical viewport_height=6.0 + 16:9 aspect
 
 import { World } from '@forgeax/engine-ecs';
-import { HANDLE_CUBE } from '@forgeax/engine-assets-runtime';
+
 import { Transform } from '@forgeax/engine-scene';
 import { Camera, MeshFilter, MeshRenderer } from '@forgeax/engine-render';
 import { orthographic } from '@forgeax/engine-render';
 import { Materials } from '@forgeax/engine-render';
 import { PointLight } from '@forgeax/engine-render';
-import type { MaterialAsset } from '@forgeax/engine-runtime';
+
 import { quat } from '@forgeax/engine-math';
+import { AssetRegistry } from '@forgeax/engine-assets-runtime';
+
+import { createPrimitiveMesh } from '@forgeax/engine-geometry';
+
 
 /** Bevy FixedVertical viewport_height=6.0 at 16:9 → width=10.667. */
 const ORTHO_HEIGHT = 6; // Bevy's viewport_height
 const ORTHO_WIDTH = ORTHO_HEIGHT * (16 / 9);
 
 export function buildOrthographicWorld(world: World): void {
+const sceneAssets = world.assets;
+if (!(sceneAssets instanceof AssetRegistry)) throw new Error('Scene requires its runtime asset owner');
+
+const primitiveCube = sceneAssets.create(createPrimitiveMesh('cube').unwrap()).unwrap();
+
   // ── Green plane (5×5), flat at y=0 ────────────────────────────────────
-  const planeMat = world.allocSharedRef<'MaterialAsset', MaterialAsset>(
-    'MaterialAsset',
-    Materials.standard({ baseColor: [0.3, 0.5, 0.3, 1] }),
-  );
+  const planeMat = sceneAssets.create(Materials.standard({ baseColor: [0.3, 0.5, 0.3, 1] })).unwrap();
   world.spawn(
     { component: Transform, data: { pos: [0, 0, 0], quat: [0, 0, 0, 1], scale: [5, 0.02, 5] } },
-    { component: MeshFilter, data: { assetHandle: HANDLE_CUBE } },
+    { component: MeshFilter, data: { assetHandle: primitiveCube } },
     { component: MeshRenderer, data: { materials: [planeMat] } },
   );
 
   // ── 4 brown cubes at (±1.5, 0.5, ±1.5) ──────────────────────────────
-  const cubeMat = world.allocSharedRef<'MaterialAsset', MaterialAsset>(
-    'MaterialAsset',
-    Materials.standard({ baseColor: [0.8, 0.7, 0.6, 1] }),
-  );
+  const cubeMat = sceneAssets.create(Materials.standard({ baseColor: [0.8, 0.7, 0.6, 1] })).unwrap();
   for (const x of [-1.5, 1.5]) {
     for (const z of [-1.5, 1.5]) {
       world.spawn(
         { component: Transform, data: { pos: [x, 0.5, z], quat: [0, 0, 0, 1], scale: [1, 1, 1] } },
-        { component: MeshFilter, data: { assetHandle: HANDLE_CUBE } },
+        { component: MeshFilter, data: { assetHandle: primitiveCube } },
         { component: MeshRenderer, data: { materials: [cubeMat] } },
       );
     }

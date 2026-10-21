@@ -4,34 +4,8 @@ import {
   applyStandardWhiteBalance,
   sampleStandardColorLut,
 } from '../pipeline/standard-output/color-transform';
-import {
-  createStandardOutputPlan,
-  validateStandardOutputPlan,
-} from '../pipeline/standard-output/graph';
-
-const fullRequest = {
-  temporal: true,
-  meter: true,
-  bloom: true,
-  exposure: true,
-  whiteBalance: true,
-  lut: true,
-  fxaa: true,
-  outputEncoding: 'explicit-oetf' as const,
-};
 
 describe('Standard output chain integration', () => {
-  it('shares the exact stage domains and costs between direct and clustered lanes', () => {
-    const direct = createStandardOutputPlan({ ...fullRequest, lane: 'direct' });
-    const clustered = createStandardOutputPlan({ ...fullRequest, lane: 'clustered' });
-    expect(clustered.logicalStages).toEqual(direct.logicalStages);
-    expect(clustered.physicalStages).toEqual(direct.physicalStages);
-    expect(clustered.incrementalResources).toEqual(direct.incrementalResources);
-    expect(clustered.incrementalBindings).toBe(direct.incrementalBindings);
-    expect(validateStandardOutputPlan(direct).ok).toBe(true);
-    expect(validateStandardOutputPlan(clustered).ok).toBe(true);
-  });
-
   it('keeps manual D65 and strength zero as exact identity operations', () => {
     expect(applyStandardWhiteBalance([0.2, 0.4, 0.8], 6504, 0)).toEqual([0.2, 0.4, 0.8]);
     const identityLut = new Float32Array(2 * 2 * 2 * 4);

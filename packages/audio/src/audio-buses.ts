@@ -22,8 +22,10 @@ export const DEFAULT_AUDIO_BUSES: readonly AudioBus[] = [
   { id: 'music', parent: 'master' },
 ];
 
-/** Validate all audible edges together: a send cannot introduce feedback. */
-export function validateAudioBuses(buses: readonly AudioBus[]): Result<void, AudioError> {
+/** Snapshot and validate all audible edges together: a send cannot introduce feedback. */
+export function prepareAudioBuses(
+  input: readonly AudioBus[],
+): Result<readonly AudioBus[], AudioError> {
   const fail = (reason: string) =>
     err(
       new AudioError({
@@ -33,7 +35,26 @@ export function validateAudioBuses(buses: readonly AudioBus[]): Result<void, Aud
         detail: { code: 'control-failed', reason },
       }),
     );
-  if (buses.length < 1 || buses.length > 64) return fail('bus count must be 1..64');
+  if (input.length < 1 || input.length > 64) return fail('bus count must be 1..64');
+  const buses: AudioBus[] = [];
+  for (const { id, parent, volume, muted, sends } of input) {
+    if ((sends?.length ?? 0) > 32) return fail('at most 32 sends per bus');
+    buses.push(
+      Object.freeze({
+        id,
+        parent,
+        ...(volume === undefined ? {} : { volume }),
+        ...(muted === undefined ? {} : { muted }),
+        ...(sends === undefined
+          ? {}
+          : {
+              sends: Object.freeze(
+                sends.map(({ bus, gain, tap }) => Object.freeze({ bus, gain, tap })),
+              ),
+            }),
+      }),
+    );
+  }
   const ids = new Map(buses.map((bus) => [bus.id, bus]));
   if (ids.size !== buses.length) return fail('duplicate bus ID');
   if (buses.filter((bus) => bus.parent === null).length !== 1)
@@ -47,7 +68,6 @@ export function validateAudioBuses(buses: readonly AudioBus[]): Result<void, Aud
       (bus.volume ?? 1) < 0
     )
       return fail('invalid bus ID or volume');
-    if ((bus.sends?.length ?? 0) > 32) return fail('at most 32 sends per bus');
     if (bus.parent !== null && !ids.has(bus.parent)) return fail(`missing parent for ${bus.id}`);
     for (const send of bus.sends ?? []) {
       if (
@@ -77,5 +97,7 @@ export function validateAudioBuses(buses: readonly AudioBus[]): Result<void, Aud
     visited.add(id);
     return true;
   };
-  return buses.every((bus) => visit(bus.id)) ? ok(undefined) : fail('parent/send feedback cycle');
+  return buses.every((bus) => visit(bus.id))
+    ? ok(Object.freeze(buses))
+    : fail('parent/send feedback cycle');
 }

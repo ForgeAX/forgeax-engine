@@ -6,7 +6,7 @@ import {
   RhiError,
   type Texture,
 } from '@forgeax/engine-rhi';
-import { type Handle, ok } from '@forgeax/engine-types';
+import { type AssetHandle, ok } from '@forgeax/engine-types';
 import { createRendererCaptureOwner } from '../capture/renderer-captures';
 import { Camera } from '../components/camera';
 import { CameraView, cameraViewExtent } from '../components/camera-view';
@@ -273,15 +273,32 @@ export function createCameraViews(internals: RenderSystemInternals, primary: Ren
       try {
         const publication = source?.publication;
         if (publication !== undefined) {
-          // Asset residency is shared by all views. Invalidate once before any
-          // camera records, so a later view cannot destroy an earlier binding.
-          for (const handle of [
-            ...publication.packet.invalidatedAssets,
-            ...publication.packet.retiredAssets,
-          ]) {
+          // Every view consumes the same precise accepted asset changes.
+          for (const change of publication.assetChanges) {
+            const payload = publication.resources.resolveAsset(change.handle).unwrap();
+            internals.gpuStore
+              .adoptMeshChange(
+                change,
+                payload.kind === 'mesh' ? payload : undefined,
+                publication.resources,
+              )
+              .unwrap();
+            internals.gpuStore
+              .adoptTextureChange(
+                change,
+                payload.kind === 'texture' ? payload : undefined,
+                publication.resources,
+              )
+              .unwrap();
+            internals.gpuStore.invalidateSampler(change.handle, publication.resources);
+            internals.gpuStore.adoptCubemapChange(change, publication.resources);
+          }
+          for (const handle of publication.packet.retiredAssets) {
             internals.gpuStore.invalidateMesh(handle, publication.resources);
+            internals.gpuStore.invalidateSampler(handle, publication.resources);
+            internals.gpuStore.evictCubemap(handle, publication.resources);
             internals.gpuStore.invalidateTexture(
-              handle as Handle<'TextureAsset', 'shared'>,
+              handle as AssetHandle<'texture'>,
               publication.resources,
             );
           }

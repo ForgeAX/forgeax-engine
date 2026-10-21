@@ -59,7 +59,7 @@
 //   2. Register the sprite material referencing the atlas
 //      `TextureAsset` with the initial frame's `region` rectangle (the
 //      runtime tick system overrides this region per entity per frame).
-//   3. `world.spawn` an entity with `MeshFilter(HANDLE_QUAD)` +
+//   3. `world.spawn` an entity with `MeshFilter(quad)` +
 //      `MeshRenderer(spriteMaterial)` + `Instances(...)` plus this
 //      `SpriteAnimation` (frameCount / frameDuration / regions /
 //      playbackMode) and `SpriteRegionOverride { region }` (the tick
@@ -122,7 +122,8 @@ import { defineComponent } from '@forgeax/engine-ecs';
  *     SpriteAnimation, SpriteRegionOverride, SPRITE_PLAYBACK_MODE_LOOP,
  *   } from '@forgeax/engine-render/authoring';
  *   import { Transform } from '@forgeax/engine-scene';
- *   import { HANDLE_QUAD } from '@forgeax/engine-assets-runtime';
+ *   import { createPrimitiveMesh } from '@forgeax/engine-geometry';
+ *   const quad = assets.create(createPrimitiveMesh('quad').unwrap()).unwrap();
  *
  *   // 4 frames packed in an atlas, each 64x64 inside a 256x64 row:
  *   const regions = new Float32Array([
@@ -134,7 +135,7 @@ import { defineComponent } from '@forgeax/engine-ecs';
  *   world.spawn(
  *     { component: Transform, data: { pos: [0, 0, 0],
  *       quat: [0, 0, 0, 1], scale: [1, 1, 1] } },
- *     { component: MeshFilter, data: { assetHandle: HANDLE_QUAD } },
+ *     { component: MeshFilter, data: { assetHandle: quad } },
  *     { component: MeshRenderer, data: { materials: [spriteMaterial] } },
  *     { component: SpriteAnimation,
  *       data: {

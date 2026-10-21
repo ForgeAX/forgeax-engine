@@ -13,7 +13,8 @@
 
 import type { AssetError, MeshAsset } from '@forgeax/engine-types';
 import { err, type Result } from '@forgeax/engine-types';
-import { degenerate, FACTORY_FLOATS_PER_VERTEX, meshFromInterleaved } from './box';
+import { degenerate } from './box';
+import { createPrimitiveAttributes, finishPrimitiveMesh } from './primitive-attributes';
 
 export function createCylinderGeometry(
   radiusTop: number,
@@ -50,7 +51,7 @@ export function createCylinderGeometry(
   const bottomIdxCount = bottomCap ? rs * 3 : 0;
   const indexCount = sideIndexCount + topIdxCount + bottomIdxCount;
 
-  const vertices = new Float32Array(vertexCount * FACTORY_FLOATS_PER_VERTEX);
+  const attributes = createPrimitiveAttributes(vertexCount);
   const indices = new Uint32Array(indexCount);
 
   // --- side ---
@@ -72,16 +73,15 @@ export function createCylinderGeometry(
       const nz = cosT;
       // normalize
       const nlen = Math.sqrt(nx * nx + ny * ny + nz * nz) || 1;
-      const base = vIdx * FACTORY_FLOATS_PER_VERTEX;
-      vertices[base + 0] = x;
-      vertices[base + 1] = y;
-      vertices[base + 2] = z;
-      vertices[base + 3] = nx / nlen;
-      vertices[base + 4] = ny / nlen;
-      vertices[base + 5] = nz / nlen;
-      vertices[base + 6] = u;
+      attributes.position[vIdx * 3 + 0] = x;
+      attributes.position[vIdx * 3 + 1] = y;
+      attributes.position[vIdx * 3 + 2] = z;
+      attributes.normal[vIdx * 3 + 0] = nx / nlen;
+      attributes.normal[vIdx * 3 + 1] = ny / nlen;
+      attributes.normal[vIdx * 3 + 2] = nz / nlen;
+      attributes.uv[vIdx * 2 + 0] = u;
       // UV.v uses the WebGPU top-left convention (V=0 = image top).
-      vertices[base + 7] = v;
+      attributes.uv[vIdx * 2 + 1] = v;
       vIdx++;
     }
   }
@@ -109,24 +109,22 @@ export function createCylinderGeometry(
   ] as const) {
     if (!(radius > 0)) continue;
     const centerIdx = vIdx;
-    const cBase = vIdx * FACTORY_FLOATS_PER_VERTEX;
-    vertices[cBase + 1] = direction * halfHeight;
-    vertices[cBase + 4] = direction;
-    vertices[cBase + 6] = 0.5;
-    vertices[cBase + 7] = 0.5;
+    attributes.position[vIdx * 3 + 1] = direction * halfHeight;
+    attributes.normal[vIdx * 3 + 1] = direction;
+    attributes.uv[vIdx * 2 + 0] = 0.5;
+    attributes.uv[vIdx * 2 + 1] = 0.5;
     vIdx++;
     const ringStart = vIdx;
     for (let ix = 0; ix <= rs; ix++) {
       const theta = (ix / rs) * Math.PI * 2;
       const sinT = Math.sin(theta);
       const cosT = Math.cos(theta);
-      const base = vIdx * FACTORY_FLOATS_PER_VERTEX;
-      vertices[base + 0] = radius * sinT;
-      vertices[base + 1] = direction * halfHeight;
-      vertices[base + 2] = radius * cosT;
-      vertices[base + 4] = direction;
-      vertices[base + 6] = sinT * 0.5 + 0.5;
-      vertices[base + 7] = cosT * 0.5 + 0.5;
+      attributes.position[vIdx * 3 + 0] = radius * sinT;
+      attributes.position[vIdx * 3 + 1] = direction * halfHeight;
+      attributes.position[vIdx * 3 + 2] = radius * cosT;
+      attributes.normal[vIdx * 3 + 1] = direction;
+      attributes.uv[vIdx * 2 + 0] = sinT * 0.5 + 0.5;
+      attributes.uv[vIdx * 2 + 1] = cosT * 0.5 + 0.5;
       vIdx++;
     }
     for (let ix = 0; ix < rs; ix++) {
@@ -136,5 +134,5 @@ export function createCylinderGeometry(
     }
   }
 
-  return meshFromInterleaved(vertices, indices);
+  return finishPrimitiveMesh(attributes, indices);
 }

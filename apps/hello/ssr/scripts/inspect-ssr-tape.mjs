@@ -32,9 +32,9 @@ export function reflectionFormulaError(expected, actual, alternateExpected = exp
 // compose shader; it can cross an FP16 bin at high-contrast texel boundaries.
 // https://www.w3.org/TR/WGSL/#floating-point-accuracy
 export function reflectionTexelCoordinate(pixel, fullSize, mipSize, f32Reciprocal = false) {
-  if (!f32Reciprocal) return (pixel + 1) / fullSize * mipSize - 0.5;
+  if (!f32Reciprocal) return (pixel + 0.5) / fullSize * mipSize - 0.5;
   const f = Math.fround;
-  return f(f(f(pixel + 1) * f(1 / fullSize)) * f(mipSize)) - 0.5;
+  return f(f(f(pixel + 0.5) * f(1 / fullSize)) * f(mipSize)) - 0.5;
 }
 
 export function decodeSsrReadback(r, uint32Words = []) {
@@ -249,8 +249,7 @@ export async function inspectSsrTape(tapePath) {
         const bilinear = level => {
           if (level === 0 && receiverBase !== undefined) return receiverBase;
           const mip = pyramid[level];
-          // The producer traces full-res pixel 2*p. Its half-res texel origin
-          // differs by half a full-res pixel from a conventional downsample.
+          // Trace, temporal and composition share the full-resolution pixel center.
           const px = reflectionTexelCoordinate(x, width, mip.width, f32Reciprocal);
           const py = reflectionTexelCoordinate(y, height, mip.height, f32Reciprocal);
           const ix = Math.floor(px), iy = Math.floor(py), fx = px - ix, fy = py - iy;
@@ -304,7 +303,7 @@ export async function inspectSsrTape(tapePath) {
         const previous = await readId(id(2), w.workIndex);
         const deltas = [];
         for (let pixel = 0; pixel < output.values.length; pixel += 4) {
-          if (normal.values[pixel + 1] < 0.999 || normal.values[pixel + 3] > 0.1) continue;
+          if (normal.values[pixel + 0.5] < 0.999 || normal.values[pixel + 3] > 0.1) continue;
           deltas.push(Math.max(...[0, 1, 2].map((c) => Math.abs(output.values[pixel + c] - previous.values[pixel + c]))));
         }
         deltas.sort((a, b) => a - b);
@@ -320,7 +319,7 @@ export async function inspectSsrTape(tapePath) {
         if (traced.values[p + 3] <= 0) continue;
         reflected++;
         if ([0, 1, 2].some((c) => Math.abs(traced.values[p + c] - resolved.values[p + c]) > 0.001)) accumulated++;
-        const full = (y * 2 * sceneTemporal.width + x * 2) * 4;
+        const full = (y * sceneTemporal.width + x) * 4;
         if (sceneTemporal.values[full + 3] >= 1) reactiveReceivers++;
         if (sceneTemporal.values[full + 2] < 0) invalidTemporalReceivers++;
       }
@@ -426,51 +425,25 @@ export async function inspectSsrTape(tapePath) {
       // A counterfactual arithmetic witness, not a proposed composition rule:
       // removing the base-alpha cap also needs independent receiver admission.
       const upperEdgeMipClipping = { baseAlphaCapApplied: !receiverAdmission, bandReceiverPixels: 16, roughnessGroups: {}, witness: null, maximumRemovedHdr: 0 };
-      const receiverAwareComposition = compose.pipeline.shaders.some(shader => shader.source.includes('fn ssrReceiverWeight('));
-      const receiverReconstruction = compose.pipeline.shaders.some(shader => shader.source.includes('fn ssrReceiverSample('));
-      const normalWeight = agreement => {
-        const fraction = Math.max(0, Math.min(1, (agreement - 0.9) / 0.09));
-        return fraction * fraction * (3 - 2 * fraction);
-      };
-      const reconstructReceiver = (x, y, n, f32Reciprocal = false) => {
-        const px = reflectionTexelCoordinate(x, base.width, resolved.width, f32Reciprocal);
-        const py = reflectionTexelCoordinate(y, base.height, resolved.height, f32Reciprocal);
-        const fx = px - Math.floor(px), fy = py - Math.floor(py);
-        let totalWeight = 0;
-        const value = [0, 0, 0, 0];
-        for (let dy = 0; dy < 2; dy++) for (let dx = 0; dx < 2; dx++) {
-          const sx = Math.max(0, Math.min(resolved.width - 1, Math.floor(px) + dx));
-          const sy = Math.max(0, Math.min(resolved.height - 1, Math.floor(py) + dy));
-          const p = (sy * 2 * base.width + sx * 2) * 4;
-          const candidateNormal = normalize(normal.values.slice(p, p + 3).map(value => value * 2 - 1));
-          const agreement = n.reduce((sum, value, axis) => sum + value * candidateNormal[axis], 0);
-          const weight = (dx ? fx : 1 - fx) * (dy ? fy : 1 - fy) * normalWeight(agreement);
-          const index = (sy * resolved.width + sx) * 4, alpha = resolved.values[index + 3];
-          for (let c = 0; c < 3; c++) value[c] += weight * (presentationPremultiplied ? 1 : alpha) * resolved.values[index + c];
-          value[3] += weight * alpha;
-          totalWeight += weight;
-        }
-        return { value: value.map(v => v / Math.max(totalWeight, 1e-6)), totalWeight };
-      };
+      assert.equal(resolved.width, base.width, 'SSR must cover every scene pixel');
+      assert.equal(resolved.height, base.height, 'SSR must cover every scene row');
       for (let y = 0; y < base.height; y++) {
         for (let x = 0; x < base.width; x++) {
           const p = (y * base.width + x) * 4;
-          const t = (Math.min(Math.floor(y / 2), resolved.height - 1) * resolved.width
-            + Math.min(Math.floor(x / 2), resolved.width - 1)) * 4;
+          const t = p;
           let delta = 0;
           const clip = [(x + 0.5) / base.width * 2 - 1, 1 - (y + 0.5) / base.height * 2, depth.values[y * base.width + x], 1];
           const world = [0, 1, 2, 3].map((r) => clip.reduce((sum, value, i) => sum + inv[i * 4 + r] * value, 0));
           const v = normalize([0, 1, 2].map((i) => camera.values[24 + i] - world[i] / world[3]));
           const n = normalize(normal.values.slice(p, p + 3).map((c) => c * 2 - 1));
-          const sourcePixel = (Math.min(Math.floor(y / 2), resolved.height - 1) * 2 * base.width
-            + Math.min(Math.floor(x / 2), resolved.width - 1) * 2) * 4;
-          const sourceNormal = normalize(normal.values.slice(sourcePixel, sourcePixel + 3).map(value => value * 2 - 1));
-          const agreement = n.reduce((sum, value, axis) => sum + value * sourceNormal[axis], 0);
-          const receiverBase = receiverReconstruction ? reconstructReceiver(x, y, n) : undefined;
-          const receiverWeight = receiverAwareComposition && !receiverReconstruction ? normalWeight(agreement) : 1;
-          const baseConfidence = receiverBase?.value[3] ?? resolved.values[t + 3];
+          const sourceNormal = n;
+          const agreement = 1;
+          const receiverBase = { value: resolved.values.slice(p, p + 4), totalWeight: 1 };
+          const receiverWeight = 1;
+          const baseConfidence = receiverBase.value[3];
           const nv = Math.max(0.001, n.reduce((sum, c, i) => sum + c * v[i], 0));
-          const roughness = normal.values[p + 3];
+          const authoredRoughness = normal.values[p + 3];
+          const roughness = Math.max(0.04, authoredRoughness);
           const reflection = sampleReflection(x, y, roughness, base.width, base.height, receiverBase?.value,
             presentationPremultiplied);
           const outline = admittedSeamOracle?.outsideSilhouette.upperEdge;
@@ -499,9 +472,9 @@ export async function inspectSsrTape(tapePath) {
           }
           const [a, b] = sampleLut(nv, roughness);
           const limit = Math.max(0, Math.min(1, camera.values[238]));
-          const fade = Math.max(0, Math.min(1, (roughness - limit * 0.8) / Math.max(limit * 0.2, 1e-8)));
+          const fade = Math.max(0, Math.min(1, (authoredRoughness - limit * 0.8) / Math.max(limit * 0.2, 1e-8)));
           const currentReceiverConfidence = receiverBase?.totalWeight > 1e-6 && Number.isFinite(camera.values[239])
-            && camera.values[239] > 0.5 && roughness >= 0 && roughness < limit
+            && camera.values[239] > 0.5 && authoredRoughness >= 0 && authoredRoughness < limit
             ? 1 - fade * fade * (3 - 2 * fade) : 0;
           const effectiveConfidence = Math.min(reflection[3], receiverAdmission ? currentReceiverConfidence : baseConfidence);
           for (let c = 0; c < 3; c++) {
@@ -511,8 +484,8 @@ export async function inspectSsrTape(tapePath) {
             const metallic = material.values[p + 3];
             const f0 = 0.04 * (1 - metallic) + material.values[p + c] * metallic;
             const fresnel = f0 + (Math.max(1 - roughness, f0) - f0) * (1 - nv) ** 5;
-            // Material composition rasterizes real covered geometry. A half-res
-            // trace sample adjacent to a silhouette must not imply a sky draw.
+            // Material composition rasterizes covered geometry. Filtered radiance
+            // beside a silhouette must not imply a sky draw.
             const coverage = depth.values[y * base.width + x] < 1 ? fallback.values[p + 3] : 0;
             // The fullscreen stage consumes the stored response, not a second
             // BRDF evaluated from quantized G-buffer normals. Inspect its actual
@@ -525,7 +498,7 @@ export async function inspectSsrTape(tapePath) {
               const exactCoordinateError = reflectionFormulaError(expected, composed.values[p + c]);
               let alternateExpected = expected;
               if (exactCoordinateError > 0) {
-                const alternativeBase = receiverReconstruction ? reconstructReceiver(x, y, n, true) : undefined;
+                const alternativeBase = receiverBase;
                 const alternative = sampleReflection(x, y, roughness, base.width, base.height, alternativeBase?.value, true);
                 const alternativeConfidence = Math.min(alternative[3], receiverAdmission
                   ? currentReceiverConfidence : (alternativeBase?.value[3] ?? baseConfidence));

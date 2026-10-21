@@ -452,16 +452,79 @@ export function compute2dBounds(
   if (!finitePoint(translation) || !Number.isFinite(rotation)) {
     return invalid('2d bounds pose must contain finite translation and rotation');
   }
-  const points = shapeBoundary(shape, checked.value);
   const cos = Math.cos(rotation);
   const sin = Math.sin(rotation);
-  const transformed = points.map(
-    ([x, y]) => [translation[0] + x * cos - y * sin, translation[1] + x * sin + y * cos] as const,
-  );
+  let minX = Infinity,
+    minY = Infinity,
+    maxX = -Infinity,
+    maxY = -Infinity;
   let radius = 0;
-  for (const [x, y] of points) radius = Math.max(radius, Math.hypot(x, y));
+  const include = (x: number, y: number): void => {
+    minX = Math.min(minX, x);
+    minY = Math.min(minY, y);
+    maxX = Math.max(maxX, x);
+    maxY = Math.max(maxY, y);
+  };
+  // Bounds describe the authored curve. Tessellation controls only mesh detail.
+  switch (shape.kind) {
+    case 'circle':
+    case 'annulus':
+      radius = shape.kind === 'circle' ? shape.radius : shape.outerRadius;
+      include(-radius, -radius);
+      include(radius, radius);
+      break;
+    case 'ellipse': {
+      radius = Math.max(shape.halfWidth, shape.halfHeight);
+      const x = Math.hypot(shape.halfWidth * cos, shape.halfHeight * sin);
+      const y = Math.hypot(shape.halfWidth * sin, shape.halfHeight * cos);
+      include(-x, -y);
+      include(x, y);
+      break;
+    }
+    case 'capsule': {
+      radius = shape.radius + shape.halfLength;
+      const x = shape.radius + Math.abs(sin) * shape.halfLength;
+      const y = shape.radius + Math.abs(cos) * shape.halfLength;
+      include(-x, -y);
+      include(x, y);
+      break;
+    }
+    case 'circular-sector':
+    case 'circular-segment': {
+      radius = shape.radius;
+      const start = -Math.PI / 2 - shape.angle / 2;
+      for (const angle of [start, start + shape.angle]) {
+        const x = radius * Math.cos(angle),
+          y = radius * Math.sin(angle);
+        include(x * cos - y * sin, x * sin + y * cos);
+      }
+      if (shape.kind === 'circular-sector') include(0, 0);
+      const turn = 2 * Math.PI;
+      const orientation = Math.atan2(sin, cos);
+      for (const [x, y] of [
+        [1, 0],
+        [0, 1],
+        [-1, 0],
+        [0, -1],
+      ] as const) {
+        const relative = (((Math.atan2(y, x) - orientation - start) % turn) + turn) % turn;
+        if (relative <= shape.angle) include(radius * x, radius * y);
+      }
+      break;
+    }
+    default:
+      for (const [x, y] of shapeBoundary(shape, checked.value)) {
+        include(x * cos - y * sin, x * sin + y * cos);
+        radius = Math.max(radius, Math.hypot(x, y));
+      }
+  }
   return ok({
-    aabb: box2.fromPoints(box2.create(), transformed),
+    aabb: box2.create(
+      translation[0] + minX,
+      translation[1] + minY,
+      translation[0] + maxX,
+      translation[1] + maxY,
+    ),
     circle: circle2.create(translation[0], translation[1], radius),
   });
 }

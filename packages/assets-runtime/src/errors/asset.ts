@@ -254,8 +254,8 @@ export interface SceneCollectAssetGuidUnresolvedDetail {
  * Emitted during rootsToSceneAsset collect (handle) or
  * serializeSceneAssetToPack (guid); fail-fast per charter P3.
  *   - `.code = 'scene-collect-asset-guid-unresolved'`
- *   - `.expected` — every shared asset reference has a catalogued GUID
- *   - `.hint` — Register the asset in AssetRegistry before collecting.
+ *   - `.expected` — every managed asset reference has a source GUID
+ *   - `.hint` — Load the referenced asset from its source before collecting.
  *   - `.detail = { field, handle }` (collect) or `{ field, guid }` (serialize)
  */
 export class SceneCollectAssetGuidUnresolvedError extends Error {
@@ -266,10 +266,10 @@ export class SceneCollectAssetGuidUnresolvedError extends Error {
 
   constructor(field: string, ref: number | string) {
     const where = typeof ref === 'number' ? `handle ${ref}` : `guid '${ref}'`;
-    const expected = `shared field '${field}' (${where}) resolves to an asset whose GUID is catalogued`;
+    const expected = `asset field '${field}' (${where}) resolves to a source-loaded asset GUID`;
     const hint =
-      'source SceneAsset is not catalogued: call registry.catalog(guid, payload) first, ' +
-      'or load through loadByGuid() which auto-catalogs GUID-scoped assets';
+      'load the asset with registry.load(guid, kind) and bind its returned handle; ' +
+      'save code-created content to a source asset before exporting a GUID reference';
     super(`${expected} — ${hint}`);
     this.name = 'SceneCollectAssetGuidUnresolvedError';
     this.expected = expected;

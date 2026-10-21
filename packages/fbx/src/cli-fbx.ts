@@ -1,50 +1,17 @@
 import { readFile, writeFile } from 'node:fs/promises';
 import { basename, extname } from 'node:path';
 import {
+  type AssetCliContext,
+  emitAssetCliError,
+  serializeMetaJson,
+} from '@forgeax/engine-pack/build';
+import {
   createFbxMeta,
   type FbxMetaPreviousDocument,
   type FbxMetaSourceDocument,
   isFbxMetaDocument,
 } from './meta.js';
 import { initFbxWasm, parseFbx } from './wasm.js';
-
-interface FbxCliContext {
-  readonly stdoutWrite: (line: string) => void;
-  readonly stderrWrite: (line: string) => void;
-}
-
-interface FbxCliError {
-  readonly code: string;
-  readonly expected: string;
-  readonly hint: string;
-  readonly detail?: unknown;
-}
-
-function emitError(ctx: FbxCliContext, error: FbxCliError): number {
-  const payload: Record<string, unknown> = {
-    code: error.code,
-    expected: error.expected,
-    hint: error.hint,
-  };
-  if (error.detail !== undefined) payload.detail = error.detail;
-  ctx.stderrWrite(JSON.stringify(payload));
-  return 1;
-}
-
-function serializeMetaJson(value: unknown): string {
-  const sortKeysDeep = (current: unknown): unknown => {
-    if (Array.isArray(current)) return current.map(sortKeysDeep);
-    if (current !== null && typeof current === 'object') {
-      const sorted: Record<string, unknown> = {};
-      for (const key of Object.keys(current as Record<string, unknown>).sort()) {
-        sorted[key] = sortKeysDeep((current as Record<string, unknown>)[key]);
-      }
-      return sorted;
-    }
-    return current;
-  };
-  return `${JSON.stringify(sortKeysDeep(value), null, 2)}\n`;
-}
 
 function helpBody(): string {
   return [
@@ -66,7 +33,7 @@ function existingMetaPath(sourcePath: string): string {
 
 async function readExistingMeta(
   sourcePath: string,
-  ctx: FbxCliContext,
+  ctx: AssetCliContext,
 ): Promise<
   | {
       readonly ok: true;
@@ -85,7 +52,7 @@ async function readExistingMeta(
     }
     return {
       ok: false,
-      exitCode: emitError(ctx, {
+      exitCode: emitAssetCliError(ctx, {
         code: 'asset-meta-unreadable',
         expected: 'an absent or readable JSON sidecar',
         hint: 'repair the existing FBX sidecar before importing the source again',
@@ -100,7 +67,7 @@ async function readExistingMeta(
   } catch (cause) {
     return {
       ok: false,
-      exitCode: emitError(ctx, {
+      exitCode: emitAssetCliError(ctx, {
         code: 'asset-meta-unreadable',
         expected: 'the existing sidecar to contain valid JSON',
         hint: 'repair the existing FBX sidecar before importing the source again',
@@ -116,7 +83,7 @@ async function readExistingMeta(
   if (!isFbxMetaDocument(parsed)) {
     return {
       ok: false,
-      exitCode: emitError(ctx, {
+      exitCode: emitAssetCliError(ctx, {
         code: 'asset-meta-conflict',
         expected: 'the existing sidecar to describe an FBX source package',
         hint: 'resolve the sidecar conflict explicitly; the importer will not replace another producer identity',
@@ -127,14 +94,14 @@ async function readExistingMeta(
   return { ok: true, path: metaPath, value: parsed };
 }
 
-export async function runCliFbx(rest: readonly string[], ctx: FbxCliContext): Promise<number> {
+export async function runCliFbx(rest: readonly string[], ctx: AssetCliContext): Promise<number> {
   const [sub, ...subRest] = rest;
   if (sub === undefined || sub === '--help' || sub === '-h') {
     ctx.stdoutWrite(helpBody());
     return 0;
   }
   if (sub !== 'import') {
-    return emitError(ctx, {
+    return emitAssetCliError(ctx, {
       code: 'unknown-subcommand',
       expected: "subcommand 'import'",
       hint: "run 'forgeax help asset import' for usage",
@@ -145,14 +112,14 @@ export async function runCliFbx(rest: readonly string[], ctx: FbxCliContext): Pr
   const dryRun = subRest.includes('--dry-run');
   const sourcePath = subRest.find((argument) => !argument.startsWith('-'));
   if (sourcePath === undefined) {
-    return emitError(ctx, {
+    return emitAssetCliError(ctx, {
       code: 'cli-parse-error',
       expected: 'forgeax asset import [--dry-run] <path.fbx> --root <project>',
       hint: "pass a positional <fbx> argument; run 'forgeax help asset import' for usage",
     });
   }
   if (extname(sourcePath).toLowerCase() !== '.fbx') {
-    return emitError(ctx, {
+    return emitAssetCliError(ctx, {
       code: 'fbx-source-extension-unsupported',
       expected: 'a .fbx source path',
       hint: 'pass an FBX source to the FBX producer or use the matching built-in importer',
@@ -168,7 +135,7 @@ export async function runCliFbx(rest: readonly string[], ctx: FbxCliContext): Pr
   try {
     sourceBytes = new Uint8Array(await readFile(sourcePath));
   } catch (cause) {
-    return emitError(ctx, {
+    return emitAssetCliError(ctx, {
       code: 'fbx-source-read-failed',
       expected: 'a readable FBX source file',
       hint: 'check the source path and file permissions, then retry the import',
@@ -181,7 +148,7 @@ export async function runCliFbx(rest: readonly string[], ctx: FbxCliContext): Pr
     await initFbxWasm();
     parsed = JSON.parse(parseFbx(sourceBytes)) as unknown;
   } catch (cause) {
-    return emitError(ctx, {
+    return emitAssetCliError(ctx, {
       code: 'fbx-import-failed',
       expected: 'the FBX producer to parse the source and expose a supported topology',
       hint: cause instanceof Error ? cause.message : 'inspect the FBX source and retry',
@@ -193,7 +160,7 @@ export async function runCliFbx(rest: readonly string[], ctx: FbxCliContext): Pr
     const parserError = (parsed as { readonly error?: unknown }).error;
     if (parserError !== undefined && typeof parserError === 'object' && parserError !== null) {
       const detail = parserError as Record<string, unknown>;
-      return emitError(ctx, {
+      return emitAssetCliError(ctx, {
         code: typeof detail.code === 'string' ? detail.code : 'fbx-import-failed',
         expected: 'the FBX producer to expose a supported topology',
         hint: 'repair or convert the FBX source, then retry the import',
@@ -205,12 +172,12 @@ export async function runCliFbx(rest: readonly string[], ctx: FbxCliContext): Pr
   const document = parsed as FbxMetaSourceDocument;
 
   const meta = createFbxMeta(document, basename(sourcePath), existing.value);
-  if (!meta.ok) return emitError(ctx, meta.error);
+  if (!meta.ok) return emitAssetCliError(ctx, meta.error);
 
   try {
     await writeFile(existing.path, serializeMetaJson(meta.value), 'utf8');
   } catch (cause) {
-    return emitError(ctx, {
+    return emitAssetCliError(ctx, {
       code: 'asset-meta-write-failed',
       expected: 'the FBX sidecar to be writable beside the source',
       hint: 'check the project asset directory permissions and retry',

@@ -1,6 +1,8 @@
+import { AssetRegistry } from '@forgeax/engine/assets-runtime';
+import { createPrimitiveMesh } from '@forgeax/engine/geometry';
 import { Outline, OutlineOcclusionValue } from '@forgeax/engine/render';
 import { CheckList, defineFeature } from '../../lab/feature';
-import { MESH, spawnMesh, spawnStage, standard } from '../../lab/stage';
+import { spawnMesh, spawnStage, standard } from '../../lab/stage';
 import { serial } from './support/serial';
 
 export default defineFeature({
@@ -12,17 +14,25 @@ export default defineFeature({
   expect:
     'ON: the grey sphere gets a thick yellow outline, and the part hidden behind the wall shows a magenta outline. OFF: no outline, and no outline-* passes run.',
   setup({ app, world, frames }) {
+    const primitiveAssets = world.assets;
+    if (!(primitiveAssets instanceof AssetRegistry))
+      throw new Error('Scene requires its runtime asset owner');
+
+    const stageSphere = primitiveAssets.create(createPrimitiveMesh('sphere').unwrap()).unwrap();
+
+    const stageCube = primitiveAssets.create(createPrimitiveMesh('cube').unwrap()).unwrap();
+
     const { camera } = spawnStage(world, { eye: [0, 1.8, 5], target: [0, 0.8, 0] });
     const sphere = spawnMesh(
       world,
-      MESH.sphere,
+      stageSphere,
       standard(world, { baseColor: [0.5, 0.5, 0.5, 1] }),
       {
         pos: [0.4, 0.9, -0.5],
         scale: [1.4, 1.4, 1.4],
       },
     );
-    spawnMesh(world, MESH.cube, standard(world, { baseColor: [0.2, 0.35, 0.6, 1] }), {
+    spawnMesh(world, stageCube, standard(world, { baseColor: [0.2, 0.35, 0.6, 1] }), {
       pos: [-0.6, 0.9, 0.8],
       scale: [1.4, 1.8, 0.2],
     });

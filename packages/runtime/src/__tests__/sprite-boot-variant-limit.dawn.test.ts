@@ -1,11 +1,12 @@
 import { shaderManifestUrl } from './shader-manifest-url.fixture';
+
 // Frame-1 sprite readiness across the device atmosphere axis. A storage-capable
 // device below the atmosphere sampled-texture floor resolves sprite requests to
 // ATMOSPHERE_AVAILABLE=false; boot must seed those exact module labels, or the
 // first frame skips the draw while the lazy module compiles.
 
-import { HANDLE_QUAD } from '@forgeax/engine-assets-runtime';
 import { World } from '@forgeax/engine-ecs';
+import { createPrimitiveMesh } from '@forgeax/engine-geometry';
 import {
   ANTIALIAS_NONE,
   Camera,
@@ -19,6 +20,7 @@ import {
 } from '@forgeax/engine-render/authoring';
 import { Transform } from '@forgeax/engine-scene';
 import { describe, expect, it } from 'vitest';
+import { drawReadyFrame } from '../../../../scripts/test/ready-render-frame.mjs';
 import { constructRuntimeRendererHost } from '../renderer-host';
 
 const WIDTH = 128;
@@ -138,53 +140,60 @@ async function firstFrameLitPixels(
     globalThis.navigator.gpu.requestAdapter = originalRequestAdapter;
   }
   if (!host.ok) throw host.error;
-  const { renderer } = host.value;
+  const { renderer, assets } = host.value;
   if (device === undefined) throw new Error('GPUDevice not captured');
   if (sampledTextureLimit !== undefined) {
     expect(device.limits.maxSampledTexturesPerShaderStage).toBe(sampledTextureLimit);
   }
 
-  const world = new World();
-  const texture = world.allocSharedRef('TextureAsset', {
-    kind: 'texture',
-    shape: { viewDimension: '2d', extent: { width: 1, height: 1 } },
-    format: 'rgba8unorm-srgb',
-    data: new Uint8Array([230, 40, 30, 255]),
-    colorSpace: 'srgb',
-    mips: { kind: 'none' },
-  } as never);
-  const sampler = world.allocSharedRef('SamplerAsset', {
-    kind: 'sampler',
-    magFilter: 'nearest',
-    minFilter: 'nearest',
-    addressModeU: 'clamp-to-edge',
-    addressModeV: 'clamp-to-edge',
-  } as never);
-  const material = world.allocSharedRef('MaterialAsset', {
-    kind: 'material',
-    passes: [
-      {
-        name: 'Forward',
-        program: { module: 'forgeax::sprite' },
-        renderState: {
-          blend: SPRITE_PREMULTIPLIED_ALPHA_BLEND,
-          tags: { LightMode: 'Forward' },
-          queue: 3000,
+  const world = new World({ assets });
+  const quad = assets.create(createPrimitiveMesh('quad').unwrap()).unwrap();
+  const texture = assets
+    .create({
+      kind: 'texture',
+      shape: { viewDimension: '2d', extent: { width: 1, height: 1 } },
+      format: 'rgba8unorm-srgb',
+      data: new Uint8Array([230, 40, 30, 255]),
+      colorSpace: 'srgb',
+      mips: { kind: 'none' },
+    })
+    .unwrap();
+  const sampler = assets
+    .create({
+      kind: 'sampler',
+      magFilter: 'nearest',
+      minFilter: 'nearest',
+      addressModeU: 'clamp-to-edge',
+      addressModeV: 'clamp-to-edge',
+    })
+    .unwrap();
+  const material = assets
+    .create({
+      kind: 'material',
+      passes: [
+        {
+          name: 'Forward',
+          program: { module: 'forgeax::sprite' },
+          renderState: {
+            blend: SPRITE_PREMULTIPLIED_ALPHA_BLEND,
+            tags: { LightMode: 'Forward' },
+            queue: 3000,
+          },
         },
+      ],
+      values: {
+        colorTint: [1, 1, 1, 1],
+        baseColorTexture: texture,
+        sampler,
+        region: [0, 0, 1, 1],
+        pivotAndSize: [0.5, 0.5, 1, 1],
       },
-    ],
-    values: {
-      colorTint: [1, 1, 1, 1],
-      baseColorTexture: texture,
-      sampler,
-      region: [0, 0, 1, 1],
-      pivotAndSize: [0.5, 0.5, 1, 1],
-    },
-  } as never);
+    })
+    .unwrap();
   const identity = new Float32Array([1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1]);
   world.spawn(
     { component: Transform, data: { pos: [0, 0, 0], quat: [0, 0, 0, 1], scale: [1, 1, 1] } },
-    { component: MeshFilter, data: { assetHandle: HANDLE_QUAD } },
+    { component: MeshFilter, data: { assetHandle: quad } },
     { component: MeshRenderer, data: { materials: [material as never] } },
     ...(instanced
       ? [
@@ -212,23 +221,23 @@ async function firstFrameLitPixels(
   const attachment = renderer.attach(world);
   if (!attachment.ok) throw attachment.error;
   world.update(1 / 60).unwrap();
-  const drawn = renderer.draw({
+  const drawn = await drawReadyFrame(renderer, {
     leases: [attachment.value],
     camera: { lease: attachment.value },
     environment: { lease: attachment.value },
   });
-  expect(drawn.ok).toBe(true);
+  expect(drawn.presentation).toBe('ready');
   await device.queue.onSubmittedWorkDone();
   if (target === undefined) throw new Error('render target was not configured');
   const lit = centreLitPixels(await readPixels(device, target));
-  renderer.dispose();
+  await renderer.dispose();
   return lit;
 }
 
 describe('sprite boot variants follow the device atmosphere axis (dawn)', () => {
   for (const sampledTextureLimit of [undefined, 16] as const) {
     for (const instanced of [false, true]) {
-      it(`draws a ${instanced ? 'SpriteInstances' : 'per-entity'} sprite on frame 1 at limit ${sampledTextureLimit ?? 'default'}`, async () => {
+      it(`draws a ${instanced ? 'SpriteInstances' : 'per-entity'} sprite on its first ready presentation at limit ${sampledTextureLimit ?? 'default'}`, async () => {
         expect(await firstFrameLitPixels(sampledTextureLimit, instanced)).toBeGreaterThan(128);
       });
     }

@@ -4,6 +4,7 @@ import WebSocket from 'ws';
 import { createHostWebSocketClient } from '@forgeax/engine-host/transport';
 import { HTTP_BATCH_SIZE } from '../contract.ts';
 import { bundlePackProgram } from './program-bundler.mjs';
+const RESOURCE_BYTE_BUDGET = 256 * 1024 * 1024;
 export function createNetworkBroker(config, { bundle, trace = () => {} } = {}) {
   const originKey = (url) => {
     const protocol =
@@ -51,7 +52,7 @@ export function createNetworkBroker(config, { bundle, trace = () => {} } = {}) {
     resources.set(id, { data });
     while (
       [...resources.values()].reduce((sum, value) => sum + value.data.length, 0) >
-      256 * 1024 * 1024
+      RESOURCE_BYTE_BUDGET
     )
       resources.delete(resources.keys().next().value);
     if (raw.length > 32768)
@@ -100,8 +101,15 @@ export function createNetworkBroker(config, { bundle, trace = () => {} } = {}) {
           ? AbortSignal.any([signal, lifetime.signal, AbortSignal.timeout(30000)])
           : AbortSignal.any([lifetime.signal, AbortSignal.timeout(30000)]),
       });
-      const data = Buffer.from(await response.arrayBuffer());
-      if (data.length > 64 * 1024 * 1024) throw new Error('Response exceeds View transport bound');
+      const chunks = [];
+      let length = 0;
+      for await (const chunk of response.body ?? []) {
+        length += chunk.length;
+        if (length > RESOURCE_BYTE_BUDGET)
+          throw new Error('Response exceeds View transport bound');
+        chunks.push(chunk);
+      }
+      const data = Buffer.concat(chunks, length);
       const headers = Object.fromEntries(response.headers);
       delete headers['content-encoding'];
       delete headers['content-length'];

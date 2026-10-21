@@ -20,6 +20,7 @@ import testQuality from '../../../../scripts/test/render-quality.json' with { ty
 import type { RhiBackendInstrumentation } from '../../../render/src/assembly/backend-contract';
 import { compactTape } from './compact-tape.fixture';
 import { luminanceRgba16f } from './contact-shadow.fixture';
+import { testAssets } from './helpers/runtime-assets';
 import { CHANNEL_EPSILON, CHANNEL_SIZE } from './lighting-channels.fixture';
 import { renderValue } from './standard-gbuffer-replay.fixture';
 
@@ -58,16 +59,19 @@ export async function verifyChannelLifecycle(
 ) {
   const makeWorld = () => {
     const world = new World();
-    const mesh = world.allocSharedRef('MeshAsset', createBoxGeometry(0.8, 1.2, 0.1).unwrap());
-    const material = world.allocSharedRef(
-      'MaterialAsset',
-      Materials.standard({
-        baseColor: [0.5, 0.5, 0.5, 1],
-        roughness: 0.7,
-        emissive: [0.02, 0.02, 0.02],
-        emissiveIntensity: 1,
-      }),
-    );
+    const mesh = testAssets(world)
+      .create(createBoxGeometry(0.8, 1.2, 0.1).unwrap())
+      .unwrap();
+    const material = testAssets(world)
+      .create(
+        Materials.standard({
+          baseColor: [0.5, 0.5, 0.5, 1],
+          roughness: 0.7,
+          emissive: [0.02, 0.02, 0.02],
+          emissiveIntensity: 1,
+        }),
+      )
+      .unwrap();
     const receivers = [-0.6, 0.6].map((x, index) =>
       world
         .spawn(
@@ -212,15 +216,16 @@ export async function verifyChannelLifecycle(
       await draw();
       const exchanged = await draw(`${path}-mask-mutation`);
       expect(center(exchanged, 40) - center(exchanged, 24)).toBeGreaterThan(0.01);
-      const replacement = scene.world.allocSharedRef(
-        'MaterialAsset',
-        Materials.standard({
-          baseColor: [0.5, 0.5, 0.5, 1],
-          roughness: 0.7,
-          emissive: [0.05, 0.05, 0.05],
-          emissiveIntensity: 1,
-        }),
-      );
+      const replacement = testAssets(scene.world)
+        .create(
+          Materials.standard({
+            baseColor: [0.5, 0.5, 0.5, 1],
+            roughness: 0.7,
+            emissive: [0.05, 0.05, 0.05],
+            emissiveIntensity: 1,
+          }),
+        )
+        .unwrap();
       scene.world.set(receiver(0), MeshRenderer, { materials: [replacement] }).unwrap();
       await draw();
       const changed = await draw(`${path}-material-replacement`);

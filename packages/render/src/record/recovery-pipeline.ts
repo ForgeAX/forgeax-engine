@@ -26,7 +26,7 @@ import {
 } from '../pipeline-spec';
 import { POINTS_LINES_MATERIAL_SHADER_ID, pointsLinesFragmentEntry } from '../points-lines/record';
 import type { CameraSnapshot } from '../render-contract';
-import type { DispatchEntry, MaterialSnapshot } from '../render-system-extract';
+import type { DispatchEntry, DispatchList, MaterialSnapshot } from '../render-system-extract';
 import type { ValidatedRenderable } from './frame-snapshot';
 import { geometryRenderStateForPass } from './main-pass-geometry';
 import { geometryRenderStateForTopology } from './main-pass-material';
@@ -219,7 +219,7 @@ function addStandardMaterialRequests(input: {
   readonly internals: RenderSystemInternals;
   readonly pipelineState: PipelineState;
   readonly validated: readonly ValidatedRenderable[];
-  readonly dispatch: readonly DispatchEntry[];
+  readonly dispatch: DispatchList;
   readonly standardLighting: StandardTopologyInputValue | undefined;
   readonly sampleCount: number;
   readonly isHdrTarget: boolean;
@@ -236,7 +236,7 @@ function addStandardMaterialRequests(input: {
   }
   for (const entry of input.validated) {
     if (entry.source.pointsLines !== undefined) {
-      const pointsLinesMaterial = entry.source.material;
+      const pointsLinesMaterial = entry.source.material.snapshot;
       addRequest({
         requests: input.requests,
         requestKeys: input.requestKeys,
@@ -279,7 +279,8 @@ function addStandardMaterialRequests(input: {
     const unlitProjection = projectionVariant(meshProjection, undefined);
     const unlitHasColor = unlitProjection === 'VERTEX_COLOR_AVAILABLE=true';
     for (const submesh of entry.mesh.submeshes) {
-      const material = entry.source.materials[submesh.materialSlot] ?? entry.source.material;
+      const material = (entry.source.materials[submesh.materialSlot] ?? entry.source.material)
+        .snapshot;
       const forwardProgram = forwardPrograms.get(
         `${entry.renderableIndex}:${material.materialHandle ?? -1}`,
       );
@@ -304,7 +305,7 @@ function addStandardMaterialRequests(input: {
           pipelineState: input.pipelineState,
           materialShaderId: SKIN_MATERIAL_SHADER_ID,
           isHdrTarget: input.isHdrTarget,
-          ...optionalRenderState(entry.source.material.renderState),
+          ...optionalRenderState(entry.source.material.snapshot.renderState),
           topology: entry.mesh.submeshes[0]?.topology ?? 'triangle-list',
           indexFormat: entry.mesh.indexFormat,
           ...optionalVariant(skinProbeVariant),
@@ -476,7 +477,7 @@ function addTransparentSpriteRequests(input: {
   }
 
   for (const entry of input.validated) {
-    const entityShaderId = entry.source.material.materialShaderId;
+    const entityShaderId = entry.source.material.snapshot.materialShaderId;
     if (
       entityShaderId === 'forgeax::sprite' ||
       entityShaderId === 'forgeax::sprite-lit' ||
@@ -494,7 +495,8 @@ function addTransparentSpriteRequests(input: {
       ),
     );
     for (const submesh of entry.mesh.submeshes) {
-      const material = entry.source.materials[submesh.materialSlot] ?? entry.source.material;
+      const material = (entry.source.materials[submesh.materialSlot] ?? entry.source.material)
+        .snapshot;
       if (material.transparent !== true || material.materialShaderId === undefined) continue;
       addRequest({
         requests: input.requests,
@@ -522,7 +524,7 @@ function addShadowRequests(input: {
   readonly internals: RenderSystemInternals;
   readonly pipelineState: PipelineState;
   readonly validated: readonly ValidatedRenderable[];
-  readonly dispatch: readonly DispatchEntry[];
+  readonly dispatch: DispatchList;
 }): void {
   // Recovery has no record context, so it cannot use the context-backed
   // shadowShaderMap. Group the producer dispatch facts directly and warm every
@@ -543,7 +545,8 @@ function addShadowRequests(input: {
   for (const entry of input.validated) {
     for (const submesh of entry.mesh.submeshes) {
       if (!isTriangleTopology(submesh.topology)) continue;
-      const material = entry.source.materials[submesh.materialSlot] ?? entry.source.material;
+      const material = (entry.source.materials[submesh.materialSlot] ?? entry.source.material)
+        .snapshot;
       const shadowDispatches =
         dispatches.get(entry.renderableIndex)?.get(material.materialHandle ?? 0) ?? [];
       for (const dispatch of shadowDispatches.length === 0 ? [undefined] : shadowDispatches) {
@@ -591,7 +594,7 @@ export function prepareRecoveryPipelineReadiness(input: {
   readonly camera: CameraSnapshot;
   readonly standardLighting: StandardTopologyInputValue | undefined;
   readonly validated: readonly ValidatedRenderable[];
-  readonly dispatch: readonly DispatchEntry[];
+  readonly dispatch: DispatchList;
   readonly shadowCastersActive: boolean;
   readonly splitLdrSprite: boolean;
   readonly reflectionFallbackAvailable: boolean;

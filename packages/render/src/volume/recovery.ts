@@ -1,8 +1,9 @@
+import type { VolumetricFogLightKind } from './capability';
 import type { VolumeProjectorTuple } from './temporal';
 
 export interface VolumeSelectedLightFacts {
   readonly entity: number;
-  readonly kind: 'directional' | 'point' | 'spot';
+  readonly kind: VolumetricFogLightKind;
   readonly revision: number;
   readonly shadowTile: number;
   readonly pointLightEntity?: number;

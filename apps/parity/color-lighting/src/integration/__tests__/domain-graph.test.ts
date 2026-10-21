@@ -23,7 +23,7 @@ describe('domain graph integration', () => {
       colorConnections: [{ source: 'hdr-source', destination: 'hdr-destination' }],
     } as never);
 
-    const result = graph.compile({ backendKind: 'null', caps });
+    const result = graph.compile({ caps });
     expect(result.ok).toBe(true);
   });
 
@@ -44,7 +44,7 @@ describe('domain graph integration', () => {
       colorConnections: [{ source: 'source', destination: 'destination' }],
     } as never);
 
-    const result = graph.compile({ backendKind: 'null', caps });
+    const result = graph.compile({ caps });
     expect(result.ok).toBe(false);
     if (result.ok) throw new Error('expected missing color domain');
     expect(result.error.code).toBe('missing-color-domain');

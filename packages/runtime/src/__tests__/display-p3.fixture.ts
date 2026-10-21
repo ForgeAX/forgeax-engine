@@ -1,5 +1,5 @@
-import { HANDLE_CUBE } from '@forgeax/engine-assets-runtime';
 import { World } from '@forgeax/engine-ecs';
+import { createPrimitiveMesh } from '@forgeax/engine-geometry';
 import { color } from '@forgeax/engine-math';
 import {
   Camera,
@@ -24,6 +24,7 @@ import * as webgpu from '@forgeax/engine-rhi-webgpu';
 import { propagateTransforms, Transform } from '@forgeax/engine-scene';
 import { expect } from 'vitest';
 import testQuality from '../../../../scripts/test/render-quality.json' with { type: 'json' };
+import { testAssets } from './helpers/runtime-assets';
 
 export const DISPLAY_P3_SIZE = 64;
 /** One 8-bit step of dither plus one of float rounding. */
@@ -159,14 +160,21 @@ export function createDisplayP3Scene(renderer: Renderer, errors: unknown[]) {
   });
   for (const quadrant of QUADRANTS) {
     const [r, g, b] = linearWorking(quadrant);
-    const material = world.allocSharedRef('MaterialAsset', Materials.unlit([r, g, b, 1]));
+    const material = testAssets(world)
+      .create(Materials.unlit([r, g, b, 1]))
+      .unwrap();
     world
       .spawn(
         {
           component: Transform,
           data: { pos: [quadrant.center[0], quadrant.center[1], 0], scale: [1.9, 1.9, 0.5] },
         },
-        { component: MeshFilter, data: { assetHandle: HANDLE_CUBE } },
+        {
+          component: MeshFilter,
+          data: {
+            assetHandle: testAssets(world).create(createPrimitiveMesh('cube').unwrap()).unwrap(),
+          },
+        },
         { component: MeshRenderer, data: { materials: [material] } },
       )
       .unwrap();

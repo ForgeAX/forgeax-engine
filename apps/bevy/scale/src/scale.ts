@@ -16,13 +16,17 @@ import {
   type EntityHandle,
   type World,
 } from '@forgeax/engine-ecs';
-import { HANDLE_CUBE } from '@forgeax/engine-assets-runtime';
+
 import { Transform } from '@forgeax/engine-scene';
 import { Camera, DirectionalLight, MeshFilter, MeshRenderer } from '@forgeax/engine-render';
 import { perspective } from '@forgeax/engine-render';
 import { Materials } from '@forgeax/engine-render';
-import type { MaterialAsset } from '@forgeax/engine-runtime';
+
 import { quat } from '@forgeax/engine-math';
+import { AssetRegistry } from '@forgeax/engine-assets-runtime';
+
+import { createPrimitiveMesh } from '@forgeax/engine-geometry';
+
 
 // A compact range makes one full reverse + axis cycle observable within CI's
 // 100-frame smoke budget while retaining Bevy's bounded per-axis semantics.
@@ -40,10 +44,12 @@ export const Scaling = defineComponent('Scaling', {
 
 /** Build Bevy's scale scene: rotated cube, directional light, and camera. */
 export function buildScaleWorld(world: World): void {
-  const cubeMaterial = world.allocSharedRef<'MaterialAsset', MaterialAsset>(
-    'MaterialAsset',
-    Materials.standard({ baseColor: [0.9, 0.9, 0.9, 1] }),
-  );
+const sceneAssets = world.assets;
+if (!(sceneAssets instanceof AssetRegistry)) throw new Error('Scene requires its runtime asset owner');
+
+const primitiveCube = sceneAssets.create(createPrimitiveMesh('cube').unwrap()).unwrap();
+
+  const cubeMaterial = sceneAssets.create(Materials.standard({ baseColor: [0.9, 0.9, 0.9, 1] })).unwrap();
   const cubeQuat = quat.eulerY(Math.PI / 4);
   world.spawn(
     {
@@ -54,7 +60,7 @@ export function buildScaleWorld(world: World): void {
         scale: [1, 1, 1],
       },
     },
-    { component: MeshFilter, data: { assetHandle: HANDLE_CUBE } },
+    { component: MeshFilter, data: { assetHandle: primitiveCube } },
     { component: MeshRenderer, data: { materials: [cubeMaterial] } },
     {
       component: Scaling,

@@ -1,5 +1,7 @@
+import { AssetRegistry } from '@forgeax/engine/assets-runtime';
+import { createPrimitiveMesh } from '@forgeax/engine/geometry';
 import { CheckList, defineFeature } from '../../lab/feature';
-import { MESH, spawnMesh, spawnStage, standard } from '../../lab/stage';
+import { spawnMesh, spawnStage, standard } from '../../lab/stage';
 import { createLabComputeFeature, LAB_COMPUTE_PASS } from './support/compute-feature';
 
 const IDENTITY = 'feature-lab::render-feature-injection';
@@ -15,8 +17,14 @@ export default defineFeature({
   expect:
     "All checks pass: inspect().features lists the identity, featureDiagnostics reports it 'active' with no error, and the per-frame pass list contains the feature pass next to the Standard passes.",
   async setup({ app, world, frames }) {
+    const primitiveAssets = world.assets;
+    if (!(primitiveAssets instanceof AssetRegistry))
+      throw new Error('Scene requires its runtime asset owner');
+
+    const stageCube = primitiveAssets.create(createPrimitiveMesh('cube').unwrap()).unwrap();
+
     spawnStage(world);
-    spawnMesh(world, MESH.cube, standard(world, { baseColor: [0.2, 0.6, 1, 1] }), {
+    spawnMesh(world, stageCube, standard(world, { baseColor: [0.2, 0.6, 1, 1] }), {
       pos: [0, 0.5, 0],
     });
     await frames(3);

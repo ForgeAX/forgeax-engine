@@ -6,8 +6,8 @@ import {
   CameraView,
   createRenderPublisher,
   type FramebufferSnapshotRegion,
-  type FrameDomainObservation,
   type FrameReceipt,
+  type FrameReceiptObservation,
   Materials,
   MeshFilter,
   MeshRenderer,
@@ -28,10 +28,13 @@ import * as webgpu from '@forgeax/engine-rhi-webgpu';
 import { propagateTransforms, Transform } from '@forgeax/engine-scene';
 import { expect } from 'vitest';
 import testQuality from '../../../../scripts/test/render-quality.json' with { type: 'json' };
+import { testAssets } from './helpers/runtime-assets';
 import { renderValue } from './standard-gbuffer-replay.fixture';
 
 /** Square canvas; the orthographic display camera maps one world unit to 16 pixels. */
 export const SNAPSHOT_CANVAS = 128;
+type FrameDomainObservation = NonNullable<FrameReceiptObservation['observations']>[number];
+
 const SNAPSHOT = 32;
 const RED = [1, 0.02, 0.01, 1] as const;
 const BLUE = [0.01, 0.03, 1, 1] as const;
@@ -195,8 +198,10 @@ function buildSnapshotScene(
     readonly identity: { readonly source: string; readonly epoch: number };
   },
 ): SnapshotScene {
-  const world = new World();
-  const mesh = world.allocSharedRef('MeshAsset', createBoxGeometry(2, 2, 2).unwrap());
+  const world = new World(publication === undefined ? {} : { assets: publication.assets });
+  const mesh = testAssets(world)
+    .create(createBoxGeometry(2, 2, 2).unwrap())
+    .unwrap();
   const box = (x: number, y: number, material: unknown) =>
     world
       .spawn(
@@ -205,7 +210,13 @@ function buildSnapshotScene(
         { component: MeshRenderer, data: { materials: [material as never] } },
       )
       .unwrap();
-  const source = box(-2, 2, world.allocSharedRef('MaterialAsset', Materials.unlit([...RED])));
+  const source = box(
+    -2,
+    2,
+    testAssets(world)
+      .create(Materials.unlit([...RED]))
+      .unwrap(),
+  );
   const quadPositions = [
     [2, 2],
     [-2, -2],
@@ -213,14 +224,13 @@ function buildSnapshotScene(
   ] as const;
   for (const [index, texture] of quadTextures.entries()) {
     const [x, y] = required(quadPositions[index]);
-    const sourceRef = world.allocSharedRef('RenderTargetTextureSource', texture as never);
+    const sourceRef = { source: texture as never };
     box(
       x,
       y,
-      world.allocSharedRef(
-        'MaterialAsset',
-        Materials.unlit([1, 1, 1, 1], { baseColorTexture: sourceRef as never }),
-      ),
+      testAssets(world)
+        .create(Materials.unlit([1, 1, 1, 1], { baseColorTexture: sourceRef as never }))
+        .unwrap(),
     );
   }
   const camera = world
@@ -292,10 +302,9 @@ function buildSnapshotScene(
 }
 
 function recolorSource(scene: SnapshotScene, color: readonly number[]) {
-  const material = scene.world.allocSharedRef(
-    'MaterialAsset',
-    Materials.unlit([...color] as [number, number, number, number]),
-  );
+  const material = testAssets(scene.world)
+    .create(Materials.unlit([...color] as [number, number, number, number]))
+    .unwrap();
   scene.world.set(scene.source, MeshRenderer, { materials: [material] }).unwrap();
 }
 

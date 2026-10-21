@@ -231,8 +231,6 @@ describe('single-layer medium graph producer pair', () => {
       view: undefined,
       currentTexture: undefined,
       clear: [0, 0, 0, 1],
-      geometryColorResolveView: null,
-      ldrSpriteColorView: null,
     } as unknown as RenderPipelineFrame;
     const compiled = graph.compile({ device, surfaceSize: { width: 1, height: 1 } });
     expect(compiled.ok).toBe(true);

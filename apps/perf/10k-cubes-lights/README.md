@@ -5,7 +5,7 @@ This is one parameterized `engine-performance` pressure consumer. Its no-argumen
 | Fact | Fixed contract |
 |:--|:--|
 | Cubes | `10,000` individually queryable entities, each with `Transform`, `MeshFilter`, and `MeshRenderer` |
-| Shared assets | Built-in `HANDLE_CUBE` and one shared standard `MaterialAsset` handle |
+| Shared assets | One unit-cube Mesh and one standard Material handle created in the App asset registry |
 | Distribution | Uniform PRNG samples in `[-24,24] x [-16,16] x [-24,24]` |
 | Seed | `0x010c0b35` (`PERF_WORKLOAD_SEED`, version `1`) |
 | Camera | Transform at the exact volume center `[0,0,0]`, rotating continuously in place |
@@ -88,7 +88,7 @@ pnpm --filter @forgeax/perf-10k-cubes-lights compare:browser
 
 The command serves the production Vite bundle and runs Three.js `0.184.0`
 (`WebGPURenderer`) beside the ForgeaX page in fresh Chrome contexts. Both pages
-use the same seed, bounds, camera law, `BoxGeometry`/`HANDLE_CUBE` dimensions,
+use the same seed, bounds, camera law, unit-cube dimensions,
 standard-PBR material parameters, `32` clustered punctual lights, viewport,
 warm-up, and measured frame count. The default distribution is `16 PointLight
 + 16 SpotLight` only to preserve light-kind parity with Three.js; ForgeaX

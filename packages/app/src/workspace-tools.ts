@@ -1,4 +1,5 @@
 import type { PackProgramSource } from '@forgeax/engine-pack/runtime';
+import type { PackDraftRequest } from '@forgeax/engine-pack/source';
 import {
   defineTool,
   type ToolContribution,
@@ -36,9 +37,12 @@ function workspaceHintText(value: unknown): string {
 }
 
 /** A serializable projection of existing owners, never a second state store. */
-export function snapshotEngineWorkspace(runtime: EngineWorkspaceRuntime, catalogEpoch = 0) {
+export function snapshotEngineWorkspace(
+  runtime: EngineWorkspaceRuntime,
+  catalogEpoch = 0,
+  preview = runtime.preview,
+) {
   const opened = runtime.project;
-  const preview = runtime.preview;
   const target = (value: NonNullable<typeof opened>['target']) => {
     if (!value) return null;
     const { surface: _surface, ...identity } = value;
@@ -337,7 +341,7 @@ export function createEngineWorkspaceTools(
             throw new TypeError(`workspace requires positive ${name}`);
           return value;
         };
-        await runtime.openPreview({
+        const preview = await runtime.openPreview({
           project: opened.project,
           projectHandle: opened.handle,
           asset,
@@ -345,7 +349,7 @@ export function createEngineWorkspaceTools(
           height: extent('height', 720),
           signal: context.signal,
         });
-        return snapshotEngineWorkspace(runtime);
+        return snapshotEngineWorkspace(runtime, 0, preview);
       },
     },
     'preview.close': {
@@ -412,6 +416,59 @@ export function createEngineWorkspaceTools(
           signal: context.signal,
         });
         return { target: owner.target };
+      },
+    },
+    'preview.display.get': {
+      summary: 'Read the identified resource preview display capabilities and current settings.',
+      async run(args, context) {
+        const owner = preview(args);
+        if (!owner.display)
+          throw new EngineWorkspaceError(
+            'engine-workspace-capability-unavailable',
+            'A resource preview display plugin',
+          );
+        const result = await owner.display.get({ signal: context.signal });
+        if (owner !== preview(args))
+          throw new EngineWorkspaceError(
+            'engine-workspace-target-stale',
+            'The same preview target',
+          );
+        return result;
+      },
+    },
+    'preview.display.set': {
+      summary: 'Change display geometry only on the identified resource preview.',
+      properties: {
+        mode: { enum: ['material', 'wireframe'] },
+        collision: { type: 'boolean' },
+        bounds: { type: 'boolean' },
+      },
+      async run(args, context) {
+        const owner = preview(args);
+        if (!owner.display)
+          throw new EngineWorkspaceError(
+            'engine-workspace-capability-unavailable',
+            'A resource preview display plugin',
+          );
+        if (args.mode !== undefined && args.mode !== 'material' && args.mode !== 'wireframe')
+          throw new TypeError('Display mode must be material or wireframe');
+        for (const key of ['collision', 'bounds'])
+          if (args[key] !== undefined && typeof args[key] !== 'boolean')
+            throw new TypeError(`${key} must be boolean`);
+        const result = await owner.display.set(
+          {
+            ...(args.mode === 'material' || args.mode === 'wireframe' ? { mode: args.mode } : {}),
+            ...(typeof args.collision === 'boolean' ? { collision: args.collision } : {}),
+            ...(typeof args.bounds === 'boolean' ? { bounds: args.bounds } : {}),
+          },
+          { signal: context.signal },
+        );
+        if (owner !== preview(args))
+          throw new EngineWorkspaceError(
+            'engine-workspace-target-stale',
+            'The same preview target',
+          );
+        return result;
       },
     },
     'preview.capture': {
@@ -530,6 +587,37 @@ export function createEngineWorkspaceTools(
         });
         if (runtime.project !== opened) throw new Error('engine workspace inspection became stale');
         return { project: opened.project, inspection };
+      },
+    };
+  }
+  const authorPack = runtime.authorPack;
+  if (authorPack) {
+    handlers['asset.source.draft'] = {
+      summary:
+        'Edit a memory Pack draft, explicitly generate its preview, or atomically save its source.',
+      required: ['projectId', 'request'],
+      properties: {
+        request: { type: 'object', additionalProperties: true },
+        previewTargetId: { type: 'string' },
+      },
+      async run(args, context) {
+        const opened = project(args);
+        if (args.request === null || typeof args.request !== 'object')
+          throw new TypeError('A Pack draft request is required');
+        const result = await authorPack({
+          ...opened,
+          request: args.request as PackDraftRequest,
+          ...(typeof args.previewTargetId === 'string'
+            ? { previewTargetId: args.previewTargetId }
+            : {}),
+          signal: context.signal,
+        });
+        if (runtime.project !== opened)
+          throw new EngineWorkspaceError(
+            'engine-workspace-project-stale',
+            'The same project after authoring',
+          );
+        return result;
       },
     };
   }
@@ -761,10 +849,12 @@ export function createEngineWorkspaceTools(
               'assets.list',
               'assets.search',
               'asset.inspect',
+              'asset.source.draft',
               'scene.tree.get',
               'entity.inspect',
               'target.pick',
               'camera.get',
+              'preview.display.get',
               'preview.capture',
               'runtime-pack.inspect',
               'runtime-pack.snapshot',

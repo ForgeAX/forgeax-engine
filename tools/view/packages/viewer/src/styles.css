@@ -298,6 +298,11 @@ body {
   --fx-edge-drawer-z: 1000;
 }
 
+/* Retained native frames and their asset controls share one stacking context. */
+.fx-view-dockview-host[data-forgeax-view-document-surface] {
+  isolation: auto;
+}
+
 /* Map dockview theme vars to ForgeaX tokens (interface DockShell.css `.fx-dockshell`).
    Dockview 6.6.1 applies `theme.className` on `.dv-shell` only (see dockview-core updateTheme),
    so overrides must target the shell — not `.fx-view-dockview` — to beat `.dockview-theme-abyss`. */
@@ -1212,3 +1217,6 @@ body {
   align-items: center;
   gap: var(--fx-ref-space-4);
 }
+
+.fx-resource-page-status { position: absolute; inset: 0; z-index: 3; display: flex; align-items: center; justify-content: center; padding: 24px; background: var(--fx-color-surface-canvas); color: var(--fx-color-text-primary); }
+.fx-resource-page-status[data-phase="failed"] { inset: auto 16px 16px; padding: 12px; justify-content: flex-start; border: 1px solid currentColor; }

@@ -1,4 +1,7 @@
+import { createPrimitiveMesh, packInterleavedVertexAttributes } from '@forgeax/engine-geometry';
+import type { AssetHandle } from '@forgeax/engine-types';
 import testQuality from '../../../../scripts/test/render-quality.json' with { type: 'json' };
+import { testAssets } from './helpers/runtime-assets';
 // composite-skybox-cross-world.browser.test.ts
 //
 // feat-20260709-editor-world-partition (ENGINE-fix-round2): browser-mode
@@ -30,7 +33,6 @@ import testQuality from '../../../../scripts/test/render-quality.json' with { ty
 // composite frames, (b) the composited frame is neither empty nor uniformly
 // black (skybox sky + lit geometry both reach the swap-chain).
 
-import { HANDLE_CUBE } from '@forgeax/engine-assets-runtime';
 import { World } from '@forgeax/engine-ecs';
 import { halfFloat } from '@forgeax/engine-math';
 import {
@@ -44,7 +46,7 @@ import {
   TONEMAP_REINHARD_EXTENDED,
 } from '@forgeax/engine-render';
 import { Transform } from '@forgeax/engine-scene';
-import type { EquirectAsset, Handle, MaterialAsset, MeshAsset } from '@forgeax/engine-types';
+import type { EquirectAsset, MeshAsset } from '@forgeax/engine-types';
 import { afterEach, describe, expect, it } from 'vitest';
 import { page } from 'vitest/browser';
 import { constructRuntimeRendererHost } from '../renderer-host';
@@ -89,14 +91,16 @@ function brightEquirect(width = 8, height = 4): EquirectAsset {
 // editor gizmo handle: a user-tier (slot >= BUILTIN_BASE) mesh that lives in
 // the CAMERA-owner world, not the resource-owner world.
 function gizmoMesh(): MeshAsset {
-  const v = (x: number, y: number, z: number): number[] => [x, y, z, 0, 0, 1, 0, 0, 0, 0, 1, 1];
   const positions = new Float32Array([-0.3, -0.3, 0, 0.3, -0.3, 0, 0, 0.4, 0]);
   const normals = new Float32Array([0, 0, 1, 0, 0, 1, 0, 0, 1]);
   const uvs = new Float32Array([0, 0, 1, 0, 0.5, 1]);
   const tangents = new Float32Array([0, 0, 1, 1, 0, 0, 1, 1, 0, 0, 1, 1]);
   return {
     kind: 'mesh',
-    vertices: new Float32Array([...v(-0.3, -0.3, 0), ...v(0.3, -0.3, 0), ...v(0, 0.4, 0)]),
+    vertices: packInterleavedVertexAttributes(
+      { position: positions, normal: normals, uv: uvs, tangent: tangents },
+      3,
+    ).unwrap().vertices,
     indices: new Uint16Array([0, 1, 2]),
     attributes: { position: positions, normal: normals, uv: uvs, tangent: tangents },
     submeshes: [
@@ -113,21 +117,28 @@ function litBox(
   x: number,
   y: number,
 ): void {
-  const matHandle = world.allocSharedRef<'MaterialAsset', MaterialAsset>('MaterialAsset', {
-    kind: 'material',
-    passes: [
-      {
-        name: 'Forward',
-        program: { module: 'forgeax::default-standard-pbr' },
-        renderState: { tags: { LightMode: 'Forward' }, queue: 2000 },
-      },
-    ],
-    values: { baseColor: [color[0], color[1], color[2]], metallic: 0, roughness: 0.5 },
-  });
+  const matHandle = testAssets(world)
+    .create({
+      kind: 'material',
+      passes: [
+        {
+          name: 'Forward',
+          program: { module: 'forgeax::default-standard-pbr' },
+          renderState: { tags: { LightMode: 'Forward' }, queue: 2000 },
+        },
+      ],
+      values: { baseColor: [color[0], color[1], color[2]], metallic: 0, roughness: 0.5 },
+    })
+    .unwrap();
   world
     .spawn(
       { component: Transform, data: { pos: [x, y, 0], scale: [1.2, 1.2, 1.2] } },
-      { component: MeshFilter, data: { assetHandle: HANDLE_CUBE } },
+      {
+        component: MeshFilter,
+        data: {
+          assetHandle: testAssets(world).create(createPrimitiveMesh('cube').unwrap()).unwrap(),
+        },
+      },
       { component: MeshRenderer, data: { materials: [matHandle] } },
     )
     .unwrap();
@@ -389,21 +400,20 @@ describe.skipIf(!browserReady)('composite + skybox + cross-world mesh (ENGINE-fi
     // The editor gizmo: a user-tier mesh handle that lives in editorWorld's
     // sharedRefs (slot >= BUILTIN_BASE). Under defect 2 the record stage
     // resolves this against sceneWorld and fires asset-not-registered.
-    const gizmoHandle: Handle<'MeshAsset', 'shared'> = editorWorld.allocSharedRef<
-      'MeshAsset',
-      MeshAsset
-    >('MeshAsset', gizmoMesh());
-    const gizmoMat = editorWorld.allocSharedRef<'MaterialAsset', MaterialAsset>('MaterialAsset', {
-      kind: 'material',
-      passes: [
-        {
-          name: 'Forward',
-          program: { module: 'forgeax::default-standard-pbr' },
-          renderState: { tags: { LightMode: 'Forward' }, queue: 2000 },
-        },
-      ],
-      values: { baseColor: [0.95, 0.85, 0.1], metallic: 0, roughness: 0.6 },
-    });
+    const gizmoHandle: AssetHandle<'mesh'> = testAssets(editorWorld).create(gizmoMesh()).unwrap();
+    const gizmoMat = testAssets(editorWorld)
+      .create({
+        kind: 'material',
+        passes: [
+          {
+            name: 'Forward',
+            program: { module: 'forgeax::default-standard-pbr' },
+            renderState: { tags: { LightMode: 'Forward' }, queue: 2000 },
+          },
+        ],
+        values: { baseColor: [0.95, 0.85, 0.1], metallic: 0, roughness: 0.6 },
+      })
+      .unwrap();
     editorWorld
       .spawn(
         { component: Transform, data: { pos: [-1.8, 1.4, 0] } },
@@ -414,7 +424,7 @@ describe.skipIf(!browserReady)('composite + skybox + cross-world mesh (ENGINE-fi
 
     // sceneWorld (resourceOwner, index 1): skybox (equirect) + lit boxes.
     const sceneWorld = new World();
-    const equirect = sceneWorld.allocSharedRef('EquirectAsset', brightEquirect());
+    const equirect = testAssets(sceneWorld).create(brightEquirect()).unwrap();
     sceneWorld.spawn({ component: Skylight, data: { equirect, intensity: 1.0 } });
     sceneWorld.spawn({
       component: SkyboxBackground,

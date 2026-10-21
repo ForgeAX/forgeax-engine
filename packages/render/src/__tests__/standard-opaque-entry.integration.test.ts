@@ -1,5 +1,5 @@
-import { HANDLE_CUBE } from '@forgeax/engine-assets-runtime';
 import { World } from '@forgeax/engine-ecs';
+import { createBoxGeometry } from '@forgeax/engine-geometry';
 import type { RenderPipelineDescriptor } from '@forgeax/engine-rhi';
 import { RhiNullDevice, rhi } from '@forgeax/engine-rhi-null';
 import { registerPropagateTransforms, Transform } from '@forgeax/engine-scene';
@@ -51,7 +51,9 @@ async function fragmentEntriesForOpaqueStandard(marker: string): Promise<string[
   try {
     const initialized = await renderer.initialization;
     if (!initialized.ok) throw new Error(JSON.stringify(initialized.error));
-    const world = new World();
+    const assets = renderer.assetRegistry;
+    const world = new World({ assets });
+    const mesh = assets.create(createBoxGeometry(1, 1, 1).unwrap()).unwrap();
     const attachment = renderer.attach(world);
     if (!attachment.ok) throw attachment.error;
     const attached = attachment.value;
@@ -71,14 +73,11 @@ async function fragmentEntriesForOpaqueStandard(marker: string): Promise<string[
         },
       )
       .unwrap();
-    const material = world.allocSharedRef(
-      'MaterialAsset',
-      Materials.standard({ baseColor: [1, 1, 1, 1] }),
-    );
+    const material = assets.create(Materials.standard({ baseColor: [1, 1, 1, 1] })).unwrap();
     world
       .spawn(
         { component: Transform, data: {} },
-        { component: MeshFilter, data: { assetHandle: HANDLE_CUBE } },
+        { component: MeshFilter, data: { assetHandle: mesh } },
         { component: MeshRenderer, data: { materials: [material] } },
       )
       .unwrap();

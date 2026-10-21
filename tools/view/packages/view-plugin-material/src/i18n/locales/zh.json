@@ -29,6 +29,13 @@
     "previewEmpty": "没有材质预览",
     "previewEmptyDescription": "请从内容浏览器打开材质资产。",
     "previewCapabilityMissing": "Engine 没有为该材质返回预览目标。",
-    "restoreView": "复原视角"
+    "restoreView": "复原视角",
+    "restoreViewDescription": "恢复此材质预览打开时的视角。",
+    "statsTitle": "材质统计", "valueUnavailable": "不可用", "yes": "是", "no": "否",
+    "compilerUnavailable": "编译统计不可用",
+    "stats": {
+      "passCount": "Pass 数量", "parameterCount": "参数数量", "textureParameterCount": "纹理参数数量",
+      "program": "程序", "blend": "混合", "cullMode": "剔除模式", "depthCompare": "深度比较", "depthWriteEnabled": "深度写入"
+    }
   }
 }

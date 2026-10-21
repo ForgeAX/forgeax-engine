@@ -1,8 +1,12 @@
-import { HANDLE_QUAD } from '@forgeax/engine-assets-runtime';
+
 import type { EntityHandle, World } from '@forgeax/engine-ecs';
 import type { MaterialAsset } from '@forgeax/engine-types';
 import { BLOOM_DISABLED, Camera, Materials, MeshFilter, MeshRenderer, orthographic, TONEMAP_REINHARD_EXTENDED } from '@forgeax/engine/render';
 import { Transform } from '@forgeax/engine-scene';
+import { AssetRegistry } from '@forgeax/engine/assets-runtime';
+
+import { createPrimitiveMesh } from '@forgeax/engine/geometry';
+
 
 const ORTHO = { left: -640, right: 640, bottom: -360, top: 360, near: 0.1, far: 2000 } as const;
 
@@ -17,6 +21,11 @@ function material(color: readonly [number, number, number, number]): MaterialAss
 }
 
 export function buildBloom2dWorld(world: World): Bloom2dScene {
+const sceneAssets = world.assets;
+if (!(sceneAssets instanceof AssetRegistry)) throw new Error('Scene requires its runtime asset owner');
+
+const primitiveQuad = sceneAssets.create(createPrimitiveMesh('quad').unwrap()).unwrap();
+
   const colors: readonly [readonly [number, number, number, number], readonly [number, number, number], number, number][] = [
     [[8, 0.05, 0.02, 1], [-360, 135, 0], 170, 1],
     [[0.05, 7, 0.08, 1], [0, 0, 0], 150, 1],
@@ -28,10 +37,10 @@ export function buildBloom2dWorld(world: World): Bloom2dScene {
 
   let brightCount = 0;
   for (const [color, pos, size, bright] of colors) {
-    const mat = world.allocSharedRef<'MaterialAsset', MaterialAsset>('MaterialAsset', material(color));
+    const mat = sceneAssets.create(material(color)).unwrap();
     world.spawn(
       { component: Transform, data: { pos, quat: [0, 0, 0, 1], scale: [size, size, 1] } },
-      { component: MeshFilter, data: { assetHandle: HANDLE_QUAD } },
+      { component: MeshFilter, data: { assetHandle: primitiveQuad } },
       { component: MeshRenderer, data: { materials: [mat] } },
     );
     brightCount += bright;

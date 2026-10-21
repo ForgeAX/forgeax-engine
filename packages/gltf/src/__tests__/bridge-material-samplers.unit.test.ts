@@ -1,4 +1,4 @@
-import type { Handle } from '@forgeax/engine-types';
+import type { AssetHandle } from '@forgeax/engine-types';
 import { describe, expect, it } from 'vitest';
 import { toMaterialAsset } from '../bridge.js';
 import type { GltfMaterialIr } from '../parse-gltf.js';
@@ -47,14 +47,14 @@ describe('glTF material sampler mapping', () => {
           [2, 102],
           [3, 103],
           [4, 104],
-        ]) as unknown as ReadonlyMap<number, Handle<'TextureAsset', 'shared'>>,
+        ]) as unknown as ReadonlyMap<number, AssetHandle<'texture'>>,
         samplerHandles: new Map([
           [10, 200],
           [11, 201],
           [12, 202],
           [13, 203],
           [14, 204],
-        ]) as unknown as ReadonlyMap<number, Handle<'SamplerAsset', 'shared'>>,
+        ]) as unknown as ReadonlyMap<number, AssetHandle<'sampler'>>,
       },
     );
     const values = asset.values as Record<string, { sampler?: unknown }>;

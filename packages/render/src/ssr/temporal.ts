@@ -1,18 +1,19 @@
 import { err, ok, type Result } from '@forgeax/engine-types';
-import type {
-  TemporalFrameBeginInput,
-  TemporalFrameCandidate,
-  TemporalFrameConsumerId,
-  TemporalFrameCoordinator,
-  TemporalFrameError,
-  TemporalFramePhases,
-  TemporalFrameReceipt,
-  TemporalFrameStage,
+import {
+  type TemporalFrameBeginInput,
+  type TemporalFrameCandidate,
+  type TemporalFrameConsumerId,
+  type TemporalFrameCoordinator,
+  type TemporalFrameError,
+  type TemporalFramePhases,
+  type TemporalFrameReceipt,
+  type TemporalFrameStage,
+  temporalFrameStageFromError,
 } from '../temporal/frame-coordinator';
+import type { TemporalAttemptState } from '../temporal/taa-history-store';
 import type {
   SsrHistoryCandidate,
   SsrHistoryError,
-  SsrHistoryFailureStage,
   SsrHistoryInspection,
   SsrHistoryOwner,
   SsrHistoryResetReason,
@@ -31,20 +32,11 @@ export interface SsrTemporalExecutionError {
 export interface SsrTemporalInspection {
   readonly sharedEpoch: number;
   readonly consumerIds: readonly TemporalFrameConsumerId[];
-  readonly coordinatorAttempt: 'none' | 'active' | 'committed' | 'aborted';
+  readonly coordinatorAttempt: TemporalAttemptState;
   readonly history: SsrHistoryInspection;
 }
 export type SsrTemporalError = TemporalFrameError | SsrHistoryError | SsrTemporalExecutionError;
 
-function stageFromError(cause: unknown): TemporalFrameStage {
-  if (typeof cause === 'object' && cause !== null && 'stage' in cause) {
-    const stage = (cause as { readonly stage?: unknown }).stage;
-    if (stage === 'build' || stage === 'encode' || stage === 'finish' || stage === 'submit') {
-      return stage;
-    }
-  }
-  return 'submit';
-}
 function coordinatorInput<T>(input: TemporalFrameBeginInput<T>): TemporalFrameBeginInput<T> {
   const consumerIds = input.consumerIds?.includes('ssr')
     ? input.consumerIds
@@ -108,7 +100,7 @@ export class SsrTemporalConsumer<T = unknown> {
     if (!history.ok) return history;
     return committed;
   }
-  abort(candidate: SsrTemporalCandidate<T>, stage: SsrHistoryFailureStage): void {
+  abort(candidate: SsrTemporalCandidate<T>, stage: TemporalFrameStage): void {
     this.history.abortFrame(candidate.history, stage);
     this.coordinator.abort(candidate.temporal, stage);
   }
@@ -125,7 +117,7 @@ export class SsrTemporalConsumer<T = unknown> {
       phases.finish();
       phases.submit();
     } catch (cause) {
-      const stage = stageFromError(cause);
+      const stage = temporalFrameStageFromError(cause);
       this.abort(candidate, stage);
       return err({
         code: 'ssr-temporal-stage-failed',

@@ -102,6 +102,13 @@ describe('external texture host lifecycle on RhiNull', () => {
     expect(imported.kind).toBe('gpu-texture');
     expect(h.resolve(imported.source, false)?.kind).toBe('textureView');
     expect(h.resolve(imported.source, true)?.kind).toBe('textureView');
+    expect(h.resolve(structuredClone(imported.source), false)?.value).toBe(
+      h.resolve(imported.source, false)?.value,
+    );
+    const other = host();
+    expect(other.resolve(structuredClone(imported.source), false)).toBeUndefined();
+    expect(errors.pop()).toMatchObject({ detail: { reason: 'foreign-renderer' } });
+    other.dispose();
     expect(errors).toEqual([]);
   });
 
@@ -201,7 +208,7 @@ describe('external texture host lifecycle on RhiNull', () => {
 
   it('reports a source minted by another renderer as foreign once', () => {
     const h = host();
-    const foreign = createExternalTextureSource();
+    const foreign = createExternalTextureSource('foreign-renderer', 1);
     expect(h.resolve(foreign, false)).toBeUndefined();
     expect(h.resolve(foreign, false)).toBeUndefined();
     expect(errors).toHaveLength(1);

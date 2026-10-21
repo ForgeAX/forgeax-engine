@@ -29,6 +29,12 @@ function target() {
 describe('RenderTarget material source', () => {
   it('binds one target generation and one exact view subresource', () => {
     const binding = createRenderTargetMaterialSource(target(), descriptor, {
+      source: {
+        kind: 'render-texture-source',
+        owner: crypto.randomUUID(),
+        id: 1,
+        source: 'target',
+      },
       aspect: 'color',
       dimension: '2d',
       mipLevel: 2,
@@ -53,6 +59,12 @@ describe('RenderTarget material source', () => {
 
   it('rejects a wrong shape, format, view, or stale generation before binding', () => {
     const binding = createRenderTargetMaterialSource(target(), descriptor, {
+      source: {
+        kind: 'render-texture-source',
+        owner: crypto.randomUUID(),
+        id: 1,
+        source: 'target',
+      },
       aspect: 'color',
       dimension: '2d',
       mipLevel: 0,
@@ -77,6 +89,12 @@ describe('RenderTarget material source', () => {
 
   it('uses the renderer-owned physical view resolver before material bind assembly', () => {
     const binding = createRenderTargetMaterialSource(target(), descriptor, {
+      source: {
+        kind: 'render-texture-source',
+        owner: crypto.randomUUID(),
+        id: 1,
+        source: 'target',
+      },
       aspect: 'color',
       dimension: '2d',
       mipLevel: 0,

@@ -8,7 +8,6 @@
 export type {
   BasisSourceInspection,
   BasisSourceMeta,
-  TranscodedBasisTexture,
   TranscodedMip,
   TranscodedTexture,
 } from './basis-transcoder.js';
@@ -26,6 +25,7 @@ export type {
   TranscodeChannels,
   TranscodeModel,
   TranscodeSource,
+  TranscodeTargetFormat,
 } from './transcode.js';
 export { selectTranscodeTarget } from './transcode.js';
 export type { BasisWasmHost } from './wasm/basis-types.js';

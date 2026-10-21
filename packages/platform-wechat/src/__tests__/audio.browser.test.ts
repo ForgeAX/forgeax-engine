@@ -1,3 +1,5 @@
+import { AssetRegistry } from '@forgeax/engine-assets-runtime';
+import { audioContribution } from '@forgeax/engine-audio';
 import type { Platform, PlatformEvent } from '@forgeax/engine-platform';
 import { type AudioClipAsset, ok } from '@forgeax/engine-types';
 import { expect, it, vi } from 'vitest';
@@ -84,11 +86,13 @@ it('reuses real decode, gain, panner and source nodes through native lifecycle a
     } as Platform,
     { onError: (error) => errors.push(error) },
   );
-  const clip = tone();
+  const assets = new AssetRegistry();
+  assets.installDecoder(audioContribution.kind, audioContribution.decoder);
+  const clip = assets.create(tone()).unwrap();
   try {
     expect(acquire).not.toHaveBeenCalled();
     backend.setListenerPose(pose);
-    backend.play(1, clip, {
+    backend.play(1, assets, clip, {
       loop: true,
       volume: 0.5,
       spatialBlend: 1,
@@ -115,7 +119,7 @@ it('reuses real decode, gain, panner and source nodes through native lifecycle a
     visible = true;
     for (const listener of touch) listener();
     await expect.poll(() => context.state).toBe('running');
-    backend.play(2, clip, { loop: false, volume: 0, spatialBlend: 0, bus: 'sfx' });
+    backend.play(2, assets, clip, { loop: false, volume: 0, spatialBlend: 0, bus: 'sfx' });
     await expect.poll(() => backend.getActiveSourceCount()).toBe(2);
     expect(decode).toHaveBeenCalledTimes(1);
     backend.stop(1);
@@ -132,6 +136,7 @@ it('reuses real decode, gain, panner and source nodes through native lifecycle a
     expect(errors).toEqual([]);
   } finally {
     backend.destroy();
+    assets.dispose();
     if (context.state !== 'closed') await context.close();
   }
 });

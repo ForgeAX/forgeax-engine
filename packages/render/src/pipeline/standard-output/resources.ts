@@ -1,5 +1,5 @@
 import { err, ok, type Result, RhiError, type RhiQueue } from '@forgeax/engine-rhi';
-import { toShared } from '@forgeax/engine-types';
+import type { AssetHandle } from '@forgeax/engine-types';
 import type { RenderResourceScope } from '../../publication/resource-scope';
 import type { RenderFrameState } from '../../record/frame-snapshot';
 import type { RenderSystemInternals } from '../../record/render-context';
@@ -76,9 +76,8 @@ export function prepareStandardOutputResources(
   if (output !== undefined && output.colorLut > 0 && output.colorLutStrength > 0) {
     const lut = prepareStandardLutGpu({
       world,
-      handle: toShared<'TextureAsset'>(output.colorLut),
+      handle: output.colorLut as AssetHandle<'texture'>,
       strength: output.colorLutStrength,
-      assets: internals.assets,
       gpuStore: internals.gpuStore,
       device: internals.device,
     });
@@ -223,9 +222,8 @@ export function stageStandardOutputStates(
     frameState.pendingStandardLutGpuResources ?? frameState.standardLutGpuResources;
   if (wantsLut && lutResources !== undefined) {
     const prepared = prepareStandardLutCandidate(lutState, {
-      // sourceKey is the Catalog-owned identity returned by the same
-      // preparation that built the live LUT bind group; numeric handles do
-      // not cross the inspection boundary.
+      // The same managed source identity names the prepared binding and
+      // committed inspection state; residency owns its changing GPU allocation.
       resident: lutResources.sourceKey,
       sourceKey: lutResources.sourceKey,
       generation: lutState.targetGeneration,

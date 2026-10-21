@@ -104,7 +104,7 @@ function lastEpoch(log: FieldRangeLog): number {
 }
 
 /** Sort and coalesce overlapping or touching ranges. */
-export function mergeArrayRanges(ranges: ArrayRange[]): ArrayRange[] {
+function mergeArrayRanges(ranges: ArrayRange[]): ArrayRange[] {
   if (ranges.length < 2) return ranges;
   ranges.sort((a, b) => a.start - b.start);
   const merged: ArrayRange[] = [];

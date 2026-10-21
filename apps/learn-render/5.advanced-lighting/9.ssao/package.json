@@ -19,7 +19,9 @@
   },
   "forgeax": {
     "rhiDebug": {
-      "riskFamilies": ["screen-space-post"]
+      "riskFamilies": [
+        "screen-space-post"
+      ]
     },
     "smokeInvocation": "pnpm --filter @forgeax/app-learn-render-5-advanced-lighting-9-ssao smoke",
     "metrics": {
@@ -58,7 +60,8 @@
     "@forgeax/engine-runtime": "workspace:*",
     "@forgeax/engine-types": "workspace:*",
     "@forgeax/engine-scene": "workspace:*",
-    "@forgeax/engine-render": "workspace:*"
+    "@forgeax/engine-render": "workspace:*",
+    "@forgeax/engine-geometry": "workspace:*"
   },
   "devDependencies": {
     "@forgeax/engine-rhi-debug": "workspace:*",

@@ -7,7 +7,7 @@ import { decodeCatalogWire } from '@forgeax/engine-pack';
 import type { RuntimeAssetBinding } from '@forgeax/engine-types';
 import { describe, expect, it } from 'vitest';
 import {
-  createAssetRegistry,
+  AssetRegistry,
   createCatalogSource,
   defineAssetKind,
 } from '../../../assets-runtime/src/index.js';
@@ -69,7 +69,7 @@ describe('UI Pack v2 artifact transport', () => {
       };
       next();
     });
-    let registry: ReturnType<typeof createAssetRegistry> | undefined;
+    let registry: AssetRegistry | undefined;
     try {
       plugin.configResolved({ root, command: 'serve', base: '/' });
       plugin.configureServer({
@@ -95,7 +95,7 @@ describe('UI Pack v2 artifact transport', () => {
       const response = await fetch(new URL(accepted.catalogUrl, base));
       expect(response.status).toBe(200);
       const catalog = decodeCatalogWire(await response.json()).unwrap();
-      registry = createAssetRegistry({
+      registry = new AssetRegistry({
         scopeId: accepted.scopeId,
         catalog: createCatalogSource({ entries: catalog }),
         fetcher: (input, init) => fetch(new URL(String(input), base), init),
@@ -105,7 +105,8 @@ describe('UI Pack v2 artifact transport', () => {
       const loaded = await registry.load(guid, uiKind);
       expect(loaded, JSON.stringify(loaded)).toMatchObject({ ok: true });
       if (!loaded.ok) throw loaded.error;
-      expect(loaded.value).toMatchObject({
+      const payload = registry.read(loaded.value).unwrap();
+      expect(payload).toMatchObject({
         guid,
         html,
         css,
@@ -115,7 +116,7 @@ describe('UI Pack v2 artifact transport', () => {
           'icon.svg': { mediaType: 'image/svg+xml', url: expect.any(String) },
         },
       });
-      const resource = loaded.value.resources?.['icon.svg'];
+      const resource = payload.resources?.['icon.svg'];
       if (resource === undefined || !('url' in resource)) throw new Error('missing streamed icon');
       expect(resource).not.toHaveProperty('bytes');
       const iconResponse = await fetch(new URL(resource.url, base));

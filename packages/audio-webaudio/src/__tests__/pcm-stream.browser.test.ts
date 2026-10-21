@@ -1,4 +1,5 @@
-import { createAudioIntentBackend } from '@forgeax/engine-audio';
+import { AssetRegistry } from '@forgeax/engine-assets-runtime';
+import { audioContribution, createAudioIntentBackend } from '@forgeax/engine-audio';
 import { expect, it, vi } from 'vitest';
 import { createHostAudioConsumer } from '../host-audio-consumer';
 import { indexPcmWave } from '../pcm-wave';
@@ -47,6 +48,8 @@ it('streams real Range windows with pause, seek, rate, effects, bus and cancella
   await ctx.resume();
   const consumer = createHostAudioConsumer(new WebAudioEngine({ context: ctx }));
   const requests = vi.spyOn(globalThis, 'fetch');
+  const assets = new AssetRegistry();
+  assets.installDecoder(audioContribution.kind, audioContribution.decoder);
   const backend = createAudioIntentBackend({ emit: (intent) => consumer.consume(intent) });
   try {
     backend.configureBuses([
@@ -55,12 +58,15 @@ it('streams real Range windows with pause, seek, rate, effects, bus and cancella
     ]);
     backend.play(
       1,
-      {
-        kind: 'audio',
-        sourceKey: 'range-tone',
-        mediaType: 'audio/wav',
-        stream: { ...manifest, url: `${location.origin}/__pcm/resume-slow.wav` },
-      },
+      assets,
+      assets
+        .create({
+          kind: 'audio',
+          sourceKey: 'range-tone',
+          mediaType: 'audio/wav',
+          stream: { ...manifest, url: `${location.origin}/__pcm/resume-slow.wav` },
+        })
+        .unwrap(),
       { loop: true, volume: 0.1, spatialBlend: 1, bus: 'voice', paused: true, fromPosition: 1.25 },
     );
     expect(consumer.engine.getPlaybackPosition(1)).toBe(1.25);
@@ -148,6 +154,8 @@ it('fences delayed windows across stop, publication replacement, disposal and by
   await context.resume();
   const engine = new WebAudioEngine({ context });
   const consumer = createHostAudioConsumer(engine);
+  const assets = new AssetRegistry();
+  assets.installDecoder(audioContribution.kind, audioContribution.decoder);
   const backend = createAudioIntentBackend({ emit: (intent) => consumer.consume(intent) });
   const requests = vi.spyOn(globalThis, 'fetch');
   const clip = (suffix: string) => ({
@@ -158,19 +166,20 @@ it('fences delayed windows across stop, publication replacement, disposal and by
   });
   const options = { loop: true, volume: 0.1, spatialBlend: 0, bus: 'music' };
   try {
-    backend.play(1, clip('slow.wav'), options);
+    backend.play(1, assets, assets.create(clip('slow.wav')).unwrap(), options);
     expect(consumer.state().streaming?.pendingReads).toBe(1);
     backend.stop(1);
     await new Promise((resolve) => setTimeout(resolve, 350));
     expect(consumer.state().activeSourceCount).toBe(0);
     expect(consumer.state().streaming?.pendingBytes).toBe(0);
-    backend.play(1, clip('slow.wav'), options);
+    backend.play(1, assets, assets.create(clip('slow.wav')).unwrap(), options);
     const nextRequest = requests.mock.results.length;
-    backend.play(2, clip('tone.wav'), options);
+    backend.play(2, assets, assets.create(clip('tone.wav')).unwrap(), options);
     expect(requests.mock.results[nextRequest]?.type).toBe('return');
     await requests.mock.results[nextRequest]?.value;
     await expect.poll(() => consumer.state().activeSourceCount).toBe(1);
-    expect(engine.getStreamState(1)).toBeUndefined();
+    expect(engine.getStreamState(1)).toBeDefined();
+    await expect.poll(() => consumer.state().activeSourceCount).toBe(2);
     consumer.dispose();
     await new Promise((resolve) => setTimeout(resolve, 350));
     expect(engine.getActiveSourceCount()).toBe(0);

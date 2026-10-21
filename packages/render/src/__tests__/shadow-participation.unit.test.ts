@@ -1,5 +1,6 @@
-import { AssetRegistry, HANDLE_CUBE } from '@forgeax/engine-assets-runtime';
+import { AssetRegistry } from '@forgeax/engine-assets-runtime';
 import { World } from '@forgeax/engine-ecs';
+import { createPrimitiveMesh } from '@forgeax/engine-geometry';
 import { Transform } from '@forgeax/engine-scene';
 import { describe, expect, it } from 'vitest';
 import { MeshFilter } from '../components/mesh-filter';
@@ -9,11 +10,17 @@ import { meshSurfaceFlags } from '../record/mesh-ssbo';
 import { extractFrames } from '../render-system-extract-tail';
 import { RENDERABLE_SOURCE_COMPONENTS } from '../scene/render-source';
 
-function cube(world: World, participation?: { cast: boolean; receive: boolean }): void {
+const BUILTIN_CUBE = createPrimitiveMesh('cube').unwrap();
+
+function cube(
+  world: World,
+  assets: AssetRegistry,
+  participation?: { cast: boolean; receive: boolean },
+): void {
   world
     .spawn(
       { component: Transform, data: {} },
-      { component: MeshFilter, data: { assetHandle: HANDLE_CUBE } },
+      { component: MeshFilter, data: { assetHandle: assets.create(BUILTIN_CUBE).unwrap() } },
       { component: MeshRenderer, data: {} },
       ...(participation === undefined
         ? []
@@ -24,11 +31,12 @@ function cube(world: World, participation?: { cast: boolean; receive: boolean })
 
 describe('ShadowParticipation extraction', () => {
   it('strips shadow-caster dispatch only for cast-disabled entities', () => {
-    const world = new World();
-    cube(world);
-    cube(world, { cast: false, receive: true });
-    cube(world, { cast: true, receive: false });
-    const frame = extractFrames([world], 0, new AssetRegistry({} as never));
+    const assets = new AssetRegistry({ shaderRegistry: {} as never });
+    const world = new World({ assets });
+    cube(world, assets);
+    cube(world, assets, { cast: false, receive: true });
+    cube(world, assets, { cast: true, receive: false });
+    const frame = extractFrames([world], 0, assets);
     const casters = (renderableIndex: number) =>
       frame.dispatch.filter(
         (entry) =>
@@ -48,11 +56,12 @@ describe('ShadowParticipation extraction', () => {
   });
 
   it('marks receive-disabled renderables without touching the others', () => {
-    const world = new World();
-    cube(world);
-    cube(world, { cast: false, receive: true });
-    cube(world, { cast: true, receive: false });
-    const frame = extractFrames([world], 0, new AssetRegistry({} as never));
+    const assets = new AssetRegistry({ shaderRegistry: {} as never });
+    const world = new World({ assets });
+    cube(world, assets);
+    cube(world, assets, { cast: false, receive: true });
+    cube(world, assets, { cast: true, receive: false });
+    const frame = extractFrames([world], 0, assets);
     expect(frame.renderables.map((renderable) => renderable.shadowReceiver)).toEqual([
       undefined,
       undefined,

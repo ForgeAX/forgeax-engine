@@ -23,11 +23,14 @@ describe('live Morph picking', () => {
     for (let i = 0; i < positions.length; i += 3) positions[i] = (positions[i] ?? 0) + 3;
     s.world
       .set(s.entity, MeshFilter, {
-        assetHandle: s.world.allocSharedRef('MeshAsset', {
-          ...staticMesh,
-          attributes: { position: positions },
-          aabb: new Float32Array([2.6, -1, 0, 3.4, 1, 0]),
-        }),
+        assetHandle: s.assets
+          .create({
+            ...staticMesh,
+            attributes: { position: positions },
+            vertices: positions,
+            aabb: new Float32Array([2.6, -1, 0, 3.4, 1, 0]),
+          })
+          .unwrap(),
       })
       .unwrap();
     expect(pick(s).status).toBe('miss');
@@ -53,10 +56,13 @@ describe('live Morph picking', () => {
     const d = s.mesh.morphTargets?.[0]?.position as Float32Array;
     s.world
       .set(s.entity, MeshFilter, {
-        assetHandle: s.world.allocSharedRef('MeshAsset', {
-          ...s.mesh,
-          morphTargets: [{ position: d }, { position: d }],
-        }),
+        assetHandle: s.assets
+          .create({
+            ...s.mesh,
+            morphTargets: [{ position: d }, { position: d }],
+            morphWeights: new Float32Array([0, 0]),
+          })
+          .unwrap(),
       })
       .unwrap();
     s.world.set(s.entity, MorphWeights, { weights: new Float32Array([0.4, -0.2]) }).unwrap();
@@ -144,14 +150,13 @@ it.each([false, true])('queries legal normal/tangent-only Morph geometry (Skin=%
   const count = (s.mesh.attributes.position as Float32Array).length;
   const mesh = {
     ...s.mesh,
+    morphWeights: new Float32Array([0, 0]),
     morphTargets: [
       { normal: new Float32Array(count).fill(0.25) },
       { tangent: new Float32Array((count / 3) * 4) },
     ],
   };
-  s.world
-    .set(s.entity, MeshFilter, { assetHandle: s.world.allocSharedRef('MeshAsset', mesh) })
-    .unwrap();
+  s.world.set(s.entity, MeshFilter, { assetHandle: s.assets.create(mesh).unwrap() }).unwrap();
   s.world.set(s.entity, MorphWeights, { weights: new Float32Array([1, -0.5]) }).unwrap();
   expect(pick(s).status).toBe('hit');
   const pose = currentMeshPositions(s.world, s.entity, mesh);
@@ -163,9 +168,7 @@ it.each([false, true])('queries legal normal/tangent-only Morph geometry (Skin=%
     ...mesh,
     morphTargets: [mesh.morphTargets[0] ?? {}, s.mesh.morphTargets?.[0] ?? {}],
   };
-  s.world
-    .set(s.entity, MeshFilter, { assetHandle: s.world.allocSharedRef('MeshAsset', mixed) })
-    .unwrap();
+  s.world.set(s.entity, MeshFilter, { assetHandle: s.assets.create(mixed).unwrap() }).unwrap();
   s.world.set(s.entity, MorphWeights, { weights: new Float32Array([1, 0.2]) }).unwrap();
   expect(pick(s).status).toBe('miss');
   expect(pick(s, 83.2).status).toBe('hit');

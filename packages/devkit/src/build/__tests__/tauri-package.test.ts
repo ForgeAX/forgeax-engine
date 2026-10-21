@@ -17,7 +17,7 @@ it('embeds unchanged browser resources with one native close owner and no native
     await writeFile(resolve(root, 'assets/game.wasm'), wasm);
     await writeFile(resolve(root, 'pack-index.json'), '[]');
     await writeFile(resolve(root, 'shaders/manifest.json'), '{}');
-    await writeTauriProject({ id: 'test-game', name: 'Test Game' } as ProjectFacts, {}, root);
+    await writeTauriProject({ id: 'test-game', name: 'Test Game' } as ProjectFacts, root);
     expect(new Uint8Array(await readFile(resolve(root, 'web/assets/game.wasm')))).toEqual(wasm);
     expect(await readFile(resolve(root, 'web/index.html'), 'utf8')).toBe(
       '<script src="./assets/game.js"></script>',

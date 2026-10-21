@@ -1,7 +1,6 @@
 import { createApp } from '@forgeax/engine-app/browser';
 import { INPUT_SNAPSHOT_RESOURCE_KEY, type InputSnapshot } from '@forgeax/engine-input';
 import { Time, Update } from '@forgeax/engine-ecs';
-import { unwrapHandle } from '@forgeax/engine-types';
 import { EngineEnvironmentError } from '@forgeax/engine-runtime';
 import { forgeaxBundlerAdapter } from 'virtual:forgeax/bundler';
 import {
@@ -24,6 +23,8 @@ async function bootstrap(target: HTMLCanvasElement): Promise<void> {
   const result = await createApp(target, {}, forgeaxBundlerAdapter());
   if (!result.ok) return console.error('[bevy-rotate-to-cursor] createApp failed:', result.error);
   const app = result.value;
+  const assets = app.assets;
+  if (assets === undefined) throw new Error('App asset service is unavailable');
   const pixels = makeShipPixels();
   const texture = {
     kind: 'texture' as const,
@@ -33,8 +34,8 @@ async function bootstrap(target: HTMLCanvasElement): Promise<void> {
     colorSpace: 'srgb' as const,
     mips: { kind: 'none' as const },
   };
-  const textureHandle = app.world.allocSharedRef('TextureAsset', texture);
-  const scene = buildRotateToCursorWorld(app.world, unwrapHandle(textureHandle));
+  const textureHandle = assets.create(texture).unwrap();
+  const scene = buildRotateToCursorWorld(app.world, textureHandle);
   const cursor = { x: target.width * 0.5, y: target.height * 0.5 };
   app.world.addSystem(Update, {
     name: 'rotate-to-cursor',

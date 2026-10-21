@@ -1,5 +1,5 @@
-import { HANDLE_CUBE } from '@forgeax/engine-assets-runtime';
 import { World } from '@forgeax/engine-ecs';
+import { createBoxGeometry } from '@forgeax/engine-geometry';
 import type { RenderPipeline, RhiDevice, ShaderModule } from '@forgeax/engine-rhi';
 import { RhiNullRenderPassEncoder, rhi } from '@forgeax/engine-rhi-null';
 import { registerPropagateTransforms, Transform } from '@forgeax/engine-scene';
@@ -67,7 +67,9 @@ it.each([
     expect((await renderer.initialization).ok).toBe(true);
     expect(synchronous).toHaveLength(0);
     const beforeDraw = asynchronous.length;
-    const world = new World();
+    const assets = renderer.assetRegistry;
+    const world = new World({ assets });
+    const mesh = assets.create(createBoxGeometry(1, 1, 1).unwrap()).unwrap();
     const attachment = renderer.attach(world);
     if (!attachment.ok) throw attachment.error;
     const attached = attachment.value;
@@ -87,17 +89,18 @@ it.each([
         },
       )
       .unwrap();
-    const material = world.allocSharedRef(
-      'MaterialAsset',
-      Materials.standard({
-        baseColor: [1, 1, 1, 1],
-        renderState: { blend: { color: {}, alpha: {} } },
-      }),
-    );
+    const material = assets
+      .create(
+        Materials.standard({
+          baseColor: [1, 1, 1, 1],
+          renderState: { blend: { color: {}, alpha: {} } },
+        }),
+      )
+      .unwrap();
     world
       .spawn(
         { component: Transform, data: {} },
-        { component: MeshFilter, data: { assetHandle: HANDLE_CUBE } },
+        { component: MeshFilter, data: { assetHandle: mesh } },
         { component: MeshRenderer, data: { materials: [material] } },
       )
       .unwrap();
@@ -300,7 +303,9 @@ it.each([
   const boundPipelines = vi.spyOn(RhiNullRenderPassEncoder.prototype, 'setPipeline');
   try {
     expect((await renderer.initialization).ok).toBe(true);
-    const world = new World();
+    const assets = renderer.assetRegistry;
+    const world = new World({ assets });
+    const mesh = assets.create(createBoxGeometry(1, 1, 1).unwrap()).unwrap();
     const attachment = renderer.attach(world);
     if (!attachment.ok) throw attachment.error;
     const attached = attachment.value;
@@ -320,14 +325,13 @@ it.each([
         },
       )
       .unwrap();
-    const material = world.allocSharedRef(
-      'MaterialAsset',
-      Materials.standard({ transmission: 1, roughness: 0, baseColor: [1, 1, 1, 1] }),
-    );
+    const material = assets
+      .create(Materials.standard({ transmission: 1, roughness: 0, baseColor: [1, 1, 1, 1] }))
+      .unwrap();
     world
       .spawn(
         { component: Transform, data: {} },
-        { component: MeshFilter, data: { assetHandle: HANDLE_CUBE } },
+        { component: MeshFilter, data: { assetHandle: mesh } },
         { component: MeshRenderer, data: { materials: [material] } },
       )
       .unwrap();

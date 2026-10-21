@@ -41,19 +41,22 @@ describe('generation-scoped VFX HMR LKG', () => {
       value: {
         status: 'recovered',
         generation: 1,
-        candidateGeneration: 2,
-        lastKnownGoodGeneration: 1,
+        draft: first.value.draft,
         recoveryHint: expect.stringContaining('repair'),
       },
     });
 
     version = 'two';
     if (!rejected.ok) return;
+    expect(rejected.value.draft).toBe(first.value.draft);
     const recovered = await registry.runTransaction<{ version: string }, Record<string, never>>({
       key: 'particle-effect',
       input: {},
       previous: rejected.value,
     });
-    expect(recovered).toMatchObject({ ok: true, value: { status: 'committed', generation: 2 } });
+    expect(recovered).toMatchObject({
+      ok: true,
+      value: { status: 'committed', generation: 2, draft: { payload: { version: 'two' } } },
+    });
   });
 });

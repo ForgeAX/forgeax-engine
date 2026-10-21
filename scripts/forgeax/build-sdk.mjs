@@ -504,17 +504,22 @@ const registry = createServer(async (request, response) => {
     response.writeHead(200, { 'content-type': 'application/json' }).end(body);
     return;
   }
-  const upstream = await fetchWithRetry(`https://registry.npmjs.org${url}`, {
-    headers: { accept: request.headers.accept ?? 'application/json' },
-  });
-  const headers = Object.fromEntries(
-    [...upstream.headers.entries()].filter(
-      ([name]) =>
-        name !== 'content-encoding' && name !== 'content-length' && name !== 'transfer-encoding',
-    ),
-  );
-  response.writeHead(upstream.status, headers);
-  response.end(Buffer.from(await upstream.arrayBuffer()));
+  try {
+    const upstream = await fetchWithRetry(`https://registry.npmjs.org${url}`, {
+      headers: { accept: request.headers.accept ?? 'application/json' },
+    });
+    const headers = Object.fromEntries(
+      [...upstream.headers.entries()].filter(
+        ([name]) =>
+          name !== 'content-encoding' && name !== 'content-length' && name !== 'transfer-encoding',
+      ),
+    );
+    const body = Buffer.from(await upstream.arrayBuffer());
+    response.writeHead(upstream.status, headers);
+    response.end(body);
+  } catch (cause) {
+    response.writeHead(502).end(cause instanceof Error ? cause.message : String(cause));
+  }
 });
 const registryPort = 40_000 + (Number.parseInt(engineCommit.slice(0, 8), 16) % 20_000);
 await once(registry.listen(registryPort, '127.0.0.1'), 'listening');

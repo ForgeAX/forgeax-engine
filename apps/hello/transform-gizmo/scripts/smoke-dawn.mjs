@@ -117,7 +117,7 @@ const host = await constructRuntimeRendererHost(
 );
 assert(host.ok, JSON.stringify(host.error));
 const renderer = host.value.renderer,
-  world = new World();
+  world = new World({ assets: host.value.assets });
 const attachment = renderer.attach(world).unwrap(),
   scene = createGizmoScene(world, WIDTH, HEIGHT);
 scene.gizmo.configure({ size: 55 });

@@ -2,6 +2,7 @@ import { createMaterialLoader } from '@forgeax/engine-assets-runtime';
 import { World } from '@forgeax/engine-ecs';
 import { halfFloat } from '@forgeax/engine-math';
 import { validateCookedMaterialRecord } from '@forgeax/engine-pack';
+import { AssetGuid } from '@forgeax/engine-pack/guid';
 import {
   Camera,
   DirectionalLight,
@@ -19,12 +20,14 @@ import { propagateTransforms, Transform } from '@forgeax/engine-scene';
 import type { MaterialAsset } from '@forgeax/engine-types';
 import { assert } from 'vitest';
 import testQuality from '../../../../scripts/test/render-quality.json' with { type: 'json' };
+import { loadMaterialFixture } from '../../../assets-runtime/src/__tests__/fixtures/runtime-material';
 import {
   createProbeGlobalMesh,
   probeGlobalProfile,
 } from '../../../render/src/__tests__/raytracing/probe-global.fixture';
 import { createMaterialPackCooker } from '../../../shader-compiler/src/material/pack-cooker';
 import { constructRuntimeRendererHost } from '../renderer-host';
+import { testAssets } from './helpers/runtime-assets';
 import { renderValue } from './standard-gbuffer-replay.fixture';
 
 export const SIZE = 32;
@@ -198,8 +201,17 @@ export async function createIrradianceFieldHarness(options: {
   const unsubscribe = renderer.subscribe((event) => {
     if (event.kind === 'error') errors.push(event.error);
   });
-  const world = new World();
-  const publish = async (guid: string, source: MaterialAsset) => {
+  const world = new World({ assets: host.assets });
+  const materialDependencies = new Map<
+    string,
+    NonNullable<Parameters<typeof loadMaterialFixture>[2]>[number]
+  >();
+  const publish = async (
+    source: MaterialAsset,
+    dependencies: NonNullable<Parameters<typeof loadMaterialFixture>[2]> = [],
+  ) => {
+    for (const dependency of dependencies) materialDependencies.set(dependency.guid, dependency);
+    const guid = AssetGuid.format(AssetGuid.random());
     const cooked = await createMaterialPackCooker().cook({ guid, source });
     const record = validateCookedMaterialRecord(
       (cooked.payload as { cooked: unknown }).cooked,
@@ -209,16 +221,14 @@ export async function createIrradianceFieldHarness(options: {
       loadReference: async () => true,
     }).load({ guid, specializationKey: record.specializationKey ?? '' });
     assert(ready.status === 'Ready');
-    host.assets.catalog(guid, source).unwrap();
-    host.assets.recordMaterialReadiness(guid, ready);
-    return world.allocSharedRef('MaterialAsset', source);
+    return (
+      await loadMaterialFixture(host.assets, ready.record, [...materialDependencies.values()])
+    ).unwrap().handle;
   };
   const white = await publish(
-    'irradiance-field-white',
     Materials.standard({ baseColor: [1, 1, 1, 1], roughness: 1, specular: 0 }),
   );
   const emissive = await publish(
-    'irradiance-field-emitter',
     Materials.standard({
       baseColor: [0, 0, 0, 1],
       roughness: 1,
@@ -228,7 +238,9 @@ export async function createIrradianceFieldHarness(options: {
     }),
   );
   const slab = async (width: number, height: number, depth: number) =>
-    world.allocSharedRef('MeshAsset', await createProbeGlobalMesh(width, height, depth));
+    testAssets(world)
+      .create(await createProbeGlobalMesh(width, height, depth))
+      .unwrap();
   const spawn = (
     mesh: Awaited<ReturnType<typeof slab>>,
     material: typeof white,

@@ -1,14 +1,16 @@
 import { expect, it } from 'vitest';
+import { MaterialResource } from '../../material-resource';
+import { worldRenderResources } from '../../publication/resource-scope';
 import { projectRayScene } from '../../raytracing/scene-projection';
 import { retainedTransportPlane } from './scene-projection.fixture';
 
 it('projects the accepted material snapshot across edits without consulting newer World values', () => {
   const source = retainedTransportPlane({ kind: 'material', values: { emissiveIntensity: 99 } });
-  const firstSlot = source.retained.slotsSnapshot()[0];
+  const firstSlot = source.retained.slotsSnapshot().at(0);
   expect(firstSlot).toBeDefined();
   if (firstSlot === undefined) throw new Error('missing retained fixture slot');
   const initial = {
-    ...firstSlot.snapshot.material,
+    ...firstSlot.snapshot.material.snapshot,
     materialSurfacePrograms: {
       'ray-hit': { programKey: 'accepted-program-A', evaluateCoverage: false },
     },
@@ -20,7 +22,11 @@ it('projects the accepted material snapshot across edits without consulting newe
         kind: 'update',
         worldId: 0,
         entityKey: 31,
-        snapshot: { ...firstSlot.snapshot, material, materials: [material] },
+        snapshot: {
+          ...firstSlot.snapshot,
+          material: MaterialResource.from(material),
+          materials: [MaterialResource.from(material)],
+        },
       },
     ]);
   replace(initial);
@@ -44,18 +50,20 @@ it('projects the accepted material snapshot across edits without consulting newe
   // Geometry identity and acceleration inputs do not change with a material edit.
   expect(second.scene.triangles).toEqual(first.scene.triangles);
   expect(second.scene.nodes).toEqual(first.scene.nodes);
-  // Equal numeric handles in two Worlds are distinct material identities.
+  // Each World retains its owning asset identity.
   const secondWorld = retainedTransportPlane({ kind: 'material' });
   const slots = secondWorld.retained
     .slotsSnapshot()
     .map((slot) => ({ ...slot, slot: slot.slot + 1, worldId: 1 }));
   const combined = projectRayScene(
     [...source.retained.slotsSnapshot(), ...slots],
-    [source.world, secondWorld.world],
+    [source.world, secondWorld.world].map(worldRenderResources),
     16,
   );
+  const secondSlot = secondWorld.retained.slotsSnapshot().at(0);
+  if (secondSlot === undefined) throw new Error('missing second World fixture slot');
   expect(combined.materials.map((material) => [material.worldId, material.handle])).toEqual([
     [0, initial.materialHandle],
-    [1, initial.materialHandle],
+    [1, secondSlot.snapshot.material.snapshot.materialHandle],
   ]);
 });

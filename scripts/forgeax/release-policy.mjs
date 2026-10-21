@@ -12,6 +12,17 @@ export function releasePolicy(version) {
     : { channel: 'next', branch: 'main', tag: 'next' };
 }
 
+export function assertSuccessfulCandidateRun(run, expectedRunId) {
+  if (
+    !Number.isSafeInteger(run?.id) ||
+    String(run.id) !== String(expectedRunId) ||
+    run.path !== '.github/workflows/sdk-release-candidate.yml' ||
+    run.status !== 'completed' ||
+    run.conclusion !== 'success'
+  )
+    throw new Error('release-candidate-run-not-successful');
+}
+
 export function developmentVersion(stable, sequence, source) {
   if (releasePolicy(stable).channel !== 'stable' || !/^[0-9a-f]{40}$/.test(source)) {
     throw new Error('release-development-baseline-invalid');

@@ -1,4 +1,4 @@
-import type { Handle } from '@forgeax/engine-types';
+import type { AssetHandle } from '@forgeax/engine-types';
 import { describe, expect, it } from 'vitest';
 import { toMaterialAsset } from '../bridge.js';
 import { parseGltf } from '../parse-gltf.js';
@@ -83,7 +83,7 @@ describe('glTF KHR_texture_transform per-slot parsing', () => {
       textureHandles: new Map([
         [0, 100],
         [1, 101],
-      ]) as unknown as ReadonlyMap<number, Handle<'TextureAsset', 'shared'>>,
+      ]) as unknown as ReadonlyMap<number, AssetHandle<'texture'>>,
     });
     expect(projected.values).toMatchObject({
       baseColorTexture: {

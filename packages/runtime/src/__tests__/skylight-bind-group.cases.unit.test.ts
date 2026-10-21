@@ -1,350 +1,15 @@
-// @ts-nocheck — merged file: indexed-access checks cascade across noUncheckedIndexedAccess for blocks originally outside src/ rootDir
-// Consolidated by feat-20260609-test-pool-startup-reduction-merge-tiny-test-files
-// biome-ignore-all lint/complexity/noUselessLoneBlockStatements: block-scope isolation between merged source files (consolidation paradigm)
-//
-// Source files (N=44):
-//   - packages/runtime/__tests__/antialias-from-f32.test.ts
-//   - packages/runtime/src/__tests__/bloom-gating.test.ts
-//   - packages/runtime/src/__tests__/camera-antialias.test.ts
-//   - packages/runtime/src/__tests__/camera-bloom.test.ts
-//   - packages/runtime/src/__tests__/camera-clear-schema.test.ts
-//   - packages/runtime/src/__tests__/camera-ortho.test.ts
-//   - packages/runtime/src/__tests__/fxaa-intermediate-texture.test.ts
-//   - packages/runtime/src/__tests__/fxaa-pipeline.test.ts
-//   - packages/runtime/src/__tests__/ibl-pipeline-cache.test.ts
-//   - packages/runtime/src/__tests__/ibl-runtime-probe.test.ts
-//   - packages/runtime/src/__tests__/render-system-record-warn-once.test.ts
-//   - packages/runtime/src/__tests__/shadow-skip-non-triangle.test.ts
-//   - packages/runtime/src/__tests__/skin-errors-kebab-case.test.ts
-//   - packages/runtime/src/__tests__/skybox-error.test.ts
-//   - packages/runtime/src/__tests__/skybox-shader-compile.test.ts
-//   - packages/runtime/src/__tests__/skylight-bind-group.test.ts
-//   - packages/runtime/src/__tests__/skylight-component.test.ts
-//   - packages/runtime/src/__tests__/skylight-fallback-path.test.ts
-//   - packages/runtime/src/__tests__/skylight-pipeline-layout.test.ts
-//   - packages/runtime/src/__tests__/tonemap-hdr-target.test.ts
-//   - packages/runtime/src/__tests__/tonemap-pipeline-split.test.ts
-//   - packages/runtime/src/__tests__/zero-camera-clear-fallback.test.ts
-//   - packages/runtime/src/components/__tests__/skin.test.ts
-//   - packages/runtime/src/systems/__tests__/advance-animation-player.test.ts
-//   - packages/runtime/src/systems/__tests__/graph-skybox.test.ts
-//   - packages/runtime/src/systems/__tests__/propagate-transforms.test.ts
-//   - packages/runtime/src/systems/__tests__/skin-cap-gate.test.ts
-//   - packages/runtime/src/systems/__tests__/skin-instances-coexist.test.ts
-//   - packages/runtime/src/systems/__tests__/skin-palette-extract.test.ts
-//   - packages/runtime/src/systems/__tests__/skin-pipeline-routing.test.ts
-//   - packages/runtime/src/systems/__tests__/skybox-extract.test.ts
-//   - packages/runtime/src/systems/__tests__/sprite-animation-tick-boundary.test.ts
-//   - packages/runtime/src/systems/__tests__/sprite-animation-tick-clamp.test.ts
-//   - packages/runtime/src/systems/__tests__/sprite-animation-tick-frame-duration-negative.test.ts
-//   - packages/runtime/src/systems/__tests__/sprite-animation-tick-frame-duration-zero.test.ts
-//   - packages/runtime/src/systems/__tests__/sprite-animation-tick-loop.test.ts
-//   - packages/runtime/src/systems/__tests__/sprite-animation-tick-override-probe.test.ts
-//   - packages/runtime/src/systems/__tests__/sprite-animation-tick-regions-mismatch.test.ts
-//   - packages/runtime/src/systems/__tests__/tonemap.test.ts
-//   - packages/runtime/src/systems/__tests__/transparent-sort-config-get.test.ts
-//   - packages/runtime/src/systems/__tests__/transparent-sort-config-set.test.ts
-//   - packages/runtime/src/systems/__tests__/transparent-sort.test.ts
-//   - packages/runtime/src/__tests__/render-system-multi-material.test.ts
-//   - packages/runtime/src/__tests__/render-system-record-submesh.test.ts
-//
-// Paradigm: each block-scope wraps a source file. ancestorTitles[0] is the
-// source-preserved inner describe (NOT the source filename for these 3 files
-// — recovery path: vitest report ancestorTitles -> grep this file -> upstream
-// `// ─── from <name>.test.ts ───` block separator -> source filename).
-// Top-level imports merged + deduped.
-
-import { readFileSync } from 'node:fs';
-import { resolve } from 'node:path';
-import { fileURLToPath } from 'node:url';
-import { AnimationPlayer } from '@forgeax/engine-animation';
-import type { AssetRuntimeErrorCode } from '@forgeax/engine-assets-runtime';
-import { AssetRegistry } from '@forgeax/engine-assets-runtime';
-import type { EntityHandle, World as WorldType } from '@forgeax/engine-ecs';
-import { ENTITY_NULL_RAW, World } from '@forgeax/engine-ecs';
-import { SpriteAnimationInvalidError } from '@forgeax/engine-ecs/projection';
-import { mat4, vec3 } from '@forgeax/engine-math';
-import type { RenderErrorCode, Renderer as RendererType } from '@forgeax/engine-render';
-import {
-  ANTIALIAS_FXAA,
-  ANTIALIAS_NONE,
-  BLOOM_DISABLED,
-  BLOOM_ENABLED,
-  CAMERA_PROJECTION_ORTHOGRAPHIC,
-  CAMERA_PROJECTION_PERSPECTIVE,
-  Camera,
-  MeshFilter,
-  MeshRenderer,
-  SkyboxBackground,
-  Skylight,
-} from '@forgeax/engine-render';
+// @ts-nocheck — remaining legacy assertions are migrated separately.
+// biome-ignore-all lint/complexity/noUselessLoneBlockStatements: source test block isolation
 import type { BindGroupEntry, Buffer, Sampler, Texture, TextureView } from '@forgeax/engine-rhi';
-import { ok as rhiOk } from '@forgeax/engine-rhi';
-import { ChildOf, Name, propagateTransforms, Transform } from '@forgeax/engine-scene';
-import {
-  DIRECT_DFG_LUT_SIZE,
-  directDfgLutBytes,
-  TONEMAP_LUMINANCE_EPSILON,
-} from '@forgeax/engine-shader';
-import type { SkinErrorCode } from '@forgeax/engine-skinning';
-import {
-  Skin,
-  SkinInstancesCoexistForbiddenError,
-  SkinJointCountExceededError,
-  SkinJointDespawnedError,
-  SkinJointPathUnresolvedError,
-} from '@forgeax/engine-skinning';
-import type {
-  Handle,
-  MaterialAsset,
-  MeshAsset,
-  SkeletonAsset,
-  TextureFormat,
-} from '@forgeax/engine-types';
-import { toShared } from '@forgeax/engine-types';
-import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
-import { worldInternal } from '../../../ecs/src/world-internal';
-import {
-  SPRITE_PLAYBACK_MODE_CLAMP,
-  SPRITE_PLAYBACK_MODE_LOOP,
-  SpriteAnimation,
-  SpriteRegionOverride,
-} from '../../../render/src/components';
-import {
-  type CameraProjection,
-  cameraProjectionFromF32,
-} from '../../../render/src/components/camera';
+import { DIRECT_DFG_LUT_SIZE, directDfgLutBytes } from '@forgeax/engine-shader';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
   assembleMaterialWithSkylightEntries,
   createSkylightFallback,
 } from '../../../render/src/ibl/skylight-bind-group';
-import {
-  appendInjection,
-  buildPbrPipelineLayouts,
-  buildUnlitMaterialBgl,
-} from '../../../render/src/pbr-pipeline';
-import { INSTANCE_STORAGE_STRIDE_FLOATS } from '../../../render/src/record/mesh-ssbo';
-import { selectSwapChainFormat } from '../../../render/src/render-system';
-import { createSkinPaletteAllocator } from '../../../render/src/systems/skin-palette-allocator';
-import { standardMaterialShaderVariants } from './helpers/standard-material-manifest';
-import { drawWithOwners } from './renderer-test-utils';
-
-function componentFieldType(component: { fields: Record<string, { type: string }> }, name: string) {
-  return component.fields[name]?.type;
-}
-
-function componentFieldDefault(
-  component: { fields: Record<string, { default?: unknown }> },
-  name: string,
-) {
-  return component.fields[name]?.default;
-}
-
-function componentSchemaTypes(component: { fields: Record<string, { type: string }> }) {
-  return Object.fromEntries(
-    Object.entries(component.fields).map(([name, field]) => [name, field.type]),
-  );
-}
+import { appendInjection } from '../../../render/src/pbr-pipeline';
 
 afterEach(() => vi.restoreAllMocks());
-
-type RendererErrorObservation = {
-  readonly code: string;
-  readonly detail?: unknown;
-  readonly hint?: string;
-};
-
-function unwrapRendererError(value: unknown): RendererErrorObservation {
-  let current = value as RendererErrorObservation;
-  while (
-    current.detail !== undefined &&
-    typeof current.detail === 'object' &&
-    current.detail !== null
-  ) {
-    const cause = (current.detail as { cause?: unknown }).cause;
-    if (
-      cause === undefined ||
-      typeof cause !== 'object' ||
-      cause === null ||
-      typeof (cause as { code?: unknown }).code !== 'string'
-    ) {
-      break;
-    }
-    current = cause as RendererErrorObservation;
-  }
-  return current;
-}
-
-function subscribeRendererErrors(
-  renderer: RendererType,
-  listener: (error: RendererErrorObservation) => void,
-): () => void {
-  return renderer.subscribe((event) => {
-    if (event.kind === 'error') listener(unwrapRendererError(event.error));
-  });
-}
-
-function drawPublished(renderer: RendererType, world: WorldType) {
-  const attached = renderer.attach(world);
-  if (!attached.ok) throw attached.error;
-  world.update().unwrap();
-  return drawWithOwners(renderer, world);
-}
-
-// feat-20260704-runtime-tier1-decomposition M2 / w12: reconstitute the
-// eliminated top-level RuntimeErrorCode aggregate union (D-3) as a test-local
-// alias so the exhaustive-switch bodies below stay byte-identical (AC-09).
-type RuntimeLayerErrorCode = RenderErrorCode | AssetRuntimeErrorCode | SkinErrorCode;
-
-import {
-  AnimationTargetId,
-  bindAnimationTargets,
-  advanceAnimationPlayer as canonicalAdvanceAnimationPlayer,
-} from '@forgeax/engine-animation';
-import { deriveAnimationTargetId } from '@forgeax/engine-animation/target-id';
-import { DeviceScope } from '../../../render/src/device/device-scope';
-import { GpuBuffer } from '../../../render/src/gpu-resource';
-import { getOrCreateIblCache, hasIblCache } from '../../../render/src/ibl/IblPipelineCache';
-import {
-  disposeInstanceBuffers,
-  type InstanceBufferCacheEntry,
-} from '../../../render/src/instance-buffer-cache';
-import { standardPipeline as urpPipeline } from '../../../render/src/pipeline/standard-pipeline';
-import { ZERO_CAMERA_CLEAR_FALLBACK } from '../../../render/src/record/frame-snapshot';
-import {
-  warnMultiLightDirectional,
-  warnMultiLightPoint,
-  warnMultiLightSpot,
-} from '../../../render/src/record/helpers';
-import type { CameraSnapshot } from '../../../render/src/render-contract';
-import {
-  type ExtractedLights,
-  prepareExtractContext,
-} from '../../../render/src/render-system-extract';
-import { extractFrame, extractFrames } from '../../../render/src/render-system-extract-tail';
-import {
-  getTransparentSortConfig,
-  setTransparentSortConfig,
-  TRANSPARENT_SORT_CONFIG_KEY,
-  TRANSPARENT_SORT_MODE_LAYER_Y,
-  TRANSPARENT_SORT_MODE_LAYER_YZ,
-  TRANSPARENT_SORT_MODE_LAYER_Z,
-} from '../../../render/src/systems/transparent-sort-config';
-import { spriteAnimationTickSystem } from '../systems/sprite-animation-tick';
-import { makeMockShaderRegistry } from './helpers/mock-shader-registry';
-
-void [
-  ANTIALIAS_FXAA,
-  ANTIALIAS_NONE,
-  AnimationPlayer,
-  AnimationTargetId,
-  AssetRegistry,
-  BLOOM_DISABLED,
-  BLOOM_ENABLED,
-  CAMERA_PROJECTION_ORTHOGRAPHIC,
-  CAMERA_PROJECTION_PERSPECTIVE,
-  Camera,
-  ChildOf,
-  DeviceScope,
-  ENTITY_NULL_RAW,
-  GpuBuffer,
-  INSTANCE_STORAGE_STRIDE_FLOATS,
-  MeshFilter,
-  MeshRenderer,
-  Name,
-  SPRITE_PLAYBACK_MODE_CLAMP,
-  SPRITE_PLAYBACK_MODE_LOOP,
-  Skin,
-  SkinInstancesCoexistForbiddenError,
-  SkinJointCountExceededError,
-  SkinJointDespawnedError,
-  SkinJointPathUnresolvedError,
-  SkyboxBackground,
-  Skylight,
-  SpriteAnimation,
-  SpriteAnimationInvalidError,
-  SpriteRegionOverride,
-  TONEMAP_LUMINANCE_EPSILON,
-  TRANSPARENT_SORT_CONFIG_KEY,
-  TRANSPARENT_SORT_MODE_LAYER_Y,
-  TRANSPARENT_SORT_MODE_LAYER_YZ,
-  TRANSPARENT_SORT_MODE_LAYER_Z,
-  Transform,
-  World,
-  ZERO_CAMERA_CLEAR_FALLBACK,
-  afterEach,
-  assembleMaterialWithSkylightEntries,
-  beforeAll,
-  beforeEach,
-  bindAnimationTargets,
-  buildPbrPipelineLayouts,
-  buildUnlitMaterialBgl,
-  cameraProjectionFromF32,
-  canonicalAdvanceAnimationPlayer,
-  componentFieldDefault,
-  componentFieldType,
-  componentSchemaTypes,
-  createSkinPaletteAllocator,
-  createSkylightFallback,
-  deriveAnimationTargetId,
-  describe,
-  disposeInstanceBuffers,
-  drawPublished,
-  drawWithOwners,
-  expect,
-  extractFrame,
-  extractFrames,
-  fileURLToPath,
-  getOrCreateIblCache,
-  getTransparentSortConfig,
-  hasIblCache,
-  it,
-  makeMockShaderRegistry,
-  mat4,
-  prepareExtractContext,
-  propagateTransforms,
-  readFileSync,
-  resolve,
-  rhiOk,
-  selectSwapChainFormat,
-  setTransparentSortConfig,
-  spriteAnimationTickSystem,
-  standardMaterialShaderVariants,
-  subscribeRendererErrors,
-  toShared,
-  unwrapRendererError,
-  urpPipeline,
-  vec3,
-  vi,
-  warnMultiLightDirectional,
-  warnMultiLightPoint,
-  warnMultiLightSpot,
-  worldInternal,
-];
-type __MergedKeep =
-  | AssetRuntimeErrorCode
-  | BindGroupEntry
-  | Buffer
-  | CameraProjection
-  | CameraSnapshot
-  | EntityHandle
-  | ExtractedLights
-  | Handle
-  | InstanceBufferCacheEntry
-  | MaterialAsset
-  | MeshAsset
-  | RenderErrorCode
-  | RendererErrorObservation
-  | RendererType
-  | RuntimeLayerErrorCode
-  | Sampler
-  | SkeletonAsset
-  | SkinErrorCode
-  | Texture
-  | TextureFormat
-  | TextureView
-  | WorldType;
-
 {
   // --- from skylight-bind-group.test.ts ---
 
@@ -455,10 +120,10 @@ type __MergedKeep =
       // binding 8: irradianceSampler
       expect(merged[8]?.binding).toBe(8);
       expect((merged[8] as { sampler?: { type: string } }).sampler?.type).toBe('filtering');
-      // binding 9: prefilterMap (texture_cube)
+      // binding 9: prefilterMap (CubeUV texture_2d)
       expect(merged[9]?.binding).toBe(9);
       expect((merged[9] as { texture?: { viewDimension: string } }).texture?.viewDimension).toBe(
-        'cube',
+        '2d',
       );
       // binding 10: prefilterSampler
       expect(merged[10]?.binding).toBe(10);
@@ -498,11 +163,10 @@ type __MergedKeep =
     });
   });
 
-  // ─── Assertion (c): fallback texture_cube depthOrArrayLayers=6 + white
-  // irradiance / prefilter + BRDF fallback data ───
+  // ─── Assertion (c): white irradiance cube / 2D prefilter + BRDF fallback data ───
 
-  describe('t40 round-4 (c) fallback cube texture geometry + white-environment data', () => {
-    it('fallback cube texture is depthOrArrayLayers=6; irradiance+prefilter are white and BRDF preserves the DFG sampling axes', () => {
+  describe('t40 round-4 (c) fallback geometry + white-environment data', () => {
+    it('irradiance is a white cube, prefilter is white 2D, and BRDF preserves the DFG sampling axes', () => {
       const device = makeMockDevice();
       const queue = makeMockQueue();
       createSkylightFallback(
@@ -513,7 +177,7 @@ type __MergedKeep =
       const cubeDescs = device.createTexture.mock.calls
         .map((args) => args[0] as CapturedTextureDescriptor)
         .filter((d) => d.size.depthOrArrayLayers === 6);
-      expect(cubeDescs.length).toBeGreaterThanOrEqual(2);
+      expect(cubeDescs).toHaveLength(1);
       for (const desc of cubeDescs) {
         expect(desc.size.depthOrArrayLayers).toBe(6);
         expect(desc.size.width).toBe(1);
@@ -522,7 +186,7 @@ type __MergedKeep =
 
       const writes = queue.writeTexture.mock.calls;
       const cubes = writes.filter((call) => call[3].depthOrArrayLayers === 6);
-      expect(cubes).toHaveLength(2);
+      expect(cubes).toHaveLength(1);
       for (const call of cubes) {
         const bytes = call[1];
         const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
@@ -530,7 +194,23 @@ type __MergedKeep =
           for (let channel = 0; channel < 4; channel++)
             expect(view.getUint16(layer * 256 + channel * 2, true)).toBe(0x3c00);
       }
-      const lut = writes.filter((call) => call[3].depthOrArrayLayers === 1);
+      const flat = device.createTexture.mock.calls
+        .map((args) => args[0] as CapturedTextureDescriptor)
+        .filter((d) => d.size.depthOrArrayLayers === 1);
+      expect(flat).toHaveLength(2);
+      expect(flat.filter((d) => d.size.width === 1 && d.size.height === 1)).toHaveLength(1);
+      const prefilter = writes.filter(
+        (call) => call[3].depthOrArrayLayers === 1 && call[3].width === 1,
+      );
+      expect(prefilter).toHaveLength(1);
+      expect(prefilter[0][3]).toEqual({ width: 1, height: 1, depthOrArrayLayers: 1 });
+      const white = prefilter[0][1];
+      const whiteView = new DataView(white.buffer, white.byteOffset, white.byteLength);
+      for (let channel = 0; channel < 4; channel++)
+        expect(whiteView.getUint16(channel * 2, true)).toBe(0x3c00);
+      const lut = writes.filter(
+        (call) => call[3].depthOrArrayLayers === 1 && call[3].width === DIRECT_DFG_LUT_SIZE,
+      );
       expect(lut).toHaveLength(1);
       expect(lut[0][3]).toEqual({
         width: DIRECT_DFG_LUT_SIZE,

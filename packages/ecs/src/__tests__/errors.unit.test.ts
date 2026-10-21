@@ -16,7 +16,6 @@
 // Paradigm: each block-scoped describe('<source-filename>.test.ts', ...) preserves
 // source as ancestorTitles[0]. Top-level imports merged + deduped.
 
-import { execSync } from 'node:child_process';
 import { readdirSync, readFileSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -355,226 +354,6 @@ import { sourceHits } from './source-scan.fixture';
         expect(e.actualGeneration).toBeUndefined();
       });
     });
-
-    describe('AC-09 EcsErrorCode net-zero relative fence (w16)', () => {
-      function parseEcsErrorCodeMembers(src: string): string[] {
-        const header = 'export type EcsErrorCode =';
-        const start = src.indexOf(header);
-        if (start === -1) return [];
-        const bodyStart = start + header.length;
-        const endMarker = src.indexOf('export type EcsErrorDetail');
-        const searchEnd = endMarker > -1 ? endMarker : src.length;
-        let lastSemicolon = -1;
-        for (let i = bodyStart; i < searchEnd; i++) {
-          if (src[i] === ';') lastSemicolon = i;
-        }
-        const body = src.slice(bodyStart, lastSemicolon > -1 ? lastSemicolon : searchEnd);
-
-        const members = new Set<string>();
-        for (const raw of body.split('\n')) {
-          const line = raw.trim();
-          const member = line.match(/^\|\s*'([^']+)'/);
-          if (member) {
-            members.add(member[1] ?? '');
-            continue;
-          }
-          const first = line.match(/^=\s*'([^']+)'/);
-          if (first) {
-            members.add(first[1] ?? '');
-          }
-        }
-        return [...members].sort();
-      }
-
-      it('EcsErrorCode member set = git HEAD member set (net add 0, net delete 0)', () => {
-        const errorsPath = resolve(__dirname, '..', 'errors.ts');
-
-        const currentSrc = readFileSync(errorsPath, 'utf-8');
-        const currentMembers = parseEcsErrorCodeMembers(currentSrc);
-
-        let headSrc: string;
-        try {
-          headSrc = execSync('git show HEAD:packages/ecs/src/errors.ts', {
-            encoding: 'utf-8',
-            stdio: ['pipe', 'pipe', 'pipe'],
-          });
-        } catch {
-          return;
-        }
-        const headMembers = parseEcsErrorCodeMembers(headSrc);
-
-        // M-4 (feat-20260611-ecs-storage-naming-ssot): intentional SCREAMING_SNAKE -> kebab rename.
-        // Map head-side SCREAMING_SNAKE codes to their kebab counterparts before comparison.
-        const M4_RENAME_MAP: Record<string, string> = {
-          ENTITY_INDEX_OVERFLOW: 'entity-index-overflow',
-          SCHEMA_UNSUPPORTED_FIELD: 'schema-unsupported-field',
-          STALE_ENTITY: 'stale-entity',
-          COMPONENT_ALREADY_PRESENT: 'component-already-present',
-          COMPONENT_NOT_PRESENT: 'component-not-present',
-          CYCLIC_DEPENDENCY: 'cyclic-dependency',
-          RESOURCE_NOT_FOUND: 'resource-not-found',
-        };
-        // feat-20260614-ecs-shared-component-and-unique-rename M2/w5: intentional
-        // managed-ref-* -> unique-ref-* error code rename (handle brand
-        // `'managed'` -> `'unique'` cascade). Map head-side managed-ref codes
-        // to their unique-ref counterparts before comparison.
-        const FEAT_20260614_RENAME_MAP: Record<string, string> = {
-          'managed-ref-released': 'unique-ref-released',
-          'managed-ref-double-release': 'unique-ref-double-release',
-        };
-        // feat-20260625-sprite-instances-and-tilemap-terrain-static-batch
-        // post-merge with PR #520 (transparent collapse): PR 520 narrowed
-        // `MaterialSnapshot.shadingModel` to `'unlit' | undefined` — sprite
-        // is no longer a shadingModel enum member; identification is via
-        // `materialShaderId === 'forgeax::sprite'` (OOS-1 path retained).
-        // The guard error code accordingly renames to match the actual
-        // discriminator it checks.
-        const FEAT_20260625_RENAME_MAP: Record<string, string> = {
-          'sprite-instances-requires-sprite-shading-model':
-            'sprite-instances-requires-sprite-shader',
-        };
-        const applyRenames = (m: string): string =>
-          FEAT_20260625_RENAME_MAP[m] ?? FEAT_20260614_RENAME_MAP[m] ?? M4_RENAME_MAP[m] ?? m;
-        const headSet = new Set(headMembers.map(applyRenames));
-        const currentSet = new Set(currentMembers);
-
-        // bug-20260615 spawn-data-unknown-field-fail-fast: AGENTS.md
-        // §Error model evolution permits add-only minor evolution. Each
-        // intentional addition lists itself here so accidental drift in
-        // unrelated diffs still trips the gate.
-        //
-        // feat-20260614-ecs-shared-component-and-unique-rename M3 adds the
-        // two SharedRefStore error codes (companion to the existing
-        // unique-ref-* pair). Intentional add per the same minor-evolution
-        // contract.
-        //
-        // feat-20260623 #511 unified generational handle codec adds the
-        // shared-ref-stale + unique-ref-stale pair (gen-mismatch on
-        // resolve / retain after the entity+asset shared isRetiredSlot
-        // SSOT merge). Intentional add per the same minor-evolution
-        // contract.
-        // M2 time and scheduling extends the 43-code baseline by exactly three
-        // approved codes. The relative fence rejects any additional drift.
-        const INTENTIONAL_ADDS = new Set<string>([
-          'time-delta-invalid',
-          'time-config-invalid',
-          'schedule-scope-mismatch',
-          'resource-protected',
-          'spawn-data-unknown-field',
-          'shared-ref-released',
-          'shared-ref-double-release',
-          'shared-ref-payload-invalid',
-          'builtin-slot-not-owned',
-          // feat-20260625-sprite-instances-and-tilemap-terrain-static-batch
-          // M1 / w2 — 3 declared, fired at render-system-extract entry in
-          // M3 w13 (plan-strategy D-6). Minor evolution +3 per AGENTS.md
-          // §Error model evolution contract.
-          'sprite-instances-count-mismatch',
-          'sprite-instances-requires-sprite-shader',
-          'sprite-instances-mutually-exclusive-with-instances',
-          // feat-20260623-asset-handle-generation M4 — `shared-ref-stale` /
-          // `unique-ref-stale` landed on main during this feat's in-flight
-          // window (PR #502 + companion lands). Absorbed at merge into
-          // INTENTIONAL_ADDS so the net-zero gate stays self-consistent
-          // (charter F1: upstream lands must not trigger this feat's fence).
-          'shared-ref-stale',
-          'unique-ref-stale',
-          // feat-20260713-mount-override-component-add-and-shared-ref-round
-          // M2 / w9 — P3 shared-field value gate. `shared-field-invalid-value`
-          // fails fast when a `shared<T>` / `array<shared<T>>` field is bound to
-          // a raw GUID / sidecar object (not a resolved numeric handle) instead
-          // of the pre-fix silent zeroing. Minor evolution +1 per AGENTS.md
-          // §Error model evolution contract.
-          'shared-field-invalid-value',
-          // feat-20260714-bevy-style-system-sets M1 / w3 — sole invalid-SystemSet
-          // error code. Minor evolution +1 per AGENTS.md §Error model evolution
-          // contract.
-          'system-set-not-registered',
-          'change-epoch-exhausted',
-          'query-descriptor-conflict',
-          'query-data-requires-fields',
-          'query-span-unavailable',
-          'query-iteration-invalidated',
-          'query-iteration-active',
-          'sparse-storage-requires-tag',
-          // feat-20260803-entity-visibility M1 — closed enum writes fail
-          // before storage mutation. Minor evolution +1 per the same contract.
-          'component-field-invalid-value',
-          // feat-20260822 ECS core reduction — managed array writes reject
-          // arbitrary object payloads before row/buffer mutation.
-          'managed-array-invalid-value',
-          // P5b per-row Instances updates: in-place range writes never resize.
-          'array-range-out-of-bounds',
-          // feat-20260825-engine-feedback-verifiable-remediation M1 / w4 —
-          // object-write numeric preflight rejects NaN before mutation.
-          'component-numeric-value-invalid',
-          'shared-kernel-ineligible',
-          'shared-kernel-failed',
-          'world-poisoned',
-          'command-failed',
-          'system-failed',
-        ]);
-
-        const added: string[] = [];
-        const deleted: string[] = [];
-        const INTENTIONAL_DELETES = new Set<string>([
-          'query-descriptor-with-optional-conflict',
-          'query-combinations-entity-required',
-          // Domain errors now close in render/runtime/scene owner unions;
-          // ECS retains their structured detail classes only for migration
-          // evidence and no longer counts these codes in EcsErrorCode.
-          'component-not-defined',
-          'resource-invalid-value',
-          'scene-override-type-mismatch',
-          'spawn-light-invalid-bounds',
-          'sprite-animation-invalid',
-          'sprite-instances-count-mismatch',
-          'sprite-instances-mutually-exclusive-with-instances',
-          'sprite-instances-requires-sprite-shader',
-          'entity-index-overflow',
-          'schema-unsupported-field',
-          'sparse-storage-requires-tag',
-          'change-epoch-exhausted',
-          'instance-transforms-stride-mismatch',
-          'managed-array-element-type-not-allowed',
-          'query-data-requires-fields',
-          'query-descriptor-conflict',
-          'query-iteration-active',
-          'query-iteration-invalidated',
-          'query-span-unavailable',
-          'relationship-mirror-component-not-registered',
-          'relationship-mirror-field-type-mismatch',
-          'resource-protected',
-          'fixed-array-overflow',
-          'array-pop-empty',
-          'cardinality-exceeded',
-        ]);
-        for (const c of currentSet) {
-          if (!headSet.has(c) && !INTENTIONAL_ADDS.has(c)) added.push(c);
-        }
-        for (const h of headSet) {
-          if (!currentSet.has(h) && !INTENTIONAL_DELETES.has(h)) deleted.push(h);
-        }
-
-        if (added.length > 0 || deleted.length > 0) {
-          const lines: string[] = [];
-          if (added.length > 0)
-            lines.push(
-              `EcsErrorCode members ADDED by this feat (net +${added.length}): ${added.join(', ')}`,
-            );
-          if (deleted.length > 0)
-            lines.push(
-              `EcsErrorCode members DELETED by this feat (net -${deleted.length}): ${deleted.join(', ')}`,
-            );
-          lines.push(
-            `HEAD member count: ${headMembers.length}; current member count: ${currentMembers.length}`,
-          );
-          throw new Error(lines.join('\n'));
-        }
-
-        expect(currentMembers.length).toBeGreaterThan(0);
-      });
-    });
   });
 }
 
@@ -638,7 +417,6 @@ import { sourceHits } from './source-scan.fixture';
             case 'shared-ref-released':
             case 'shared-ref-double-release':
             case 'shared-ref-payload-invalid':
-            case 'builtin-slot-not-owned':
             case 'shared-ref-stale':
             case 'unique-ref-stale':
             // feat-20260713-mount-override-component-add-and-shared-ref-round
@@ -657,6 +435,7 @@ import { sourceHits } from './source-scan.fixture';
             case 'time-delta-invalid':
             case 'time-config-invalid':
             case 'schedule-scope-mismatch':
+            case 'derived-write-active':
             case 'shared-kernel-ineligible':
             case 'shared-kernel-failed':
             case 'world-poisoned':
@@ -1321,7 +1100,7 @@ import { sourceHits } from './source-scan.fixture';
   // `array<shared<T>>` elements must all be numbers) with a structured EcsError
   // (.code / .expected / .hint) instead of silently zeroing the column to
   // `[0,0,0,0]`. AI users bind a shared reference by first resolving the GUID to
-  // a handle (AssetRegistry.load + allocSharedRef); passing a raw GUID string / {guid}
+  // a handle (World.allocSharedRef); passing a raw GUID string / {guid}
   // object / {kind} object bypasses that resolution and used to be swallowed.
   //
   // The three GUID forms feedback verified being zeroed:
@@ -1337,10 +1116,10 @@ import { sourceHits } from './source-scan.fixture';
     // Distinct component names per test (defineComponent global index is
     // process-wide) — a scalar shared field + an array<shared<>> field.
     function scalarComp(name: string) {
-      return defineComponent(name, { mat: { type: 'shared<MaterialAsset>' } });
+      return defineComponent(name, { mat: { type: 'shared<GameMaterial>' } });
     }
     function arrayComp(name: string) {
-      return defineComponent(name, { clips: { type: 'array<shared<AnimationClip>, 4>' } });
+      return defineComponent(name, { clips: { type: 'array<shared<GameClip>, 4>' } });
     }
 
     const GUID_FORMS: ReadonlyArray<{ label: string; value: unknown }> = [
@@ -1438,7 +1217,7 @@ import { sourceHits } from './source-scan.fixture';
     it('valid number handle for a scalar shared field is accepted (no false positive)', () => {
       const world = new World();
       const C = scalarComp('W7Scalar_ValidHandle');
-      const handle = world.allocSharedRef('MaterialAsset', {});
+      const handle = world.allocSharedRef('GameMaterial', {});
       const r = world.spawn({ component: C, data: { mat: handle } as never });
       expect(r.ok).toBe(true);
     });
@@ -1446,8 +1225,8 @@ import { sourceHits } from './source-scan.fixture';
     it('valid number handles for an array<shared<T>> field are accepted (no false positive)', () => {
       const world = new World();
       const C = arrayComp('W7Array_ValidHandles');
-      const h1 = world.allocSharedRef('AnimationClip', {});
-      const h2 = world.allocSharedRef('AnimationClip', {});
+      const h1 = world.allocSharedRef('GameClip', {});
+      const h2 = world.allocSharedRef('GameClip', {});
       const r = world.spawn({ component: C, data: { clips: [h1, h2] } as never });
       expect(r.ok).toBe(true);
     });

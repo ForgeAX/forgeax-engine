@@ -1,3 +1,4 @@
+import type { AssetRegistry } from '@forgeax/engine-assets-runtime';
 import { World } from '@forgeax/engine-ecs';
 import type { RenderFeature, RenderFeatureWork, RenderFrameInput } from '@forgeax/engine-render';
 import { Camera } from '@forgeax/engine-render';
@@ -106,8 +107,8 @@ export function preparedFeature(
   };
 }
 
-export function preparedWorld(): World {
-  const world = new World();
+export function preparedWorld(assets?: AssetRegistry): World {
+  const world = new World(assets === undefined ? {} : { assets });
   world.spawn(
     { component: Transform, data: { pos: [0, 0, 3], quat: [0, 0, 0, 1], scale: [1, 1, 1] } },
     { component: Camera, data: { fov: 60, aspect: 1, near: 0.1, far: 100 } },

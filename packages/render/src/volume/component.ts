@@ -59,7 +59,7 @@ export type ValidatedVolumetricFog = VolumetricFogAuthoring;
 export const VolumetricFog = defineComponent('VolumetricFog', {
   light: { type: 'entity' },
   spotLight: { type: 'entity' },
-  density: { type: 'shared<TextureAsset>', simulationTransient: true },
+  density: { type: 'asset<texture>', simulationTransient: true },
   boundsMin: { type: 'array<f32, 3>' },
   boundsMax: { type: 'array<f32, 3>' },
   extinction: { type: 'array<f32, 3>' },

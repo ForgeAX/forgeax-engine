@@ -1,27 +1,30 @@
-import { HANDLE_SPHERE } from '@forgeax/engine-assets-runtime';
+import type { AssetHandle } from '@forgeax/engine-types';
+import { type AssetRegistry } from '@forgeax/engine-assets-runtime';
 import type { EntityHandle, World } from '@forgeax/engine-ecs';
 import { MeshFilter, MeshRenderer } from '@forgeax/engine-render';
-import type { Handle } from '@forgeax/engine-types';
+import { createPrimitiveMesh } from '@forgeax/engine-geometry';
+const BUILTIN_SPHERE = createPrimitiveMesh('sphere').unwrap();
+
 
 export interface MeshHandleSwap {
   readonly entity: EntityHandle;
-  readonly original: Handle<'MeshAsset', 'shared'>;
-  readonly originalMaterials: readonly Handle<'MaterialAsset', 'shared'>[];
-  readonly alternate: Handle<'MeshAsset', 'shared'>;
+  readonly original: AssetHandle<'mesh'>;
+  readonly originalMaterials: readonly AssetHandle<'material'>[];
+  readonly alternate: AssetHandle<'mesh'>;
   active: 'original' | 'alternate';
   swaps: number;
 }
 
-export function createMeshHandleSwap(world: World, entity: EntityHandle | undefined): MeshHandleSwap | undefined {
+export function createMeshHandleSwap(world: World, assets: AssetRegistry, entity: EntityHandle | undefined): MeshHandleSwap | undefined {
   if (entity === undefined) return undefined;
   const mesh = world.get(entity, MeshFilter);
   const renderer = world.get(entity, MeshRenderer);
-  if (!mesh.ok || !renderer.ok || renderer.value.materials.length === 0 || mesh.value.assetHandle === HANDLE_SPHERE) return undefined;
+  if (!mesh.ok || !renderer.ok || renderer.value.materials.length === 0) return undefined;
   return {
     entity,
     original: mesh.value.assetHandle,
     originalMaterials: [...renderer.value.materials],
-    alternate: HANDLE_SPHERE,
+    alternate: assets.create(BUILTIN_SPHERE).unwrap(),
     active: 'original',
     swaps: 0,
   };

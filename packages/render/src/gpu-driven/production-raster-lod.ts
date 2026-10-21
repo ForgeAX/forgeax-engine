@@ -4,8 +4,8 @@ import { type RecordProfileRunner, runRecordProfilePhase } from '../record/rende
 import type { CameraSnapshot } from '../render-contract';
 import type { RenderSceneSlot } from '../scene/render-scene-types';
 import { lodDraws, selectLod } from '../scene/visibility/lod-selector';
+import { batchLodLevelCount } from './batch-layout';
 import {
-  batchLodLevelCount,
   type GpuDrivenBatch,
   type GpuDrivenBatchLod,
   projectedHeightForCandidate,
@@ -13,7 +13,7 @@ import {
 } from './batch-topology';
 
 /** LOD0 is always resident; lower levels need a physical range in the current mesh. */
-export function lodLevelReady(lod: GpuDrivenBatchLod | undefined, level: number): boolean {
+function lodLevelReady(lod: GpuDrivenBatchLod | undefined, level: number): boolean {
   return level === 0 || lod?.ranges?.[level - 1] !== undefined;
 }
 
@@ -39,15 +39,6 @@ export function admittedRasterBatchCount(plan: SubmissionPlan): number {
     (count, batch) => count + (batch.visibleCapacity > 0 ? batchLodLevelCount(batch) : 0),
     0,
   );
-}
-
-export function gpuDrawEntityCount(drawKeys: ReadonlySet<string>): number {
-  const entities = new Set<string>();
-  for (const key of drawKeys) {
-    const separator = key.indexOf(':');
-    if (separator > 0) entities.add(key.slice(0, separator));
-  }
-  return entities.size;
 }
 
 /** Only rigid Standard PBR shading reads the per-item LOD fade. */

@@ -1,6 +1,6 @@
 import { isValidAssetGuidString } from '@forgeax/engine-types';
-
 import { decodeCatalogWire } from './catalog-wire.js';
+import { type AssetCliContext, emitAssetCliError } from './cli-output.js';
 
 // @forgeax/engine-pack/src/cli-asset — Pack producer implementation used by
 // DevKit's unified `forgeax asset` command. It is not a package bin.
@@ -14,7 +14,12 @@ import { createHash } from 'node:crypto';
 import { readFile } from 'node:fs/promises';
 import { dirname, isAbsolute, resolve } from 'node:path';
 import { parseArgs } from 'node:util';
-import type { ArtifactDescriptor, AssetEvidence, CookReceipt } from '@forgeax/engine-types';
+import type {
+  ArtifactDescriptor,
+  AssetEvidence,
+  CookReceipt,
+  PackIndexEntry,
+} from '@forgeax/engine-types';
 import { validateArtifactPath } from './artifact-path.js';
 import { runAtlas } from './atlas/run-atlas.js';
 import {
@@ -32,13 +37,11 @@ import { loadScriptablePack } from './scriptable-pack-node.js';
 // reviving the historical standalone executable as a second public surface.
 export { runAtlas } from './atlas/run-atlas.js';
 
-export interface PackEntry {
-  readonly guid: string;
-  readonly kind: string;
-  readonly sourcePath: string;
-  readonly name?: string;
-  readonly sourceKey?: string;
-  readonly sourceIndex?: number;
+export interface PackEntry
+  extends Pick<
+    PackIndexEntry,
+    'guid' | 'kind' | 'sourcePath' | 'name' | 'sourceKey' | 'sourceIndex'
+  > {
   readonly sourceRevision?: string;
 }
 
@@ -101,33 +104,13 @@ type VerificationFacts = Pick<
   'dependencies' | 'output' | 'producer'
 >;
 
-interface AssetCtx {
-  readonly stdoutWrite: (line: string) => void;
-  readonly stderrWrite: (line: string) => void;
+interface AssetCtx extends AssetCliContext {
   /** Optional cwd override (defaults to `process.cwd()`); enables hermetic tests. */
   readonly cwd?: string;
 }
 
-interface ScanErrShape {
-  code: string;
-  expected: string;
-  hint: string;
-  detail?: unknown;
-}
-
 function isRecord(value: unknown): value is Record<string, unknown> {
   return value !== null && typeof value === 'object' && !Array.isArray(value);
-}
-
-function emitError(ctx: AssetCtx, err: ScanErrShape): number {
-  const payload: Record<string, unknown> = {
-    code: err.code,
-    expected: err.expected,
-    hint: err.hint,
-  };
-  if (err.detail !== undefined) payload.detail = err.detail;
-  ctx.stderrWrite(JSON.stringify(payload));
-  return 1;
 }
 
 export async function scanEntries(
@@ -139,7 +122,7 @@ export async function scanEntries(
 > {
   const result = await scanInventory(roots);
   if (!result.ok) {
-    emitError(ctx, {
+    emitAssetCliError(ctx, {
       code: result.error.code,
       expected: result.error.expected,
       hint: result.error.hint,
@@ -262,7 +245,7 @@ export async function runCliAsset(rest: string[], ctx: AssetCtx): Promise<number
     case 'stop-publish':
       return runRecoveryCommand(sub, subRest, ctx);
     default:
-      return emitError(ctx, {
+      return emitAssetCliError(ctx, {
         code: 'unknown-subcommand',
         expected: 'subcommand in {scan, lookup, verify, atlas, meta}',
         hint: "run 'forgeax help asset' for usage",
@@ -285,7 +268,7 @@ async function runMeta(rest: string[], ctx: AssetCtx): Promise<number> {
       throw new Error('exactly one ScriptablePack source path is required');
     }
   } catch (error) {
-    return emitError(ctx, {
+    return emitAssetCliError(ctx, {
       code: 'cli-parse-error',
       expected: 'forgeax asset inspect --subject <source.pack.ts> --root <project> --json',
       hint: 'pass one trusted ScriptablePack module path',
@@ -296,7 +279,7 @@ async function runMeta(rest: string[], ctx: AssetCtx): Promise<number> {
   const loaded = await loadScriptablePack(absolutePath(source, cwd), {
     metadataOnly: true,
   });
-  if (!loaded.ok) return emitError(ctx, loaded.error);
+  if (!loaded.ok) return emitAssetCliError(ctx, loaded.error);
   ctx.stdoutWrite(JSON.stringify(projectScriptablePackMeta(loaded.value, source)));
   return 0;
 }
@@ -334,7 +317,7 @@ async function runRecoveryCommand(
     );
     return 0;
   } catch (error) {
-    return emitError(ctx, {
+    return emitAssetCliError(ctx, {
       code: 'cli-parse-error',
       expected: `${operation} [--guid <guid>]`,
       hint: "run 'forgeax help asset' for usage",
@@ -355,7 +338,7 @@ async function runScan(rest: string[], ctx: AssetCtx): Promise<number> {
     roots = (parsed.values.roots as string[] | undefined) ?? [ctx.cwd ?? process.cwd()];
   } catch (e) {
     const message = e instanceof Error ? e.message : String(e);
-    return emitError(ctx, {
+    return emitAssetCliError(ctx, {
       code: 'cli-parse-error',
       expected: 'forgeax asset list --root <project> --json',
       hint: "run 'forgeax help asset' for usage",
@@ -372,14 +355,14 @@ async function runLookup(rest: string[], ctx: AssetCtx): Promise<number> {
   if (rest.some((value) => value === '--guid')) return runEvidence(rest, ctx);
   const [guid] = rest;
   if (typeof guid !== 'string') {
-    return emitError(ctx, {
+    return emitAssetCliError(ctx, {
       code: 'cli-parse-error',
       expected: 'forgeax asset inspect --subject <guid> --root <project> --json',
       hint: 'pass a 36-char dash-form UUID positional argument',
     });
   }
   if (!isValidAssetGuidString(guid)) {
-    return emitError(ctx, {
+    return emitAssetCliError(ctx, {
       code: 'pack-guid-malformed',
       expected: '36-char RFC 4122 dash-form GUID (8-4-4-4-12 lowercase hex)',
       hint: 'use AssetGuid.random() or a UUIDv7 generator; all GUID fields must be 36-char RFC 4122 dash-form',
@@ -392,7 +375,7 @@ async function runLookup(rest: string[], ctx: AssetCtx): Promise<number> {
   const normalized = guid.toLowerCase();
   const entry = result.value.find((e) => e.guid.toLowerCase() === normalized);
   if (entry === undefined) {
-    return emitError(ctx, {
+    return emitAssetCliError(ctx, {
       code: 'asset-not-found',
       expected: 'GUID present in scan results',
       hint: 'run scan to list known GUIDs; verify the GUID came from a .meta.json sub-asset entry',
@@ -497,7 +480,7 @@ async function runVerify(rest: string[], ctx: AssetCtx): Promise<number> {
     });
   } catch (e) {
     const message = e instanceof Error ? e.message : String(e);
-    return emitError(ctx, {
+    return emitAssetCliError(ctx, {
       code: 'cli-parse-error',
       expected: 'forgeax asset verify --root <project> --json',
       hint: "run 'forgeax help asset' for usage",
@@ -603,7 +586,7 @@ function parseEvidenceOptions(rest: string[], ctx: AssetCtx): EvidenceCliOptions
     const project = parsed.values.project;
     const catalog = parsed.values.catalog;
     if (typeof guid !== 'string' || typeof project !== 'string' || typeof catalog !== 'string') {
-      emitError(ctx, {
+      emitAssetCliError(ctx, {
         code: 'cli-parse-error',
         expected: '--guid <guid> --project <dir> --catalog <path> --json',
         hint: "run 'forgeax help asset' for usage",
@@ -613,7 +596,7 @@ function parseEvidenceOptions(rest: string[], ctx: AssetCtx): EvidenceCliOptions
     return { guid, project, catalog };
   } catch (e) {
     const message = e instanceof Error ? e.message : String(e);
-    emitError(ctx, {
+    emitAssetCliError(ctx, {
       code: 'cli-parse-error',
       expected: '--guid <guid> --project <dir> --catalog <path> --json',
       hint: "run 'forgeax help asset' for usage",
@@ -631,7 +614,7 @@ async function readJson(path: string, ctx: AssetCtx): Promise<unknown | undefine
   try {
     return JSON.parse(await readFile(path, 'utf8')) as unknown;
   } catch (e) {
-    emitError(ctx, {
+    emitAssetCliError(ctx, {
       code: 'asset-evidence-input-invalid',
       expected: `readable JSON evidence input at ${path}`,
       hint: 'restore the catalog or cook receipt JSON, then rerun lookup or verify',
@@ -670,17 +653,36 @@ function artifactInputs(
       if (!pathResult.ok) return [key, { ...descriptor, verification: 'failed' as const }] as const;
       const artifactPath = resolve(dirname(packagePathValue), pathResult.value);
       try {
-        const bytes = await readFile(artifactPath);
+        const stored = await readFile(artifactPath);
+        const range = descriptor.byteRange;
+        const containerOk =
+          range === undefined ||
+          (Number.isSafeInteger(range.offset) &&
+            range.offset >= 0 &&
+            Number.isSafeInteger(range.length) &&
+            range.length > 0 &&
+            Number.isSafeInteger(range.offset + range.length) &&
+            range.offset + range.length <= stored.length &&
+            (descriptor.contentEncoding ?? 'identity') === 'identity' &&
+            descriptor.delivery === undefined &&
+            descriptor.integrity !== undefined &&
+            `sha256:${createHash('sha256').update(stored).digest('hex')}` ===
+              range.containerDigest);
+        const bytes =
+          range === undefined ? stored : stored.subarray(range.offset, range.offset + range.length);
         const lengthOk =
           descriptor.byteLength === undefined || descriptor.byteLength === bytes.byteLength;
         const digestOk =
           descriptor.integrity === undefined ||
-          createHash('sha256').update(bytes).digest('base64') === descriptor.integrity.digest;
+          createHash('sha256').update(bytes).digest('base64') === descriptor.integrity.digest ||
+          `sha256:${createHash('sha256').update(bytes).digest('hex')}` ===
+            descriptor.integrity.digest;
         return [
           key,
           {
             ...descriptor,
-            verification: lengthOk && digestOk ? ('passed' as const) : ('failed' as const),
+            verification:
+              containerOk && lengthOk && digestOk ? ('passed' as const) : ('failed' as const),
           },
         ] as const;
       } catch {
@@ -695,7 +697,7 @@ async function runEvidence(rest: string[], ctx: AssetCtx): Promise<number> {
   const options = parseEvidenceOptions(rest, ctx);
   if (options === undefined) return 1;
   if (!isValidAssetGuidString(options.guid)) {
-    return emitError(ctx, {
+    return emitAssetCliError(ctx, {
       code: 'pack-guid-malformed',
       expected: '36-char RFC 4122 dash-form GUID (8-4-4-4-12 lowercase hex)',
       hint: 'use AssetGuid.random() or a UUIDv7 generator; all GUID fields must be 36-char RFC 4122 dash-form',
@@ -707,7 +709,7 @@ async function runEvidence(rest: string[], ctx: AssetCtx): Promise<number> {
   if (catalogValue === undefined) return 1;
   const rows = catalogRows(catalogValue);
   if (rows === undefined) {
-    return emitError(ctx, {
+    return emitAssetCliError(ctx, {
       code: 'asset-evidence-input-invalid',
       expected: 'catalog JSON array or {entries: []} object',
       hint: 'rebuild the catalog and rerun lookup or verify',
@@ -718,7 +720,7 @@ async function runEvidence(rest: string[], ctx: AssetCtx): Promise<number> {
     (candidate) => candidate.guid?.toString().toLowerCase() === options.guid.toLowerCase(),
   );
   if (row === undefined || typeof row.packageUrl !== 'string') {
-    return emitError(ctx, {
+    return emitAssetCliError(ctx, {
       code: 'asset-not-found',
       expected: 'catalog row with GUID and packageUrl',
       hint: 'rebuild the catalog or verify the GUID came from the project source inventory',
@@ -730,12 +732,12 @@ async function runEvidence(rest: string[], ctx: AssetCtx): Promise<number> {
   const packageValue = await readJson(packageFile, ctx);
   if (packageValue === undefined) return 1;
   const parsedPack = parsePackV2(packageValue);
-  if (!parsedPack.ok) return emitError(ctx, parsedPack.error);
+  if (!parsedPack.ok) return emitAssetCliError(ctx, parsedPack.error);
   const asset = parsedPack.value.assets.find(
     (candidate) => candidate.guid.toLowerCase() === options.guid.toLowerCase(),
   );
   if (asset === undefined) {
-    return emitError(ctx, {
+    return emitAssetCliError(ctx, {
       code: 'asset-evidence-input-invalid',
       expected: 'Pack v2 package asset with the requested GUID',
       hint: 'recook the package and rebuild the catalog so the GUID and package agree',
@@ -759,7 +761,7 @@ async function runEvidence(rest: string[], ctx: AssetCtx): Promise<number> {
     ...(receipt !== undefined ? { receipt: receipt as CookReceipt } : {}),
     package: { guid: asset.guid, artifacts: packageArtifacts },
   });
-  if (!result.ok) return emitError(ctx, result.error);
+  if (!result.ok) return emitAssetCliError(ctx, result.error);
   ctx.stdoutWrite(JSON.stringify(result.value satisfies AssetEvidence));
   return 0;
 }

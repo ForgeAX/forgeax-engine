@@ -6,9 +6,9 @@ import { INPUT_SNAPSHOT_RESOURCE_KEY, type InputSnapshot } from '@forgeax/engine
 // What this demo exercises end-to-end (charter F1 progressive disclosure):
 //   - createApp(canvas, opts) -- one-screen takeoff with rAF + auto
 //     input-attach + Time resource (feat-20260518-app-shell-game-loop).
-//   - HANDLE_SPHERE -- the 4th builtin mesh handle (id=4, radius=1
-//     16x12, 12-float interleaved layout, same as HANDLE_CUBE /
-//     HANDLE_TRIANGLE / HANDLE_QUAD).
+//   - BUILTIN_SPHERE -- the 4th builtin mesh handle (id=4, radius=1
+//     16x12, 12-float interleaved layout, same as BUILTIN_CUBE /
+//     BUILTIN_TRIANGLE / BUILTIN_QUAD).
 //   - Space toggle runtime: reads InputSnapshot.keyboard.down('Space'),
 //     derives a press-edge from prev-frame level tracking, toggles
 //     Camera.antialias between ANTIALIAS_NONE and ANTIALIAS_FXAA via
@@ -32,7 +32,7 @@ import { INPUT_SNAPSHOT_RESOURCE_KEY, type InputSnapshot } from '@forgeax/engine
 import { createApp } from '@forgeax/engine-app/browser';
 import type { CanvasAppError } from '@forgeax/engine-app';
 
-import { HANDLE_CUBE, HANDLE_QUAD, HANDLE_SPHERE, HANDLE_TRIANGLE } from '@forgeax/engine-assets-runtime';
+
 import { Transform } from '@forgeax/engine-scene';
 
 import {
@@ -47,7 +47,7 @@ import {
 import { EngineEnvironmentError } from '@forgeax/engine-runtime';
 import { Camera, DirectionalLight, MeshFilter, MeshRenderer, ShadowParticipation } from '@forgeax/engine-render';
 
-import type { Handle } from '@forgeax/engine-types';
+import type { AssetHandle } from '@forgeax/engine-types';
 import { forgeaxBundlerAdapter } from 'virtual:forgeax/bundler';
 import {
   DARK_GRADIENT_FIXTURE,
@@ -57,6 +57,12 @@ import {
 } from './dark-gradient-fixture';
 import { createDarkGradientTexture, darkGradientQuad } from '../scripts/dark-gradient-scene.mjs';
 import { runMipmapPipelineProbe } from './mipmap-pipeline-probe';
+import { createPrimitiveMesh } from '@forgeax/engine-geometry';
+const BUILTIN_CUBE = createPrimitiveMesh('cube').unwrap();
+const BUILTIN_QUAD = createPrimitiveMesh('quad').unwrap();
+const BUILTIN_SPHERE = createPrimitiveMesh('sphere').unwrap();
+const BUILTIN_TRIANGLE = createPrimitiveMesh('triangle').unwrap();
+
 
 const canvas = document.querySelector<HTMLCanvasElement>('#app');
 if (!canvas) {
@@ -290,6 +296,12 @@ async function bootstrap(target: HTMLCanvasElement): Promise<void> {
     return;
   }
   const app = appRes.value;
+  const assets = app.assets;
+  if (assets === undefined) throw new Error('Demo requires the host AssetRegistry');
+  const cubeMesh = assets.create(BUILTIN_CUBE).unwrap();
+  const quadMesh = assets.create(BUILTIN_QUAD).unwrap();
+  const sphereMesh = assets.create(BUILTIN_SPHERE).unwrap();
+  const triangleMesh = assets.create(BUILTIN_TRIANGLE).unwrap();
   console.warn(`[fxaa] backend=${app.renderer.inspect().capabilities.backendKind}`);
   if (darkGradientLane !== undefined) {
     app.renderer.subscribe((event) => {
@@ -357,17 +369,17 @@ async function bootstrap(target: HTMLCanvasElement): Promise<void> {
   // aliasing is obvious in the ANTIALIAS_NONE state (PI-3). Each
   // body is scaled to 0.5 to fit all 4 in view without overlap.
   const LAYOUT: readonly {
-    readonly handle: Handle<'MeshAsset', 'shared'>;
+    readonly handle: AssetHandle<'mesh'>;
     readonly pos: readonly [number, number, number];
   }[] = [
-    { handle: HANDLE_TRIANGLE, pos: [-1.05, 0, 0]},
-    { handle: HANDLE_CUBE, pos: [-0.35, 0, 0]},
-    { handle: HANDLE_QUAD, pos: [0.35, 0, 0]},
-    { handle: HANDLE_SPHERE, pos: [1.05, 0, 0]},
+    { handle: triangleMesh, pos: [-1.05, 0, 0]},
+    { handle: cubeMesh, pos: [-0.35, 0, 0]},
+    { handle: quadMesh, pos: [0.35, 0, 0]},
+    { handle: sphereMesh, pos: [1.05, 0, 0]},
   ];
   if (darkGradientLane === undefined) {
     // Default demo material stays outside the dedicated dark-gradient scene.
-    const materialHandle = world.allocSharedRef('MaterialAsset', {
+    const materialHandle = assets.create({
       kind: 'material',
       passes: [
         { name: 'Forward', program: { module: 'forgeax::default-standard-pbr' }, renderState: { tags: { LightMode: 'Forward' }, queue: 2000 } },
@@ -377,7 +389,7 @@ async function bootstrap(target: HTMLCanvasElement): Promise<void> {
         metallic: 0.0,
         roughness: 0.4,
       },
-    });
+    }).unwrap();
     for (const slot of LAYOUT) {
       world.spawn(
         {
@@ -395,18 +407,18 @@ async function bootstrap(target: HTMLCanvasElement): Promise<void> {
   }
 
   if (darkGradientLane !== undefined) {
-    const gradientTexture = world.allocSharedRef('TextureAsset', createDarkGradientTexture());
-    const gradientMaterial = world.allocSharedRef('MaterialAsset', Materials.standard({
+    const gradientTexture = assets.create(createDarkGradientTexture()).unwrap();
+    const gradientMaterial = assets.create(Materials.standard({
       baseColor: [1, 1, 1, 1],
       baseColorTexture: gradientTexture,
       metallic: 0,
       roughness: 1,
       renderState: { cullMode: 'none' },
-    }));
+    })).unwrap();
     const gradientQuad = darkGradientQuad();
     world.spawn(
       { component: Transform, data: { pos: gradientQuad.position, scale: gradientQuad.scale } },
-      { component: MeshFilter, data: { assetHandle: HANDLE_QUAD } },
+      { component: MeshFilter, data: { assetHandle: quadMesh } },
       { component: MeshRenderer, data: { materials: [gradientMaterial] } },
       { component: ShadowParticipation, data: { cast: false, receive: true } },
     ).unwrap();

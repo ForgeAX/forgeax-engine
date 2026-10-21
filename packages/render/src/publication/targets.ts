@@ -1,4 +1,5 @@
 import { createRenderTargetHost, type RenderTargetHost } from '../assembly/render-target-host';
+import { MaterialResource } from '../material-resource';
 import type {
   RenderTarget,
   RenderTargetDescriptor,
@@ -8,7 +9,8 @@ import type {
 import { resolveRenderTargetMaterialSource } from '../targets/material-source';
 import { isCanvasTextureSource, type MaterialTextureSource } from '../textures/canvas-texture';
 import { isExternalTextureSource } from '../textures/external-texture';
-import type { RenderPublicationTemplate } from './contract';
+import { renderTextureSourceKey } from '../textures/source-token';
+import type { RenderPublication } from './contract';
 import { RenderPublicationError } from './contract';
 import type { PreparedRenderPublication } from './receiver';
 
@@ -51,31 +53,34 @@ export class RenderPublicationTargetOwner {
 }
 
 export function publicationTargetSources(
-  templates: readonly RenderPublicationTemplate[],
+  materials: RenderPublication['materials'],
 ): readonly PublishedRenderTargetSource[] {
-  const sources = new Map<RenderTargetTextureSource, PublishedRenderTargetSource>();
-  for (const template of templates)
-    for (const material of template.snapshot.materials) {
-      for (const source of material.textureSources?.values() ?? []) {
-        if (isCanvasTextureSource(source) || isExternalTextureSource(source) || sources.has(source))
-          continue;
-        const binding = resolveRenderTargetMaterialSource(source);
-        if (binding === undefined)
-          throw new RenderPublicationError({
-            reason: 'shape',
-            subject: 'unknown material target source',
-          });
-        sources.set(source, {
-          token: source,
-          target: binding.target,
-          options: {
-            aspect: 'color',
-            dimension: binding.view.dimension,
-            mipLevel: binding.view.mipLevel,
-          },
+  const sources = new Map<string, PublishedRenderTargetSource>();
+  for (const { value: material } of materials) {
+    for (const source of material.textureSources?.values() ?? []) {
+      if (
+        isCanvasTextureSource(source) ||
+        isExternalTextureSource(source) ||
+        sources.has(renderTextureSourceKey(source))
+      )
+        continue;
+      const binding = resolveRenderTargetMaterialSource(source);
+      if (binding === undefined)
+        throw new RenderPublicationError({
+          reason: 'shape',
+          subject: 'unknown material target source',
         });
-      }
+      sources.set(renderTextureSourceKey(source), {
+        token: source,
+        target: binding.target,
+        options: {
+          aspect: 'color',
+          dimension: binding.view.dimension,
+          mipLevel: binding.view.mipLevel,
+        },
+      });
     }
+  }
   return [...sources.values()];
 }
 
@@ -124,7 +129,7 @@ export class RenderPublicationTargetReceiver {
         throw new RenderPublicationError({ reason: 'shape', subject: 'missing target descriptor' });
       return target;
     };
-    const sources = new Map<RenderTargetTextureSource, RenderTargetTextureSource>();
+    const sources = new Map<string, RenderTargetTextureSource>();
     for (const row of packet.targetSources) {
       const record = records.get(row.target);
       if (record === undefined)
@@ -137,34 +142,42 @@ export class RenderPublicationTargetReceiver {
         source = created.value;
         record.sources.set(key, source);
       }
-      sources.set(row.token, source);
+      sources.set(renderTextureSourceKey(row.token), source);
     }
     const camera = <T extends { readonly target?: RenderTarget }>(row: T): T =>
       row.target === undefined ? row : { ...row, target: resolve(row.target) };
+    const rebound = new Map<MaterialResource, MaterialResource>();
+    const rebind = (material: MaterialResource): MaterialResource => {
+      const existing = rebound.get(material);
+      if (existing !== undefined) return existing;
+      if (material.snapshot.textureSources === undefined) return material;
+      const textureSources = new Map<string, MaterialTextureSource>(
+        [...material.snapshot.textureSources].map(([name, token]) => {
+          if (isCanvasTextureSource(token) || isExternalTextureSource(token))
+            return [name, token] as const;
+          const source = sources.get(renderTextureSourceKey(token));
+          if (source === undefined)
+            throw new RenderPublicationError({
+              reason: 'shape',
+              subject: 'missing material target source',
+            });
+          return [name, source] as const;
+        }),
+      );
+      const resource = MaterialResource.from({ ...material.snapshot, textureSources });
+      rebound.set(material, resource);
+      return resource;
+    };
+    const materialUpdates = input.materialUpdates.map(rebind);
     const renderables = input.frame.renderables.map((row) => {
-      const materials = row.materials.map((material) => {
-        if (material.textureSources === undefined) return material;
-        const textureSources = new Map<string, MaterialTextureSource>(
-          [...material.textureSources].map(([name, token]) => {
-            if (isCanvasTextureSource(token) || isExternalTextureSource(token))
-              return [name, token] as const;
-            const source = sources.get(token);
-            if (source === undefined)
-              throw new RenderPublicationError({
-                reason: 'shape',
-                subject: 'missing material target source',
-              });
-            return [name, source] as const;
-          }),
-        );
-        return { ...material, textureSources };
-      });
+      const materials = row.materials.map(rebind);
       const first = row.materials.indexOf(row.material);
       return { ...row, materials, material: materials[Math.max(0, first)] ?? row.material };
     });
     const snapshots = new Map(renderables.map((row) => [row.entityKey, row]));
     return {
       ...input,
+      materialUpdates,
       frame: {
         ...input.frame,
         renderables,

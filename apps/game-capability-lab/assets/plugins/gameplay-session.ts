@@ -1,5 +1,4 @@
 import { Transform } from '@forgeax/engine-scene';
-import { RuntimeMeshVertices } from '@forgeax/engine-assets-runtime';
 import { PointLight } from '@forgeax/engine-render';
 import { type EntityHandle, type World } from '@forgeax/engine-ecs';
 import type { GameHost } from '@forgeax/engine-app';
@@ -194,12 +193,9 @@ export async function createGameplaySession(
     jpegTextureSwap: targets.jpegTextureSwap,
     chromaticAberration,
   });
-  context.effect(() => () => {
-    const content = projectilePresentation.customProjectile?.meshContent;
-    if (content !== undefined && world.hasComponent(content, RuntimeMeshVertices)) {
-      world.despawn(content).unwrap();
-    }
-  }, 'game-default/custom-projectile-content');
+  context.effect(() => () => projectilePresentation.dispose(), 'game-default/projectile-assets');
+  context.effect(() => () => targets.animatedMaterial?.dispose(), 'game-default/animated-material');
+
   installDefaultGameplayConfig(world, {
     playerY: PLAYER_Y,
     topQuaternion,

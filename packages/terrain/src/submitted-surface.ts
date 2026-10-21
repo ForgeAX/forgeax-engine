@@ -1,3 +1,4 @@
+import { decodeTerrainHeight, terrainHeightMipOffset } from './height-atlas.js';
 import { terrainVertexCoordinates } from './lod.js';
 
 /** Frozen geometry facts of one drawn subsection; packed bytes use the cooked mip order. */
@@ -6,26 +7,22 @@ export interface TerrainSurface {
   readonly width: number;
   readonly lod: number;
   readonly neighbors: readonly number[];
-  readonly heightRange: readonly [number, number];
+  readonly textureWidth: number;
+  readonly textureHeight: number;
+  readonly sectionIndex: number;
   readonly heights: Uint8Array;
 }
 
 function height(surface: TerrainSurface, x: number, z: number, mip: number): number {
-  let offset = 0,
-    size = surface.vertices;
-  for (let i = 0; i < mip; i++) {
-    offset += size * size * 4;
-    size /= 2;
-  }
-  const index = offset + (z * size + x) * 4;
-  const f = Math.fround;
-  const q = ((surface.heights[index] ?? 0) << 8) | (surface.heights[index + 1] ?? 0);
-  const min = f(surface.heightRange[0]),
-    max = f(surface.heightRange[1]);
-  if (q === 0) return min;
-  if (q === 65535) return max;
-  const step = f(f(max - min) / 65535);
-  return q <= 32767 ? f(min + f(q * step)) : f(max - f((65535 - q) * step));
+  const size = surface.vertices / 2 ** mip;
+  const tileColumns = surface.textureWidth / surface.vertices;
+  const pixel =
+    terrainHeightMipOffset(surface.textureWidth, surface.textureHeight, mip) +
+    ((Math.floor(surface.sectionIndex / tileColumns) * size + z) * tileColumns * size +
+      (surface.sectionIndex % tileColumns) * size +
+      x) *
+      4;
+  return decodeTerrainHeight(surface.heights, pixel);
 }
 
 /** Reconstruct the same two-mip XZ/height morph as the cooked vertex shader. */

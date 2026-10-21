@@ -1,4 +1,5 @@
 import {
+  createStandardPbrArtifactReceipt,
   DEFAULT_STANDARD_PBR_PARAM_SCHEMA,
   DEFAULT_UNLIT_PARAM_SCHEMA,
 } from '@forgeax/engine-shader';
@@ -85,7 +86,12 @@ export function standardPbrFixtureVariants(composedWgsl: string) {
           const definesKey = sortedDefines.every(([, value]) => value)
             ? ''
             : sortedDefines.map(([key, value]) => `${key}=${value}`).join('+');
-          variants.push({ definesKey, defines, composedWgsl });
+          variants.push({
+            definesKey,
+            defines,
+            composedWgsl,
+            receipt: createStandardPbrArtifactReceipt(false, vertexColor),
+          });
         }
       }
     }
@@ -100,6 +106,7 @@ export function standardPbrManifestRow(composedWgsl: string) {
     sourcePath: 'fixture://forgeax/default-standard-pbr.wgsl',
     composedWgsl,
     paramSchema: JSON.stringify(DEFAULT_STANDARD_PBR_PARAM_SCHEMA),
+    receipt: createStandardPbrArtifactReceipt(),
     variants: standardPbrFixtureVariants(composedWgsl),
   };
 }
@@ -127,7 +134,12 @@ const shadowCasterVariants = (() => {
             const definesKey = sortedDefines.every(([, value]) => value)
               ? ''
               : sortedDefines.map(([key, value]) => `${key}=${value}`).join('+');
-            variants.push({ definesKey, defines, composedWgsl: shadowCasterWgsl });
+            variants.push({
+              definesKey,
+              defines,
+              composedWgsl: shadowCasterWgsl,
+              receipt: createStandardPbrArtifactReceipt(!skinningDisabled, false),
+            });
           }
         }
       }
@@ -167,6 +179,7 @@ const materialShaders = [
     sourcePath: 'fixture://forgeax/default-standard-pbr.wgsl',
     composedWgsl: pbrWgsl,
     paramSchema: JSON.stringify(DEFAULT_STANDARD_PBR_PARAM_SCHEMA),
+    receipt: createStandardPbrArtifactReceipt(),
     variants: standardPbrVariants,
     uvSetCount: 8,
   },
@@ -182,6 +195,7 @@ const materialShaders = [
     identifier: 'forgeax::default-shadow-caster',
     sourcePath: 'fixture://forgeax/default-shadow-caster.wgsl',
     composedWgsl: shadowCasterWgsl,
+    receipt: createStandardPbrArtifactReceipt(),
     paramSchema: JSON.stringify([]),
     variants: shadowCasterVariants,
   },

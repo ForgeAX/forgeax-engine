@@ -1,4 +1,6 @@
 // biome-ignore-all lint/complexity/noUselessLoneBlockStatements: block-scope isolation between merged source files (consolidation paradigm)
+import type { AssetHandle } from '@forgeax/engine-types';
+import { testAssets } from './helpers/runtime-assets';
 // Consolidated by feat-20260609-test-pool-startup-reduction-merge-tiny-test-files
 //
 // Source files (N=21):
@@ -28,7 +30,6 @@
 // source as ancestorTitles[0]. Top-level imports merged + deduped.
 
 import { AnimationPlayer } from '@forgeax/engine-animation';
-import { AssetRegistry } from '@forgeax/engine-assets-runtime';
 import {
   type Component,
   defineComponent,
@@ -37,6 +38,7 @@ import {
   World,
 } from '@forgeax/engine-ecs';
 import { componentDefinition, componentId, componentSchema } from '@forgeax/engine-ecs/internal';
+import { createBoxGeometry } from '@forgeax/engine-geometry';
 import {
   ANTIALIAS_NONE,
   BLOOM_DISABLED,
@@ -45,6 +47,7 @@ import {
   Camera,
   DirectionalLight,
   Layer,
+  Materials,
   MeshFilter,
   MeshRenderer,
   orthographic,
@@ -72,8 +75,7 @@ import {
   propagateTransforms,
   Transform,
 } from '@forgeax/engine-scene';
-import type { Handle, SceneAsset, SceneEntity } from '@forgeax/engine-types';
-import { toShared } from '@forgeax/engine-types';
+import type { SceneAsset, SceneEntity } from '@forgeax/engine-types';
 import { describe, expect, expectTypeOf, it } from 'vitest';
 import { tonemapFromF32 } from '../../../render/src/components/camera';
 import { skyboxModeFromF32 } from '../../../render/src/components/skybox-background';
@@ -141,8 +143,8 @@ import { extractFrame } from '../../../render/src/render-system-extract-tail';
   //
   // Locks plan-strategy 7.2 naming + requirements IN-1 schema field set:
   //   Transform: pos:[f32x3] + quat:[f32x4] + scale:[f32x3] + shear:[f32x3]
-  //   MeshFilter:         assetHandle:'shared<MeshAsset>' (u32)
-  //   MeshRenderer:       materials:'array<shared<MaterialAsset>>' (u32)
+  //   MeshFilter:         assetHandle:'asset<mesh>' (u32)
+  //   MeshRenderer:       materials:'array<asset<material>>' (u32)
   //   Camera:             fov:f32 + aspect:f32 + near:f32 + far:f32   = 4 f32
   //   DirectionalLight: direction:[f32x3] + color:[f32x3] + intensity:f32 = 7 f32
   //
@@ -171,16 +173,16 @@ import { extractFrame } from '../../../render/src/render-system-extract-tail';
       expect(componentSchema(GlobalTransform).world).toBe('array<f32, 16>');
     });
 
-    it('MeshFilter has 1 shared<MeshAsset> field (assetHandle; M5 / w14)', () => {
+    it('MeshFilter has 1 asset<mesh> field (assetHandle; M5 / w14)', () => {
       expect(MeshFilter.name).toBe('MeshFilter');
       expect(Object.keys(componentSchema(MeshFilter)).length).toBe(1);
-      expect(componentSchema(MeshFilter).assetHandle).toBe('shared<MeshAsset>');
+      expect(componentSchema(MeshFilter).assetHandle).toBe('asset<mesh>');
     });
 
     it('MeshRenderer has materials, lighting channels, skin bounds and pipeline preparation', () => {
       expect(MeshRenderer.name).toBe('MeshRenderer');
       expect(componentSchema(MeshRenderer)).toEqual({
-        materials: 'array<shared<MaterialAsset>>',
+        materials: 'array<asset<material>>',
         lightingChannels: 'f64',
         conservativeSkinBounds: 'bool',
         preparePipelines: 'bool',
@@ -228,7 +230,7 @@ import { extractFrame } from '../../../render/src/render-system-extract-tail';
       expect(componentSchema(Camera).rates).toBe('array<f32, 2>');
       expect(componentSchema(Camera).temperature).toBe('f32');
       expect(componentSchema(Camera).tint).toBe('f32');
-      expect(componentSchema(Camera).colorLut).toBe('shared<TextureAsset>');
+      expect(componentSchema(Camera).colorLut).toBe('asset<texture>');
       expect(componentSchema(Camera).colorLutStrength).toBe('f32');
     });
 
@@ -238,7 +240,7 @@ import { extractFrame } from '../../../render/src/render-system-extract-tail';
       // feat-20260709 M2: direction/color collapsed from 6 per-axis scalars to
       // two array<f32,3> columns (3 light fields: direction + color + intensity).
       expect(DirectionalLight.name).toBe('DirectionalLight');
-      expect(Object.keys(componentSchema(DirectionalLight)).length).toBe(17);
+      expect(Object.keys(componentSchema(DirectionalLight)).length).toBe(27);
       expect(componentSchema(DirectionalLight).lightingChannels).toBe('f64');
       expect(componentSchema(DirectionalLight).staggerCascades).toBe('bool');
       expect(componentDefinition(DirectionalLight).defaults?.staggerCascades).toBe(false);
@@ -290,30 +292,40 @@ import { extractFrame } from '../../../render/src/render-system-extract-tail';
       expect(Array.from(r.scale)).toEqual([1, 1, 1]);
     });
 
-    it('spawn MeshFilter with HANDLE_CUBE-style u32 succeeds', () => {
+    it('spawn MeshFilter with a managed Mesh reference succeeds', () => {
       const world = new World();
       const e = world
         .spawn({
           component: MeshFilter,
-          data: { assetHandle: 1 as Handle<'MeshAsset', 'shared'> },
+          data: {
+            assetHandle: testAssets(world)
+              .create(createBoxGeometry(1, 1, 1).unwrap())
+              .unwrap(),
+          },
         })
         .unwrap();
       const r = world.get(e, MeshFilter).unwrap();
-      expect(r.assetHandle).toBe(1);
+      expect(testAssets(world).read(r.assetHandle).unwrap().kind).toBe('mesh');
     });
 
-    it('spawn MeshRenderer with a branded Handle<MaterialAsset> succeeds', () => {
+    it('spawn MeshRenderer with a managed Material reference succeeds', () => {
       const world = new World();
       const e = world
         .spawn({
           component: MeshRenderer,
           data: {
-            materials: [7 as Handle<'MaterialAsset', 'shared'>],
+            materials: [
+              testAssets(world)
+                .create(Materials.unlit([1, 1, 1, 1]))
+                .unwrap(),
+            ],
           },
         })
         .unwrap();
       const r = world.get(e, MeshRenderer).unwrap();
-      expect(r.materials[0]).toBe(7);
+      const material = r.materials[0];
+      if (material === undefined) throw new Error('Missing material binding');
+      expect(testAssets(world).read(material).unwrap().kind).toBe('material');
     });
 
     it('spawn Camera with perspective parameters succeeds', () => {
@@ -358,6 +370,9 @@ import { extractFrame } from '../../../render/src/render-system-extract-tail';
 
     it('multi-component spawn (Transform + MeshFilter + MeshRenderer + Camera) targets a single archetype', () => {
       const world = new World();
+      const assets = testAssets(world);
+      const meshHandle = assets.create(createBoxGeometry(1, 1, 1).unwrap()).unwrap();
+      const materialHandle = assets.create(Materials.unlit([1, 1, 1, 1])).unwrap();
       const e = world
         .spawn(
           {
@@ -368,11 +383,11 @@ import { extractFrame } from '../../../render/src/render-system-extract-tail';
               scale: [1, 1, 1],
             },
           },
-          { component: MeshFilter, data: { assetHandle: 1 as Handle<'MeshAsset', 'shared'> } },
+          { component: MeshFilter, data: { assetHandle: meshHandle } },
           {
             component: MeshRenderer,
             data: {
-              materials: [5 as Handle<'MaterialAsset', 'shared'>],
+              materials: [materialHandle],
             },
           },
           {
@@ -392,8 +407,8 @@ import { extractFrame } from '../../../render/src/render-system-extract-tail';
         )
         .unwrap();
       expect(world.get(e, Transform).unwrap().pos[0]).toBe(0);
-      expect(world.get(e, MeshFilter).unwrap().assetHandle).toBe(1);
-      expect(world.get(e, MeshRenderer).unwrap().materials[0]).toBe(5);
+      expect(world.get(e, MeshFilter).unwrap().assetHandle).toBe(meshHandle);
+      expect(world.get(e, MeshRenderer).unwrap().materials[0]).toBe(materialHandle);
       expect(world.get(e, Camera).unwrap().far).toBe(100);
     });
   });
@@ -821,7 +836,7 @@ import { extractFrame } from '../../../render/src/render-system-extract-tail';
   // SceneInstance schema must be locally registered so resolveComponent finds
   // it during instantiateScene (matches the runtime schema definition).
   defineComponent('SceneInstance', {
-    source: { type: 'shared<SceneAsset>' },
+    source: { type: 'asset<scene>' },
     mapping: { type: 'array<entity>' },
     state: { type: 'unique<SceneInstanceState>' },
   });
@@ -842,11 +857,11 @@ import { extractFrame } from '../../../render/src/render-system-extract-tail';
     world: World,
     asset: SceneAsset,
     components: readonly Component[] = [Transform],
-  ): Handle<'SceneAsset', 'shared'> {
+  ): AssetHandle<'scene'> {
     for (const component of [SceneInstance, ChildOf, Children, ...components]) {
       world.components.register(component).unwrap();
     }
-    return world.allocSharedRef('SceneAsset', asset);
+    return testAssets(world).create(asset).unwrap();
   }
 
   function firstNodeEntity(world: World, root: EntityHandle): EntityHandle {
@@ -1101,12 +1116,12 @@ import { extractFrame } from '../../../render/src/render-system-extract-tail';
       const schema = componentSchema(AnimationPlayer) as Record<string, unknown>;
       expect(Object.keys(schema).length).toBe(12);
       expect(schema).toEqual({
-        clips: 'array<shared<AnimationClip>>',
+        clips: 'array<asset<animation-clip>>',
         times: 'array<f64>',
         weights: 'array<f32>',
         speeds: 'array<f32>',
         masks: 'array<shared<AnimationMask>>',
-        graph: 'shared<AnimationGraph>',
+        graph: 'asset<animation-graph>',
         nodeWeights: 'array<f32>',
         nodeTimes: 'array<f64>',
         nodeSpeeds: 'array<f32>',
@@ -1116,9 +1131,9 @@ import { extractFrame } from '../../../render/src/render-system-extract-tail';
       });
     });
 
-    it('componentSchema(AnimationPlayer).clips is variable array<shared<AnimationClip>> (SoA keyword)', () => {
+    it('componentSchema(AnimationPlayer).clips is variable array<asset<animation-clip>> (SoA keyword)', () => {
       expect((componentSchema(AnimationPlayer) as Record<string, unknown>).clips).toBe(
-        'array<shared<AnimationClip>>',
+        'array<asset<animation-clip>>',
       );
     });
 
@@ -1148,9 +1163,9 @@ import { extractFrame } from '../../../render/src/render-system-extract-tail';
       expect((componentSchema(AnimationPlayer) as Record<string, unknown>).looping).toBe('bool');
     });
 
-    it('componentSchema(AnimationPlayer).graph is shared<AnimationGraph> (M3 / w24 graph handle)', () => {
+    it('componentSchema(AnimationPlayer).graph is asset<animation-graph> (M3 / w24 graph handle)', () => {
       expect((componentSchema(AnimationPlayer) as Record<string, unknown>).graph).toBe(
-        'shared<AnimationGraph>',
+        'asset<animation-graph>',
       );
     });
 
@@ -1219,16 +1234,14 @@ import { extractFrame } from '../../../render/src/render-system-extract-tail';
 
     it('AnimationPlayer spawn with explicit SoA data overrides defaults', () => {
       const world = new World();
+      const clips = [1, 2, 3, 4].map((duration) =>
+        testAssets(world).create({ kind: 'animation-clip', duration, channels: [] }).unwrap(),
+      );
       const e = world
         .spawn({
           component: AnimationPlayer,
           data: {
-            clips: [
-              toShared<'AnimationClip'>(7),
-              toShared<'AnimationClip'>(3),
-              0 as Handle<'AnimationClip', 'shared'>,
-              0 as Handle<'AnimationClip', 'shared'>,
-            ],
+            clips,
             times: new Float64Array([0, 1.5, 0, 0]),
             weights: new Float32Array([0.7, 0.3, 0, 0]),
             speeds: new Float32Array([1, 0.5, 0, 0]),
@@ -1245,10 +1258,10 @@ import { extractFrame } from '../../../render/src/render-system-extract-tail';
         paused: boolean;
         looping: boolean;
       };
-      expect(ap.clips[0]).toBe(toShared<'AnimationClip'>(7));
-      expect(ap.clips[1]).toBe(toShared<'AnimationClip'>(3));
-      expect(ap.clips[2]).toBe(0);
-      expect(ap.clips[3]).toBe(0);
+      expect(ap.clips[0]).toBe(clips[0]);
+      expect(ap.clips[1]).toBe(clips[1]);
+      expect(ap.clips[2]).toBe(clips[2]);
+      expect(ap.clips[3]).toBe(clips[3]);
       expect(ap.times[0]).toBe(0);
       expect(ap.times[1]).toBeCloseTo(1.5, 5);
       expect(ap.weights[0]).toBeCloseTo(0.7, 5);
@@ -1468,7 +1481,7 @@ import { extractFrame } from '../../../render/src/render-system-extract-tail';
               : key === 'rangeEv' || key === 'rates' || key === 'projectionOffset'
                 ? 'array<f32, 2>'
                 : key === 'colorLut'
-                  ? 'shared<TextureAsset>'
+                  ? 'asset<texture>'
                   : key === 'historyVersion' || key === 'targetLayer'
                     ? 'u32'
                     : key === 'target'
@@ -1951,11 +1964,13 @@ import { extractFrame } from '../../../render/src/render-system-extract-tail';
     it('spawn with explicit materials array preserves the handle values as Uint32Array', () => {
       const world = new World();
 
-      const matHandle = world.allocSharedRef('MaterialAsset', {
-        kind: 'material',
-        baseColor: [1, 0, 0, 1],
-        passes: [{ name: 'forward', program: { module: 'project::standard' } }],
-      } as never);
+      const matHandle = testAssets(world)
+        .create({
+          kind: 'material',
+          values: { baseColor: [1, 0, 0, 1] },
+          passes: [{ name: 'forward', program: { module: 'project::standard' } }],
+        })
+        .unwrap();
 
       expect(matHandle).toBeGreaterThan(0);
 
@@ -1970,14 +1985,12 @@ import { extractFrame } from '../../../render/src/render-system-extract-tail';
     it('spawn with multiple materials round-trips Uint32Array', () => {
       const world = new World();
 
-      const m0 = world.allocSharedRef('MaterialAsset', {
-        kind: 'material',
-        baseColor: [1, 0, 0, 1],
-      } as never);
-      const m1 = world.allocSharedRef('MaterialAsset', {
-        kind: 'material',
-        baseColor: [0, 1, 0, 1],
-      } as never);
+      const m0 = testAssets(world)
+        .create(Materials.unlit([1, 0, 0, 1]))
+        .unwrap();
+      const m1 = testAssets(world)
+        .create(Materials.unlit([0, 1, 0, 1]))
+        .unwrap();
 
       const e = world.spawn({ component: MeshRenderer, data: { materials: [m0, m1] } }).unwrap();
       const row = world.get(e, MeshRenderer).unwrap();
@@ -2026,11 +2039,21 @@ import { extractFrame } from '../../../render/src/render-system-extract-tail';
 
     it('defaults: { mode: SKYBOX_MODE_CUBEMAP } yields mode===0 on spawn without mode', () => {
       const world = new World();
+      const handle = testAssets(world)
+        .create({
+          kind: 'equirect',
+          width: 2,
+          height: 1,
+          format: 'rgba16float',
+          data: new Uint8Array(16),
+          colorSpace: 'linear',
+        })
+        .unwrap();
       const e = world
         .spawn({
           component: SkyboxBackground,
           data: {
-            equirect: 42 as unknown as never, // Handle<EquirectAsset> stored as u32
+            equirect: handle,
           },
         })
         .unwrap();
@@ -2040,13 +2063,25 @@ import { extractFrame } from '../../../render/src/render-system-extract-tail';
 
     it('entity with SkyboxBackground is hit by a single-component query', () => {
       const world = new World();
-      world.spawn({
-        component: SkyboxBackground,
-        data: {
-          equirect: 7 as unknown as never,
-          mode: SKYBOX_MODE_CUBEMAP,
-        },
-      });
+      const handle = testAssets(world)
+        .create({
+          kind: 'equirect',
+          width: 2,
+          height: 1,
+          format: 'rgba16float',
+          data: new Uint8Array(16),
+          colorSpace: 'linear',
+        })
+        .unwrap();
+      world
+        .spawn({
+          component: SkyboxBackground,
+          data: {
+            equirect: handle,
+            mode: SKYBOX_MODE_CUBEMAP,
+          },
+        })
+        .unwrap();
 
       const query = world.query({ with: [SkyboxBackground] }).unwrap();
       expect([...query].length).toBe(1);
@@ -2054,11 +2089,20 @@ import { extractFrame } from '../../../render/src/render-system-extract-tail';
 
     it('world.get returns the equirect handle (u32-stored)', () => {
       const world = new World();
-      const handle = 99;
+      const handle = testAssets(world)
+        .create({
+          kind: 'equirect',
+          width: 2,
+          height: 1,
+          format: 'rgba16float',
+          data: new Uint8Array(16),
+          colorSpace: 'linear',
+        })
+        .unwrap();
       const e = world
         .spawn({
           component: SkyboxBackground,
-          data: { equirect: handle as unknown as never, mode: 0 },
+          data: { equirect: handle, mode: 0 },
         })
         .unwrap();
       const row = world.get(e, SkyboxBackground).unwrap();
@@ -2531,33 +2575,34 @@ import { extractFrame } from '../../../render/src/render-system-extract-tail';
   describe('render-system-extract count-mismatch (w12, AC-05 a)', () => {
     it('single mesh single material: extract succeeds', () => {
       const world = new World();
-      const assets = new AssetRegistry(
-        // biome-ignore lint/suspicious/noExplicitAny: mock ShaderRegistry
-        { materialArtifact: () => undefined, findMaterialArtifact: () => ({ ok: false }) } as any,
-      );
+      const assets = testAssets(world);
 
-      const matHandle = world.allocSharedRef('MaterialAsset', {
-        kind: 'material',
-        baseColor: [1, 0, 0, 1],
-        passes: [{ name: 'forward', program: { module: 'project::standard' } }],
-      } as never);
+      const matHandle = testAssets(world)
+        .create({
+          kind: 'material',
+          values: { baseColor: [1, 0, 0, 1] },
+          passes: [{ name: 'forward', program: { module: 'project::standard' } }],
+        })
+        .unwrap();
 
-      const meshHandle = world.allocSharedRef('MeshAsset', {
-        kind: 'mesh',
-        vertices: new Float32Array(4 * 12),
-        indices: new Uint16Array([0, 1, 2, 0, 2, 3]),
-        attributes: { position: new Float32Array(4 * 3) },
-        materialSlots: [{ slotName: 'Default' }],
-        submeshes: [
-          {
-            indexOffset: 0,
-            indexCount: 6,
-            vertexCount: 4,
-            materialSlot: 0,
-            topology: 'triangle-list' as const,
-          },
-        ],
-      } as never);
+      const meshHandle = testAssets(world)
+        .create({
+          kind: 'mesh',
+          vertices: new Float32Array(4 * 3),
+          indices: new Uint16Array([0, 1, 2, 0, 2, 3]),
+          attributes: { position: new Float32Array(4 * 3) },
+          materialSlots: [{ slotName: 'Default' }],
+          submeshes: [
+            {
+              indexOffset: 0,
+              indexCount: 6,
+              vertexCount: 4,
+              materialSlot: 0,
+              topology: 'triangle-list' as const,
+            },
+          ],
+        })
+        .unwrap();
 
       world.spawn(
         { component: Transform, data: {} },
@@ -2576,27 +2621,26 @@ import { extractFrame } from '../../../render/src/render-system-extract-tail';
     it('materials: [] with submeshes: [1] routes through D-Q7 case B mid-grey default (preserves legacy single-mesh-no-material path)', () => {
       const world = new World();
 
-      const assets = new AssetRegistry(
-        // biome-ignore lint/suspicious/noExplicitAny: mock ShaderRegistry
-        { materialArtifact: () => undefined, findMaterialArtifact: () => ({ ok: false }) } as any,
-      );
+      const assets = testAssets(world);
 
-      const meshHandle = world.allocSharedRef('MeshAsset', {
-        kind: 'mesh',
-        vertices: new Float32Array(4 * 12),
-        indices: new Uint16Array([0, 1, 2, 0, 2, 3]),
-        attributes: { position: new Float32Array(4 * 3) },
-        materialSlots: [{ slotName: 'Default' }],
-        submeshes: [
-          {
-            indexOffset: 0,
-            indexCount: 6,
-            vertexCount: 4,
-            materialSlot: 0,
-            topology: 'triangle-list' as const,
-          },
-        ],
-      } as never);
+      const meshHandle = testAssets(world)
+        .create({
+          kind: 'mesh',
+          vertices: new Float32Array(4 * 3),
+          indices: new Uint16Array([0, 1, 2, 0, 2, 3]),
+          attributes: { position: new Float32Array(4 * 3) },
+          materialSlots: [{ slotName: 'Default' }],
+          submeshes: [
+            {
+              indexOffset: 0,
+              indexCount: 6,
+              vertexCount: 4,
+              materialSlot: 0,
+              topology: 'triangle-list' as const,
+            },
+          ],
+        })
+        .unwrap();
 
       world.spawn(
         { component: Transform, data: {} },
@@ -2616,33 +2660,34 @@ import { extractFrame } from '../../../render/src/render-system-extract-tail';
     it('materials overflow emits a diagnostic and ignores the extra override', () => {
       const world = new World();
 
-      const assets = new AssetRegistry(
-        // biome-ignore lint/suspicious/noExplicitAny: mock ShaderRegistry
-        { materialArtifact: () => undefined, findMaterialArtifact: () => ({ ok: false }) } as any,
-      );
+      const assets = testAssets(world);
 
-      const matHandle = world.allocSharedRef('MaterialAsset', {
-        kind: 'material',
-        baseColor: [1, 0, 0, 1],
-        passes: [{ name: 'forward', program: { module: 'project::standard' } }],
-      } as never);
+      const matHandle = testAssets(world)
+        .create({
+          kind: 'material',
+          values: { baseColor: [1, 0, 0, 1] },
+          passes: [{ name: 'forward', program: { module: 'project::standard' } }],
+        })
+        .unwrap();
 
-      const meshHandle = world.allocSharedRef('MeshAsset', {
-        kind: 'mesh',
-        vertices: new Float32Array(4 * 12),
-        indices: new Uint16Array([0, 1, 2, 0, 2, 3]),
-        attributes: { position: new Float32Array(4 * 3) },
-        materialSlots: [{ slotName: 'Default' }],
-        submeshes: [
-          {
-            indexOffset: 0,
-            indexCount: 6,
-            vertexCount: 4,
-            materialSlot: 0,
-            topology: 'triangle-list' as const,
-          },
-        ],
-      } as never);
+      const meshHandle = testAssets(world)
+        .create({
+          kind: 'mesh',
+          vertices: new Float32Array(4 * 3),
+          indices: new Uint16Array([0, 1, 2, 0, 2, 3]),
+          attributes: { position: new Float32Array(4 * 3) },
+          materialSlots: [{ slotName: 'Default' }],
+          submeshes: [
+            {
+              indexOffset: 0,
+              indexCount: 6,
+              vertexCount: 4,
+              materialSlot: 0,
+              topology: 'triangle-list' as const,
+            },
+          ],
+        })
+        .unwrap();
 
       world.spawn(
         { component: Transform, data: {} },

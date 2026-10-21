@@ -1,3 +1,4 @@
+import type { MaterialSurfacePassKind } from '@forgeax/engine-types';
 import type { GBufferOrderDiagnosticInspection } from './gpu-driven/gbuffer-order-diagnostic';
 import type { ShadowCasterClassInspection } from './gpu-driven/shadow-caster-classes';
 import type { ShadowViewInspection } from './gpu-driven/shadow-views';
@@ -341,9 +342,6 @@ export function projectBarrelDistortionInspection(
 /** Detached material texture-source probe accounting for the last extract. */
 export interface MaterialTextureSourceInspection {
   readonly sourceFieldsVisited: number;
-  readonly numericSharedRefProbes: number;
-  readonly sourceCacheHits: number;
-  readonly sourceCacheMisses: number;
   readonly producerRoutes: Readonly<Record<string, number>>;
 }
 
@@ -408,7 +406,7 @@ export interface GpuSceneTableInspection {
   readonly bytes: number;
 }
 
-type GpuSceneTableName = 'primitive' | 'instance' | 'transform' | 'drawTemplate' | 'material';
+type GpuSceneTableName = 'primitive' | 'instance' | 'transform' | 'material';
 
 export interface GpuSceneInspection {
   readonly capacity: number;
@@ -516,10 +514,6 @@ export interface GpuDrivenProductionInspection {
   readonly surfaceFrameRowAllocations: number;
   /** Lifetime count of writes to the one renderer-owned shared Surface frame-time value. */
   readonly surfaceFrameTimeWrites: number;
-  /** Lifetime count of successful producer-side residency validation scans. */
-  readonly residencyValidationScans: number;
-  /** Lifetime count of validation rows reused without a CPU residency walk. */
-  readonly residencyValidationCacheHits: number;
   /** Lifetime count of CPU fallback telemetry traversals. */
   readonly cpuValidationScans: number;
   /** Lifetime count of CPU fallback telemetry cache hits. */
@@ -556,7 +550,7 @@ export interface GpuDrivenProductionInspection {
   /** Settled dynamic shadow casters waiting for the next static-layer promotion window. */
   readonly shadowCasterPendingPromotions: number;
   readonly gpuOwnedEntityCount: number;
-  readonly candidateUploadBytes: number;
+  readonly sharedInputUploadBytes: number;
   /** Dirty words of the per-view primitive suppression bitmap uploaded this frame. */
   readonly suppressionUploadBytes: number;
   readonly batchUploadBytes: number;
@@ -735,6 +729,55 @@ export interface ShadowCacheStatistics {
   readonly rebuilds: number;
   readonly drawCount: number;
   readonly invalidations: Readonly<Partial<Record<ShadowViewInvalidationReason, number>>>;
+}
+
+/** CPU commands successfully encoded by one submitted shadow raster pass.
+ * Bundle contents and GPU indirect visibility are intentionally not inferred. */
+export interface ShadowWorkloadCommands {
+  readonly directDraws: number;
+  readonly directIndexedDraws: number;
+  readonly indirectDraws: number;
+  readonly indexedIndirectDraws: number;
+  readonly bundleCalls: number;
+  /** Known stock prepared bundles only; arbitrary bundle contents stay unobserved. */
+  readonly knownBundleIndirectDraws: number;
+  readonly knownBundleIndexedIndirectDraws: number;
+  readonly directVertexInstances: number | null;
+  readonly directIndexInstances: number | null;
+}
+
+export interface ShadowWorkloadPass {
+  readonly identity: ShadowViewIdentity;
+  /** Null on a cache hit: no physical raster pass executed. */
+  readonly passName: string | null;
+  readonly cache: 'hit' | 'miss';
+  readonly invalidationReason?: ShadowViewInvalidationReason;
+  readonly commands: ShadowWorkloadCommands;
+  readonly indirectActual: 'unobserved';
+  readonly bundleContents: 'unobserved';
+  /** Historical readback with its own producer identity; never this pass's current work. */
+  readonly lastCullingObservation?: import('./gpu-driven/view-gpu').GpuDrivenCullingObservation;
+}
+
+/** Frozen at successful submission, never reconstructed from latest inspection. */
+export interface ShadowWorkloadObservation {
+  readonly status: 'complete' | 'unavailable';
+  readonly reason?: 'ui-only' | 'view-not-captured' | 'held-view' | 'observation-budget';
+  readonly scope: 'display-views';
+  /** Independent Renderer receipt identity, not the Source frame ID. */
+  readonly frameId: number;
+  readonly deviceGeneration: number;
+  readonly graphGeneration: number;
+  readonly views: readonly {
+    readonly viewKey: string;
+    readonly viewId: number;
+    readonly attachmentId: string;
+    readonly viewGeneration: number;
+    readonly eye?: 'left' | 'right';
+    readonly graphGeneration: number;
+    readonly state: 'rendered' | 'held';
+    readonly passes: readonly ShadowWorkloadPass[];
+  }[];
 }
 
 /** One shadow view decision of the last submitted frame. */
@@ -1043,7 +1086,7 @@ export interface PersistentRenderSceneInspection {
     readonly resourceGeneration: number | undefined;
     readonly status: 'submitted' | 'completed';
     readonly passes: readonly {
-      readonly pass: 'nearest-layer' | 'color';
+      readonly pass: MaterialSurfacePassKind;
       /** Total commands actually encoded, including rows beyond the bounded sample. */
       readonly commandCount: number;
       readonly totalCommandCount: number;
@@ -1098,7 +1141,7 @@ export interface FrameCacheCounters {
  * so a camera-only frame is expected to hit every cache except where noted:
  * - `visibilityProjection`: one lookup per primary view projection; keyed on
  *   the culled visible set, facet draw revision and stable slot identity.
- * - `temporalSnapshots`: one lookup per renderable per TAA/motion frame.
+ * - `temporalSnapshots`: actual consumed temporal reads, including repeated query consumers.
  * - `transparentSort`: one lookup per frame with more than one transparent
  *   entry; a hit reuses the previous order after an O(n) order check against
  *   the current camera.
@@ -1108,14 +1151,6 @@ export interface FrameCacheCounters {
 export interface MaterialUniformCacheInspection {
   readonly packHits: number;
   readonly packMisses: number;
-  /** First failed packing-cache condition; exclusive counts partition packMisses. */
-  readonly packMissNoComparison?: number;
-  readonly packMissMutable?: number;
-  readonly packMissRuntimeSchema?: number;
-  readonly packMissMovedSlot?: number;
-  readonly packMissCold?: number;
-  readonly comparedSlots: number;
-  readonly unchangedSlots: number;
   readonly uploadRanges: number;
   readonly uploadedLogicalBytes: number;
   readonly skippedUploads: number;

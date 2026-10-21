@@ -60,7 +60,7 @@ export {
   type AnimationPlaybackFailure,
 } from './playback-errors';
 export type { AnimationPlaybackOptions } from './plugin';
-export { animationPayloadsPlugin, animationPlugin, animationRuntimePlugin } from './plugin';
+export { animationPlugin } from './plugin';
 export { bindComponentProperty, bindObjectProperty } from './property-binding';
 export {
   AnimationAssetError,
@@ -85,7 +85,6 @@ export {
   advanceAnimationPlayer,
   registerAdvanceAnimationPlayer,
 } from './systems/advance-animation-player';
-export type { AnimationPayloadLookup } from './systems/evaluate-animation-graph';
 export {
   EvaluateAnimationGraph,
   evaluateAnimationGraph,

@@ -163,10 +163,8 @@ async function fixture() {
       .unwrap();
     const lut = {
       view,
-      sampler,
       strength: options.strength ?? 1,
-      bindGroupLayout: selectedLayout,
-      bindGroup: binding,
+      bind: () => ({ bindGroupLayout: selectedLayout, bindGroup: binding }),
     };
     if (options.topology) {
       addStandardPost(

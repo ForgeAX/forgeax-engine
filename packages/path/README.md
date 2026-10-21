@@ -32,7 +32,7 @@ world.despawn(path).unwrap();
 await context.fiber.dispose();
 ```
 
-Use the normal Pack source, Catalog `loadByGuid<SceneAsset>`, Scene instantiation and `rootsToSceneAsset` save route for durable content. `PathFollower.path` is an ECS `entity` field, so authored Scene entity keys become instance-local bindings and save back to keys. Two scene instances never share mutable follower state. Multiple followers of one Path entity share its preparation. Separate Path entities have independently transformed preparations; sharing is per path instance, not a global cache.
+Use the normal Pack source, Catalog `assets.load(guid, 'scene')`, Scene instantiation and `rootsToSceneAsset` save route for durable content. `PathFollower.path` is an ECS `entity` field, so authored Scene entity keys become instance-local bindings and save back to keys. Two scene instances never share mutable follower state. Multiple followers of one Path entity share its preparation. Separate Path entities have independently transformed preparations; sharing is per path instance, not a global cache.
 
 ## Authored contract
 

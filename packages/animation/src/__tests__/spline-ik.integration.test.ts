@@ -1,3 +1,5 @@
+import { AssetRegistry } from '@forgeax/engine-assets-runtime';
+import { runtimeAssetRegistry } from '@forgeax/engine-assets-runtime/internal';
 import { createWorldContext, defineComponent, type EntityHandle, World } from '@forgeax/engine-ecs';
 import { quat, vec3 } from '@forgeax/engine-math';
 import { Path, PathAxis, preparePath } from '@forgeax/engine-path';
@@ -22,7 +24,7 @@ async function rig(count = 4, length = 1) {
   const world = new World();
   const context = await createWorldContext(world, [
     scenePlugin(),
-    animationPlugin(undefined, { cadence: 'fixed' }),
+    animationPlugin({ cadence: 'fixed' }),
   ]);
   const joints: EntityHandle[] = [];
   for (let i = 0; i < count; i++)
@@ -533,12 +535,12 @@ describe('Spline IK ordinary Scene pose', () => {
         control: { components: { SplineIK: { path: 'curve', root: 'a', tip: 'c', weight: 0.5 } } },
       },
     };
-    const world = new World();
+    const world = new World({ assets: new AssetRegistry() });
     const failures: string[] = [];
     const instanceLease = world.components
       .register(
         defineComponent('SceneInstance', {
-          source: 'shared<SceneAsset>',
+          source: 'asset<scene>',
           mapping: 'array<entity>',
           state: 'unique<SceneInstanceState>',
         }),
@@ -546,13 +548,12 @@ describe('Spline IK ordinary Scene pose', () => {
       .unwrap();
     const context = await createWorldContext(world, [
       scenePlugin(),
-      animationPlugin(undefined, { cadence: 'fixed' }),
+      animationPlugin({ cadence: 'fixed' }),
       splineIKPlugin({ onError: (_e, f) => failures.push(f.code) }),
     ]);
-    const handle = world.allocSharedRef(
-      'SceneAsset',
-      JSON.parse(JSON.stringify(source)) as SceneAsset,
-    );
+    const handle = runtimeAssetRegistry(world.assets)
+      .create(JSON.parse(JSON.stringify(source)) as SceneAsset)
+      .unwrap();
     worldInstantiateSceneFlat(world, handle).unwrap();
     worldInstantiateSceneFlat(world, handle).unwrap();
     const controllers = Array.from(world.query({ read: [SplineIK] }).unwrap(), (r) => r.entity);

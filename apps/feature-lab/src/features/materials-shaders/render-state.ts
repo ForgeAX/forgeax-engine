@@ -1,6 +1,8 @@
+import { AssetRegistry } from '@forgeax/engine/assets-runtime';
+import { createPrimitiveMesh } from '@forgeax/engine/geometry';
 import { Materials } from '@forgeax/engine/render';
 import { defineFeature } from '../../lab/feature';
-import { MESH, material, spawnMesh, spawnStage, standard } from '../../lab/stage';
+import { material, spawnMesh, spawnStage, standard } from '../../lab/stage';
 import { materialToggle } from './lib/swap';
 
 export default defineFeature({
@@ -12,10 +14,18 @@ export default defineFeature({
   expect:
     'ON: a red sphere is visible through the grey wall (x-ray). OFF: the default less-equal depth test hides the sphere behind the wall.',
   setup({ world }) {
+    const primitiveAssets = world.assets;
+    if (!(primitiveAssets instanceof AssetRegistry))
+      throw new Error('Scene requires its runtime asset owner');
+
+    const stageCube = primitiveAssets.create(createPrimitiveMesh('cube').unwrap()).unwrap();
+
+    const stageSphere = primitiveAssets.create(createPrimitiveMesh('sphere').unwrap()).unwrap();
+
     spawnStage(world);
     spawnMesh(
       world,
-      MESH.cube,
+      stageCube,
       standard(world, { baseColor: [0.6, 0.6, 0.65, 1], roughness: 0.8 }),
       {
         pos: [0, 0.9, 1.2],
@@ -30,7 +40,7 @@ export default defineFeature({
       }),
     );
     const normal = material(world, Materials.unlit([1, 0.1, 0.1, 1]));
-    const sphere = spawnMesh(world, MESH.sphere, xray, {
+    const sphere = spawnMesh(world, stageSphere, xray, {
       pos: [0, 0.9, -0.6],
       scale: [1.1, 1.1, 1.1],
     });

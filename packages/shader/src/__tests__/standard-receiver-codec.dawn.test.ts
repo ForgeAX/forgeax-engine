@@ -64,7 +64,7 @@ struct Result { normal: vec4f, failures: vec4u }
       // any of the receiver's independent 32-bit channel mask to DFG.
       let channels = select(0xffffffffu ^ (1u << (layer % 32u)), 1u << (layer % 32u), mode == 1u);
       var g = encodeStandardGBuffer(n, n, 0.625, vec3f(0.5), 0.0,
-        vec3f(0.04), 1.0, vec3f(0), 1.0, 255u, 0x7fffffu,
+        vec3f(0.04), vec4f(0.04, 0.04, 0.04, 1.0), 1.0, vec3f(0), 1.0, 255u, 0x7fffffu,
         true, channels, vec4f(0), mode != 0u);
       // The terrain producer owns the existing complete upper byte.
       g.receiver_geometry.x = (g.receiver_geometry.x & 0x00ffffffu) | (layer << 24u);

@@ -6,7 +6,7 @@ import {
   createDomPartScenario,
   createUiPreviewSession,
   type UiPreviewAssetChanged,
-  type UiPreviewAssetSource,
+  type UiPreviewAssetReadResult,
   type UiPreviewCaptureAdapter,
   type UiPreviewScenario,
   type UiPreviewSession,
@@ -36,9 +36,7 @@ export interface UiAuthoringAssetGateway {
   readonly subscribe: (listener: (change: UiPreviewAssetChanged) => void) => () => void;
 }
 
-export type UiPreviewAssetSourceLoadResult = Awaited<
-  ReturnType<UiPreviewAssetSource['loadByGuid']>
->;
+export type UiPreviewAssetSourceLoadResult = UiPreviewAssetReadResult;
 
 export interface UiAuthoringHostHandle {
   readonly guid: string;
@@ -178,15 +176,12 @@ export function createUiAuthoringHost(
     gateway.listCatalog().find((entry) => entry.guid.toLowerCase() === selectedGuid.toLowerCase())
       ?.sourcePath ?? `${selectedGuid}.ui.html`;
 
-  const source: UiPreviewAssetSource = {
-    invalidate: (guid) => gateway.invalidate(guid),
-    loadByGuid: async (guid) => {
-      if (guid.toLowerCase() === selectedGuid.toLowerCase() && sourceOverride !== undefined) {
-        if (sourceOverride.error !== undefined) return { ok: false, error: sourceOverride.error };
-        if (sourceOverride.asset !== undefined) return { ok: true, value: sourceOverride.asset };
-      }
-      return gateway.loadByGuid(guid);
-    },
+  const readAsset = async (guid: string): Promise<UiPreviewAssetReadResult> => {
+    if (guid.toLowerCase() === selectedGuid.toLowerCase() && sourceOverride !== undefined) {
+      if (sourceOverride.error !== undefined) return { ok: false, error: sourceOverride.error };
+      if (sourceOverride.asset !== undefined) return { ok: true, value: sourceOverride.asset };
+    }
+    return gateway.loadByGuid(guid);
   };
 
   const scenarioFor = (name: 'default' | 'extreme' = 'default'): UiPreviewScenario =>
@@ -199,7 +194,7 @@ export function createUiAuthoringHost(
     if (candidate === undefined) {
       if (sourceOverride?.asset !== undefined) candidate = sourceOverride.asset;
       else {
-        const loaded = await source.loadByGuid(selectedGuid);
+        const loaded = await readAsset(selectedGuid);
         if (!loaded.ok) return { ok: false, error: toImportError(loaded.error) };
         candidate = loaded.value;
       }
@@ -262,7 +257,7 @@ export function createUiAuthoringHost(
       lastRefreshError = undefined;
       session = createUiPreviewSession({
         guid: selectedGuid,
-        assets: source,
+        readAsset,
         root,
         rect: { width: 320, height: 180 },
         onAction: (action) => {

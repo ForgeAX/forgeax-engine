@@ -73,7 +73,7 @@ async function pack(root: string, index: number, body: string) {
   await writeFile(
     path,
     `export default {
-    schemaVersion: '2.0.0', packageId: new Uint8Array(16).fill(${index + 1}),
+    schemaVersion: '2.0.0', plugins: true, packageId: new Uint8Array(16).fill(${index + 1}),
     build: ${body}
   };`,
   );
@@ -127,7 +127,7 @@ it('consumes a current retained inventory without reopening or leaving its origi
         throw new Error('unexpected content read');
       },
     } as never),
-  ).rejects.toThrow('ScriptablePack worker is closed');
+  ).rejects.toThrow('ScriptablePack executor is not leased');
 });
 
 it('rejects changed retained source before consuming the caller-owned definition', async () => {
@@ -155,7 +155,7 @@ it('rejects changed retained source before consuming the caller-owned definition
     value: {},
   });
   await expect(declaration.definition.build(context as never)).rejects.toThrow(
-    'ScriptablePack worker is closed',
+    'ScriptablePack executor is not leased',
   );
 });
 

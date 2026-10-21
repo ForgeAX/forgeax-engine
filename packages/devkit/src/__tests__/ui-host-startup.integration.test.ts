@@ -1,7 +1,6 @@
 import { createServer, type ServerResponse } from 'node:http';
 import {
   AssetRegistry,
-  createAssetRegistry,
   createCatalogSource,
   defineAssetKind,
 } from '@forgeax/engine-assets-runtime';
@@ -15,10 +14,7 @@ import { createUiLoader, type UiAsset } from '@forgeax/engine-ui';
 import { createUiImporter } from '@forgeax/engine-ui/importer';
 import { expect, it } from 'vitest';
 
-it.each([
-  'pack-loader',
-  'decoder',
-] as const)('activates the native UI root through %s without preloading its DOM image and font bodies', async (entry) => {
+it('activates the native UI root through its decoder without preloading DOM image and font bodies', async () => {
   const guid = '4360b2ef-2f15-4318-843f-c165ffe8d974';
   const uiKind = defineAssetKind<UiAsset, 'ui'>('ui');
   const encode = (value: string) => new TextEncoder().encode(value);
@@ -95,17 +91,11 @@ it.each([
   const address = server.address();
   if (!address || typeof address === 'string') throw new Error('missing HTTP address');
   const origin = `http://127.0.0.1:${address.port}`;
-  const registry =
-    entry === 'decoder'
-      ? createAssetRegistry({
-          scopeId: 'ui-startup',
-          catalog: createCatalogSource({ url: `${origin}/catalog.json` }),
-        })
-      : new AssetRegistry({} as never);
-  const uiLoader = createUiLoader();
-  if (registry instanceof AssetRegistry) {
-    registry.configurePackIndex(`${origin}/catalog.json`);
-  } else registry.installDecoder(uiKind, uiLoader);
+  const registry = new AssetRegistry({
+    scopeId: 'ui-startup',
+    catalog: createCatalogSource({ url: `${origin}/catalog.json` }),
+  });
+  registry.installDecoder(uiKind, createUiLoader());
   let loaded: UiAsset | undefined;
   const host = await createFrontendHost({
     autoActivate: false,
@@ -118,12 +108,10 @@ it.each([
           .plugin({
             name: 'ui',
             async apply() {
-              const result =
-                registry instanceof AssetRegistry
-                  ? await registry.loadByGuid<UiAsset>(registry.parseGuid(guid))
-                  : await registry.load(guid, uiKind);
+              const result = await registry.load(guid, uiKind);
               if (!result.ok) throw new Error(JSON.stringify(result.error));
-              loaded = result.value;
+              loaded = registry.read(result.value).unwrap();
+              registry.release(result.value).unwrap();
             },
           })
           .await();
@@ -151,7 +139,7 @@ it.each([
     }
   } finally {
     for (const response of heldMedia) response.end(Uint8Array.of(1, 2, 3));
-    if (!(registry instanceof AssetRegistry)) registry.dispose();
+    registry.dispose();
     try {
       await host.dispose();
     } finally {

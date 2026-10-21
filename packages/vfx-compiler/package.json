@@ -32,6 +32,7 @@
     "@forgeax/engine-vfx": "workspace:*"
   },
   "devDependencies": {
+    "@forgeax/engine-assets-runtime": "workspace:*",
     "@forgeax/engine-naga": "workspace:*",
     "@webgpu/types": "^0.1.74"
   },

@@ -59,6 +59,7 @@ import { CBGrid } from './CBGrid';
 import { CBNavigationBar } from './CBNavigationBar';
 import { CBPreviewPanel } from './CBPreviewPanel';
 import { RuntimePacksPanel } from './RuntimePacksPanel';
+import { PackAuthoringPanel } from './PackAuthoringPanel';
 import {
   buildFamilyFilters,
   buildKindFilters,
@@ -175,8 +176,7 @@ export function ContentBrowserPanel({
   const projectLabel = project?.name ?? project?.root ?? 'No project';
   const htmlFiles = htmlListing && htmlListing.projectId === project?.id ? htmlListing.files : EMPTY_HTML_FILES;
   const htmlListingIssue = htmlListing && htmlListing.projectId === project?.id ? htmlListing.issue : '';
-  const tooling = useSyncExternalStore(assetReferences?.subscribe ?? (() => () => {}), assetReferences?.getState ?? (() => undefined), () => undefined);
-  const catalog = useMemo(() => projectCatalog({ root: project?.root ?? '', assetRoots: project?.assetRoots ?? EMPTY_HTML_FILES, assets: (snapshot.assets ?? []).filter(asset => !tooling?.packageId || asset.packageId !== tooling.packageId), sources: packSources, htmlFiles }), [project?.root, project?.assetRoots, snapshot.assets, packSources, htmlFiles, tooling?.packageId]);
+  const catalog = useMemo(() => projectCatalog({ root: project?.root ?? '', assetRoots: project?.assetRoots ?? EMPTY_HTML_FILES, assets: snapshot.assets ?? [], sources: packSources, htmlFiles }), [project?.root, project?.assetRoots, snapshot.assets, packSources, htmlFiles]);
   const files = catalog.files;
   const folders = catalog.folders;
   const clientRef = useRef(client);
@@ -270,7 +270,7 @@ export function ContentBrowserPanel({
   const previewItem = [...folders, ...files.flatMap((file) => [file, ...file.assets])]
     .find((item) => viewItemKey(item) === previewKey) ?? null;
   const [srcWidth, setSrcWidth] = useLocalSize('view.cb.sourceWidth', 200, 140, 420);
-  const [previewWidth, setPreviewWidth] = useLocalSize('view.cb.previewWidth', 280, 180, 560);
+  const [previewWidth, setPreviewWidth] = useLocalSize('view.cb.previewWidth', 380, 180, 560, 280);
   useEffect(() => {
     openEpoch.current += 1;
     setPackSources([]);
@@ -777,7 +777,7 @@ export function ContentBrowserPanel({
 
   return (
     <div className="cb-root" data-testid="panel-content-browser">
-      {client && project && runtimeOpen ? <RuntimePacksPanel client={client} assetReferences={assetReferences} /> : null}
+      {client && project && runtimeOpen ? <RuntimePacksPanel client={client} /> : null}
       <div
         className="cb-split"
         ref={splitRef}
@@ -904,6 +904,8 @@ export function ContentBrowserPanel({
             {detailPanelOpen ? (
               <CBPreviewPanel
                 previewItem={previewItem}
+                authoring={client && previewItem && previewItem.type !== 'folder' && /\.pack\.(ts|json)$/.test(previewItem.type === 'file' ? previewItem.diskPath : previewItem.packPath)
+                  ? <PackAuthoringPanel client={client} sourcePath={previewItem.type === 'file' ? previewItem.diskPath : previewItem.packPath} addConversationReference={addConversationReference} /> : undefined}
                 thumbnail={selectedThumbnail}
                 foldersInPath={folders}
                 diskFiles={labeledFiles}

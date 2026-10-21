@@ -104,6 +104,35 @@ describe('UI companion streaming', () => {
     expect(read).not.toHaveBeenCalled();
   });
 
+  it.each(['read', 'locate'])('keeps admitted companion media types across %s', async (mode) => {
+    const mutableDescriptor = { ...descriptor };
+    const mutate = () => {
+      mutableDescriptor.mediaType = 'text/plain';
+    };
+    const loaded = await createUiLoader().decode({
+      envelope: { ...envelope, artifacts: { 'panel.png': mutableDescriptor } },
+      signal: new AbortController().signal,
+      artifacts: {
+        read: async () => {
+          mutate();
+          return ok(Uint8Array.of(1, 2, 3));
+        },
+        ...(mode === 'locate'
+          ? {
+              locate: () => {
+                mutate();
+                return 'https://published.test/media/panel.png';
+              },
+            }
+          : {}),
+      },
+    });
+    expect(loaded).toMatchObject({
+      ok: true,
+      value: { resources: { 'panel.png': { mediaType: 'image/png' } } },
+    });
+  });
+
   it('accepts admitted Pack streams while ignoring serialized resource fields', () => {
     const loader = createUiLoader();
     const resources = { 'panel.png': { mediaType: 'image/png', url: 'https://untrusted.test/' } };
@@ -123,5 +152,61 @@ describe('UI companion streaming', () => {
         },
       },
     });
+  });
+
+  it('admits publication resources only through its artifact reader', async () => {
+    const read = vi.fn(async () => ok(Uint8Array.of(1, 2, 3)));
+    const locate = vi.fn(() => 'https://published.test/media/panel.png');
+    const publication = {
+      ...envelope,
+      artifacts: {},
+      streams: {
+        'panel.png': { descriptor, url: 'https://unadmitted.invalid/panel.png' },
+      },
+    };
+    const loaded = await createUiLoader().decode({
+      envelope: publication,
+      signal: new AbortController().signal,
+      artifacts: { read, locate },
+    });
+    expect(loaded).toEqual({ ok: true, value: envelope.payload });
+    expect(read).not.toHaveBeenCalled();
+    expect(locate).not.toHaveBeenCalled();
+  });
+});
+
+it('keeps admitted UI source stable while its companion read is pending', async () => {
+  const payload = {
+    ...envelope.payload,
+    browserExtensions: ['css' as const],
+    localization: {
+      fallbackLng: 'en',
+      defaultNS: 'translation',
+      resources: { en: { translation: { label: 'Play' } } },
+    },
+  };
+  const read = vi.fn(async () => {
+    payload.html = '<p>changed after admission</p>';
+    Reflect.set(payload.browserExtensions, 1, 'invalid-extension');
+    payload.localization.fallbackLng = 'missing';
+    payload.localization.resources.en.translation.label = 'Changed';
+    return ok(Uint8Array.of(1, 2, 3));
+  });
+  const loaded = await createUiLoader().decode({
+    envelope: { ...envelope, payload },
+    signal: new AbortController().signal,
+    artifacts: { read },
+  });
+  expect(loaded).toMatchObject({
+    ok: true,
+    value: {
+      html: envelope.payload.html,
+      browserExtensions: ['css'],
+      localization: {
+        fallbackLng: 'en',
+        resources: { en: { translation: { label: 'Play' } } },
+      },
+      resources: { 'panel.png': { bytes: Uint8Array.of(1, 2, 3) } },
+    },
   });
 });

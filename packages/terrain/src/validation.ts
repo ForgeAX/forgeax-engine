@@ -26,6 +26,13 @@ export function terrainFailure(
   });
 }
 
+function terrainReferenceValid(value: unknown): boolean {
+  return (
+    (typeof value === 'string' && value.length > 0) ||
+    (typeof value === 'number' && Number.isSafeInteger(value) && value > 0 && value <= 0xffff_ffff)
+  );
+}
+
 /** Validate bounded, finite, hole-free author input before allocating derived data. */
 export function validateTerrain(source: TerrainSource): Result<TerrainSource, TerrainError> {
   if (source && 'holes' in source)
@@ -87,27 +94,20 @@ export function validateTerrain(source: TerrainSource): Result<TerrainSource, Te
       'heights',
       'one finite f32 height per sample; holes and NaN are unsupported',
     );
-  const { min, max, span } = terrainSourceHeightRange(source.heights);
-  if (
-    !Number.isFinite(Math.fround(span)) ||
-    !(min + span > min) ||
-    terrainHeightBounds(min, max, [min, min + span]).some(
-      (value) => !Number.isFinite(Math.fround(value)),
-    )
-  )
+  const { min, max } = terrainSourceHeightRange(source.heights);
+  if (terrainHeightBounds(min, max).some((value) => !Number.isFinite(Math.fround(value))))
     return terrainFailure(
       'terrain-input-invalid',
       'heightRange',
       'finite f32 height decode and conservative GPU bounds',
-      { min, max, span },
+      { min, max },
     );
   if (!Array.isArray(source.layers) || source.layers.length < 1 || source.layers.length > 32)
     return terrainFailure('terrain-layer-invalid', 'layers', '1..32 ordered Standard layers');
   for (const layer of source.layers) {
     if (
       !layer ||
-      typeof layer.material !== 'string' ||
-      !layer.material ||
+      !terrainReferenceValid(layer.material) ||
       !['weight', 'height', 'alpha'].includes(layer.blend)
     )
       return terrainFailure(
@@ -117,7 +117,7 @@ export function validateTerrain(source: TerrainSource): Result<TerrainSource, Te
       );
     if (
       layer.blend === 'height' &&
-      (!layer.height ||
+      (!terrainReferenceValid(layer.height) ||
         !layer.heightRange ||
         layer.heightRange.length !== 2 ||
         !layer.heightRange.every(Number.isFinite) ||
@@ -169,7 +169,7 @@ export function terrainDerivedLayoutValid(terrain: TerrainAsset): boolean {
     !Array.isArray(terrain.heightRange) ||
     terrain.heightRange.length !== 2 ||
     !terrain.heightRange.every(Number.isFinite) ||
-    terrain.heightRange[1] <= terrain.heightRange[0] ||
+    terrain.heightRange[1] < terrain.heightRange[0] ||
     !Array.isArray(terrain.grids) ||
     terrain.grids.length !== Math.log2(n) ||
     !Array.isArray(terrain.sections) ||

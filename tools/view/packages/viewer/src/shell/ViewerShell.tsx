@@ -134,35 +134,46 @@ function useViewPages(pageTypes: readonly PageType[], titleFor: (type: PageType)
     setActivePageId(pageId);
   }, []);
 
-  const closePage = useCallback(
-    (pageId: string) => {
+  const currentTypes = useRef(typesById);
+  currentTypes.current = typesById;
+  const closeRequests = useRef(new Map<string, Promise<void>>());
+  const closeLifetime = useMemo(() => new AbortController(), []);
+  useEffect(() => () => closeLifetime.abort(), [closeLifetime]);
+  const closePage = useCallback((pageId: string, signal = closeLifetime.signal): Promise<void> => {
+    const pending = closeRequests.current.get(pageId);
+    if (pending) return pending;
+    const page = pages.find(entry => entry.id === pageId);
+    if (!page || page.closable === false) return Promise.resolve();
+    const controller = typesById.get(page.typeId)?.controller;
+    const completion = (async () => {
+      signal.throwIfAborted();
+      await controller?.beforeClose?.(signal);
+      signal.throwIfAborted();
+      if (currentTypes.current.get(page.typeId)?.controller !== controller) throw new DOMException('Page controller changed while closing', 'AbortError');
       userSelectedPage.current = true;
-      setPages((current) => {
-        const next = current.filter((page) => page.id !== pageId);
-        if (activePageId === pageId) {
-          const closedIndex = current.findIndex((page) => page.id === pageId);
-          const fallback = next[Math.min(closedIndex, next.length - 1)] ?? next[0];
-          setActivePageId(fallback?.id ?? null);
-        }
+      flushSync(() => setPages(current => {
+        const index = current.findIndex(entry => entry.id === pageId);
+        const next = current.filter(entry => entry.id !== pageId);
+        setActivePageId(active => active === pageId ? next[Math.min(index, next.length - 1)]?.id ?? null : active);
         return next;
-      });
-    },
-    [activePageId],
-  );
-
+      }));
+    })().finally(() => { closeRequests.current.delete(pageId); });
+    closeRequests.current.set(pageId, completion);
+    return completion;
+  }, [closeLifetime, pages, typesById]);
+  const closeMany = useCallback(async (ids: readonly string[]) => {
+    const results = await Promise.allSettled(ids.map(id => closePage(id)));
+    for (const result of results) if (result.status === 'rejected') reportWorkspaceCommandError(result.reason);
+  }, [closePage]);
   const closeOthers = useCallback((pageId: string) => {
     userSelectedPage.current = true;
-    setPages((current) => current.filter((page) => page.id === pageId || page.closable === false));
     setActivePageId(pageId);
-  }, []);
-
+    void closeMany(pages.filter(page => page.id !== pageId && page.closable !== false).map(page => page.id));
+  }, [closeMany, pages]);
   const closeToRight = useCallback((pageId: string) => {
-    setPages((current) => {
-      const index = current.findIndex((page) => page.id === pageId);
-      if (index < 0) return current;
-      return current.filter((page, i) => i <= index || page.closable === false);
-    });
-  }, []);
+    const index = pages.findIndex(page => page.id === pageId);
+    if (index >= 0) void closeMany(pages.slice(index + 1).filter(page => page.closable !== false).map(page => page.id));
+  }, [closeMany, pages]);
 
   const reorderPages = useCallback((pageId: string, toIndex: number) => {
     setPages((current) => {
@@ -805,7 +816,7 @@ export function ViewerShell({
         flushSync(() => {
           if (operation === 'presentation.page.open') { openPage(type!.typeId); activation = onSelectPageType?.(type!.typeId, signal); }
           else if (operation === 'presentation.page.select') activation = selectPage(page!.id, signal);
-          else if (operation === 'presentation.page.close') closePage(page!.id);
+          else if (operation === 'presentation.page.close') activation = closePage(page!.id, signal);
         });
         await activation;
         flushSync(() => {});
@@ -917,7 +928,7 @@ export function ViewerShell({
         pages={pages}
         activePageId={activePageId}
         onSelect={id => { void Promise.resolve(selectPage(id)).catch(() => {}); }}
-        onClose={closePage}
+        onClose={id => { void closePage(id).catch(error => reportWorkspaceCommandError(error)); }}
         onCloseOthers={closeOthers}
         onCloseToRight={closeToRight}
         onReorder={reorderPages}
@@ -934,7 +945,9 @@ export function ViewerShell({
       ) : (<>
 
       <div className="fx-view-main-col">
-        {openDockPages.map((page) => (
+        {openDockPages.map((page) => {
+          const status = pageTypes.find(type => type.typeId === page.typeId)?.controller?.getStatus?.();
+          return (<div key={page.id} style={{ display: page.id === activePageId ? 'flex' : 'none', flex: '1 1 0', minWidth: 0, minHeight: 0, position: 'relative' }}>
           <DockPageWorkbench
             key={page.id}
             pageId={page.id}
@@ -948,7 +961,11 @@ export function ViewerShell({
             hideWhenInactive={pageTypes.some(type => type.typeId === page.typeId && type.hideWhenInactive)}
             layoutHostId={page.typeId === VIEW_PAGE_TYPES.scene ? VIEW_LAYOUT_HOST_ID : undefined}
           />
-        ))}
+          {status && <div className="fx-resource-page-status" role={status.phase === 'opening' ? 'status' : 'alert'} data-phase={status.phase}>
+            {status.phase === 'opening' ? t('view.resourceOpening') : status.message ?? t('view.resourceFailed')}
+          </div>}
+          </div>);
+        })}
         {openSurfacePageTypes.map((pageType) => (
           <PageSurface
             key={pageType.typeId}

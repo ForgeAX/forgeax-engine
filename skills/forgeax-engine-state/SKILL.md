@@ -57,10 +57,10 @@ flowchart TD
 ## Idiom code skeleton
 
 ```ts
-import { createApp } from '@forgeax/engine-app';
+import { createApp } from '@forgeax/engine-app/browser';
 import { Update } from '@forgeax/engine-ecs';
 import { defineState, setNextState, getState, despawnOnExit, OnEnter, addOnEnter, inState } from '@forgeax/engine-state';
-import { HANDLE_CUBE } from '@forgeax/engine-assets-runtime';
+import { createPrimitiveMesh } from '@forgeax/engine-geometry';
 import { defineSystem, Transform, MeshFilter, MeshRenderer, Camera, DirectionalLight } from '@forgeax/engine-runtime';
 
 // 1) Define state machines at module level
@@ -72,13 +72,14 @@ export const GamePhase = defineState('GamePhase', ['loading', 'playing', 'paused
 
 const res = await createApp(canvas);
 // registerStatesPlugin is called automatically by createApp
-const world = res.value.world;
+const { world, assets } = res.unwrap();
+const cube = assets.create(createPrimitiveMesh('cube').unwrap()).unwrap();
 
 // 2) Spawn level-scoped entities
 function spawnTutorial(world: World): void {
   const e = world.spawn(
     { component: Transform, data: { pos: [0, 0, 0] } },
-    { component: MeshFilter, data: { assetHandle: HANDLE_CUBE } },
+    { component: MeshFilter, data: { assetHandle: cube } },
   ).unwrap();
   despawnOnExit(world, e, LevelId, 'tutorial');
 }

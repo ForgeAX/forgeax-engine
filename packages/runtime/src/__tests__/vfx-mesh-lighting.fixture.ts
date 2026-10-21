@@ -41,8 +41,10 @@ import {
   drawReadyFrame,
 } from '../../../../scripts/test/ready-render-frame.mjs';
 import testQuality from '../../../../scripts/test/render-quality.json' with { type: 'json' };
+import { publishRuntimeAssets } from '../../../assets-runtime/src/__tests__/fixtures/runtime-publication';
 import { loadBackendPack } from '../backend-selection';
 import { constructRuntimeRendererHost } from '../renderer-host';
+import { testAssets } from './helpers/runtime-assets';
 
 export type CookMeshLightingFixture = (
   source: unknown,
@@ -269,6 +271,7 @@ async function runVfxMeshLighting(options: {
   );
   if (!constructed.ok) throw constructed.error;
   const { renderer, assets } = constructed.value;
+  world.bindAssets(assets).unwrap();
   inspectRenderer = () => renderer.inspect();
   renderer.subscribe((event) => {
     if (event.kind === 'error') errors.push(event.error);
@@ -302,13 +305,18 @@ async function runVfxMeshLighting(options: {
     const mesh = createBoxGeometry(0.5, 0.5, 0.5).unwrap();
     const materialGuid = AssetGuid.random();
     const meshGuid = AssetGuid.random();
-    const materialAdded = assets.catalog(materialGuid, {
-      ...material,
-      values: { ...material.values, baseColor: [0.3, 0.3, 0.3, 1], metallic: 0, roughness: 1 },
-    });
-    if (!materialAdded.ok) throw materialAdded.error;
-    const meshAdded = assets.catalog(meshGuid, mesh);
-    if (!meshAdded.ok) throw meshAdded.error;
+    publishRuntimeAssets(assets, [
+      {
+        guid: AssetGuid.format(materialGuid),
+        asset: {
+          ...material,
+          values: { ...material.values, baseColor: [0.3, 0.3, 0.3, 1], metallic: 0, roughness: 1 },
+        },
+      },
+      { guid: AssetGuid.format(meshGuid), asset: mesh },
+    ]);
+    (await assets.load(materialGuid, 'material')).unwrap();
+    (await assets.load(meshGuid, 'mesh')).unwrap();
     const attached = options.publication ? undefined : renderer.attach(world);
     if (attached !== undefined && !attached.ok) throw attached.error;
     const lease = attached?.value;
@@ -416,8 +424,10 @@ async function runVfxMeshLighting(options: {
       };
       const surfaceGuid = surface === undefined ? materialGuid : AssetGuid.random();
       if (surface !== undefined) {
-        const added = assets.catalog(surfaceGuid, surfaceMaterial);
-        if (!added.ok) throw added.error;
+        publishRuntimeAssets(assets, [
+          { guid: AssetGuid.format(surfaceGuid), asset: surfaceMaterial },
+        ]);
+        (await assets.load(surfaceGuid, 'material')).unwrap();
       }
       enterFailurePhase('vfx-cook');
       const cooked = await cookParticleCodeEffect(
@@ -512,11 +522,11 @@ fn vfx_update(ctx: VfxUpdateContext, particle: ptr<function, VfxParticle>) {}`,
                 },
                 {
                   component: MeshFilter,
-                  data: { assetHandle: world.allocSharedRef('MeshAsset', mesh) },
+                  data: { assetHandle: testAssets(world).create(mesh).unwrap() },
                 },
                 {
                   component: MeshRenderer,
-                  data: { materials: [world.allocSharedRef('MaterialAsset', surfaceMaterial)] },
+                  data: { materials: [testAssets(world).create(surfaceMaterial).unwrap()] },
                 },
               )
               .unwrap()
@@ -524,7 +534,7 @@ fn vfx_update(ctx: VfxUpdateContext, particle: ptr<function, VfxParticle>) {}`,
               .spawn({
                 component: ParticleEffectPlayer,
                 data: {
-                  effect: world.allocSharedRef('ParticleEffectAsset', cooked.value.asset),
+                  effect: testAssets(world).create(cooked.value.asset).unwrap(),
                   playing: true,
                   seed: 1,
                   timeScale: 1,
@@ -725,7 +735,13 @@ fn vfx_update(ctx: VfxUpdateContext, particle: ptr<function, VfxParticle>) {}`,
     };
     const packed = packInterleavedVertexAttributes(attributes, vertexCount).unwrap();
     const coloredMeshGuid = AssetGuid.random();
-    assets.catalog(coloredMeshGuid, { ...mesh, attributes, vertices: packed.vertices }).unwrap();
+    publishRuntimeAssets(assets, [
+      {
+        guid: AssetGuid.format(coloredMeshGuid),
+        asset: { ...mesh, attributes, vertices: packed.vertices },
+      },
+    ]);
+    (await assets.load(coloredMeshGuid, 'mesh')).unwrap();
     const colored = await sample('unlit', false, 0, undefined, undefined, coloredMeshGuid);
     expect(colored[1], JSON.stringify({ unlit, colored })).toBeGreaterThan((colored[0] ?? 0) + 20);
     expect(await sample('unlit', false, 0)).toEqual(unlit);
@@ -736,26 +752,28 @@ fn vfx_update(ctx: VfxUpdateContext, particle: ptr<function, VfxParticle>) {}`,
           { component: Transform, data: { pos: position, quat: [0, 0, 0, 1], scale: [1, 1, 1] } },
           {
             component: MeshFilter,
-            data: { assetHandle: world.allocSharedRef('MeshAsset', geometry) },
+            data: { assetHandle: testAssets(world).create(geometry).unwrap() },
           },
           {
             component: MeshRenderer,
             data: {
               materials: [
-                world.allocSharedRef('MaterialAsset', {
-                  ...material,
-                  passes: [
-                    ...(material.passes ?? []),
-                    {
-                      name: 'ShadowCaster',
-                      program: { module: 'forgeax::default-shadow-caster' },
-                      renderState: {
-                        tags: { LightMode: 'ShadowCaster' },
-                        passKind: 'shadow-caster',
+                testAssets(world)
+                  .create({
+                    ...material,
+                    passes: [
+                      ...(material.passes ?? []),
+                      {
+                        name: 'ShadowCaster',
+                        program: { module: 'forgeax::default-shadow-caster' },
+                        renderState: {
+                          tags: { LightMode: 'ShadowCaster' },
+                          passKind: 'shadow-caster',
+                        },
                       },
-                    },
-                  ],
-                }),
+                    ],
+                  })
+                  .unwrap(),
               ],
             },
           },
@@ -834,14 +852,16 @@ fn vfx_update(ctx: VfxUpdateContext, particle: ptr<function, VfxParticle>) {}`,
       .spawn({
         component: Skylight,
         data: {
-          equirect: world.allocSharedRef('EquirectAsset', {
-            kind: 'equirect',
-            width: 16,
-            height: 8,
-            format: 'rgba16float',
-            colorSpace: 'linear',
-            data: environmentBytes,
-          }),
+          equirect: testAssets(world)
+            .create({
+              kind: 'equirect',
+              width: 16,
+              height: 8,
+              format: 'rgba16float',
+              colorSpace: 'linear',
+              data: environmentBytes,
+            })
+            .unwrap(),
           intensity: 0.5,
         },
       })
@@ -885,21 +905,23 @@ fn vfx_update(ctx: VfxUpdateContext, particle: ptr<function, VfxParticle>) {}`,
     const receiver = world
       .spawn(
         { component: Transform, data: { pos: [0, 0, 0], quat: [0, 0, 0, 1], scale: [1, 1, 1] } },
-        { component: MeshFilter, data: { assetHandle: world.allocSharedRef('MeshAsset', mesh) } },
+        { component: MeshFilter, data: { assetHandle: testAssets(world).create(mesh).unwrap() } },
         {
           component: MeshRenderer,
           data: {
             materials: [
-              world.allocSharedRef('MaterialAsset', {
-                ...material,
-                passes: [
-                  {
-                    name: 'Forward',
-                    program: { module: 'forgeax::default-standard-pbr' },
-                    renderState: { tags: { LightMode: 'Forward' } },
-                  },
-                ],
-              }),
+              testAssets(world)
+                .create({
+                  ...material,
+                  passes: [
+                    {
+                      name: 'Forward',
+                      program: { module: 'forgeax::default-standard-pbr' },
+                      renderState: { tags: { LightMode: 'Forward' } },
+                    },
+                  ],
+                })
+                .unwrap(),
             ],
           },
         },
@@ -1063,7 +1085,7 @@ fn vfx_update(ctx: VfxUpdateContext, particle: ptr<function, VfxParticle>) {
       .spawn({
         component: ParticleEffectPlayer,
         data: {
-          effect: world.allocSharedRef('ParticleEffectAsset', depthCook.value.asset),
+          effect: testAssets(world).create(depthCook.value.asset).unwrap(),
           playing: true,
           seed: 1,
           timeScale: 1,

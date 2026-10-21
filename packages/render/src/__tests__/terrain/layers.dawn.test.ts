@@ -1,5 +1,7 @@
 import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
+import { AssetRegistry } from '@forgeax/engine-assets-runtime';
+import { World } from '@forgeax/engine-ecs';
 import { createShaderModuleImmediate, rhi } from '@forgeax/engine-rhi-webgpu';
 import { buildTerrainAssets } from '@forgeax/engine-terrain/cook';
 import {
@@ -11,7 +13,13 @@ import {
   type TerrainSource,
   type TextureAsset,
 } from '@forgeax/engine-types';
-import { expect, it } from 'vitest';
+import { assert, expect, it } from 'vitest';
+import { samplerContribution } from '../../assets/asset-decoders';
+import { GpuResidencyCache } from '../../device/gpu-residency';
+import { worldRenderResources } from '../../publication/resource-scope';
+import { defaultMaterialSnapshot } from '../../render-system-extract';
+import { TerrainLayers } from '../../terrain/layers';
+import { TerrainSourceCache } from '../../terrain/source';
 
 const material = (color: readonly number[], normalTexture?: string): MaterialAsset => ({
   kind: 'material',
@@ -47,7 +55,7 @@ it('reads actual cooked layer channels through the Landscape fragment kernel and
     source('surface_v1.wgsl') +
     source('tbn.wgsl') +
     `
-struct Material { terrainLayerModes:vec4<f32>, strategy:f32, padding:f32, uv:vec2<f32> };
+struct Material { terrainLayerModes:vec4<f32>, terrainLayerRoots:vec4<f32>, terrainLayerIndices:vec4<f32>, terrainLayerLevels:vec4<f32>, strategy:f32, padding:f32, uv:vec2<f32> };
 @group(0) @binding(0) var<uniform> material:Material;
 @group(0) @binding(1) var terrainWeightTexture:texture_2d<f32>;
 @group(0) @binding(2) var terrainColorLayers:texture_2d_array<f32>;
@@ -56,6 +64,7 @@ struct Material { terrainLayerModes:vec4<f32>, strategy:f32, padding:f32, uv:vec
 @group(0) @binding(5) var terrainEmissionLayers:texture_2d_array<f32>;
 @group(0) @binding(6) var samp:sampler;
 ` +
+    source('terrain-layer-sampling.wgsl').replace(/terrain\w+_sampler/g, 'samp') +
     surface +
     idSurface +
     `
@@ -110,7 +119,7 @@ fn channels()->SurfaceData {
     .unwrap();
   const view = device.createTextureView(target, {}).unwrap();
   const read = device.createBuffer({ size: 256, usage: 0x01 | 0x08 }).unwrap();
-  const uniform = device.createBuffer({ size: 32, usage: 0x40 | 0x08 }).unwrap();
+  const uniform = device.createBuffer({ size: 80, usage: 0x40 | 0x08 }).unwrap();
   const sampler = device
     .createSampler({
       magFilter: 'linear',
@@ -143,57 +152,129 @@ fn channels()->SurfaceData {
     ).unwrap();
     const material = output['section/0/material'];
     if (material?.kind !== 'material') throw new Error('missing cooked material');
-    const modes = material.parameters?.find((param) => param.name === 'terrainLayerModes')?.default;
+    const modes = material.values?.terrainLayerModes;
     if (!Array.isArray(modes)) throw new Error('missing layer modes');
+    const registry = new AssetRegistry();
+    registry.installDecoder(samplerContribution.kind, samplerContribution.decoder);
+    const references = new Map<string, number>();
+    for (const [key, asset] of Object.entries(assets))
+      if (asset.kind === 'texture') references.set(key, registry.create(asset).unwrap());
+    for (const [key, asset] of Object.entries(assets))
+      if (asset.kind === 'material')
+        references.set(
+          key,
+          registry
+            .create({
+              ...asset,
+              values: Object.fromEntries(
+                Object.entries(asset.values ?? {}).map(([name, value]) => [
+                  name,
+                  typeof value === 'string' ? (references.get(value) ?? value) : value,
+                ]),
+              ),
+            })
+            .unwrap(),
+        );
+    const root = registry
+      .create({
+        kind: 'terrain',
+        ...(controls ?? {
+          columns: 2,
+          rows: 2,
+          spacing: 1,
+          subsectionVertices: 2,
+          heights: new Float32Array(4),
+          weights: Float32Array.from(Array.from({ length: 4 }, () => weights).flat()),
+        }),
+        layers: layers.map((layer) => ({
+          ...layer,
+          material: references.get(
+            String(layer.material),
+          ) as import('@forgeax/engine-types').AssetHandle<'material'>,
+          ...(layer.blend === 'height'
+            ? {
+                height: references.get(
+                  String(layer.height),
+                ) as import('@forgeax/engine-types').AssetHandle<'texture'>,
+              }
+            : {}),
+        })),
+      })
+      .unwrap();
+    const world = new World({ assets: registry });
+    const store = new GpuResidencyCache();
+    store.configureGpuDevice(device, undefined, device.caps);
+    const owner = new TerrainLayers(
+      () => store,
+      () => device,
+      {
+        createShaderModule: (descriptor) => createShaderModuleImmediate(device, descriptor),
+      },
+    );
+    const fixed = owner.capture(
+      worldRenderResources(world),
+      new TerrainSourceCache().resolve(worldRenderResources(world), root),
+    );
+    const snapshot = defaultMaterialSnapshot();
+    owner.bind(snapshot, fixed);
+    const roots = [0, 0, 0, 0];
+    const indices = material.values?.terrainLayerIndices as number[];
     device.queue
       .writeBuffer(
         uniform,
         0,
-        Float32Array.from([...modes, encoding.kind === 'ids' ? 1 : 0, 0, ...uv]),
+        Float32Array.from([
+          ...modes,
+          ...roots,
+          ...indices,
+          0,
+          0,
+          0,
+          0,
+          encoding.kind === 'ids' ? 1 : 0,
+          0,
+          ...uv,
+        ]),
       )
       .unwrap();
-    const names = [
-      'weights',
-      'terrain-color-layers',
-      'terrain-normal-height-layers',
-      'terrain-orm-layers',
-      'terrain-emission-layers',
-    ];
-    const textures = names.map((name) => {
-      const asset =
-        output[`${encoding.kind === 'ids' && name !== 'weights' ? 'layers' : 'section/0'}/${name}`];
-      if (asset?.kind !== 'texture') throw new Error('missing derived texture');
-      const width = asset.shape.extent.width,
-        height = asset.shape.extent.height,
-        layers = 'layers' in asset.shape.extent ? asset.shape.extent.layers : 1;
-      const texture = device
-        .createTexture({
-          size: { width, height, depthOrArrayLayers: layers },
-          format: asset.format,
-          usage: 0x02 | 0x04,
-        })
-        .unwrap();
-      const data = asset.data.subarray(0, width * height * layers * (name === 'weights' ? 4 : 8));
-      device.queue
-        .writeTexture(
-          { texture },
-          data,
-          { bytesPerRow: width * (name === 'weights' ? 4 : 8), rowsPerImage: height },
-          { width, height, depthOrArrayLayers: layers },
-        )
-        .unwrap();
-      return texture;
+    const weightsAsset = output['section/0/weights'];
+    if (weightsAsset?.kind !== 'texture') throw new Error('missing control');
+    const width = weightsAsset.shape.extent.width,
+      height = weightsAsset.shape.extent.height;
+    const weightTexture = device
+      .createTexture({
+        size: { width, height, depthOrArrayLayers: 1 },
+        format: weightsAsset.format,
+        usage: 0x02 | 0x04,
+      })
+      .unwrap();
+    device.queue
+      .writeTexture(
+        { texture: weightTexture },
+        weightsAsset.data.subarray(0, width * height * 4),
+        { bytesPerRow: width * 4, rowsPerImage: height },
+        { width, height, depthOrArrayLayers: 1 },
+      )
+      .unwrap();
+    const textures = [weightTexture];
+    const layerViews = [
+      'terrainColorLayers',
+      'terrainNormalHeightLayers',
+      'terrainOrmLayers',
+      'terrainEmissionLayers',
+    ].map((name) => {
+      const binding = owner.texture(snapshot, name);
+      assert(binding);
+      return binding.textureView;
     });
-    const views = textures.map((texture, i) =>
-      device.createTextureView(texture, { dimension: i === 0 ? '2d' : '2d-array' }).unwrap(),
-    );
+    const views = [device.createTextureView(weightTexture, {}).unwrap(), ...layerViews];
     const group = device
       .createBindGroup({
         layout,
         entries: [
           { binding: 0, resource: { kind: 'buffer', value: { buffer: uniform } } },
           ...views.map((view, i) => ({
-            binding: i + 1,
+            binding: 1 + i,
             resource: { kind: 'textureView' as const, value: view },
           })),
           { binding: 6, resource: { kind: 'sampler', value: sampler } },
@@ -203,6 +284,13 @@ fn channels()->SurfaceData {
     const result: number[][] = [];
     try {
       for (const pipeline of pipelines) {
+        for (const name of [
+          'terrainColorLayers',
+          'terrainNormalHeightLayers',
+          'terrainOrmLayers',
+          'terrainEmissionLayers',
+        ])
+          owner.texture(snapshot, name);
         const encoder = device.createCommandEncoder().unwrap();
         const pass = encoder.beginRenderPass({
           colorAttachments: [{ view, loadOp: 'clear', storeOp: 'store', clearValue: [0, 0, 0, 0] }],
@@ -216,13 +304,22 @@ fn channels()->SurfaceData {
           { buffer: read, bytesPerRow: 256 },
           { width: 1, height: 1, depthOrArrayLayers: 1 },
         );
-        device.queue.submit([encoder.finish().unwrap()]).unwrap();
+        const uploads = store.prepareTextureMips().unwrap();
+        device.queue
+          .submit([
+            ...(uploads?.buffer === undefined ? [] : [uploads.buffer]),
+            encoder.finish().unwrap(),
+          ])
+          .unwrap();
+        uploads?.complete(true);
         await device.queue.onSubmittedWorkDone();
         const mapped = (await read.mapAsync(0x01)).unwrap();
         result.push(Array.from(new Float32Array(mapped.getMappedRange().unwrap().slice(0, 16))));
         mapped.unmap();
       }
     } finally {
+      owner.dispose();
+      store.destroyAll();
       for (const texture of textures) device.destroyTexture(texture).unwrap();
     }
     return result;

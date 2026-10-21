@@ -1,6 +1,6 @@
 import { forgeaxBundlerAdapter } from 'virtual:forgeax/bundler';
 import { createApp } from '@forgeax/engine/app/browser';
-import { HANDLE_CUBE, HANDLE_QUAD } from '@forgeax/engine/assets-runtime';
+
 import { Time, Update } from '@forgeax/engine/ecs';
 import {
   Camera,
@@ -14,6 +14,8 @@ import {
 import { ChildOf, Transform } from '@forgeax/engine/scene';
 import { type Example, paintBlank, paintDepartures, paintTelemetry, paintWelcome } from './paint';
 import './style.css';
+import { createPrimitiveMesh } from '@forgeax/engine/geometry';
+
 
 function element<T extends HTMLElement>(selector: string): T {
   const node = document.querySelector<T>(selector);
@@ -30,25 +32,22 @@ paintWelcome(ctx);
 async function start() {
   const view = element<HTMLCanvasElement>('#world');
   const app = (await createApp(view, {}, forgeaxBundlerAdapter())).unwrap();
+  const assets = app.assets;
+  if (assets === undefined) throw new Error('App asset service is unavailable');
   const { world } = app;
+const primitiveCube = assets.create(createPrimitiveMesh('cube').unwrap()).unwrap();
+
+const primitiveQuad = assets.create(createPrimitiveMesh('quad').unwrap()).unwrap();
+
   const lifetime = new AbortController();
   const options = { signal: lifetime.signal };
   const texture = new CanvasTexture(canvas, { flipY: false });
-  const source = world.allocSharedRef('CanvasTextureSource', texture.source);
-  const display = world.allocSharedRef(
-    'MaterialAsset',
-    Materials.unlit('#ffffff', { baseColorTexture: source }),
-  );
-  const frame = world.allocSharedRef(
-    'MaterialAsset',
-    Materials.standard({ baseColor: '#25483e', roughness: 0.75, metallic: 0.15 }),
-  );
-  const foot = world.allocSharedRef(
-    'MaterialAsset',
-    Materials.standard({ baseColor: '#78917a', roughness: 0.9 }),
-  );
-  const ground = world.allocSharedRef('MaterialAsset', Materials.unlit('#d9e2d7'));
-  const stripe = world.allocSharedRef('MaterialAsset', Materials.unlit('#c3d0c1'));
+  const source = { source: texture.source };
+  const display = assets.create(Materials.unlit('#ffffff', { baseColorTexture: source })).unwrap();
+  const frame = assets.create(Materials.standard({ baseColor: '#25483e', roughness: 0.75, metallic: 0.15 })).unwrap();
+  const foot = assets.create(Materials.standard({ baseColor: '#78917a', roughness: 0.9 })).unwrap();
+  const ground = assets.create(Materials.unlit('#d9e2d7')).unwrap();
+  const stripe = assets.create(Materials.unlit('#c3d0c1')).unwrap();
   const pivot = world.spawn({ component: Transform, data: {} }).unwrap();
   function box(
     pos: [number, number, number],
@@ -60,7 +59,7 @@ async function start() {
       .spawn(
         { component: Transform, data: { pos, scale } },
         { component: ChildOf, data: { parent } },
-        { component: MeshFilter, data: { assetHandle: HANDLE_CUBE } },
+        { component: MeshFilter, data: { assetHandle: primitiveCube } },
         { component: MeshRenderer, data: { materials: [material] } },
       )
       .unwrap();
@@ -74,7 +73,7 @@ async function start() {
     .spawn(
       { component: Transform, data: { pos: [0, 2.15, 0.116], scale: [4, 2.5, 1] } },
       { component: ChildOf, data: { parent: pivot } },
-      { component: MeshFilter, data: { assetHandle: HANDLE_QUAD } },
+      { component: MeshFilter, data: { assetHandle: primitiveQuad } },
       { component: MeshRenderer, data: { materials: [display] } },
     )
     .unwrap();

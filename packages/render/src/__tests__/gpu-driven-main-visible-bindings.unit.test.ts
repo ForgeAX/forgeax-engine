@@ -1,19 +1,24 @@
+import { AssetRegistry } from '@forgeax/engine-assets-runtime';
 import { World } from '@forgeax/engine-ecs';
 import { createBoxGeometry } from '@forgeax/engine-geometry';
 import { mat4, vec3 } from '@forgeax/engine-math';
 import { RenderGraphBuilder } from '@forgeax/engine-render-graph';
 import { type BindGroup, err, ok, RhiError } from '@forgeax/engine-rhi';
 import { rhi } from '@forgeax/engine-rhi-null';
-import { deriveMaterialDynamicInputLayout } from '@forgeax/engine-types';
+import {
+  deriveMaterialDynamicInputLayout,
+  type MaterialSurfacePassKind,
+} from '@forgeax/engine-types';
 import { describe, expect, it, vi } from 'vitest';
 import { GpuResidencyCache } from '../device/gpu-residency';
 import { BatchTopology } from '../gpu-driven/batch-topology';
-import { materialBindingKey } from '../gpu-driven/material-bindings';
 import { PreparedRasterBundleCache } from '../gpu-driven/prepared-raster-bundle';
-import { GpuDrivenProduction } from '../gpu-driven/production-raster';
+import { GpuDrivenProduction, type PreparedGpuDrivenFrame } from '../gpu-driven/production-raster';
 import { MaterialAbiRasterAdapter } from '../gpu-driven/production-raster-material';
 import { GpuDrivenView } from '../gpu-driven/view-gpu';
 import { GpuScene } from '../gpu-scene';
+import { MaterialResource } from '../material-resource';
+import { worldRenderResources } from '../publication/resource-scope';
 import {
   getOpaqueResourceIdentity,
   makeZeroCameraFallbackSnapshot,
@@ -22,11 +27,13 @@ import type { RenderPipelineFrame } from '../render-pipeline';
 import type { RenderableSnapshot } from '../render-system-extract';
 import { RenderScene } from '../scene/render-scene';
 import { ReadonlyDynamicInputPage } from '../surface/dynamic-input';
+import { SurfaceSubmissionObservationOwner } from '../surface/submission-observation';
 import {
-  type SurfacePassName,
-  SurfaceSubmissionObservationOwner,
-} from '../surface/submission-observation';
-import { preparedPbrSnapshot, standardPbrInputs } from './gpu-driven-production-fixture';
+  admitGpuFixture,
+  preparedPbrSnapshot,
+  preparedSnapshot,
+  standardPbrInputs,
+} from './gpu-driven-production-fixture';
 
 const schema = {
   name: 'windowEvents',
@@ -38,6 +45,32 @@ const schema = {
   maxEventsPerSample: 1,
 };
 
+function observeRasterRecordings() {
+  const windows: (readonly BindGroup[])[][] = [];
+  const original = PreparedRasterBundleCache.prototype.begin;
+  const begin = vi.spyOn(PreparedRasterBundleCache.prototype, 'begin').mockImplementation(function (
+    this: PreparedRasterBundleCache,
+    ...args
+  ) {
+    const recording = original.apply(this, args);
+    const rows: (readonly BindGroup[])[] = [];
+    windows.push(rows);
+    const push = recording.push.bind(recording);
+    recording.push = (bindings) => {
+      rows.push(bindings.windows);
+      push(bindings);
+    };
+    return recording;
+  });
+  return {
+    windows,
+    clear: () => {
+      windows.length = 0;
+    },
+    restore: () => begin.mockRestore(),
+  };
+}
+
 async function fixture(
   surface = false,
   count = 2,
@@ -48,22 +81,16 @@ async function fixture(
   // Window lifetime regressions exercise the portable path explicitly.
   Object.defineProperty(device, 'caps', { value: { ...device.caps, firstInstanceIndirect } });
   const store = new GpuResidencyCache();
-  store.configureGpuDevice(
-    device,
-    undefined,
-    () => {
-      throw new Error('unused cubemap');
-    },
-    device.caps,
-  );
-  const world = new World();
+  store.configureGpuDevice(device, undefined, device.caps);
+  const assets = new AssetRegistry();
+  const world = new World({ assets });
   const pod = createBoxGeometry(1, 1, 1).unwrap();
   const handles = Array.from({ length: count === 2 ? 1 : count }, () =>
-    world.allocSharedRef('MeshAsset', { ...pod }),
+    assets.create({ ...pod }).unwrap(),
   );
   const meshes = handles.map((handle) =>
     store
-      .ensureResident(handle, pod, world, [
+      .ensureResident(handle, pod, worldRenderResources(world), [
         {
           ...pod,
           indices: defined(pod.indices).slice(0, 24),
@@ -77,12 +104,13 @@ async function fixture(
     const matrix = mat4.identity(mat4.create());
     const transforms = new Float32Array(instanceCount * 16);
     for (let i = 0; i < instanceCount; i++) transforms.set(matrix, i * 16);
-    const material = {
+    const material = new MaterialResource({
+      passes: [],
       baseColor: vec3.create(1, 1, 1),
       metallic: 0,
       roughness: 1,
       materialHandle: index + 100,
-    };
+    });
     return preparedPbrSnapshot({
       worldId: 0,
       entityKey: index + 1,
@@ -104,11 +132,22 @@ async function fixture(
           topology: 'triangle-list',
           pipelineClass: 'fixture',
           materialResourceClass: 'fixture',
+          geometry: defined(preparedSnapshot(0, 0).gpuDrivenDraws?.[0]).geometry,
           lodRanges: [{ first: (index % 2) * 12, count: 12, baseVertex: 0 }],
         },
       ],
     });
   });
+  if (count === 2) {
+    const first = defined(snapshots[0]);
+    const second = defined(snapshots[1]);
+    snapshots[1] = {
+      ...second,
+      material: first.material,
+      materials: first.materials,
+      gpuDrivenDraws: defined(first.gpuDrivenDraws),
+    };
+  }
   const delta = projection.apply(
     snapshots.map((snapshot) => ({
       kind: 'update' as const,
@@ -126,16 +165,16 @@ async function fixture(
   const layout = device.createBindGroupLayout({ entries: [] }).unwrap();
   const group = device.createBindGroup({ layout, entries: [] }).unwrap();
   const programs = standardPbrInputs(device, shader, layout);
-  const artifact = defined(programs.standardPbrArtifact);
+  const artifact = defined(programs.materialArtifact);
   const dynamicLayout = deriveMaterialDynamicInputLayout(schema).unwrap();
   const page = (pageId: number) =>
     ReadonlyDynamicInputPage.create({ sourceId: 'main-windows', pageId, schema }).unwrap();
   const production = new GpuDrivenProduction(device, { createShaderModule: () => ok(shader) });
-  const input: Parameters<GpuDrivenProduction['prepare']>[0] = {
+  const input: Parameters<typeof admitGpuFixture>[0] = {
     ...programs,
     ...(surface
       ? {
-          standardPbrArtifact: {
+          materialArtifact: {
             ...artifact,
             receipt: {
               ...defined(artifact.receipt),
@@ -160,7 +199,7 @@ async function fixture(
       : {}),
     scene: {
       scene: available.scene,
-      plan: topology.plan(),
+      plan: topology.query(topology.sourcePlan(), undefined),
       slots: projection.slotsSnapshot(),
       slotAt: projection.slotAt,
       worldIdentities: ['main-window-world'],
@@ -172,10 +211,13 @@ async function fixture(
         .map((slot, index) => [slot.slot, defined(meshes[index] ?? meshes[0])]),
     ),
     viewBindGroupLayout: layout,
-    meshResidencyEpoch: store.meshResidencyEpoch,
   };
-  const prepare = (overrides: Partial<typeof input> = {}) =>
-    defined(production.prepare({ ...input, ...overrides }).unwrap());
+  let pending: PreparedGpuDrivenFrame | undefined;
+  const prepare = (overrides: Partial<typeof input> = {}) => {
+    pending?._abortResourceReplacement?.();
+    pending = defined(production.prepare(admitGpuFixture({ ...input, ...overrides })).unwrap());
+    return pending;
+  };
   return {
     device,
     production,
@@ -198,12 +240,17 @@ async function fixture(
       );
       available.scene.sync(delta).unwrap();
       topology.apply(delta);
-      return { ...defined(input.scene), plan: topology.plan(), slots: projection.slotsSnapshot() };
+      return {
+        ...defined(input.scene),
+        plan: topology.query(topology.sourcePlan(), undefined),
+        slots: projection.slotsSnapshot(),
+      };
     },
     close() {
       production.dispose();
       available.scene.dispose();
       store.destroyAll();
+      assets.dispose();
     },
   };
 }
@@ -268,8 +315,14 @@ function recorder(
           ...(preparedBundles
             ? { bundleDescriptor: { colorFormats: ['rgba8unorm' as const] } }
             : {}),
-          materialBindGroups: [f.group],
-          materialSlotIndicesByEntity: new Map(),
+          prepareMaterialBinding: (
+            (groups: readonly (import('@forgeax/engine-rhi').BindGroup | undefined)[]) =>
+            (slot: number) => {
+              const group = groups[slot];
+              return group === undefined ? undefined : { group, byteOffset: slot * 1280 };
+            }
+          )([f.group]),
+          materialSlotIndicesByBinding: new Map(),
         };
         for (const phase of late ? (['all', 'late'] as const) : (['all'] as const)) {
           for (const entry of [undefined, 'fs_gbuffer', 'fs_temporal']) {
@@ -320,7 +373,7 @@ describe('Main GPU-driven prepared visible windows', () => {
         resourceGeneration: undefined,
       });
     let observation = begin(0);
-    const physical = new Map<SurfacePassName, number[]>();
+    const physical = new Map<MaterialSurfacePassKind, number[]>();
     for (const [surfacePass, entry] of [
       ['nearest-layer', 'fs_nearest_layer'],
       ['color', 'fs_color'],
@@ -350,8 +403,14 @@ describe('Main GPU-driven prepared visible windows', () => {
               resources,
               {
                 ...prepared.standardPbrFrameResources,
-                materialBindGroups: [f.group],
-                materialSlotIndicesByEntity: new Map(),
+                prepareMaterialBinding: (
+                  (groups: readonly (import('@forgeax/engine-rhi').BindGroup | undefined)[]) =>
+                  (slot: number) => {
+                    const group = groups[slot];
+                    return group === undefined ? undefined : { group, byteOffset: slot * 1280 };
+                  }
+                )([f.group]),
+                materialSlotIndicesByBinding: new Map(),
                 surfaceSubmissionObservation: observation,
               },
               'single-layer-medium',
@@ -418,10 +477,10 @@ describe('Main GPU-driven prepared visible windows', () => {
     const initial = f.prepare();
     const r = recorder(f, initial, true, true);
     const create = vi.spyOn(f.device, 'createRenderBundleEncoder');
-    const resolve = vi.spyOn(PreparedRasterBundleCache.prototype, 'resolve');
+    const recordings = observeRasterRecordings();
     try {
       r.record();
-      const first = resolve.mock.calls.map((call) => call[3].map((binding) => binding.windows));
+      const first = recordings.windows.map((rows) => [...rows]);
       expect(first).toHaveLength(6);
       for (let batch = 0; batch < 3; batch += 1) {
         expect(first[1]?.[batch]).toBe(first[0]?.[batch]);
@@ -430,22 +489,22 @@ describe('Main GPU-driven prepared visible windows', () => {
         expect(first[4]?.[batch]).toBe(first[3]?.[batch]);
         expect(first[5]?.[batch]).toBe(first[3]?.[batch]);
       }
-      resolve.mockClear();
+      recordings.clear();
       expect(create).toHaveBeenCalledTimes(6);
       expect(f.production.inspect().preparedBundleBuilds).toBe(6);
       create.mockClear();
       r.record(f.prepare());
       expect(create).not.toHaveBeenCalled();
-      expect(resolve).toHaveBeenCalledTimes(6);
-      for (const [pass, call] of resolve.mock.calls.entries()) {
-        for (const [batch, binding] of call[3].entries()) {
-          expect(binding.windows).toBe(first[pass]?.[batch]);
+      expect(recordings.windows).toHaveLength(6);
+      for (const [pass, call] of recordings.windows.entries()) {
+        for (const [batch, binding] of call.entries()) {
+          expect(binding).toBe(first[pass]?.[batch]);
         }
       }
       expect(f.production.inspect().preparedBundleHits).toBe(6);
       expect(f.production.inspect().encodedIndirectDraws).toBe(36);
     } finally {
-      resolve.mockRestore();
+      recordings.restore();
       create.mockRestore();
       await r.close();
       await f.close();
@@ -471,15 +530,15 @@ describe('Main GPU-driven prepared visible windows', () => {
       const changed = f.publish([
         { ...source, instances: { ...instances, transforms, instanceCount: 9, archVersion: 2 } },
       ]);
-      expect(changed.plan.batches[0]).toBe(scene.plan.batches[0]);
-      expect(changed.plan.batches[2]).toBe(scene.plan.batches[2]);
+      expect(changed.plan.batches.at(0)).toBe(scene.plan.batches.at(0));
+      expect(changed.plan.batches.at(2)).toBe(scene.plan.batches.at(2));
       f.prepare({ scene: changed });
       const after = f.production.inspect();
-      // Main and shadow each rebuild one group and retain both native siblings.
+      // This main-only preparation rebuilds one group and retains both native siblings.
       expect(defined(after.filteredAssemblyBuilds) - defined(before.filteredAssemblyBuilds)).toBe(
-        2,
+        1,
       );
-      expect(defined(after.filteredAssemblyHits) - defined(before.filteredAssemblyHits)).toBe(4);
+      expect(defined(after.filteredAssemblyHits) - defined(before.filteredAssemblyHits)).toBe(2);
     } finally {
       f.close();
     }
@@ -527,7 +586,7 @@ describe('Main GPU-driven prepared visible windows', () => {
       f.topology.apply(delta);
       const scene = {
         ...defined(f.input.scene),
-        plan: f.topology.plan(),
+        plan: f.topology.query(f.topology.sourcePlan(), undefined),
         slots: f.projection.slotsSnapshot(),
       };
       const changed = f.prepare({ scene });
@@ -577,11 +636,11 @@ describe('Main GPU-driven prepared visible windows', () => {
     const initial = f.prepare();
     const r = recorder(f, initial, true, true);
     const lookup = vi.spyOn(MaterialAbiRasterAdapter.prototype, 'visibleWindowBindGroupForBuffer');
-    const resolve = vi.spyOn(PreparedRasterBundleCache.prototype, 'resolve');
+    const recordings = observeRasterRecordings();
     let next: ReturnType<typeof recorder> | undefined;
     try {
       r.record();
-      const oldWindows = resolve.mock.calls.flatMap((call) => call[3].map((b) => b.windows));
+      const oldWindows = recordings.windows.flat();
       const oldContents = oldWindows.map((windows) => [...windows]);
       const oldCalls = [...lookup.mock.calls];
       expect(oldCalls).toHaveLength(12);
@@ -604,7 +663,7 @@ describe('Main GPU-driven prepared visible windows', () => {
       expect(next.record(f.prepare({ scene }))).toEqual(groups);
       expect(lookup).not.toHaveBeenCalled();
     } finally {
-      resolve.mockRestore();
+      recordings.restore();
       lookup.mockRestore();
       await next?.close();
       await r.close();
@@ -616,30 +675,30 @@ describe('Main GPU-driven prepared visible windows', () => {
     const f = await fixture(false, 3, 64);
     const shader = (await rhi.createShaderModule(f.device, { code: 'synthetic' })).unwrap();
     const other = new GpuDrivenProduction(f.device, { createShaderModule: () => ok(shader) });
-    const prepare = () => defined(other.prepare(f.input).unwrap());
+    const prepare = () => defined(other.prepare(admitGpuFixture(f.input)).unwrap());
     const r = recorder(f, f.prepare(), true, true);
     const second = recorder({ ...f, production: other, prepare }, prepare(), true, true);
-    const resolve = vi.spyOn(PreparedRasterBundleCache.prototype, 'resolve');
+    const recordings = observeRasterRecordings();
     try {
       r.record();
-      const first = resolve.mock.calls.flatMap((call) => call[3].map((b) => b.windows));
-      resolve.mockClear();
+      const first = recordings.windows.flat();
+      recordings.clear();
       second.record();
-      const next = resolve.mock.calls.flatMap((call) => call[3].map((b) => b.windows));
+      const next = recordings.windows.flat();
       expect(next).toHaveLength(first.length);
       const firstGroups = new Set(first.flat());
       for (const windows of next) {
         expect(first).not.toContain(windows);
         expect(windows.every((group) => !firstGroups.has(group))).toBe(true);
       }
-      resolve.mockClear();
+      recordings.clear();
       r.record(f.prepare());
-      const retained = resolve.mock.calls.flatMap((call) => call[3].map((b) => b.windows));
+      const retained = recordings.windows.flat();
       retained.forEach((windows, index) => {
         expect(windows).toBe(first[index]);
       });
     } finally {
-      resolve.mockRestore();
+      recordings.restore();
       await second.close();
       await r.close();
       other.dispose();
@@ -715,7 +774,7 @@ describe('Main GPU-driven prepared visible windows', () => {
 
   it('uses current windows through material split/rejoin while reusing the compiled graph', async () => {
     const f = await fixture();
-    const key = materialBindingKey({ worldId: 0, entityKey: 1 }, 100);
+    const key = '0:1';
     const bindings = new Map([[key, 'separate-probe-binding']]);
     f.prepare({ materialBindingClasses: bindings });
     const merged = f.prepare();
@@ -746,16 +805,16 @@ describe('Main GPU-driven prepared visible windows', () => {
     const initial = f.prepare();
     const r = recorder(f, initial, true, true);
     const lookup = vi.spyOn(MaterialAbiRasterAdapter.prototype, 'visibleWindowBindGroupForBuffer');
-    const resolve = vi.spyOn(PreparedRasterBundleCache.prototype, 'resolve');
+    const recordings = observeRasterRecordings();
     let next: ReturnType<typeof recorder> | undefined;
     try {
       r.record();
-      const oldWindows = resolve.mock.calls.flatMap((call) => call[3].map((b) => b.windows));
+      const oldWindows = recordings.windows.flat();
       const oldContents = oldWindows.map((windows) => [...windows]);
       const first = oldWindows.flat();
       const firstBuffer = defined(lookup.mock.calls[0])[0];
       const instanceBuffer = defined(f.input.scene).scene.instanceBuffer;
-      const bindings = new Map([[materialBindingKey({ worldId: 0, entityKey: 1 }, 100), 'split']]);
+      const bindings = new Map([['0:1', 'split']]);
       const grown = f.prepare({ materialBindingClasses: bindings });
       expect(grown.topologySignature).not.toBe(initial.topologySignature);
       expect(defined(f.input.scene).scene.instanceBuffer).toBe(instanceBuffer);
@@ -770,7 +829,7 @@ describe('Main GPU-driven prepared visible windows', () => {
       expect(next.record(f.prepare({ materialBindingClasses: bindings }))).toEqual(groups);
       expect(lookup).not.toHaveBeenCalled();
     } finally {
-      resolve.mockRestore();
+      recordings.restore();
       lookup.mockRestore();
       await next?.close();
       await r.close();

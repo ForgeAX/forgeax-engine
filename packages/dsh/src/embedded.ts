@@ -1,26 +1,20 @@
 import { once } from 'node:events';
-import { createServer, type IncomingMessage, type ServerResponse } from 'node:http';
+import { createServer } from 'node:http';
 import type { AddressInfo } from 'node:net';
 
 import { Context, type Plugin } from '@forgeax/engine-plugin';
 
-import { apply as federationApply, inject as federationInject } from './index';
-
-interface Route {
-  readonly kind: 'exact' | 'prefix';
-  readonly path: string;
-  readonly handler: (request: IncomingMessage, response: ServerResponse) => void | Promise<void>;
-}
+import { apply as federationApply, inject as federationInject, type WebRoute } from './index';
 
 class EmbeddedWebServer {
-  private readonly routes = new Set<Route>();
+  private readonly routes = new Set<WebRoute>();
 
-  register(route: Route): () => void {
+  register(route: WebRoute): () => void {
     this.routes.add(route);
     return () => this.routes.delete(route);
   }
 
-  match(pathname: string): Route | undefined {
+  match(pathname: string): WebRoute | undefined {
     return [...this.routes].find((route) =>
       route.kind === 'exact'
         ? pathname === route.path

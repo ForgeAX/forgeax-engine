@@ -6,10 +6,20 @@ import {
   formatInspectorFieldLabel,
   inspectorEntityFromInspection,
 } from '../packages/view-plugin-inspector/src/inspection.ts';
-import { inspectorColorHex } from '../packages/view-components/src/inspector-form-model.ts';
+import { inspectorColorHex, inspectorFormGroupsFromInspection } from '../packages/view-components/src/inspector-form-model.ts';
 import { INSPECTIONS, SCENE_NODES } from '../apps/view-fixture-host/src/scenarios/default.ts';
 
 describe('Object inspector data source', () => {
+  it('keeps native metadata paths distinct from identity fields', () => {
+    const groups = inspectorFormGroupsFromInspection({ guid: 'mesh-guid', asset: { kind: 'mesh' },
+      meta: { kind: 'mesh', vertexCount: 24, collision: { kind: 'triangles' } } });
+    const fields = groups[0].fields;
+    assert.equal(new Set(fields.map(field => field.key)).size, fields.length);
+    assert.equal(fields.find(field => field.key === 'kind').value, 'mesh');
+    assert.equal(fields.find(field => field.key === 'meta.kind').value, 'mesh');
+    assert.equal(groups[1].fields[0].key, 'meta.collision.kind');
+  });
+
   const inspectRotation = (value, component = 'Transform', labels = {}) => inspectorEntityFromInspection({
     entityId: 'world:1',
     components: [{ name: component, fields: { quat: { type: 'array<f32, 4>' } }, values: { quat: value } }],
@@ -129,7 +139,7 @@ describe('Object inspector data source', () => {
   it('keeps numeric shared-asset handles in reference controls', () => {
     const entity = inspectorEntityFromInspection({ entityId: 'world:2', components: [{
       name: 'MeshFilter',
-      fields: { mesh: { type: 'shared<MeshAsset>' }, optionalMesh: { type: 'shared<MeshAsset>' } },
+      fields: { mesh: { type: 'asset<mesh>' }, optionalMesh: { type: 'asset<mesh>' } },
       values: { mesh: 42, optionalMesh: 0 },
     }] });
     assert.deepEqual(entity.components[0].fields.map(({ kind, value }) => ({ kind, value })), [

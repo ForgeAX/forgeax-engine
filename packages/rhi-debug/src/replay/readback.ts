@@ -6,14 +6,13 @@ import type {
   Texture,
 } from '@forgeax/engine-rhi';
 import { textureReadbackLayout } from '@forgeax/engine-rhi';
-import { err, mipDimension, ok, type Result } from '@forgeax/engine-types';
+import { err, isCompressedFormat, mipDimension, ok, type Result } from '@forgeax/engine-types';
 import { createRhiDebugError, type RhiDebugError } from '../errors';
 import { readbackDepthTexture } from '../readback-depth';
 import type { CreateShaderModuleFn } from '../recorder';
 import { projectTextureExtent } from '../texel-layout';
 import type { ResourceTable, ResourceTableEntry } from './resources';
 import {
-  getTextureReadbackPlan,
   isDepthStencilTextureFormat,
   isDepthTextureFormat,
   textureBytesPerTexel,
@@ -31,7 +30,7 @@ export interface TextureReadbackSubresource {
   readonly mipLevel?: number;
   /** Array layer, or the depth slice of a `3d` texture (the copy origin z). */
   readonly arrayLayer?: number;
-  readonly aspect?: 'all' | 'depth-only' | 'stencil-only';
+  readonly aspect?: GPUTextureAspect;
 }
 
 export type ReplayReadbackRequest = BufferReadbackRange | TextureReadbackSubresource;
@@ -40,7 +39,7 @@ export type ReplayReadbackRequest = BufferReadbackRange | TextureReadbackSubreso
 export interface TextureSubresource {
   readonly mipLevel: number;
   readonly arrayLayer: number;
-  readonly aspect?: 'all' | 'depth-only' | 'stencil-only';
+  readonly aspect?: GPUTextureAspect;
 }
 
 export type ReadbackSubresource = TextureSubresource | BufferReadbackRange;
@@ -225,15 +224,14 @@ async function readTexture(
       'multisampled textures require a single-sample resolve target before readback',
     );
   }
-  const plan = getTextureReadbackPlan({ format, dimension });
-  if (!plan.supported) {
-    return err(
-      createRhiDebugError('readback-unsupported', {
-        stage: 'readback',
-        resourceId,
-        format,
-        reason: plan.reason,
-      }),
+  const texelBytes = textureBytesPerTexel(format);
+  if (texelBytes === undefined) {
+    return readbackUnsupported(
+      resourceId,
+      format,
+      isCompressedFormat(format as GPUTextureFormat)
+        ? 'compressed texture readback has no core decoder'
+        : 'texture format is not in the v7 readback matrix',
     );
   }
   const size = projectTextureExtent(recordField(descriptor, 'size'));
@@ -301,9 +299,6 @@ async function readTexture(
     if (!bytes.ok) return bytes;
     return ok({ resourceId, kind: 'texture', format, width, height, bytes: bytes.value });
   }
-  const texelBytes = textureBytesPerTexel(format);
-  if (texelBytes === undefined)
-    return readbackFailure(`texture format ${format} has no byte layout`);
   const { rowBytes, bytesPerRow, byteLength } = textureReadbackLayout(width, height, {
     blockWidth: 1,
     blockHeight: 1,
@@ -405,7 +400,7 @@ function copyTextureBytes(
   copy: {
     readonly mipLevel: number;
     readonly arrayLayer: number;
-    readonly aspect: 'all' | 'depth-only' | 'stencil-only';
+    readonly aspect: GPUTextureAspect;
     readonly width: number;
     readonly height: number;
     readonly bytesPerRow: number;
@@ -478,9 +473,7 @@ function textureSubresourceField(
   return value[key];
 }
 
-function textureAspect(
-  value: ReplayReadbackRequest | undefined,
-): 'all' | 'depth-only' | 'stencil-only' {
+function textureAspect(value: ReplayReadbackRequest | undefined): GPUTextureAspect {
   if (value === undefined || isBufferRange(value)) return 'all';
   return value.aspect ?? 'all';
 }

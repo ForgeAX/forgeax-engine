@@ -13,7 +13,7 @@ export const DAWN_COMPACT_TEST_FILES = Object.freeze([
   'packages/rhi-wgpu/src/__tests__/dawn-texture-dimensions.dawn.test.ts',
   'packages/runtime/__tests__/webgpu-backend.dawn.test.ts',
   'packages/runtime/src/__tests__/dawn/material-cooked-fixture.dawn.test.ts',
-  'packages/runtime/src/__tests__/dawn/mipmap-srgb-linear.dawn.test.ts',
+  'packages/render/src/__tests__/mipmap-srgb-linear.dawn.test.ts',
   'packages/runtime/src/__tests__/fullscreen-feature-host.dawn.test.ts',
   'packages/runtime/src/__tests__/renderer-device-loss-recovery.dawn.test.ts',
   'packages/runtime/src/__tests__/shadow-csm-blend.dawn.test.ts',

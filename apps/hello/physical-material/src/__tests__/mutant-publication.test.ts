@@ -11,6 +11,7 @@ function publication(source: string) {
   return {
     schemaVersion: SHADER_MANIFEST_PUBLICATION_VERSION,
     receipts: [{ bindings: [] }],
+    entryPoints: [],
     fragments,
     sources: { [sourceDigest]: [0, 1] },
     entries: [],
@@ -24,6 +25,7 @@ it('produces a digest-valid additive falsifier from the current fragmented wire 
   const mutant = await createAdditiveCoatMutantPublication(input, 'product', 'mutant');
   expect(input).toEqual(original);
   expect(mutant.receipts).toEqual(input.receipts);
+  expect(mutant.entryPoints).toEqual(input.entryPoints);
   expect(mutant.materialShaders[1].receiptIndex).toBe(0);
   expect(mutant.materialShaders[0]).toEqual(input.materialShaders[0]);
   expect(mutant.materialShaders[1].composedWgsl).toBeUndefined();

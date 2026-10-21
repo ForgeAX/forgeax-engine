@@ -1,7 +1,5 @@
-import { resolveAssetHandle } from '@forgeax/engine-assets-runtime';
 import type { RenderGraphBuilder, RenderGraphFrame } from '@forgeax/engine-render-graph';
 import type { Buffer, RhiDevice } from '@forgeax/engine-rhi';
-import { type MeshAsset, toShared } from '@forgeax/engine-types';
 import { ResidencyLifetime } from '../device/residency-lifetime';
 import { SceneSdfUnavailableError } from '../errors/scene-sdf';
 import type { RenderFeatureSceneResource } from '../features/plan';
@@ -22,9 +20,10 @@ import type { PersistentGpuDrivenState } from '../scene/render-scene';
 import { projectCollisionScene } from './scene-sdf-projection';
 
 type Request = Extract<RenderFeatureSceneResource, { kind: 'scene-sdf' }>;
+type SourceKey = readonly [identity: object, revision: number, scope: RenderResourceScope];
 interface Region {
   readonly device: RhiDevice;
-  readonly sourceKey: readonly unknown[];
+  readonly sourceKey: SourceKey;
   readonly rangeKey: string;
   readonly input: GlobalSdfCompositionInputs;
   readonly buffer: Buffer;
@@ -51,27 +50,16 @@ export function createFeatureSceneSdf(internals: RenderSystemInternals) {
   const candidates = new Map<string, Region>();
   const failed = new Set<string>();
   const release = (region: Region) => region.lifetime.retire();
-  const sourceKey = (request: Request, current: FeatureSceneSdfSource) => {
+  const sourceKey = (request: Request, current: FeatureSceneSdfSource): SourceKey => {
     const retained = current.retained;
     if (retained === undefined || !retained.isCurrent() || !retained.isSourceCurrent())
       throw new SceneSdfUnavailableError({ reason: 'missing-source', world: request.world });
-    const refs: unknown[] = [
-      retained.identity,
-      retained.revision,
-      internals.assets.catalogEpoch,
-      current.scopes[request.world],
-    ];
-    for (const slot of retained.slots) {
-      if (slot.worldId !== request.world || slot.snapshot.authorVisible === false) continue;
-      // Accepted asset payload identity changes on reimport, independently of
-      // World/transform revisions. No independent mutation clock.
-      const scope = current.scopes[request.world];
-      if (scope === undefined)
-        throw new SceneSdfUnavailableError({ reason: 'missing-source', world: request.world });
-      const mesh = resolveAssetHandle<MeshAsset>(scope, toShared(slot.snapshot.assetHandle));
-      refs.push(mesh.ok ? mesh.value : undefined, mesh.ok ? mesh.value.distanceField : undefined);
-    }
-    return refs;
+    const scope = current.scopes[request.world];
+    if (scope === undefined)
+      throw new SceneSdfUnavailableError({ reason: 'missing-source', world: request.world });
+    // The retained scene revision includes adopted asset publications. Its
+    // currentness fence rejects pending edits; checking holders adds no evidence.
+    return [retained.identity, retained.revision, scope];
   };
   return {
     begin() {
@@ -112,8 +100,9 @@ export function createFeatureSceneSdf(internals: RenderSystemInternals) {
         region !== undefined &&
         (region.device !== internals.device ||
           region.rangeKey !== rangeKey ||
-          region.sourceKey.length !== refs.length ||
-          refs.some((ref, i) => ref !== region?.sourceKey[i]))
+          region.sourceKey[0] !== refs[0] ||
+          region.sourceKey[1] !== refs[1] ||
+          region.sourceKey[2] !== refs[2])
       ) {
         // All consumers in one transaction observe the same source. Keep the
         // candidate reachable for rejection cleanup rather than overwriting it.
@@ -138,6 +127,7 @@ export function createFeatureSceneSdf(internals: RenderSystemInternals) {
           current.scopes,
           request.world,
           request.descriptor,
+          retained,
         );
         const packed = packGlobalSdfComposition(projection.instances, {
           ...request.descriptor,
@@ -311,7 +301,7 @@ export function createFeatureSceneSdf(internals: RenderSystemInternals) {
     detach(scope: RenderResourceScope) {
       for (const map of [regions, candidates, requested])
         for (const [key, region] of map) {
-          if (region.sourceKey[3] !== scope) continue;
+          if (region.sourceKey[2] !== scope) continue;
           release(region);
           map.delete(key);
         }

@@ -111,14 +111,14 @@ try {
       // A heightfield has no overhang. With vertical incident light and no
       // other caster, every actual curved triangle is unoccluded along +Y.
       // Reuse the preregistered plane 2/255 budget, without flattening geometry.
-      const fold = (
-        await h.app.assets.loadByGuid(
-          AssetGuid.derive(definePackageId('019fcaf0-0000-7000-8000-000000000001'), 'terrain'),
+      const foldHandle = (
+        await h.app.assets.load(
+          AssetGuid.derive(definePackageId('019fcaf0-0000-7000-8000-000000000001'), 'terrain'), 'terrain'
         )
       ).unwrap();
-      const foldHandle = h.app.world.sharedRefs.acquire('TerrainAsset', fold);
+      const fold = h.app.assets.read(foldHandle).unwrap();
       h.app.world.set(h.subjects.terrain, Terrain, { asset: foldHandle, forcedLod: 0 }).unwrap();
-      h.app.world.sharedRefs.release(foldHandle).unwrap();
+      h.app.world.assets.release(foldHandle).unwrap();
       const eye = [3.5, 9, 15];
       h.app.world
         .set(h.subjects.camera, Transform, {
@@ -182,7 +182,7 @@ try {
       h.app.world.set(lights[0].entity, DirectionalLight, { castShadow: false }).unwrap();
       for (let i = 0; i < 60; i++) await h.frame();
       const blockedOff = await capture(`${renderPath}-fold-self-blocker-off`);
-      const grid = h.app.assets.lookup(fold.grids[0]);
+      const grid = h.app.assets.read(fold.grids[0]).unwrap();
       assert(grid.indices && grid.attributes.position);
       const vertices = Array.from({ length: grid.attributes.position.length / 3 }, (_, index) => {
         const x = grid.attributes.position[index * 3],

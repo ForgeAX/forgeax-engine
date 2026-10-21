@@ -1,3 +1,4 @@
+import { runtimeAssets } from '@forgeax/engine-assets-runtime/internal';
 // feat-20260623 M2 w11+w12 — SceneInstance to SceneAsset POD collection + pack
 // serialization (plan-strategy D-1: pure-data collector).
 //
@@ -45,11 +46,10 @@
 //   normalization on first reload; fixed-point from second collect onward).
 
 import {
-  builtinMeshGuid,
-  resolveAssetHandle,
   SceneCollectAssetGuidUnresolvedError,
   SceneCollectEntityRefOutOfClosureError,
 } from '@forgeax/engine-assets-runtime';
+
 import {
   componentDefinition,
   type Component as EcsComponent,
@@ -69,12 +69,12 @@ import {
   worldGetSceneAssetForInstance,
   worldGetSceneInstanceState,
 } from '@forgeax/engine-scene';
-import type { Asset, Handle, LocalEntityId, SceneAsset } from '@forgeax/engine-types';
+import type { Handle, LocalEntityId, SceneAsset } from '@forgeax/engine-types';
 import { foldMountOverrides } from './scene-utils/mount-override-fold';
 
 /** The collector needs identity lookup, not an authoring registry implementation. */
 export interface SceneAssetGuidLookup {
-  guidOf(asset: Asset): string | undefined;
+  guidOf(handle: number): string | undefined;
 }
 
 // Shared helpers
@@ -99,8 +99,8 @@ type SchemaFieldClass =
 
 function classifyFieldSchema(fieldType: string | undefined): SchemaFieldClass | undefined {
   if (fieldType === undefined) return undefined;
-  if (fieldType.startsWith('shared<')) return { kind: 'shared', scalar: true };
-  if (fieldType.startsWith('array<shared<')) return { kind: 'shared', scalar: false };
+  if (fieldType.startsWith('asset<')) return { kind: 'shared', scalar: true };
+  if (fieldType.startsWith('array<asset<')) return { kind: 'shared', scalar: false };
   return undefined;
 }
 
@@ -120,11 +120,11 @@ function _handleToGuid(
   field: string,
 ): Result<string | undefined, SceneCollectAssetGuidUnresolvedError> {
   if (handle === 0) return ok(undefined); // NULL sentinel
-  const builtinGuid = builtinMeshGuid(handle as unknown as Handle<string, 'shared'>);
-  if (builtinGuid !== undefined) return ok(builtinGuid);
-  const assetRes = resolveAssetHandle(world, handle as unknown as Handle<string, 'shared'>);
+  const assetRes = runtimeAssets(world.assets).resolveAsset(
+    handle as unknown as Handle<string, 'shared'>,
+  );
   if (!assetRes.ok) return err(new SceneCollectAssetGuidUnresolvedError(field, handle));
-  const guid = registry.guidOf(assetRes.value as Asset);
+  const guid = registry.guidOf(handle);
   if (guid === undefined) return err(new SceneCollectAssetGuidUnresolvedError(field, handle));
   return ok(guid);
 }
@@ -578,9 +578,9 @@ function collectKeyedSceneAsset(
       const kind = classifyEntityField(token as EcsComponent, field);
       if (kind === null) {
         const sharedType = schema[field];
-        const shared: SchemaFieldClass | undefined = sharedType?.startsWith('shared<')
+        const shared: SchemaFieldClass | undefined = sharedType?.startsWith('asset<')
           ? { kind: 'shared', scalar: true }
-          : sharedType?.startsWith('array<shared<')
+          : sharedType?.startsWith('array<asset<')
             ? { kind: 'shared', scalar: false }
             : undefined;
         if (shared === undefined) return ok(fieldValue);
@@ -1014,8 +1014,7 @@ export function rootsToSceneAsset(
           sh.error as unknown as number,
         ),
       );
-    const pr = resolveAssetHandle<SceneAsset>(
-      world,
+    const pr = runtimeAssets(world.assets).resolveAsset<SceneAsset>(
       sh.value as unknown as Handle<string, 'shared'>,
     );
     if (!pr.ok)
@@ -1025,7 +1024,7 @@ export function rootsToSceneAsset(
           sh.value as unknown as number,
         ),
       );
-    const g = registry.guidOf(pr.value as Asset);
+    const g = registry.guidOf(sh.value);
     if (g === undefined)
       return err(
         new SceneCollectAssetGuidUnresolvedError(
@@ -1253,7 +1252,7 @@ export function rootsToSceneAsset(
           // the slot-0 default; emitting 0 would be misread as refs index 0 by
           // parseScenePayload HANDLE_FIELD_NAMES). array handle 0 -> positional 0
           // kept (paired SoA alignment, e.g. AnimationPlayer.clips = [h,0,0,0]).
-          // AnimationPlayer.graph (shared<AnimationGraph> scalar, M4/w31) is
+          // AnimationPlayer.graph (asset<animation-graph> scalar, M4/w31) is
           // handled generically here — no special case needed.
           const normalized = _isArrayLike(rawValue) ? _normalizeArray(rawValue) : rawValue;
           const sharedClass = classifyFieldSchema(schema[fieldName]);

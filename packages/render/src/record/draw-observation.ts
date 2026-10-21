@@ -6,12 +6,14 @@ import type { RenderableDrawReceipt } from './gpu-draw-receipts';
 import type { RenderSystemInternals } from './render-context';
 
 /** One bounded staging list owned by the actual record callback, committed at submit. */
-export function createDrawObservation(internals: RenderSystemInternals) {
+export function createDrawObservation(
+  internals: Pick<RenderSystemInternals, 'device' | 'resolvePipelineReference'>,
+) {
   const draws: MaterialDrawObservation[] = [];
   let reason: Extract<DrawObservation, { status: 'unavailable' }>['reason'] | undefined;
   return {
     record(
-      entry: ValidatedRenderable,
+      entry: Pick<ValidatedRenderable, 'source'>,
       submeshIndex: number | undefined,
       receipt: RenderableDrawReceipt | undefined,
       world: Pick<World, 'identity'> | undefined,
@@ -21,8 +23,8 @@ export function createDrawObservation(internals: RenderSystemInternals) {
         reason = 'unsupported-lane';
         return;
       }
-      const material = entry.source.materials[receipt?.materialSlot ?? 0] ?? entry.source.material;
-      const publication = material.materialPublication;
+      const material = receipt?.material;
+      const publication = material?.materialPublication;
       const candidates =
         publication?.programs.filter((p) => p.specializationKey === receipt?.programKey) ?? [];
       const program =
@@ -32,6 +34,7 @@ export function createDrawObservation(internals: RenderSystemInternals) {
             : undefined
           : publication?.programs[receipt.passIndex];
       if (
+        material === undefined ||
         publication === undefined ||
         program === undefined ||
         program.specializationKey !== receipt?.programKey ||

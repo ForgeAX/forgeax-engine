@@ -1,7 +1,9 @@
 import { createFullscreenRenderFeature } from '@forgeax/engine/app';
+import { AssetRegistry } from '@forgeax/engine/assets-runtime';
+import { createPrimitiveMesh } from '@forgeax/engine/geometry';
 import { PostProcessParams } from '@forgeax/engine/render';
 import { CheckList, defineFeature } from '../../lab/feature';
-import { MESH, spawnMesh, spawnStage, standard } from '../../lab/stage';
+import { spawnMesh, spawnStage, standard } from '../../lab/stage';
 
 const IDENTITY = 'feature-lab::invert-post';
 
@@ -48,8 +50,14 @@ export default defineFeature({
   expect:
     'ON: the whole frame is color-inverted (dark background turns near-white, the orange sphere turns blue). OFF: the normal scene.',
   setup({ app, world }) {
+    const primitiveAssets = world.assets;
+    if (!(primitiveAssets instanceof AssetRegistry))
+      throw new Error('Scene requires its runtime asset owner');
+
+    const stageSphere = primitiveAssets.create(createPrimitiveMesh('sphere').unwrap()).unwrap();
+
     spawnStage(world);
-    spawnMesh(world, MESH.sphere, standard(world, { baseColor: [1, 0.5, 0.1, 1] }), {
+    spawnMesh(world, stageSphere, standard(world, { baseColor: [1, 0.5, 0.1, 1] }), {
       pos: [0, 0.7, 0],
     });
     const params = world

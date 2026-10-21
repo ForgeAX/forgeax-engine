@@ -79,8 +79,6 @@ describe('resource preview artifact publication', () => {
       actualCarrier: 'headless-private',
       trace: {
         events: [],
-        backend: 'webgpu',
-        adapter: 'webgpu-adapter',
         presentation: 'hidden',
       },
       captureId: 'capture',

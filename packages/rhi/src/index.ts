@@ -898,11 +898,11 @@ export type RenderPassDescriptor = ExplicitUndefined<
 };
 
 /** Timestamp writes attached to a render pass descriptor. */
-export interface RenderPassTimestampWrites {
+export type RenderPassTimestampWrites = ExplicitUndefined<
+  Omit<GPURenderPassTimestampWrites, 'querySet'>
+> & {
   querySet: QuerySet;
-  beginningOfPassWriteIndex?: number | undefined;
-  endOfPassWriteIndex?: number | undefined;
-}
+};
 
 /** Compute-pass descriptor with forgeax-owned timestamp query handles. */
 export type ComputePassDescriptor = ExplicitUndefined<
@@ -912,11 +912,7 @@ export type ComputePassDescriptor = ExplicitUndefined<
 };
 
 /** Timestamp writes attached to a compute pass descriptor. */
-export interface ComputePassTimestampWrites {
-  querySet: QuerySet;
-  beginningOfPassWriteIndex?: number | undefined;
-  endOfPassWriteIndex?: number | undefined;
-}
+export type ComputePassTimestampWrites = RenderPassTimestampWrites;
 
 // ============================================================================
 // Capabilities trio (MVP-1.2) - readonly + independent fields
@@ -2513,4 +2509,5 @@ export function cubeArrayDepthFaceView(
   };
 }
 
+export { projectAdapterCapabilities } from './adapter-capabilities';
 export { textureCopyOrigin, textureReadbackLayout } from './texture-copy-layout';

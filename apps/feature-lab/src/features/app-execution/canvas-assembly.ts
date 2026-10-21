@@ -1,7 +1,9 @@
 import { createApp } from '@forgeax/engine/app/browser';
+import { AssetRegistry } from '@forgeax/engine/assets-runtime';
 import { World } from '@forgeax/engine/ecs';
+import { createPrimitiveMesh } from '@forgeax/engine/geometry';
 import { CheckList, defineFeature } from '../../lab/feature';
-import { MESH, spawnMesh, spawnStage, standard } from '../../lab/stage';
+import { spawnMesh, spawnStage, standard } from '../../lab/stage';
 
 export default defineFeature({
   title: 'Canvas assembly entry',
@@ -12,8 +14,14 @@ export default defineFeature({
   expect:
     'All checks pass: the App exposes World/Renderer/pluginContext/input, and a detached canvas yields app-canvas-detached instead of throwing.',
   setup({ app, world }) {
+    const primitiveAssets = world.assets;
+    if (!(primitiveAssets instanceof AssetRegistry))
+      throw new Error('Scene requires its runtime asset owner');
+
+    const stageCube = primitiveAssets.create(createPrimitiveMesh('cube').unwrap()).unwrap();
+
     spawnStage(world);
-    spawnMesh(world, MESH.cube, standard(world, { baseColor: [0.2, 0.7, 0.9, 1] }), {
+    spawnMesh(world, stageCube, standard(world, { baseColor: [0.2, 0.7, 0.9, 1] }), {
       pos: [0, 0.5, 0],
     });
     return {

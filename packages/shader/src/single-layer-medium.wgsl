@@ -12,7 +12,9 @@
 #ifdef GPU_DRIVEN_SCENE_INDEX_AVAILABLE
 #import forgeax_material::parameters::{MATERIAL_SCENE_ROW_VEC4_COUNT}
 #endif
-#import forgeax_pbr::ibl_sampling::{sampleIblDiffuse}
+#import forgeax_pbr::ibl_sampling::{sampleIblDiffuse, environmentReflectionDirection}
+#import forgeax_pbr::ibl_shared::{inverseRotateEnvironment}
+#import forgeax_pbr::pmrem::{samplePmrem}
 #import forgeax_pbr::lighting_probe::{evaluateProbeDiffuse}
 #import forgeax_pbr::lighting_directional::{evalDirectionalShadowFactorAtPixel}
 #ifdef CLUSTER_FORWARD_AVAILABLE
@@ -77,7 +79,7 @@ struct SingleLayerMediumSceneMaterialRow {
 // empty medium parameter region and six IBL entries (bindings 7 and 8).
 @group(1) @binding(1) var mediumIrradianceMap: texture_cube<f32>;
 @group(1) @binding(2) var mediumIrradianceSampler: sampler;
-@group(1) @binding(3) var mediumPrefilterMap: texture_cube<f32>;
+@group(1) @binding(3) var mediumPrefilterMap: texture_2d<f32>;
 @group(1) @binding(4) var mediumPrefilterSampler: sampler;
 @group(1) @binding(5) var mediumBrdfLut: texture_2d<f32>;
 struct SurfaceSkylightUniforms {
@@ -463,14 +465,14 @@ fn sampleNearestCoverage(pixelPosition: vec4<f32>, rawDepth: f32) -> f32 {
 }
 
 fn sampleSkyReflection(normal: vec3<f32>, viewDirection: vec3<f32>, roughness: f32) -> vec3<f32> {
-  let reflectedDirection = reflect(-viewDirection, normal);
-  let maxLod = max(f32(textureNumLevels(mediumPrefilterMap)) - 1.0, 0.0);
-  let environment = textureSampleLevel(
+  let reflectedDirection = environmentReflectionDirection(normal, viewDirection, roughness);
+  let rotated = inverseRotateEnvironment(reflectedDirection, mediumSkylight.rotation);
+  let environment = samplePmrem(
     mediumPrefilterMap,
     mediumPrefilterSampler,
-    reflectedDirection,
-    roughness * maxLod,
-  ).rgb;
+    vec3<f32>(rotated.x, -rotated.y, rotated.z),
+    roughness,
+  );
   return environment * vec3<f32>(mediumSkylight.colorR, mediumSkylight.colorG, mediumSkylight.colorB) * max(mediumSkylight.intensity, 0.0);
 }
 
@@ -493,9 +495,12 @@ fn sampleMediumDiffuse(
   var diffuse = skyIrradiance;
 #ifdef PROBE_BLEND_AVAILABLE
 #ifdef GPU_DRIVEN_SCENE_INDEX_AVAILABLE
-  let probeBase = probeIdentity.x * 16u;
+  let requestedProbeBase = probeIdentity.x * 16u;
+  let probeInBounds = requestedProbeBase + 9u < arrayLength(&probeBlendRecords);
+  let probeBase = select(0u, requestedProbeBase, probeInBounds);
   let probeHeader = probeBlendRecords[probeBase];
   let probeIdentityValid =
+    probeInBounds &&
     u32(probeHeader.x) + 1u == probeIdentity.x &&
     u32(probeHeader.y) == probeIdentity.y;
 #else

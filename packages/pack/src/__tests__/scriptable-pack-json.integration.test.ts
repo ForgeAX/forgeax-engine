@@ -19,7 +19,7 @@ it('loads JSON as data in the isolated Worker and inventories the original bytes
     await writeFile(
       source,
       `import config from './data.json';
-      export default { schemaVersion: '2.0.0', packageId: new Uint8Array(16).fill(1),
+      export default { schemaVersion: '2.0.0', plugins: true, packageId: new Uint8Array(16).fill(1),
         build: () => ({ ok: true, value: { 'plugin/test': {
           kind: 'plugin', module: { specifier: './unused.ts' }, config
         } } }) };`,

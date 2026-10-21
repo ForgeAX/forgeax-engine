@@ -1,3 +1,6 @@
+import { createCatalogSource } from '@forgeax/engine-assets-runtime';
+import { createRuntimePackPublication } from '@forgeax/engine-pack/runtime';
+
 function isRecord(value) {
   return value !== null && typeof value === 'object' && !Array.isArray(value);
 }
@@ -70,7 +73,7 @@ async function sha256Hex(bytes) {
 
 function validateLodProducerManifest(value, expectedRoles) {
   const manifest = requireRecord(value, 'E03 producer manifest');
-  if (manifest.schemaVersion !== 'e03-incremental-inputs/1')
+  if (manifest.schemaVersion !== 'e03-incremental-inputs/2')
     throw new Error('unsupported E03 producer manifest schema');
   const provenance = requireRecord(manifest.provenance, 'E03 manifest provenance');
   if (
@@ -151,21 +154,30 @@ function validateLodProducerManifest(value, expectedRoles) {
   )
     throw new Error('E03 root AssetRef order no longer matches material, middle and lowest');
 
+  const initialRoot = requireRecord(manifest.initialRoot, 'E03 initial root');
+  if (initialRoot.guid !== roles.root || initialRoot.kind !== 'mesh' || initialRoot.path !== `assets/${roles.root}-initial.json` || !sameJsonValue(initialRoot.refs.map(ref => ref.guid), [roles.material, roles.middle]))
+    throw new Error('E03 initial root must publish the complete root + middle closure');
+  requireSha256(initialRoot.sha256, 'E03 initial root SHA256');
+  if (!Number.isSafeInteger(initialRoot.byteLength) || initialRoot.byteLength <= 0) throw new Error('E03 initial root byte length is invalid');
   const admission = requireRecord(manifest.admission, 'E03 manifest admission');
   if (
     !sameJsonValue(admission.initial, [roles.material, roles.middle, roles.root]) ||
     !sameJsonValue(admission.later, [roles.lowest]) ||
     !sameJsonValue(admission.excluded, [roles.scene]) ||
-    admission.route !== 'public loaders -> AssetRegistry.catalog(original guid, payload, refs)'
+    admission.route !== 'complete Catalog publication -> load / reload original root'
   ) {
     throw new Error('E03 producer admission does not match the fixed incremental route');
   }
   const shaderClosure = requireRecord(manifest.shaderClosure, 'E03 shader closure');
   if (
-    shaderClosure.status !== 'cpu-publication-verified' ||
+    !['not-prepared', 'cpu-publication-verified'].includes(shaderClosure.status) ||
     shaderClosure.gpuReadiness !== 'unverified'
   ) {
     throw new Error('E03 shader closure must keep GPU readiness unverified');
+  }
+  if (shaderClosure.status === 'not-prepared') {
+    if (shaderClosure.publication !== undefined) throw new Error('E03 unprepared shaders cannot claim a publication');
+    return manifest;
   }
   const publication = requireRecord(shaderClosure.publication, 'E03 shader publication');
   if (publication.path !== 'shaders/manifest.json' || publication.byteLength <= 0)
@@ -195,8 +207,8 @@ export async function verifyLodProducerManifestBytes(bytes, expectedRoles, produ
   return Object.freeze({ manifest: freezeTree(manifest), sha256: digest });
 }
 
-/** Catalog real producer rows through the host's public loaders and AssetRegistry. */
-export async function catalogLodProducerAssets(assets, manifestValue, readBytes, expectedRoles) {
+/** Load a complete source closure, then explicitly adopt its expanded publication. */
+export async function loadLodProducerAssets(assets, manifestValue, readBytes, expectedRoles) {
   const manifest = validateLodProducerManifest(manifestValue, expectedRoles);
   const readVerified = async (path, digest, byteLength) => {
     const bytes = await readBytes(path);
@@ -205,66 +217,56 @@ export async function catalogLodProducerAssets(assets, manifestValue, readBytes,
     if ((await sha256Hex(bytes)) !== digest) throw new Error(`E03 input ${path} SHA256 mismatch`);
     return bytes;
   };
-  const decodeAndCatalog = async (guid) => {
-    const row = manifest.assets.find((candidate) => candidate.guid === guid);
-    if (!row) throw new Error(`E03 producer manifest is missing ${guid}`);
-    const documentBytes = await readVerified(row.path, row.sha256, row.byteLength);
-    const document = requireRecord(
-      JSON.parse(new TextDecoder().decode(documentBytes)),
-      `E03 producer asset ${guid}`,
-    );
-    if (
-      document.guid !== row.guid ||
-      document.kind !== row.kind ||
-      !sameJsonValue(document.refs, row.refs)
-    ) {
-      throw new Error(`E03 producer asset ${guid} no longer matches its manifest identity`);
-    }
-    const artifactInputs = {};
+  const documents = new Map(), binaries = new Map();
+  // Validate the delivered original producer bytes before admitting either stage.
+  for (const row of [...manifest.assets, manifest.initialRoot]) {
+    const bytes = await readVerified(row.path, row.sha256, row.byteLength);
+    const document = requireRecord(JSON.parse(new TextDecoder().decode(bytes)), `E03 asset ${row.guid}`);
+    if (document.guid !== row.guid || document.kind !== row.kind || !sameJsonValue(document.refs, row.refs))
+      throw new Error(`E03 producer asset ${row.guid} no longer matches its manifest identity`);
+    const artifacts = {};
     for (const [key, descriptorValue] of Object.entries(row.artifacts)) {
       const descriptor = requireRecord(descriptorValue, `E03 producer artifact ${key}`);
-      const integrity = requireRecord(
-        descriptor.integrity,
-        `E03 producer artifact ${key} integrity`,
-      );
-      const bytes = await readVerified(descriptor.path, integrity.digest, descriptor.byteLength);
-      artifactInputs[key] = { descriptor, bytes };
+      const integrity = requireRecord(descriptor.integrity, `E03 producer artifact ${key} integrity`);
+      binaries.set(descriptor.path, await readVerified(descriptor.path, integrity.digest, descriptor.byteLength));
+      artifacts[key] = { ...descriptor, integrity: { ...integrity, digest: `sha256:${integrity.digest}` } };
     }
-    const payload = requireRecord(document.payload, `E03 producer asset ${guid} payload`);
-    const loaded = await assets.loaders.loadPack(
-      {
-        guid,
-        kind: row.kind,
-        payload,
-        refs: row.refs.map((ref) => ref.guid),
-        artifacts: artifactInputs,
+    documents.set(row === manifest.initialRoot ? 'initial-root' : row.guid, { guid: row.guid, kind: row.kind, payload: requireRecord(document.payload, `E03 asset ${row.guid} payload`), refs: row.refs.map(ref => ref.guid), artifacts });
+  }
+  const publish = (complete) => {
+    const base = `https://lod-producer.invalid/${manifest.provenance.producerHead}/${complete ? 'complete' : 'initial'}/`;
+    const packageUrl = `${base}pack.json`;
+    const guids = complete ? [...manifest.admission.initial, ...manifest.admission.later] : manifest.admission.initial;
+    const rows = guids.map(guid => {
+      const row = documents.get(guid);
+      if (row === undefined) throw new Error(`E03 missing producer ${guid}`);
+      if (complete || guid !== manifest.roles.root) return row;
+      return documents.get('initial-root');
+    });
+    const publication = createRuntimePackPublication({ scopeId: 'asset-runtime', sourcePath: 'lod-scene.gltf', sourceRevision: complete ? 'complete' : 'initial', packageUrl, pack: { assets: rows } });
+    const packBytes = JSON.stringify(publication.pack);
+    assets.setCatalogSource(createCatalogSource({
+      entries: rows.map(row => ({ guid: row.guid, kind: row.kind, packageUrl, sourcePath: 'lod-scene.gltf', publication: publication.publication })),
+      fetch: async input => {
+        const url = String(input);
+        if (url === packageUrl) return new Response(packBytes);
+        const data = url.startsWith(base) ? binaries.get(url.slice(base.length)) : undefined;
+        return data === undefined ? new Response(null, { status: 404 }) : new Response(data.slice().buffer);
       },
-      {
-        fetchBinary: async () => {
-          throw new Error('E03 producer bytes are supplied explicitly');
-        },
-        resolveRef: async () => {
-          throw new Error('E03 producer refs must remain unresolved during incremental catalog');
-        },
-        transcodeCaps: { bc: false, etc2: false, astc: false },
-        device: undefined,
-      },
-    );
-    if (!loaded.ok) throw new Error(`E03 public loader rejected ${guid}: ${String(loaded.error)}`);
-    if (loaded.value === undefined)
-      throw new Error(`E03 public loader returned no payload for ${guid}`);
-    const cataloged = assets.catalog(guid, loaded.value, row.refs);
-    if (!cataloged.ok)
-      throw new Error(`E03 AssetRegistry rejected ${guid}: ${String(cataloged.error)}`);
-    return loaded.value;
+    }));
   };
-
-  for (const guid of manifest.admission.initial) await decodeAndCatalog(guid);
-  if (assets.lookup(manifest.roles.lowest) !== undefined)
-    throw new Error('E03 lowest LOD was admitted before its manifest stage');
+  publish(false);
+  const root = (await assets.load(manifest.roles.root, 'mesh')).unwrap();
+  let complete = false;
   return {
     manifest,
-    admitLowest: () => decodeAndCatalog(manifest.roles.lowest),
+    root,
+    async admitLowest() {
+      if (complete) return;
+      publish(true);
+      (await assets.reload(root, { conflict: 'reject' })).unwrap();
+      complete = true;
+    },
   };
 }
 

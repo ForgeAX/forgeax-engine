@@ -1,5 +1,7 @@
 #!/usr/bin/env node
 import { encodePng } from '@forgeax/engine-image/png';
+import { constructRuntimeRendererHost } from '@forgeax/engine-runtime/internal/renderer-host';
+let smokeAssets;
 import { createSmokeRenderer, drawSmokeFrame, rendererBackend, subscribeSmokeErrors } from "../../scripts/renderer-smoke.mjs";
 import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
@@ -86,13 +88,17 @@ async function capture() {
 }
 
 const { World } = await import('@forgeax/engine-ecs');
+const { AssetRegistry } = await import('@forgeax/engine-assets-runtime');
+const { registerPropagateTransforms } = await import('@forgeax/engine-scene');
 const { createRenderer } = await import('@forgeax/engine-runtime');
 const here = dirname(fileURLToPath(import.meta.url));
 const manifestUrl = `data:application/json,${encodeURIComponent(readFileSync(resolve(here, '..', 'dist', 'shaders', 'manifest.json'), 'utf8'))}`;
 
 let renderer;
 try {
-  renderer = await createSmokeRenderer(createRenderer, mockCanvas, {}, { shaderManifestUrl: manifestUrl });
+  const hostResult = await constructRuntimeRendererHost(mockCanvas, {}, { shaderManifestUrl: manifestUrl });
+if (!hostResult.ok) throw hostResult.error;
+({ renderer, assets: smokeAssets } = hostResult.value);
 } catch (err) {
   console.error(`[smoke] FAIL - createRenderer: ${err instanceof Error ? err.message : String(err)}`);
   process.exit(1);
@@ -101,10 +107,12 @@ const errors = [];
 subscribeSmokeErrors(renderer, (err) => errors.push({ code: err.code, hint: err.hint }));
 
 const { buildAlterMeshWorld, mutateSharedMesh, swapRightMesh } = await import(resolve(here, '..', 'src', 'alter-mesh.ts'));
-const world = new World();
+const assets = smokeAssets;
+const world = new World({ assets });
+registerPropagateTransforms(world);
 const worldAttachment1 = renderer.attach(world);
 if (!worldAttachment1.ok) throw worldAttachment1.error;
-const state = buildAlterMeshWorld(world);
+const state = buildAlterMeshWorld(world, assets);
 
 world.update().unwrap();
 await drawSmokeFrame(renderer, world);
@@ -115,7 +123,7 @@ world.update().unwrap();
 await drawSmokeFrame(renderer, world);
 await delay(50);
 const afterSwap = await capture();
-mutateSharedMesh(world, state);
+if (process.env.FALSIFY !== 'freeze-mesh') mutateSharedMesh(assets, state);
 world.update().unwrap();
 await drawSmokeFrame(renderer, world);
 await delay(50);
@@ -125,7 +133,7 @@ for (let i = 3; i < SMOKE_MIN_FRAMES; i++) {
   await drawSmokeFrame(renderer, world);
 }
 mkdirSync(resolve(here, '..', 'artifacts'), { recursive: true });
-writeFileSync(resolve(here, '..', 'artifacts', 'alter-mesh-ref.png'), encodePng(WIDTH, HEIGHT, afterMutation));
+writeFileSync(resolve(here, '..', 'artifacts', `alter-mesh${process.env.FALSIFY ? `-${process.env.FALSIFY}` : ''}-ref.png`), encodePng(WIDTH, HEIGHT, afterMutation));
 
 function diff(a, b) {
   let sum = 0;

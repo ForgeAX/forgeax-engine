@@ -1,63 +1,9 @@
-// @forgeax/engine-ecs - SharedRefStore.
-//
-// Reference-counted store for AssetRegistry-style shared handles. Schema vocab
-// `shared<T>` fields derive `Handle<T, 'shared'>` whose lifecycle is tracked
-// by retain/release on the holder side - allocators (typically the asset
-// registry) call `alloc` once and let consumers retain/release as the asset
-// flows through ECS components and external systems. When rc transitions
-// 1 -> 0 the store publishes release evidence. External owners dispose their
-// payloads from their own lifecycle effects; ECS does not invoke callbacks.
-//
-// Companion to UniqueRefStore (1-holder-direct-release semantics). The two
-// stores share storage shape and code patterns; only the lifecycle differs:
-//
-//   UniqueRefStore: alloc -> store; release -> drop. No retain.
-//   SharedRefStore: alloc -> rc=1; retain -> rc++; release -> rc--; rc=0 -> drop.
-//
-// §contract - shared handles are refcounted AND carry a generation
-//   The handle u32 packs `(generation << 24) | slot` via the shared codec in
-//   `@forgeax/engine-types` (same SSOT codec as UniqueRefStore and ECS
-//   EntityHandle). `alloc` welds the slot's current generation; resolve /
-//   retain / release compare the handle generation against
-//   `_generations[slot]` BEFORE any refcount/payload work, so a handle whose
-//   slot was released and re-allocated returns `SharedRefStaleError`
-//   ('shared-ref-stale') instead of silently resolving the next payload.
-//   Generation advances on the rc=0 drop and retires the slot when gen would
-//   exceed MAX_GEN (gen 255 is still usable; retire at would-be 256, no wrap).
-//   AI users keep the rule "don't cache a handle
-//   past release" - the AssetRegistry mediates most shared handle lifecycles,
-//   but a stale handle now fails structurally rather than silently.
-//
-// §tier boundary (feat-20260614 M6 D-15)
-//   This store manages ONLY user-tier slots (`slot >= BUILTIN_BASE`). Builtin
-//   asset payloads in the builtin range are process-static and live in their
-//   authoring package; they
-//   are never reference-counted. `nextSlot` starts at `BUILTIN_BASE` so minted
-//   handles never collide with builtin slots, and alloc/retain/release/resolve
-//   fail-fast with `BuiltinSlotNotOwnedError` when handed a builtin slot.
-//
-// One live entry owns payload, refcount and optional intern identity. The
-// reverse object index is weak; generation history survives entry retirement.
-// Free slots form a LIFO stack; fresh slots begin at BUILTIN_BASE.
-//
-// 24 bits = 16_777_215 simultaneous live shared handles - same ceiling as
-// UniqueRefStore + Entity, so the three managed-handle resources fail-fast
-// at the same bound.
-//
-// Release path (D-1 codes):
-//   - resolve(h): err(SharedRefReleasedError)        if payload absent.
-//   - retain(h):  err(SharedRefReleasedError)        if payload absent.
-//   - release(h): err(SharedRefDoubleReleaseError, rc=0) on rc=0 input.
-//   - any(builtin slot): err(BuiltinSlotNotOwnedError) (D-15).
-//
-// Identity invariant (mirrors UniqueRefStore): resolve(h) returns the SAME
-// payload object on every call until the final release. Archetype migration
-// preserves this trivially - the column carries the u32 handle, never the
-// payload reference.
+// Reference-counted, generation-checked storage for non-asset shared ECS values.
+// Assets use the injected AssetReferenceOwner and never enter this store.
+// Slot 0 is reserved for an empty component field; every other slot is owned.
 
 import type { Handle } from '@forgeax/engine-types';
 import {
-  BUILTIN_BASE,
   err,
   handleGeneration,
   handleSlot,
@@ -70,14 +16,13 @@ import {
   unwrapHandle,
 } from '@forgeax/engine-types';
 import {
-  BuiltinSlotNotOwnedError,
   SharedRefDoubleReleaseError,
   SharedRefPayloadInvalidError,
   SharedRefReleasedError,
   SharedRefStaleError,
 } from './errors.js';
 
-export interface SharedRefReleaseEvidence {
+interface SharedRefReleaseEvidence {
   readonly payload: unknown;
   readonly refcount: 0;
   readonly generation: number;
@@ -90,20 +35,17 @@ export interface SharedRefReleaseEvidence {
 /**
  * Reference-counted store for ECS-aware `Handle<T, 'shared'>` lifecycles.
  *
- * The producer (typically AssetRegistry) calls `alloc` once and owns the
+ * The producer calls `alloc` once and owns the
  * "alloc-grant" rc=1; consumers (ECS schema fields, external systems) call
  * `retain` on each new holder and `release` when the holder drops. When rc
  * transitions 1 -> 0 the store publishes one structured release-evidence
  * record; it does not invoke a user callback or own payload disposal.
  *
- * D-15: manages ONLY user-tier slots (`slot >= BUILTIN_BASE`). Builtin slots
- * (`< BUILTIN_BASE`) fail-fast with `BuiltinSlotNotOwnedError`.
- *
  * Public API:
  *   - alloc(target, payload)        -> Handle<T, 'shared'> (rc=1)
  *   - intern(target, payload)        -> stable producer handle per target + object identity
- *   - resolve(handle)             -> Result<T, SharedRefReleasedError | SharedRefStaleError | BuiltinSlotNotOwnedError>
- *   - retain(handle)              -> Result<void, SharedRefReleasedError | SharedRefStaleError | BuiltinSlotNotOwnedError>
+ *   - resolve(handle)             -> Result<T, SharedRefReleasedError | SharedRefStaleError>
+ *   - retain(handle)              -> Result<void, SharedRefReleasedError | SharedRefStaleError>
  *   - release(handle)             -> Result<release evidence | undefined, ...>
  *   - refcount(handle)            -> number (0 == released; debug + tests)
  *   - _liveCount()                -> live slot count (debug + inspector)
@@ -117,7 +59,7 @@ export class SharedRefStore {
   private readonly entries = new Map<number, SharedRefEntry>();
   private readonly freeSlots: number[] = [];
   private readonly internedByTarget = new Map<string, WeakMap<object, number>>();
-  private nextSlot = BUILTIN_BASE;
+  private nextSlot = 1;
   /** Latest published mutation epoch per live handle; not an event journal. */
 
   /**
@@ -141,8 +83,6 @@ export class SharedRefStore {
    * happens internally — external callers no longer construct Handle<...>
    * directly.
    *
-   * Minted slots are user-tier (`>= BUILTIN_BASE`); builtin slots are never
-   * produced here (D-15).
    */
   alloc<Target extends string, T = unknown>(target: Target, payload: T): Handle<Target, 'shared'> {
     return this.allocate(target, { payload, refcount: 1, target: undefined });
@@ -222,9 +162,8 @@ export class SharedRefStore {
    */
   resolve<Target extends string, T = unknown>(
     handle: Handle<Target, 'shared'>,
-  ): Result<T, SharedRefReleasedError | SharedRefStaleError | BuiltinSlotNotOwnedError> {
+  ): Result<T, SharedRefReleasedError | SharedRefStaleError> {
     const raw = unwrapHandle(handle);
-    if (raw < BUILTIN_BASE) return err(new BuiltinSlotNotOwnedError(raw));
     // Gen comparison (M4): extract slot + handle gen, compare against
     // store's current gen. Mismatch means slot was released and re-allocated —
     // the caller's handle is stale. This check runs BEFORE payload lookup so
@@ -257,9 +196,8 @@ export class SharedRefStore {
    */
   retain<Target extends string>(
     handle: Handle<Target, 'shared'>,
-  ): Result<void, SharedRefReleasedError | SharedRefStaleError | BuiltinSlotNotOwnedError> {
+  ): Result<void, SharedRefReleasedError | SharedRefStaleError> {
     const raw = unwrapHandle(handle);
-    if (raw < BUILTIN_BASE) return err(new BuiltinSlotNotOwnedError(raw));
     // Gen comparison runs before rc read (q12: all three operations compare gen first).
     const slot = handleSlot(handle);
     const handleGen = handleGeneration(handle);
@@ -291,10 +229,9 @@ export class SharedRefStore {
     handle: Handle<Target, 'shared'>,
   ): Result<
     SharedRefReleaseEvidence | undefined,
-    SharedRefDoubleReleaseError | SharedRefStaleError | BuiltinSlotNotOwnedError
+    SharedRefDoubleReleaseError | SharedRefStaleError
   > {
     const raw = unwrapHandle(handle);
-    if (raw < BUILTIN_BASE) return err(new BuiltinSlotNotOwnedError(raw));
     // Gen comparison runs FIRST — before rc read, before any mutation (q12).
     const slot = handleSlot(handle);
     const handleGen = handleGeneration(handle);

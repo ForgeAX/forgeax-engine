@@ -33,8 +33,8 @@ try {
     return bytes;
   };
   const rootHandle = h.app.world.get(h.subjects.terrain, Terrain).unwrap().asset;
-  const root = h.app.world.sharedRefs.resolve(rootHandle).unwrap();
-  const material = h.app.assets.lookup(root.sections[0].material);
+  const root = h.app.assets.read(rootHandle).unwrap();
+  const material = h.app.assets.read(root.sections[0].material).unwrap();
   assert.equal(material.kind, 'material');
   const abi = derive(projectMaterialParameterSchema(material.parameters, root.sections[0].material, 'runtime').unwrap());
   const fields = new Map(abi.uboLayout.entries.map((field) => [field.name, field.offset]));

@@ -1,5 +1,6 @@
+import { useBuiltAssetSource, useImportedAssetSource } from '../../../shared/scripts/source-publication.mjs';
+import { AssetGuid, PackageId } from '@forgeax/engine-pack/guid';
 import { halfFloat } from '@forgeax/engine/math';
-import { decodeCatalogWire } from '@forgeax/engine-pack';
 // Node/Dawn harness shared by the hello-gi smoke and the reference tool. The
 // Renderer consumes ordinary cooked material publications (the same
 // createMaterialPackCooker the Pack plugin uses) and the scene table in
@@ -65,19 +66,21 @@ export async function cookGiMaterials(extra = {}, rasterOnly = []) {
     ...Object.entries(extra),
   ];
   for (const [name, source] of sources) {
-    const draft = await cooker.cook({ guid: name, source });
+    const guid = AssetGuid.format(AssetGuid.derive(PackageId.parse('1b80a2ad-3fd5-4ab7-83c1-187bb4edc052').value, name));
+    const draft = await cooker.cook({ guid, source });
+    const row = { guid, kind: 'material', payload: draft.payload, artifacts: draft.artifacts, refs: draft.refs.map((guid) => ({ guid })) };
     const record = validateCookedMaterialRecord(
       JSON.parse(JSON.stringify(normaliseForPack(draft.payload.cooked))),
     ).unwrap();
     const ready = await createMaterialLoader({
-      loadPublication: async () => ({ guid: name, record, artifacts: draft.artifacts }),
-    }).load({ guid: name, specializationKey: record.specializationKey ?? '' });
+      loadPublication: async () => ({ guid, record, artifacts: draft.artifacts }),
+    }).load({ guid, specializationKey: record.specializationKey ?? '' });
     if (ready.status !== 'Ready')
       throw new Error(`material ${name} publication failed: ${JSON.stringify(ready)}`);
     const [first, ...rest] = ready.record.resolved.passes;
     const asset = { ...source, ...ready.record.resolved, passes: [first, ...rest] };
     if (rasterOnly.includes(name)) {
-      cooked.set(name, { source, ready, asset });
+      cooked.set(name, { source, ready, asset, row });
       continue;
     }
     const selected = selectMaterialPassProgram(projectMaterialRecord(ready.record), 'forward', {
@@ -98,6 +101,7 @@ export async function cookGiMaterials(extra = {}, rasterOnly = []) {
       source,
       ready,
       asset,
+      row,
       // The reference path tracer consumes the same cooked ray-hit program the GI lane uses.
       program: {
         context: 'ray-hit',
@@ -345,8 +349,8 @@ export async function spawnSponza(world, assets, distDir) {
   await createWorldContext(world, [renderComponentsPlugin(), scenePlugin()]);
   const restore = installDistCatalog(assets, distDir);
   try {
-    const scene = (await assets.loadByGuid(assets.parseGuid(SPONZA.sceneGuid))).unwrap();
-    assets.instantiate(world.allocSharedRef('SceneAsset', scene), world).unwrap();
+    const scene = (await assets.load(assets.parseGuid(SPONZA.sceneGuid), 'scene')).unwrap();
+    assets.instantiate(scene, world).unwrap();
   } finally {
     restore();
   }
@@ -355,12 +359,12 @@ export async function spawnSponza(world, assets, distDir) {
 }
 
 /** Publish cooked materials into the Renderer's asset registry and the World. */
-export function publishMaterials(world, assets, cooked) {
+export async function publishMaterials(world, assets, cooked) {
+  if (world.assets !== assets) throw new Error('GI World must use its renderer host asset owner');
+  await useImportedAssetSource(assets, { assets: [...cooked.values()].map((entry) => entry.row) }, 'gi-materials');
   const handles = new Map();
   for (const [name, entry] of cooked) {
-    assets.catalog(name, entry.asset).unwrap();
-    assets.recordMaterialReadiness(name, entry.ready);
-    handles.set(name, world.allocSharedRef('MaterialAsset', entry.asset));
+    handles.set(name, (await assets.load(entry.row.guid, 'material')).unwrap());
   }
   return (name) => {
     const handle = handles.get(name);
@@ -596,52 +600,14 @@ export function pixelCenterRays(camera, width, height) {
 }
 
 /**
- * Serve a built hello-gi `dist/` catalog to `assets.loadByGuid` under Node: a static
+ * Serve a built hello-gi `dist/` catalog to `assets.load` under Node: a static
  * fetch over pack-index, pack descriptors and their artifacts (the same
  * package-relative resolution the browser runtime uses). Returns a restore function.
  */
 export function installDistCatalog(assets, distDir) {
-  const indexWire = JSON.parse(readFileSync(resolve(distDir, 'pack-index.json'), 'utf8'));
-  const index = decodeCatalogWire(indexWire).unwrap();
-  const paths = new Map(
-    index.map((entry) => [entry.packageUrl, resolve(distDir, entry.packageUrl.replace(/^\//, ''))]),
-  );
-  const original = globalThis.fetch;
-  const response = (body) => ({
-    ok: true,
-    status: 200,
-    json: async () => body,
-    arrayBuffer: async () => new ArrayBuffer(0),
-  });
-  globalThis.fetch = async (url) => {
-    const key = typeof url === 'string' ? url : String(url);
-    if (key === '/pack-index.json') return response(indexWire);
-    const path = paths.get(key);
-    if (path === undefined) return { ok: false, status: 404, json: async () => ({}) };
-    if (key.endsWith('.json')) {
-      const pack = JSON.parse(readFileSync(path, 'utf8'));
-      const base = key.slice(0, key.lastIndexOf('/') + 1);
-      for (const asset of pack.assets ?? [])
-        for (const descriptor of Object.values(asset.artifacts ?? {}))
-          if (typeof descriptor?.path === 'string')
-            paths.set(
-              `${base}${descriptor.path.replace(/^\/+/, '')}`,
-              resolve(dirname(path), descriptor.path),
-            );
-      return response(pack);
-    }
-    return {
-      ok: true,
-      status: 200,
-      json: async () => ({}),
-      arrayBuffer: async () => {
-        const bytes = readFileSync(path);
-        return bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength);
-      },
-    };
-  };
-  assets.configurePackIndex('/pack-index.json');
+  const previous = assets.catalogSource;
+  useBuiltAssetSource(assets, distDir);
   return () => {
-    globalThis.fetch = original;
+    if (previous !== undefined) assets.setCatalogSource(previous);
   };
 }

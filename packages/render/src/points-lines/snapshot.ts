@@ -15,18 +15,15 @@ export type PointsLinesStyle =
  * Detached facts retained between frames for the Points/Lines owner.
  *
  * The snapshot deliberately contains no World, ECS row, AssetRegistry, GPU
- * handle, or derived triangle data. Mesh and material generations are the
- * producer-owned fences used by prepare; viewport and projection are the
- * only camera-owned facts in this projection.
+ * handle, asset versions, or derived triangle data. Prepare selects versions
+ * from the accepted asset scope when consuming an actual draw.
  */
 export interface PointsLinesRetainedSnapshot {
   readonly worldId: number;
   readonly entityKey: number;
   readonly component: 'Points' | 'Lines' | undefined;
   readonly meshHandle: number;
-  readonly meshGeneration: number;
   readonly materialHandle: number;
-  readonly materialGeneration: number;
   readonly style: PointsLinesStyle | undefined;
   readonly layer: number;
   readonly sortKey: number | undefined;
@@ -37,7 +34,13 @@ export interface PointsLinesRetainedSnapshot {
   readonly dedicatedResourceBytes?: number;
 }
 
-interface PointsLinesSnapshotInput
+/** Exact content selected by the actual draw preparation, never patched into entity rows. */
+export interface PointsLinesPreparedSnapshot extends PointsLinesRetainedSnapshot {
+  readonly meshGeneration: number;
+  readonly materialGeneration: number;
+}
+
+export interface PointsLinesSnapshotInput
   extends Omit<
     PointsLinesRetainedSnapshot,
     'sourceBounds' | 'viewport' | 'projection' | 'sortKey'
@@ -56,9 +59,7 @@ export function createPointsLinesSnapshot(
     entityKey: input.entityKey,
     component: input.component,
     meshHandle: input.meshHandle,
-    meshGeneration: input.meshGeneration,
     materialHandle: input.materialHandle,
-    materialGeneration: input.materialGeneration,
     style: input.style === undefined ? undefined : { ...input.style },
     layer: input.layer,
     sortKey: input.sortKey,

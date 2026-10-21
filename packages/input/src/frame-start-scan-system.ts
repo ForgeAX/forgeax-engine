@@ -10,17 +10,11 @@
 // captured closure. Resource reads remain explicit in the system body.
 
 import { defineSystem, defineSystemSet, type SystemHandle } from '@forgeax/engine-ecs';
-import {
-  type ActionConfig,
-  type ActionState,
-  deriveActionStates,
-  INPUT_MAP_KEY,
-} from './action-state';
+import { type ActionConfig, deriveActionStates, INPUT_MAP_KEY } from './action-state';
 import {
   INPUT_SNAPSHOT_RESOURCE_KEY,
   type InputBackend,
   type InputSnapshot,
-  readActionStatesForEdgeDiff,
   snapshotFromSample,
 } from './input-snapshot';
 
@@ -68,25 +62,15 @@ export const InputFrameStartScan: SystemHandle<readonly []> = defineSystem({
     const sample = backend.sample();
     backend.feedback?.acceptResults(sample.feedbackResults ?? [], sample.feedbackLostResults ?? 0);
 
-    // Action mapping: derive states from InputMap Resource + prev snapshot edges.
-    // D-6: edge baseline reuses existing prev InputSnapshot Resource (Derive,
-    // Don't Duplicate — zero new cross-frame state carrier).
-    let actionStates: ReturnType<typeof deriveActionStates> | undefined;
-    let inputMap: readonly ActionConfig[] | undefined;
-    if (world.hasResource(INPUT_MAP_KEY)) {
-      inputMap = world.getResource<readonly ActionConfig[]>(INPUT_MAP_KEY);
-      // Read prev snapshot's internal action states for edge diff.
-      // First frame: no prev snapshot → justPressed = pressed (same as Feat1 gamepad).
-      let prevActionStates: readonly ActionState[] | undefined;
-      if (world.hasResource(INPUT_SNAPSHOT_RESOURCE_KEY)) {
-        const prevSnap = world.getResource<InputSnapshot>(INPUT_SNAPSHOT_RESOURCE_KEY);
-        prevActionStates = readActionStatesForEdgeDiff(prevSnap);
-      }
-      actionStates = deriveActionStates(sample, inputMap, prevActionStates);
-    }
-
     const previousSnapshot = world.hasResource(INPUT_SNAPSHOT_RESOURCE_KEY)
       ? world.getResource<InputSnapshot>(INPUT_SNAPSHOT_RESOURCE_KEY)
+      : undefined;
+    const actionStates = world.hasResource(INPUT_MAP_KEY)
+      ? deriveActionStates(
+          sample,
+          world.getResource<readonly ActionConfig[]>(INPUT_MAP_KEY),
+          (action) => previousSnapshot?.action(action).isPressed() ?? false,
+        )
       : undefined;
     const snapshot = snapshotFromSample(sample, actionStates, previousSnapshot);
     world.insertResource(INPUT_SNAPSHOT_RESOURCE_KEY, snapshot);

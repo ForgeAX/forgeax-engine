@@ -1,4 +1,5 @@
 import type { World } from '@forgeax/engine-ecs';
+import type { AnimationChannel } from '@forgeax/engine-types';
 
 const DIAGNOSTIC_CODES = {
   'property-invalid': 'animation-property-invalid',
@@ -20,7 +21,7 @@ export interface AnimationDiagnosticDetail {
   readonly targetId: string;
   readonly reason: keyof typeof DIAGNOSTIC_CODES;
   readonly target?: number;
-  readonly property?: 'translation' | 'rotation' | 'scale' | 'weights' | 'property';
+  readonly property?: AnimationChannel['property'];
   readonly binding?: string;
   readonly cause?: string;
   readonly expectedWeightCount?: number;

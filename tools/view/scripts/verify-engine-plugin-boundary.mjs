@@ -367,8 +367,8 @@ try {
     console.error('RHI', JSON.stringify({ digest: tape.digest, works: buildFrameModel(decoded.value.tape).works.length }));
   }
   await page.screenshot({ path: '/tmp/view-plugin-boundary.png' });
-  // The UI-removal proof closed this page without owning the Engine target.
-  // Reopening it after target disposal must fail closed, without a new canvas.
+  // Explicit page close acknowledged retirement of its exact Engine owner.
+  // Reopening an unbound page must fail closed, without a new canvas.
   await page.locator('.fx-page-tab-btn--new').click();
   await page.getByRole('menuitem', { name: 'Material', exact: true }).click();
   await page.getByTestId('panel-material-preview').getByText('Material preview unavailable', { exact: true }).waitFor();

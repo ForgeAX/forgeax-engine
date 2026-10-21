@@ -18,22 +18,20 @@ FBX bytes -> ufbx (wasm) -> JSON POD -> parse-*.ts -> meta.json
 
 ## AI user consumption path
 
-The importer key `'fbx'` is unchanged from the SDK era -- zero migration for
-existing `.fbx.meta.json` sidecars. The engine resolves the importer
-automatically via `loadByGuid`:
+The build host selects the `'fbx'` importer. Game code consumes its published
+Catalog through the ordinary runtime asset API:
 
 ```ts
-// 1) Point the asset registry at the pack index
-assets.configurePackIndex('/pack-index.json');
-
-// 2) loadByGuid dispatches on meta.importer: 'fbx' automatically
-const res = await assets.loadByGuid<SceneAsset>(guid);
-if (!res.ok) {
-  console.error(res.error.code, res.error.hint);
-  return;
-}
-const scene = res.value; // SceneAsset -- ready for instantiate()
+const handle = (await assets.load(guid, 'scene')).unwrap();
+const root = assets.instantiate(handle, world).unwrap();
 ```
+
+The World registers its component schemas before Scene loading. Source GUIDs
+resolve to runtime asset handles during admission, and each instance retains its
+own entity bindings. Catalog publication does not overwrite gameplay edits;
+explicit `assets.reload(handle, { conflict: 'reject' })` adopts the new source.
+Mesh outputs put geometry only in the `mesh-binary/5` body. Empty geometry uses
+zero bounds, and sparse UV gaps are filled in the portable vertex layout.
 
 Under the hood, `vite-plugin-pack` calls `fbxImporter.import(ctx)` which
 initializes the ufbx WASM module on first use, parses the FBX bytes, and
@@ -263,3 +261,6 @@ the source directory; it does not need or interpret the FBX filename.
 Importer skeleton and animation outputs derive from the shared Types POD contracts.
 Source node indices remain format-specific; skeleton GUIDs are assigned from sub-asset
 metadata when publishing, never from a provisional identifier in the parsed skin.
+
+Asset producer CLI errors and stable sidecar JSON follow the
+[Pack output contract](../pack/README.md#producer-output).

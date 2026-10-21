@@ -2,6 +2,7 @@ import { mkdtemp, rm, stat, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import type { Worker } from 'node:worker_threads';
+import type { Result } from '@forgeax/engine-types';
 import { expect, it } from 'vitest';
 import {
   createScriptablePackModuleExecutorPool,
@@ -11,8 +12,7 @@ import {
 
 interface OwnedExecutor {
   readonly worker: Worker;
-  readonly compileRootReady: Promise<string>;
-  readonly compileRoot: string | undefined;
+  readonly compileRootReady: Promise<Result<string, unknown>>;
 }
 
 async function withPool(
@@ -47,7 +47,8 @@ async function withPool(
     await pool.dispose();
     for (const executor of owned) {
       await executor.worker.terminate();
-      await rm(await executor.compileRootReady, { recursive: true, force: true });
+      const allocated = await executor.compileRootReady;
+      if (allocated.ok) await rm(allocated.value, { recursive: true, force: true });
     }
     await rm(root, { recursive: true, force: true });
   }
@@ -85,7 +86,7 @@ it('terminates the reusable Worker and removes its compiled directory after succ
     const executor = await acquire();
     await build(await load(source, executor));
     const owned = executor as unknown as OwnedExecutor;
-    const compileRoot = await owned.compileRootReady;
+    const compileRoot = (await owned.compileRootReady).unwrap();
     expect(owned.worker.threadId).toBeGreaterThan(0);
     expect((await stat(compileRoot)).isDirectory()).toBe(true);
     await pool.dispose();
@@ -115,7 +116,7 @@ it('escalates a same-turn complete disposal to failure when the pool shuts down'
   await withPool(32, async ({ pool, acquire, source }) => {
     const executor = await acquire();
     await load(source, executor);
-    const compileRoot = await (executor as unknown as OwnedExecutor).compileRootReady;
+    const compileRoot = (await (executor as unknown as OwnedExecutor).compileRootReady).unwrap();
     const complete = executor.dispose?.('complete');
     const shutdown = pool.dispose();
     await Promise.all([complete, shutdown]);
@@ -127,7 +128,7 @@ it('hands a queued lease the same Worker and really retires it at the second tas
   await withPool(2, async ({ pool, acquire, source }) => {
     const first = await acquire();
     const definition = await load(source, first);
-    const compileRoot = await (first as unknown as OwnedExecutor).compileRootReady;
+    const compileRoot = (await (first as unknown as OwnedExecutor).compileRootReady).unwrap();
     const queued = acquire();
     await build(definition);
     const second = await queued;
@@ -175,5 +176,19 @@ it('does not silence unsupported attributes while lowering captured JSON', async
     );
     const result = await loadScriptablePack(source, { executor: await acquire() });
     expect(result.ok).toBe(false);
+  });
+});
+
+it('awaits real Worker retirement from every concurrent pool disposal', async () => {
+  await withPool(32, async ({ pool, acquire }) => {
+    const executor = await acquire();
+    const owned = executor as unknown as OwnedExecutor;
+    const first = pool.dispose();
+    try {
+      await pool.dispose();
+      expect(owned.worker.threadId).toBe(-1);
+    } finally {
+      await first;
+    }
   });
 });

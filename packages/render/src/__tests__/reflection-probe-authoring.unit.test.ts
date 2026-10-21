@@ -58,7 +58,7 @@ describe('ReflectionProbe authoring and admission', () => {
     const probe = { halfExtents: [1, 1, 1] as const, priority: 0, intensity: 1, resolution: 256 };
     const bytes = estimateReflectionProbeBytes(probe.resolution);
     const count = Math.floor(DEFAULT_REFLECTION_PROBE_LIMITS.maxBytes / bytes);
-    expect(count).toBe(5);
+    expect(count).toBe(3);
     expect(
       admitReflectionProbe(probe, { acceptedCount: count - 1, acceptedBytes: bytes * (count - 1) }),
     ).toEqual({ ok: true, acceptedBytes: bytes * count });

@@ -3,10 +3,7 @@ import { World } from '@forgeax/engine-ecs';
 import { createBoxGeometry } from '@forgeax/engine-geometry';
 import { Transform } from '@forgeax/engine-scene';
 import { describe, expect, it, vi } from 'vitest';
-import {
-  LIGHTING_CHANNELS_DEFAULT,
-  validateLightingChannels,
-} from '../components/lighting-channels';
+import { LIGHTING_CHANNELS_DEFAULT, validateChannelMask } from '../components/lighting-channels';
 import { MeshFilter } from '../components/mesh-filter';
 import { MeshRenderer } from '../components/mesh-renderer';
 import { PointLight } from '../components/point-light';
@@ -21,7 +18,7 @@ describe('surface lighting channels', () => {
     0xffffffff,
     ...Array.from({ length: 32 }, (_, bit) => 2 ** bit),
   ])('accepts every unsigned bit including %i', (mask) => {
-    expect(validateLightingChannels(mask)).toBeNull();
+    expect(validateChannelMask(mask)).toBeNull();
   });
   it.each([
     -1,
@@ -29,7 +26,7 @@ describe('surface lighting channels', () => {
     0x100000000,
     Infinity,
   ])('rejects invalid author mask %s before integer projection', (mask) => {
-    expect(validateLightingChannels(mask)).toMatchObject({
+    expect(validateChannelMask(mask)).toMatchObject({
       code: 'resource-invalid-value',
       detail: { receivedKey: 'lightingChannels', receivedMode: mask },
     });
@@ -43,7 +40,7 @@ describe('surface lighting channels', () => {
     const result = new World().spawn({ component: MeshRenderer, data: { lightingChannels: NaN } });
     expect(result.ok).toBe(false);
     if (!result.ok) expect(result.error.code).toBe('component-numeric-value-invalid');
-    expect(validateLightingChannels(NaN)?.code).toBe('resource-invalid-value');
+    expect(validateChannelMask(NaN)?.code).toBe('resource-invalid-value');
   });
   it('packs light channels as u32 and uses primitive padding without enlarging its row', () => {
     for (const mask of [
@@ -66,14 +63,15 @@ describe('surface lighting channels', () => {
     expect(GPU_SCENE_LAYOUTS.primitive.stride).toBe(64);
   });
   it('carries every u32 bit from World to light and receiver snapshots', () => {
-    const world = new World();
+    const assets = new AssetRegistry();
+    const world = new World({ assets });
     const receiver = world
       .spawn(
         { component: Transform, data: {} },
         {
           component: MeshFilter,
           data: {
-            assetHandle: world.allocSharedRef('MeshAsset', createBoxGeometry(1, 1, 1).unwrap()),
+            assetHandle: assets.create(createBoxGeometry(1, 1, 1).unwrap()).unwrap(),
           },
         },
         { component: MeshRenderer, data: { lightingChannels: 0x80000001 } },
@@ -82,13 +80,11 @@ describe('surface lighting channels', () => {
     world.spawn({ component: PointLight, data: { lightingChannels: 0x80000000 } }).unwrap();
     // Receiver channels must not materialise the unrelated materials array.
     const read = vi.spyOn(world, 'get');
-    const frame = extractFrames([world], 0, new AssetRegistry({} as never));
-    expect(frame.renderables[0]?.lightingChannels).toBe(0x80000001);
+    const frame = extractFrames([world], 0, assets);
+    expect(frame.renderables.at(0)?.lightingChannels).toBe(0x80000001);
     expect(frame.lights.point[0]?.lightingChannels).toBe(0x80000000);
     expect(read.mock.calls.filter(([, component]) => component === MeshRenderer)).toEqual([]);
     world.set(receiver, MeshRenderer, { lightingChannels: 0x40000000 }).unwrap();
-    expect(
-      extractFrames([world], 0, new AssetRegistry({} as never)).renderables[0]?.lightingChannels,
-    ).toBe(0x40000000);
+    expect(extractFrames([world], 0, assets).renderables.at(0)?.lightingChannels).toBe(0x40000000);
   });
 });

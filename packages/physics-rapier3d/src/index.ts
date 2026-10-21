@@ -3,8 +3,8 @@
 // Re-exports the RapierPhysicsWorld3D class, WASM loader, and three-phase tick
 // systems.
 
+export type { Rapier3DCollisionEvent } from './physics-entity-records.js';
 export { registerPhysicsSystems } from './physics-sync.js';
-export type { Rapier3DCollisionEvent } from './rapier-physics-world-3d.js';
 export {
   createRapier3DPhysicsWorld,
   RapierPhysicsWorld3D,

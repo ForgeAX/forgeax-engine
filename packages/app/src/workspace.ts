@@ -1,15 +1,44 @@
+export type {
+  PackDraftField,
+  PackDraftReply,
+  PackDraftRequest,
+  PackDraftSnapshot,
+} from '@forgeax/engine-pack/source';
+
 import type { AssetRegistry } from '@forgeax/engine-assets-runtime';
 import { type EntityHandle, Time, Update, type World } from '@forgeax/engine-ecs';
-import { deriveVertexCount, deriveVertexLayoutProjection } from '@forgeax/engine-geometry';
 import { quat } from '@forgeax/engine-math';
 import type { PackProgramSource } from '@forgeax/engine-pack/runtime';
+import type {
+  PackDraftRequest,
+  PackDraftSnapshot,
+  PackDraftUpdate,
+} from '@forgeax/engine-pack/source';
+import { isScriptablePackAssetKind } from '@forgeax/engine-pack/source';
 import type { Plugin } from '@forgeax/engine-plugin';
 import type { TextureViewControl } from '@forgeax/engine-preview';
-import { worldDespawnScene } from '@forgeax/engine-scene';
+import { Camera } from '@forgeax/engine-render';
+import { worldDespawnScene, worldSceneEntityAddressOf } from '@forgeax/engine-scene';
 import type { ToolCallerIdentity } from '@forgeax/engine-tool-runtime';
-import type { Asset, CatalogEntry, SceneAsset } from '@forgeax/engine-types';
+import {
+  type Asset,
+  type AssetHandle,
+  type CatalogEntry,
+  type MeshAsset,
+  materialGuidText,
+  type SceneAsset,
+} from '@forgeax/engine-types';
 import { ensureFallbackCamera } from './fallback-camera';
 import type { App } from './types';
+import {
+  createWorkspaceAssetAuthoring,
+  type WorkspaceAssetFieldWrite,
+} from './workspace-asset-authoring';
+import {
+  type EngineWorkspaceAssetFacts,
+  workspaceAssetFacts,
+  workspaceAssetKind,
+} from './workspace-asset-facts';
 import type { EngineWorkspaceRuntimePackRequest } from './workspace-runtime-pack';
 import type { EngineWorkspaceTargetTools } from './workspace-target-tools';
 
@@ -160,11 +189,46 @@ export interface EngineWorkspaceCameraInput {
 /** Facts captured by the consumer when it binds a payload, not a live Catalog query. */
 export interface EngineWorkspaceAssetBinding {
   readonly publication?: CatalogEntry['publication'];
-  readonly meta?: Readonly<Record<string, unknown>>;
+  readonly meta?: EngineWorkspaceAssetFacts;
+}
+
+export interface EngineWorkspacePreviewDisplayOptions {
+  readonly mode?: 'material' | 'wireframe';
+  readonly collision?: boolean;
+  readonly bounds?: boolean;
+}
+
+export interface EngineWorkspacePreviewDisplay {
+  readonly mode: 'material' | 'wireframe';
+  readonly collision: boolean;
+  readonly bounds: boolean;
+  readonly capabilities: {
+    readonly wireframe: boolean;
+    readonly collision: boolean;
+    readonly bounds: boolean;
+  };
 }
 
 export interface EngineWorkspacePreview {
+  readonly writeAssetField?: (input: WorkspaceAssetFieldWrite) => Promise<void>;
+  readonly prepareAssetContent?: (
+    content: import('@forgeax/engine-import').RuntimePackContent,
+    signal?: AbortSignal,
+  ) => Promise<number>;
+  readonly commitAssetContent?: (
+    preparation: number,
+    fields: readonly WorkspaceAssetFieldWrite[],
+  ) => Promise<void>;
   readonly texture?: TextureViewControl;
+  readonly display?: {
+    get(options?: {
+      readonly signal?: AbortSignal;
+    }): EngineWorkspacePreviewDisplay | Promise<EngineWorkspacePreviewDisplay>;
+    set(
+      input: EngineWorkspacePreviewDisplayOptions,
+      options?: { readonly signal?: AbortSignal },
+    ): EngineWorkspacePreviewDisplay | Promise<EngineWorkspacePreviewDisplay>;
+  };
   readonly resize?: (input: {
     readonly targetId: string;
     readonly width: number;
@@ -183,8 +247,8 @@ export interface EngineWorkspacePreview {
    */
   readonly target: EngineWorkspaceTarget;
   readonly asset?: EngineWorkspaceAsset;
-  readonly assetBinding?: EngineWorkspaceAssetBinding;
-  readonly scene?: SceneAsset;
+  readonly assetBinding?: EngineWorkspaceAssetBinding | undefined;
+  readonly scene?: SceneAsset | undefined;
   readonly presentation?: EngineWorkspacePresentation;
   readonly handle?: unknown;
   readonly getCamera: (input: {
@@ -230,53 +294,37 @@ export interface EngineWorkspacePlay extends EngineWorkspacePreview {
 export interface EngineWorkspaceResourcePreviewOwner {
   readonly texture?: TextureViewControl;
   readonly assetBinding?: EngineWorkspaceAssetBinding;
+  readonly display?: EngineWorkspacePreview['display'];
   readonly close?: () => Promise<void> | void;
 }
 
 /**
- * Load every authored mesh material slot before allocating any World handle.
- *
- * Asset loading is concurrent, but handle allocation is deliberately a
- * second, synchronous phase. If one slot fails while another is still
- * resolving, no late loader continuation can mint a handle after the preview
- * owner has started rollback.
+ * Acquire slot assets concurrently. Settle all loads before returning or
+ * releasing their grants, so late completion cannot outlive failed preparation.
  */
-export async function loadEngineWorkspaceMaterialSlots<
-  TSlot extends { readonly defaultMaterial?: unknown },
-  TMaterial,
-  THandle,
->(
-  slots: readonly TSlot[],
-  load: (slot: TSlot) =>
-    | {
-        readonly ok: true;
-        readonly value: TMaterial;
-      }
-    | {
-        readonly ok: false;
-        readonly error: unknown;
-      }
-    | Promise<
-        | {
-            readonly ok: true;
-            readonly value: TMaterial;
-          }
-        | {
-            readonly ok: false;
-            readonly error: unknown;
-          }
-      >,
-  allocate: (material: TMaterial) => THandle,
-): Promise<readonly (THandle | 0)[]> {
-  const materials = await Promise.all(
+export async function loadEngineWorkspaceMaterialSlots(
+  assets: AssetRegistry,
+  slots: MeshAsset['materialSlots'],
+): Promise<readonly (AssetHandle<'material'> | 0)[]> {
+  const loaded = await Promise.allSettled(
     slots.map(async (slot) => {
-      if (slot.defaultMaterial === undefined) return undefined;
-      const loaded = await load(slot);
-      if (!loaded.ok) throw loaded.error;
-      return loaded.value;
+      if (slot.defaultMaterial === undefined) return 0 as const;
+      if (typeof slot.defaultMaterial === 'number') {
+        assets.retain(slot.defaultMaterial, 'material').unwrap();
+        return slot.defaultMaterial;
+      }
+      return (await assets.load(materialGuidText(slot.defaultMaterial), 'material')).unwrap();
     }),
   );
-  return materials.map((material) => (material === undefined ? 0 : allocate(material)));
+  const handles: (AssetHandle<'material'> | 0)[] = [];
+  const failed = loaded.find((result) => result.status === 'rejected');
+  for (const result of loaded) {
+    if (result.status !== 'fulfilled') continue;
+    if (failed && result.value !== 0) assets.release(result.value);
+    handles.push(result.value);
+  }
+  if (failed) throw failed.reason;
+  return handles;
 }
 
 export interface EngineWorkspaceProjectHandle {
@@ -298,6 +346,7 @@ export interface EngineWorkspaceProjectHandle {
  * public workspace provider below. Consumers never construct these values.
  */
 export interface EngineWorkspaceProjectSession extends EngineWorkspaceProjectHandle {
+  readonly authorPack?: EngineWorkspaceProvider['authorPack'];
   readonly inspectAsset?: (input: {
     readonly guid: string;
     readonly signal?: AbortSignal;
@@ -362,6 +411,13 @@ export interface EngineWorkspaceRuntimePackInput extends EngineWorkspaceProjectH
 }
 
 export interface EngineWorkspaceProvider {
+  readonly authorPack?: (
+    input: EngineWorkspaceProjectHandle & {
+      readonly request: PackDraftRequest;
+      readonly previewTargetId?: string;
+      readonly signal?: AbortSignal;
+    },
+  ) => Promise<PackDraftSnapshot | PackDraftUpdate | { readonly closed: string }>;
   readonly runtimePack?: (input: EngineWorkspaceRuntimePackInput) => Promise<unknown>;
   readonly prepareRuntimePackProgram?: (
     input: EngineWorkspaceProjectHandle & {
@@ -446,6 +502,15 @@ export function createEngineWorkspaceProvider(
           'Asset inspection in the project session',
         );
       return inspectEngineWorkspaceAsset(session.assets, input.guid, input.signal);
+    },
+    async authorPack(input) {
+      const session = sessionFor(input.handle);
+      if (session.project.id !== input.project.id || !session.authorPack)
+        throw new EngineWorkspaceError(
+          'engine-workspace-capability-unavailable',
+          'Pack authoring for this project session',
+        );
+      return session.authorPack(input);
     },
     async runtimePack(input) {
       const session = sessionFor(input.handle);
@@ -564,6 +629,7 @@ declare module '@forgeax/engine-plugin' {
 }
 
 export interface EngineWorkspaceRuntime {
+  readonly authorPack?: EngineWorkspaceProvider['authorPack'];
   readonly runtimePack?: EngineWorkspaceProvider['runtimePack'];
   readonly prepareRuntimePackProgram?: EngineWorkspaceProvider['prepareRuntimePackProgram'];
   readonly apiVersion: typeof ENGINE_WORKSPACE_API_VERSION;
@@ -915,8 +981,9 @@ export function createEngineWorkspaceRuntime(
 
   const closePreview = async (preview: EngineWorkspacePreview): Promise<void> => {
     if (state.previews.get(preview.target.targetId) !== preview) return;
-    state.previews.delete(preview.target.targetId);
     await preview.close?.({ targetId: preview.target.targetId });
+    if (state.previews.get(preview.target.targetId) === preview)
+      state.previews.delete(preview.target.targetId);
   };
   const closePreviews = async (): Promise<void> => {
     for (const preview of [...state.previews.values()]) await closePreview(preview).catch(() => {});
@@ -1000,6 +1067,9 @@ export function createEngineWorkspaceRuntime(
     ...(provider.inspectAsset === undefined
       ? {}
       : { inspectAsset: provider.inspectAsset.bind(provider) }),
+    ...(provider.authorPack === undefined
+      ? {}
+      : { authorPack: provider.authorPack.bind(provider) }),
     ...(provider.rebuildAssetSource === undefined
       ? {}
       : { rebuildAssetSource: provider.rebuildAssetSource.bind(provider) }),
@@ -1276,22 +1346,28 @@ export async function createEngineWorkspaceAppPreview(
   let resourceOwner: EngineWorkspaceResourcePreviewOwner | undefined;
   let assetBinding: EngineWorkspaceAssetBinding | undefined;
   if (input.asset.kind === 'scene') {
-    const loaded = await input.assets.loadByGuid<SceneAsset>(
-      input.assets.parseGuid(input.asset.guid),
-    );
+    (await input.assets.reconcileCatalog()).unwrap();
+    let loaded = await input.assets.load(input.asset.guid, 'scene');
+    // A producer can finish publishing while the first load is awaiting bytes.
+    // Nothing has been instantiated, so retry that superseded read once.
+    if (!loaded.ok && loaded.error.code === 'asset-superseded')
+      loaded = await input.assets.load(input.asset.guid, 'scene');
     if (!loaded.ok) throw loaded.error;
-    assetBinding = captureEngineWorkspaceAssetBinding(input.assets, input.asset.guid, loaded.value);
-    const handle = input.app.world.allocSharedRef('SceneAsset', loaded.value);
-    const instantiated = input.assets.instantiate<SceneAsset>(handle, input.app.world);
-    if (!instantiated.ok) {
-      input.app.world.sharedRefs.release(handle);
-      throw instantiated.error;
+    const handle = loaded.value;
+    try {
+      // load() deliberately retains runtime edits. An explicit reopen adopts a
+      // newer saved publication before instantiating that retained identity.
+      const adopted = input.assets.source(handle).unwrap()?.publication;
+      const published = input.assets.catalogEntry(input.asset.guid)?.publication;
+      if (adopted && published && adopted.digest !== published.digest)
+        (await input.assets.reload(handle, { conflict: 'overwrite' })).unwrap();
+      assetBinding = captureEngineWorkspaceAssetBinding(input.assets, handle);
+      loadedScene = input.assets.read(handle).unwrap();
+      sceneRoot = input.assets.instantiate(handle, input.app.world).unwrap();
+    } finally {
+      // SceneInstance owns its hold after successful instantiation.
+      input.assets.release(handle);
     }
-    // `instantiate` retains the SceneInstance source. The temporary producer
-    // grant belongs to this constructor and must not outlive the preview.
-    input.app.world.sharedRefs.release(handle);
-    loadedScene = loaded.value;
-    sceneRoot = instantiated.value;
     // A SceneAsset is also a valid standalone preview when it has no authored
     // Camera. Reuse the host fallback-camera owner so the observation API and
     // renderer share the same neutral projection; the temporary entity is
@@ -1326,22 +1402,50 @@ export async function createEngineWorkspaceAppPreview(
     }
     assetBinding = resourceOwner.assetBinding;
   }
+  const authoring = createWorkspaceAssetAuthoring({
+    assets: input.assets,
+    world: input.app.world,
+    ...(sceneRoot === undefined
+      ? {}
+      : {
+          scene: {
+            guid: input.asset.guid,
+            sourceKey:
+              input.asset.sourceKey ?? input.assets.catalogEntry(input.asset.guid)?.sourceKey ?? '',
+            get root() {
+              if (sceneRoot === undefined) throw new Error('Author scene preview has retired');
+              return sceneRoot;
+            },
+            get asset() {
+              return loadedScene;
+            },
+          },
+        }),
+  });
   const target = createEngineWorkspaceAppTarget({
     ...input,
     async close(value) {
       let failure: unknown;
+      authoring.close();
       try {
-        if (sceneRoot !== undefined) worldDespawnScene(input.app.world, sceneRoot).unwrap();
+        if (sceneRoot !== undefined) {
+          worldDespawnScene(input.app.world, sceneRoot).unwrap();
+          sceneRoot = undefined;
+        }
       } catch (error) {
         failure = error;
       }
       try {
-        if (fallbackCamera !== undefined) input.app.world.despawn(fallbackCamera).unwrap();
+        if (fallbackCamera !== undefined) {
+          input.app.world.despawn(fallbackCamera).unwrap();
+          fallbackCamera = undefined;
+        }
       } catch (error) {
         failure ??= error;
       }
       try {
         await resourceOwner?.close?.();
+        resourceOwner = undefined;
       } catch (error) {
         failure ??= error;
       }
@@ -1353,19 +1457,120 @@ export async function createEngineWorkspaceAppPreview(
       if (failure !== undefined) throw failure;
     },
   });
+  const targetTools = target.tools;
   return {
     ...target,
+    writeAssetField: authoring.write,
+    ...(targetTools === undefined
+      ? {}
+      : {
+          tools: {
+            ...targetTools,
+            async inspect(request) {
+              const result = await targetTools.inspect(request);
+              const ref =
+                sceneRoot === undefined
+                  ? undefined
+                  : worldSceneEntityAddressOf(input.app.world, sceneRoot, result.entity);
+              const address =
+                ref && (typeof ref.address === 'string' ? [ref.address] : ref.address);
+              const mount = address?.[0];
+              const fieldPaths =
+                mount === undefined || !address || address.length < 2
+                  ? undefined
+                  : loadedScene?.entities[mount]?.instance?.overrides?.flatMap((override, index) =>
+                      JSON.stringify(override.target) !== JSON.stringify(address.slice(1))
+                        ? []
+                        : Object.entries(override.components).flatMap(([component, fields]) =>
+                            Object.keys(fields ?? {}).map((field) => ({
+                              component,
+                              field,
+                              path: [
+                                'entities',
+                                mount,
+                                'instance',
+                                'overrides',
+                                String(index),
+                                'components',
+                                component,
+                                field,
+                              ],
+                            })),
+                          ),
+                    );
+              return ref && input.asset.path
+                ? {
+                    ...result,
+                    source: {
+                      guid: input.asset.guid,
+                      sourcePath: input.asset.path,
+                      sourceKey: ref.sceneSourceKey,
+                      address: ref.address,
+                      ...(fieldPaths?.length ? { fieldPaths } : {}),
+                    },
+                  }
+                : result;
+            },
+          },
+        }),
+    prepareAssetContent: authoring.prepare,
+    async commitAssetContent(preparation, fields) {
+      if (!isScriptablePackAssetKind(input.asset.kind))
+        throw new TypeError('Unsupported author asset kind');
+      let nextRoot: EntityHandle | undefined;
+      let nextScene: SceneAsset | undefined;
+      let nextBinding: EngineWorkspaceAssetBinding | undefined;
+      authoring.commit(preparation, fields, (handles) => {
+        const handle = handles.get(input.asset.guid.toLowerCase());
+        if (handle === undefined)
+          throw new Error('Generated Pack no longer contains this preview output');
+        nextBinding = captureEngineWorkspaceAssetBinding(input.assets, handle);
+        if (input.asset.kind === 'scene') {
+          nextScene = input.assets.read(handle as AssetHandle<'scene'>).unwrap();
+          // Existing scene spawning owns validation and failed-spawn cleanup.
+          // Reject the candidate before publishing any sibling asset replacement.
+          nextRoot = input.assets
+            .instantiate(handle as AssetHandle<'scene'>, input.app.world)
+            .unwrap();
+        }
+      });
+      if (nextRoot !== undefined) {
+        if (sceneRoot !== undefined) worldDespawnScene(input.app.world, sceneRoot).unwrap();
+        sceneRoot = nextRoot;
+        loadedScene = nextScene;
+        if (fallbackCamera !== undefined) {
+          for (const row of input.app.world.query({ with: [Camera] }).unwrap()) {
+            if (row.entity === fallbackCamera) continue;
+            input.app.world.despawn(fallbackCamera).unwrap();
+            fallbackCamera = undefined;
+            break;
+          }
+        }
+        fallbackCamera ??= ensureFallbackCamera(
+          input.app.world,
+          input.target.width / Math.max(1, input.target.height),
+        )?.unwrap();
+      }
+      assetBinding = nextBinding;
+    },
     get target() {
       return target.target;
     },
     asset: input.asset,
     ...(resourceOwner?.texture === undefined ? {} : { texture: resourceOwner.texture }),
-    ...(assetBinding === undefined ? {} : { assetBinding }),
-    ...(loadedScene === undefined ? {} : { scene: loadedScene }),
+    get assetBinding() {
+      return assetBinding;
+    },
+    get scene() {
+      return loadedScene;
+    },
+    ...(resourceOwner?.display === undefined ? {} : { display: resourceOwner.display }),
     handle: {
       app: input.app,
       world: input.app.world,
-      ...(sceneRoot === undefined ? {} : { sceneRoot }),
+      get sceneRoot() {
+        return sceneRoot;
+      },
     },
   };
 }
@@ -1480,7 +1685,10 @@ export function createEngineWorkspaceAppTarget(
         failure ??= error;
       }
       if (failure !== undefined) throw failure;
-    })();
+    })().catch((error) => {
+      cleanupPromise = undefined;
+      throw error;
+    });
     return cleanupPromise;
   };
   const resize = input.resize;
@@ -1797,51 +2005,46 @@ export async function inspectEngineWorkspaceAsset(
     ? {
         guid,
         asset: projectEngineWorkspaceAssets([entry])[0],
-        source: { path: entry.sourcePath },
+        source: {
+          path: entry.sourcePath,
+          ...(entry.publication === undefined
+            ? {}
+            : { publication: structuredClone(entry.publication) }),
+        },
+        ...(entry.publication === undefined
+          ? {}
+          : { publication: structuredClone(entry.publication) }),
       }
     : undefined;
   // Neutral catalog kinds remain inspectable even without a runtime loader.
-  if (entry && entry.kind !== 'mesh') return identity;
-  const payload = (await assets.loadByGuid(assets.parseGuid(guid))).unwrap();
-  signal?.throwIfAborted();
-  return {
-    ...(identity ?? { guid, asset: { guid, kind: payload.kind } }),
-    ...captureEngineWorkspaceAssetBinding(assets, guid, payload),
-  };
+  const kind = entry?.kind ?? 'mesh';
+  if (kind !== 'mesh' && kind !== 'material' && kind !== 'texture' && kind !== 'equirect')
+    return identity;
+  const handle = (await assets.load(guid, kind, signal === undefined ? {} : { signal })).unwrap();
+  try {
+    signal?.throwIfAborted();
+    return {
+      ...(identity ?? { guid, asset: { guid, kind } }),
+      ...captureEngineWorkspaceAssetBinding(assets, handle),
+    };
+  } finally {
+    assets.release(handle);
+  }
 }
 
-/** Capture immediately after load; a superseded payload must never acquire a newer row's identity. */
+/** Runtime content and its adopted provenance come from the same asset owner. */
 export function captureEngineWorkspaceAssetBinding(
   assets: AssetRegistry,
-  guid: string,
-  payload: Asset,
+  handle: AssetHandle,
 ): EngineWorkspaceAssetBinding {
-  if (assets.lookup(guid) !== payload) {
-    throw new EngineWorkspaceError(
-      'asset-invalidated',
-      'The loaded asset to remain current while its binding is captured',
-    );
-  }
-  const key = guid.toLowerCase();
-  const row =
-    assets.packIndexCache?.get(key) ??
-    assets.catalogSnapshot()?.entries.find((entry) => String(entry.guid).toLowerCase() === key);
+  const payload = assets.read(handle as AssetHandle<Asset['kind']>).unwrap();
+  const source = assets.source(handle).unwrap();
+  const meta = workspaceAssetFacts(payload);
   return {
-    ...(row?.publication === undefined ? {} : { publication: structuredClone(row.publication) }),
-    ...(payload.kind === 'mesh'
-      ? {
-          meta: {
-            vertexCount: deriveVertexCount(
-              payload.vertices,
-              deriveVertexLayoutProjection(payload.attributes),
-            ),
-            indexCount: payload.indices?.length ?? 0,
-            ...(payload.aabb ? { aabb: Array.from(payload.aabb) } : {}),
-            submeshes: structuredClone(payload.submeshes),
-            materialSlots: structuredClone(payload.materialSlots),
-          },
-        }
-      : {}),
+    ...(source?.publication === undefined
+      ? {}
+      : { publication: structuredClone(source.publication) }),
+    ...(meta === undefined ? {} : { meta }),
   };
 }
 
@@ -1850,7 +2053,7 @@ export function projectEngineWorkspaceAssets(
   entries: readonly CatalogEntry[],
 ): EngineWorkspaceAsset[] {
   return entries.map((entry) => {
-    const kind = entry.kind === 'particle-effect' ? 'vfx' : String(entry.kind);
+    const kind = workspaceAssetKind(String(entry.kind));
     return {
       guid: String(entry.guid),
       kind,

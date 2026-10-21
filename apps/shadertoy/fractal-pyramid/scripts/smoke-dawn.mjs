@@ -1,5 +1,4 @@
 #!/usr/bin/env node
-import { RuntimeMaterialValue } from '@forgeax/engine-assets-runtime';
 // shadertoy/fractal-pyramid headless smoke.
 //
 // Acceptance gate: the ported raymarcher must (a) run on the WebGPU backend,
@@ -13,7 +12,7 @@ import { RuntimeMaterialValue } from '@forgeax/engine-assets-runtime';
 //   3. createRenderer with the built shader manifest; read the composed wgsl
 //      for shadertoy::fractal-pyramid out of the manifest.
 //   4. installMaterialArtifact + spawn fullscreen quad + camera.
-//   5. For t in {0.0, 0.6, 1.3} seconds: update RuntimeMaterialValue for iTime, draw N
+//   5. For t in {0.0, 0.6, 1.3} seconds: update the material iTime value, draw N
 //      frames, copyTextureToBuffer + map, average the whole frame. Assert the
 //      mean brightness is non-trivial and that frames differ across t.
 //
@@ -211,7 +210,7 @@ const values = {
   iResolution: [WIDTH, HEIGHT],
   iTime: 0,
 };
-const world = new World();
+const world = new World({ assets });
 const worldAttachment1 = renderer.attach(world);
 if (!worldAttachment1.ok) throw worldAttachment1.error;
 const frameRequest = {
@@ -219,7 +218,7 @@ const frameRequest = {
   camera: { lease: worldAttachment1.value },
   environment: { lease: worldAttachment1.value },
 };
-const materialHandle = world.allocSharedRef('MaterialAsset', {
+const materialHandle = assets.create({
   kind: 'material',
   passes: [
     {
@@ -233,16 +232,15 @@ const materialHandle = world.allocSharedRef('MaterialAsset', {
     { name: 'iTime', type: 'f32' },
   ],
   values,
-});
+}).unwrap();
 
-const timeValue = world.spawn({ component: RuntimeMaterialValue, data: { asset: materialHandle, parameter: 'iTime', value: [0] } }).unwrap();
 
 const planeRes = createPlaneGeometry(1, 1);
 if (!planeRes.ok) {
   console.error(`[smoke] FAIL - createPlaneGeometry: ${planeRes.error.code}`);
   process.exit(1);
 }
-const planeMeshHandle = world.allocSharedRef('MeshAsset', planeRes.value);
+const planeMeshHandle = assets.create(planeRes.value).unwrap();
 
 world
   .spawn(
@@ -284,7 +282,7 @@ const unpaddedBytesPerRow = WIDTH * bytesPerPixel;
 const bytesPerRow = Math.ceil(unpaddedBytesPerRow / 256) * 256;
 
 async function captureFrameAtT(t) {
-  world.set(timeValue, RuntimeMaterialValue, { value: [t] }).unwrap();
+  assets.update(materialHandle, { values: { iTime: t } }).unwrap();
   for (let i = 0; i < SMOKE_FRAMES_PER_T; i++) {
     if (!FALSIFY_NO_DRAW) {
       world.update().unwrap();

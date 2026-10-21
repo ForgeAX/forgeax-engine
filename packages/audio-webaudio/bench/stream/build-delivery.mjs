@@ -7,7 +7,7 @@ import { build, preview } from 'vite';
 import { pluginPack } from '@forgeax/engine-vite-plugin-pack';
 import { AssetRegistry } from '@forgeax/engine-assets-runtime';
 import { audioImporter } from '../../dist/audio-importer.mjs';
-import { audioLoader } from '../../dist/index.mjs';
+import { audioContribution } from '@forgeax/engine-audio';
 const root = fileURLToPath(new URL('../../../..', import.meta.url));
 const output = resolve(root, 'artifacts/audio-stream');
 const outDir = resolve(output, 'build-delivery');
@@ -18,7 +18,8 @@ await build({ configFile: false, root, plugins: [pluginPack({ roots: [resolve(ou
 const server = await preview({ configFile: false, root, build: { outDir }, preview: { port: 5297, strictPort: true } });
 const base = 'http://localhost:5297';
 const catalog = decodeCatalogWire(JSON.parse(await readFile(resolve(outDir, 'pack-index.json'), 'utf8'))).unwrap();
-const registry = new AssetRegistry({}, undefined, [audioLoader]);
+const registry = new AssetRegistry();
+registry.installDecoder(audioContribution.kind, audioContribution.decoder);
 registry.configurePackIndex(`${base}/pack-index.json`);
 const nativeFetch = globalThis.fetch; const requests = [];
 globalThis.fetch = async (input, init) => { const response = await nativeFetch(input, init); requests.push({ url: String(input), range: init?.headers?.Range, status: response.status }); return response; };
@@ -27,9 +28,10 @@ try {
   for (const minutes of [10,60]) {
     const guid = `aaaaaaaa-aaaa-4aaa-8aaa-${String(minutes).padStart(12,'0')}`;
     const before = requests.length;
-    const loaded = await registry.loadByGuid(registry.parseGuid(guid));
-    if (!loaded.ok || loaded.value.kind !== 'audio' || !loaded.value.stream) throw loaded.ok ? new Error('stream lost in build') : loaded.error;
-    const stream = loaded.value.stream;
+    const clip = (await registry.load(guid, 'audio')).unwrap();
+    const stream = registry.read(clip).unwrap().stream;
+    registry.release(clip).unwrap();
+    if (!stream) throw new Error('stream lost in build');
     if (requests.slice(before).some(row => row.url === stream.url)) throw new Error('GUID read the full artifact');
     const at = Math.floor(stream.hashes.length * 0.7), start = stream.dataOffset + at * stream.chunkFrames * stream.channels * 2;
     const end = start + stream.chunkFrames * stream.channels * 2 - 1;

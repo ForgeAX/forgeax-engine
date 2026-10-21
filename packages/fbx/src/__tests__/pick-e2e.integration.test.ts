@@ -1,3 +1,4 @@
+import { importedMesh } from '../../../import/src/__tests__/fixtures/runtime-import';
 // pick-e2e.integration.test.ts -- FBX end-to-end pick probe over pack JSON roundtrip
 // (bug-20260706-import-path-meshasset-aabb-undefined-blocks-pick M8 / m8-1).
 //
@@ -5,7 +6,7 @@
 // buildMeshAsset (producer emits aabb, M7) -> packMeshBin (JSON tail encode) ->
 // explicit JSON.stringify -> JSON.parse roundtrip (simulating dev-server pack transport) ->
 // aabb reconstruction (Float32Array from plain array, the loader dual-contract path) ->
-// World.allocSharedRef + spawn (MeshFilter / MeshRenderer / Transform) ->
+// assets.create + spawn (MeshFilter / MeshRenderer / Transform) ->
 // pick() hit assertion + negative-control miss.
 //
 // Falsification drill (plan-strategy section 5.4) EXECUTED:
@@ -28,33 +29,23 @@
 // References: plan-strategy D-3 / R-3 / R-6; gltf pick-e2e.integration.test.ts
 // (M5 parallel structure, different chain entry point).
 
+import { AssetRegistry } from '@forgeax/engine-assets-runtime';
 import { World } from '@forgeax/engine-ecs';
 import { packMeshBin } from '@forgeax/engine-import';
 import { decodeMeshBinHeader } from '@forgeax/engine-pack';
 import { pick } from '@forgeax/engine-picking';
 import { Camera, Materials, MeshFilter, MeshRenderer, perspective } from '@forgeax/engine-render';
 import { Transform } from '@forgeax/engine-scene';
-import type {
-  Handle,
-  ImportedAsset,
-  MaterialAsset,
-  MeshAsset,
-  MeshPod,
-} from '@forgeax/engine-types';
+import type { ImportedAsset, MaterialAsset, MeshAsset, MeshPod } from '@forgeax/engine-types';
 import { describe, expect, it } from 'vitest';
 import { buildMeshAsset } from '../to-asset-pack.js';
 
 // ---- helpers ----
 
-/** Convert a branded handle to the raw u32 used by allocSharedRef return. */
-function asHandle<T extends string>(n: number): Handle<T, 'shared'> {
-  return n as unknown as Handle<T, 'shared'>;
-}
-
 /** Narrow an ImportedAsset of kind='mesh' to its MeshAsset payload. */
-function meshFromAsset(asset: ImportedAsset): MeshAsset {
+function meshFromAsset(asset: ImportedAsset<unknown>): MeshAsset {
   if (asset.kind !== 'mesh') throw new TypeError(`expected mesh, got ${asset.kind}`);
-  return asset.payload as MeshAsset;
+  return importedMesh(asset);
 }
 
 /** Build a minimal MeshPod fixture: a single triangle at Z=-3, XY symmetric.
@@ -104,6 +95,7 @@ describe('fbx e2e pick probe over pack JSON roundtrip (m8-1)', () => {
         vertices: meshAsset.vertices,
         indices: meshAsset.indices,
         submeshes: meshAsset.submeshes,
+        materialSlots: meshAsset.materialSlots,
         aabb: meshAsset.aabb,
         attributes: meshAsset.attributes,
       },
@@ -144,10 +136,11 @@ describe('fbx e2e pick probe over pack JSON roundtrip (m8-1)', () => {
     expect(roundtrippedAabb[5]).toBe(-3);
 
     // --- 6. World setup ---
-    const world = new World();
+    const assets = new AssetRegistry();
+    const world = new World({ assets });
 
     const unlitMat = Materials.unlit([1, 1, 1, 1]) as unknown as MaterialAsset;
-    const unlitHandle = asHandle<'MaterialAsset'>(world.allocSharedRef('MaterialAsset', unlitMat));
+    const unlitHandle = assets.create(unlitMat).unwrap();
 
     // Reconstruct the MeshAsset payload with the roundtripped aabb and
     // original typed arrays from the FBX buildMeshAsset output.
@@ -156,11 +149,12 @@ describe('fbx e2e pick probe over pack JSON roundtrip (m8-1)', () => {
       vertices: meshAsset.vertices,
       ...(meshAsset.indices !== undefined ? { indices: meshAsset.indices } : {}),
       submeshes: meshAsset.submeshes,
+      materialSlots: meshAsset.materialSlots,
       aabb: roundtrippedAabb,
       attributes: meshAsset.attributes,
     } as MeshAsset;
 
-    const meshHandle = asHandle<'MeshAsset'>(world.allocSharedRef('MeshAsset', meshPayload));
+    const meshHandle = assets.create(meshPayload).unwrap();
 
     // Mesh entity at origin. Identity Transform -> identity world mat4.
     const meshEntity = world
@@ -199,25 +193,30 @@ describe('fbx e2e pick probe over pack JSON roundtrip (m8-1)', () => {
     expect(miss).toBeUndefined();
   });
 
-  it('mesh without aabb: pick() returns undefined (falsification witness)', () => {
-    // Create a MeshAsset via buildMeshAsset, then strip the aabb field to
-    // verify that pick() skips it at the broad-phase check (pick.ts:184).
-    // This is a secondary in-code falsification -- it repeats the
-    // comment-out-drill semantics without modifying M7 production code.
+  it('admission derives missing bounds and rejects nonfinite geometry before picking)', () => {
+    // Bounds are derived once by the runtime asset owner before picking.
     const pod = makeTrianglePod();
     const imported = buildMeshAsset(pod, 'guid-fbx-noaabb');
     const meshWithAabb = meshFromAsset(imported);
     // Strip aabb to simulate the pre-M7 state.
     const { aabb: _dropped, ...rest } = meshWithAabb;
 
-    const world = new World();
+    const assets = new AssetRegistry();
+    const world = new World({ assets });
 
     const unlitMat = Materials.unlit([1, 1, 1, 1]) as unknown as MaterialAsset;
-    const unlitHandle = asHandle<'MaterialAsset'>(world.allocSharedRef('MaterialAsset', unlitMat));
+    const unlitHandle = assets.create(unlitMat).unwrap();
 
-    const noAabbHandle = asHandle<'MeshAsset'>(
-      world.allocSharedRef('MeshAsset', { ...rest } as MeshAsset),
-    );
+    const noAabbHandle = assets.create({ ...rest } as MeshAsset).unwrap();
+    expect(assets.read(noAabbHandle).unwrap().aabb).toEqual(meshWithAabb.aabb);
+    const invalid = {
+      ...rest,
+      attributes: {
+        ...rest.attributes,
+        position: new Float32Array([NaN, 0, 0, 1, -1, -3, 0, 1, -3]),
+      },
+    };
+    expect(assets.create(invalid as MeshAsset).ok).toBe(false);
 
     world
       .spawn(
@@ -240,8 +239,6 @@ describe('fbx e2e pick probe over pack JSON roundtrip (m8-1)', () => {
       )
       .unwrap();
 
-    // Same center ray that would hit if aabb were present.
-    const miss = pick(world, cameraEntity, 50, 50, 100, 100);
-    expect(miss).toBeUndefined();
+    expect(pick(world, cameraEntity, 50, 50, 100, 100)).toBeDefined();
   });
 });

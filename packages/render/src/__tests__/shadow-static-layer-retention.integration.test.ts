@@ -10,13 +10,14 @@ import {
   type ShadowViewIdentity,
   ShadowViewStatePool,
 } from '../gpu-driven/shadow-views';
-import { StaticShadowLayers } from '../gpu-driven/static-shadow-layers';
 import { GpuScene } from '../gpu-scene';
 import type { ShadowViewInvalidationReason } from '../inspection-types';
 import { ShadowRasterLedger } from '../record/shadow-raster-ledger';
 import type { RenderPipelineFrame, RenderPipelineTopology } from '../render-pipeline';
+import { ShadowDepthLayers } from '../shadow-depth-layers';
 import type { TerrainShadowReceiver } from '../terrain/shadow-family';
 import { addTypedShadowPasses, shadowPipelinePreparationDemand } from '../typed-shadow-passes';
+import { updateShadowView } from './helpers/gpu-input-read-domain';
 
 function spotTopology(spotMapSize = 32): RenderPipelineTopology {
   return {
@@ -54,7 +55,7 @@ async function nullDevice(): Promise<RhiDevice> {
 
 function compile(
   device: RhiDevice,
-  staticLayers?: StaticShadowLayers,
+  staticLayers?: ShadowDepthLayers,
   spotMapSize?: number,
   terrainReceivers?: readonly TerrainShadowReceiver[],
   point = false,
@@ -74,14 +75,11 @@ function compile(
             directional: { mapSize: 32, cascadeCount: 1, terrainReceivers },
           },
         };
-  addTypedShadowPasses(
-    graph,
-    topology,
-    (identity, pyramid) => pool?.project(graph, identity, true, pyramid) ?? ok(undefined),
-    undefined,
-    undefined,
-    staticLayers,
-  ).unwrap();
+  addTypedShadowPasses(graph, topology, {
+    projectGpuDrivenShadow: (identity, pyramid) =>
+      pool?.project(graph, identity, true, pyramid) ?? ok(undefined),
+    staticLayers: staticLayers,
+  }).unwrap();
   return Object.assign(graph.compile({ device, surfaceSize: { width: 64, height: 64 } }).unwrap(), {
     preparationDemand: shadowPipelinePreparationDemand(graph),
     pointTexture: point
@@ -104,7 +102,7 @@ function compile(
 function frame(
   device: RhiDevice,
   compiled: ReturnType<typeof compile>,
-  staticLayers: StaticShadowLayers | undefined,
+  staticLayers: ShadowDepthLayers | undefined,
   outcome: 'submit' | 'abort' = 'submit',
   operations?: string[],
   gpuShadowViews: Pick<
@@ -149,6 +147,7 @@ function frame(
       runtime: { device },
       pipelineState: { perPassResources: { shadowSampler: null } },
       dispatch: [],
+      validatedOrdered: [],
     } as unknown as RenderPipelineFrame)
     .unwrap();
   if (outcome === 'abort') {
@@ -197,7 +196,7 @@ describe('static shadow layer retention', () => {
       device,
       shaderModuleFactory: { createShaderModule: () => ok(shader) },
     }).unwrap();
-    const sourcePlan = new BatchTopology().plan();
+    const sourcePlan = new BatchTopology().sourcePlan();
     const matrix = new Float32Array(mat4.identity(mat4.create()));
     const planes = frustum.fromViewProjection(frustum.create(), matrix);
     const identities: readonly ShadowViewIdentity[] = [
@@ -207,17 +206,15 @@ describe('static shadow layer retention', () => {
     const update = (graphGeneration: number, view = matrix) =>
       identities.map(
         (identity) =>
-          pool
-            .update({
-              identity,
-              sourcePlan,
-              scene: available.scene,
-              matrix: view,
-              planes,
-              targetSize: 32,
-              graphGeneration,
-            })
-            .unwrap().cache,
+          updateShadowView(pool, {
+            identity,
+            sourcePlan,
+            scene: available.scene,
+            matrix: view,
+            planes,
+            targetSize: 32,
+            graphGeneration,
+          }).unwrap().cache,
       );
     const firstUpdate = update(0);
     expect(firstUpdate).toEqual(['invalidated', 'invalidated']);
@@ -294,7 +291,7 @@ describe('static shadow layer retention', () => {
 
   it('fully copies every Terrain family after a partial static producer update', async () => {
     const device = await nullDevice();
-    const staticLayers = new StaticShadowLayers(device);
+    const staticLayers = new ShadowDepthLayers(device);
     const compiled = compile(device, staticLayers, undefined, [
       { worldId: 0, entityKey: 7 },
       { worldId: 1, entityKey: 7 },
@@ -330,7 +327,7 @@ describe('static shadow layer retention', () => {
 
   it('recomposes every Terrain family after an aborted static-layer submit even when the logical GPU pool hits', async () => {
     const device = await nullDevice();
-    const staticLayers = new StaticShadowLayers(device);
+    const staticLayers = new ShadowDepthLayers(device);
     const compiled = compile(device, staticLayers, undefined, [
       { worldId: 0, entityKey: 7 },
       { worldId: 1, entityKey: 7 },
@@ -375,7 +372,7 @@ describe('static shadow layer retention', () => {
       shaderModuleFactory: { createShaderModule: () => ok(shader) },
     }).unwrap();
     const staticLayers = pool.staticLayers;
-    const sourcePlan = new BatchTopology().plan();
+    const sourcePlan = new BatchTopology().sourcePlan();
     const matrix = new Float32Array(mat4.identity(mat4.create()));
     const planes = frustum.fromViewProjection(frustum.create(), matrix);
     const identities: readonly ShadowViewIdentity[] = [
@@ -385,17 +382,15 @@ describe('static shadow layer retention', () => {
     const update = (graphGeneration: number) =>
       identities.map(
         (identity) =>
-          pool
-            .update({
-              identity,
-              sourcePlan,
-              scene: available.scene,
-              matrix,
-              planes,
-              targetSize: 32,
-              graphGeneration,
-            })
-            .unwrap().cache,
+          updateShadowView(pool, {
+            identity,
+            sourcePlan,
+            scene: available.scene,
+            matrix,
+            planes,
+            targetSize: 32,
+            graphGeneration,
+          }).unwrap().cache,
       );
     const run = (compiled: ReturnType<typeof compile>) => {
       const decisions = frame(device, compiled, staticLayers, 'submit', undefined, pool);
@@ -423,7 +418,7 @@ describe('static shadow layer retention', () => {
   it('reuses imported views across frames, abort and graph retirement', async () => {
     const device = await nullDevice();
     const createView = vi.spyOn(device, 'createTextureView');
-    const layers = new StaticShadowLayers(device);
+    const layers = new ShadowDepthLayers(device);
     const first = compile(device, layers);
     frame(device, first, layers);
     const calls = createView.mock.calls.length;
@@ -441,7 +436,7 @@ describe('static shadow layer retention', () => {
 
   it('retries failed views and preserves old allocation on replacement failure', async () => {
     const device = await nullDevice();
-    const layers = new StaticShadowLayers(device);
+    const layers = new ShadowDepthLayers(device);
     const old = layers.texture('static', 32, 3);
     const whole = layers.view('static');
     const layer = layers.view('static', 1);
@@ -485,7 +480,7 @@ describe('static shadow layer retention', () => {
 
   it('retains nothing from an aborted submit, and the final layer follows', async () => {
     const device = await nullDevice();
-    const staticLayers = new StaticShadowLayers(device);
+    const staticLayers = new ShadowDepthLayers(device);
     const compiled = compile(device, staticLayers);
     expect(frame(device, compiled, staticLayers, 'abort')).toEqual([
       'static:graph-compiled',
@@ -505,7 +500,7 @@ describe('static shadow layer retention', () => {
   it('replaces the array when its shape changes and destroys the old one after submit', async () => {
     const device = await nullDevice();
     const destroy = vi.spyOn(device, 'destroyTexture');
-    const staticLayers = new StaticShadowLayers(device);
+    const staticLayers = new ShadowDepthLayers(device);
     const small = compile(device, staticLayers, 32);
     frame(device, small, staticLayers);
     (await small.retire()).unwrap();
@@ -529,7 +524,7 @@ it.each([
   'point',
 ] as const)('uses the same pure %s raster demand before preparation', async (kind) => {
   const device = await nullDevice();
-  const staticLayers = new StaticShadowLayers(device);
+  const staticLayers = new ShadowDepthLayers(device);
   const compiled = compile(
     device,
     staticLayers,
@@ -558,7 +553,7 @@ it.each([
     } as unknown as RenderPipelineFrame;
     expect(demand?.(dynamic, identity)).toBe(true);
     expect(demand?.(dynamic, { ...identity, layer: 'static' })).toBe(false);
-    const unsubmittedLayers = new StaticShadowLayers(device);
+    const unsubmittedLayers = new ShadowDepthLayers(device);
     const unsubmitted = compile(
       device,
       unsubmittedLayers,
@@ -585,7 +580,7 @@ it.each([
 
 it('keeps preparation conservative when a Terrain family re-records a logical view', async () => {
   const device = await nullDevice();
-  const staticLayers = new StaticShadowLayers(device);
+  const staticLayers = new ShadowDepthLayers(device);
   const compiled = compile(device, staticLayers, undefined, [{ worldId: 0, entityKey: 7 }]);
   try {
     expect(compiled.preparationDemand).toBeUndefined();

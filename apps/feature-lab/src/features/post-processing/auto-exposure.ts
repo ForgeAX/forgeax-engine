@@ -1,3 +1,5 @@
+import { AssetRegistry } from '@forgeax/engine/assets-runtime';
+import { createPrimitiveMesh } from '@forgeax/engine/geometry';
 import {
   CAMERA_EXPOSURE_MODE_AUTO,
   CAMERA_EXPOSURE_MODE_MANUAL,
@@ -6,7 +8,7 @@ import {
   TONEMAP_ACES_FILMIC,
 } from '@forgeax/engine/render';
 import { CheckList, defineFeature } from '../../lab/feature';
-import { MESH, spawnMesh, spawnStage, standard } from '../../lab/stage';
+import { spawnMesh, spawnStage, standard } from '../../lab/stage';
 
 export default defineFeature({
   title: 'Auto exposure',
@@ -17,6 +19,14 @@ export default defineFeature({
   expect:
     'ON: the very dimly lit scene is brightened to a normal mid-grey exposure within a second or two. OFF (manual exposure 1): the same scene is almost black.',
   setup({ app, world, frames }) {
+    const primitiveAssets = world.assets;
+    if (!(primitiveAssets instanceof AssetRegistry))
+      throw new Error('Scene requires its runtime asset owner');
+
+    const stageCube = primitiveAssets.create(createPrimitiveMesh('cube').unwrap()).unwrap();
+
+    const stageSphere = primitiveAssets.create(createPrimitiveMesh('sphere').unwrap()).unwrap();
+
     const { camera, sun } = spawnStage(world, {
       eye: [0, 1.6, 5],
       target: [0, 0.5, 0],
@@ -31,10 +41,10 @@ export default defineFeature({
       },
     });
     world.set(sun, DirectionalLight, { intensity: 0.03 } as never).unwrap();
-    spawnMesh(world, MESH.cube, standard(world, { baseColor: [0.9, 0.3, 0.2, 1] }), {
+    spawnMesh(world, stageCube, standard(world, { baseColor: [0.9, 0.3, 0.2, 1] }), {
       pos: [-1, 0.5, 0],
     });
-    spawnMesh(world, MESH.sphere, standard(world, { baseColor: [0.2, 0.6, 0.9, 1] }), {
+    spawnMesh(world, stageSphere, standard(world, { baseColor: [0.2, 0.6, 0.9, 1] }), {
       pos: [1, 0.5, 0],
       scale: [0.5, 0.5, 0.5],
     });

@@ -8,7 +8,7 @@ import { projectScriptablePackSceneComponents } from '@forgeax/engine-pack/sourc
 import { MeshFilter, MeshRenderer } from '@forgeax/engine-render';
 import { Transform } from '@forgeax/engine-scene';
 import { ShaderRegistry } from '@forgeax/engine-shader';
-import type { CatalogEntry, MeshAsset } from '@forgeax/engine-types';
+import type { CatalogEntry } from '@forgeax/engine-types';
 import { expect, it, vi } from 'vitest';
 import { materialRecordFixture } from '../../../assets-runtime/src/__tests__/fixtures/material-publication.js';
 import { compressZstd } from '../../../codec/src/encode/index.js';
@@ -120,7 +120,9 @@ it('uses the default App dependency source and restores a generated Scene with s
   const create = async (restoring: boolean) => {
     const world = new World();
     const context = await createWorldContext(world, []);
-    const registry = new AssetRegistry(new ShaderRegistry({ manifestUrl: undefined }));
+    const registry = new AssetRegistry({
+      shaderRegistry: new ShaderRegistry({ manifestUrl: undefined }),
+    });
     const offline = vi.fn<typeof fetch>(async () => {
       throw new Error('offline restore used the network');
     });
@@ -197,14 +199,12 @@ it('uses the default App dependency source and restores a generated Scene with s
     const result = await restored.runtime.producer.restore(saved);
     expect(result.ok, JSON.stringify(result)).toBe(true);
     const rows = (await restored.registry.enumerateCatalog()).unwrap();
-    const mesh = (
-      await restored.registry.loadByGuid<MeshAsset>(restored.registry.parseGuid(meshGuid))
-    ).unwrap();
+    const mesh = restored.registry
+      .read((await restored.registry.load(meshGuid, 'mesh')).unwrap())
+      .unwrap();
     expect(mesh.attributes.position).toEqual(original.geometry.attributes.position);
     expect(mesh.indices).toEqual(original.geometry.indices);
-    expect((await restored.registry.loadByGuid(restored.registry.parseGuid(materialGuid))).ok).toBe(
-      true,
-    );
+    expect((await restored.registry.load(materialGuid, 'material')).ok).toBe(true);
     const source = rows.find((row) => row.guid === meshGuid);
     expect(source?.packageId).toBeUndefined();
     expect(source?.sourceKey).toBeUndefined();

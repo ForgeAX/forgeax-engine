@@ -3,7 +3,7 @@
 //
 // Regression gate: the earlier path collapsed `graphic_index` to only the
 // last entry, hiding lower-painted terrain transitions. `buildWorld` now
-// spawns one TileLayer per sub-layer index with `layerOrder = baseLayerOrder
+// spawns one Tilemap per sub-layer index with `layerOrder = baseLayerOrder
 // + subIndex`, so sub-layers stack within their height bucket but never
 // cross into the next bucket (HEIGHT_LAYER_BASE = 100 per world-build.ts).
 //

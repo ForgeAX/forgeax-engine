@@ -1,9 +1,13 @@
-import { HANDLE_NINESLICE_QUAD } from '@forgeax/engine-assets-runtime';
+
 import type { World } from '@forgeax/engine-ecs';
 import { Camera, MeshFilter, MeshRenderer, orthographic } from '@forgeax/engine-render';
 import { SPRITE_PREMULTIPLIED_ALPHA_BLEND } from '@forgeax/engine-render/authoring';
 import { Transform } from '@forgeax/engine-scene';
 import type { MaterialAsset } from '@forgeax/engine-types';
+import { AssetRegistry } from '@forgeax/engine-assets-runtime';
+
+import { createPrimitiveMesh } from '@forgeax/engine-geometry';
+
 
 export const TEXTURE_SIZE = 48;
 export const STRETCH_SLICES = [0.25, 0.25, 0.25, 0.25] as const;
@@ -39,6 +43,11 @@ function material(texture: number, slicesAndMode: readonly [number, number, numb
 }
 
 export function buildSpriteSliceWorld(world: World, texture: number): void {
+const sceneAssets = world.assets;
+if (!(sceneAssets instanceof AssetRegistry)) throw new Error('Scene requires its runtime asset owner');
+
+const primitiveNineSliceQuad = sceneAssets.create(createPrimitiveMesh('nine-slice-quad').unwrap()).unwrap();
+
   const panels = [
     { x: -2.9, y: 0.7, scale: [1.5, 2.5] as [number, number], slices: STRETCH_SLICES },
     { x: 0, y: 0.7, scale: [2.4, 2.5] as [number, number], slices: STRETCH_SLICES },
@@ -47,10 +56,10 @@ export function buildSpriteSliceWorld(world: World, texture: number): void {
     { x: 1.8, y: -1.7, scale: [1.7, 1.5] as [number, number], slices: STRETCH_SLICES },
   ];
   for (const panel of panels) {
-    const handle = world.allocSharedRef<'MaterialAsset', MaterialAsset>('MaterialAsset', material(texture, panel.slices));
+    const handle = sceneAssets.create(material(texture, panel.slices)).unwrap();
     world.spawn(
       { component: Transform, data: { pos: [panel.x, panel.y, 0], quat: [0, 0, 0, 1], scale: [panel.scale[0], panel.scale[1], 1] } },
-      { component: MeshFilter, data: { assetHandle: HANDLE_NINESLICE_QUAD } },
+      { component: MeshFilter, data: { assetHandle: primitiveNineSliceQuad } },
       { component: MeshRenderer, data: { materials: [handle] } },
     );
   }

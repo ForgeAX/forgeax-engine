@@ -38,6 +38,10 @@ import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { existsSync } from 'node:fs';
 import { emitSmokeReceipt } from '../../../../shared/scripts/smoke-receipt.mjs';
+import { AssetRegistry } from '@forgeax/engine-assets-runtime';
+
+import { createPrimitiveMesh } from '@forgeax/engine-geometry';
+
 
 const SMOKE_MIN_FRAMES = Number.parseInt(process.env.SMOKE_MIN_FRAMES ?? '60', 10);
 const WIDTH = 512;
@@ -167,14 +171,12 @@ if (!existsSync(HDR_PATH)) {
 // --- 4. Engine imports + renderer bootstrap ---
 
 const { World } = await import('@forgeax/engine-ecs');
-const { constructRuntimeRendererHost } = await import('@forgeax/engine-runtime/internal/renderer-host');
+const { constructRuntimeRendererHost, createPublicationAssets } = await import('@forgeax/engine-runtime/internal/renderer-host');
 const { SkyboxBackground, Skylight } = await import('@forgeax/engine-render');
 const { Camera, DirectionalLight, MeshFilter, MeshRenderer, TONEMAP_REINHARD_EXTENDED } = await import('@forgeax/engine-render');
 const { SKYBOX_MODE_CUBEMAP } = await import('@forgeax/engine-render');
 const { Transform } = await import('@forgeax/engine-scene');
-const {
-  HANDLE_CUBE,
-} = await import('@forgeax/engine-assets-runtime');
+
 const { buildEngineShaderManifest } = await import(
   '@forgeax/engine-vite-plugin-shader'
 );
@@ -246,10 +248,9 @@ const equirectPod = {
   data: floatBytes,
   colorSpace: 'linear',
 };
-// --- 6. Material descriptors (minted per-world inside spawnScene) ---
-// Handles are minted via world.allocSharedRef (M8 D-19), so each of the two
-// dual-state Worlds gets its own column handles for the equirect cubemap and
-// the two PBR materials. The descriptor payloads below are shared inputs.
+// --- 6. Material descriptors ---
+// Each World asset registry creates its equirect and material handles inside
+// spawnScene from these shared descriptors.
 
 const reflectiveMatPayload = {
   kind: 'material',
@@ -298,12 +299,17 @@ const nonReflectiveMatPayload = {
  *   - Camera at pos z=6, tonemap=REINHARD_EXTENDED
  */
 async function spawnScene(world, spawnSkybox) {
+const sceneAssets = world.assets;
+if (!(sceneAssets instanceof AssetRegistry)) throw new Error('Scene requires its runtime asset owner');
+
+const primitiveCube = sceneAssets.create(createPrimitiveMesh('cube').unwrap()).unwrap();
+
   // Mint this world's column handles (M8 D-19): equirect source + two PBR
   // materials. The equirect->cubemap + IBL projection is INTERNAL to the engine
   // (lazy, in the render record arm) -- the Skylight holds the equirect handle.
-  const equirect = world.allocSharedRef('EquirectAsset', equirectPod);
-  const reflectiveMatHandle = world.allocSharedRef('MaterialAsset', reflectiveMatPayload);
-  const nonReflectiveMatHandle = world.allocSharedRef('MaterialAsset', nonReflectiveMatPayload);
+  const equirect = world.assets.create(equirectPod).unwrap();
+  const reflectiveMatHandle = world.assets.create(reflectiveMatPayload).unwrap();
+  const nonReflectiveMatHandle = world.assets.create(nonReflectiveMatPayload).unwrap();
 
   world.spawn({
     component: Skylight,
@@ -324,7 +330,7 @@ async function spawnScene(world, spawnSkybox) {
       data: {
         pos: [-1.5, 0, 0], quat: [0, 0, 0, 1], scale: [1, 1, 1],},
     },
-    { component: MeshFilter, data: { assetHandle: HANDLE_CUBE } },
+    { component: MeshFilter, data: { assetHandle: primitiveCube } },
     { component: MeshRenderer, data: { materials: [reflectiveMatHandle] } },
   );
 
@@ -335,7 +341,7 @@ async function spawnScene(world, spawnSkybox) {
       data: {
         pos: [1.5, 0, 0], quat: [0, 0, 0, 1], scale: [1, 1, 1],},
     },
-    { component: MeshFilter, data: { assetHandle: HANDLE_CUBE } },
+    { component: MeshFilter, data: { assetHandle: primitiveCube } },
     { component: MeshRenderer, data: { materials: [nonReflectiveMatHandle] } },
   );
 
@@ -449,7 +455,7 @@ if (!device) {
 }
 
 // State A: skybox-on (full IBL skybox + Skylight + two cubes)
-const worldOn = new World();
+const worldOn = new World({ assets: assets });
 await spawnScene(worldOn, true);
 const onFrames = await drawFrames(worldOn, SMOKE_MIN_FRAMES, 'skybox-on');
 const pixelsOn = await readbackPixels(device);
@@ -468,7 +474,7 @@ if (FALSIFY === 'skybox-reuse-buffer') {
   // (The renderer writes to getCurrentTexture() which returns renderTarget.)
   // We need a fresh draw: destroy old renderTarget so configure creates a new one.
   renderTarget = null;
-  const worldOff = new World();
+  const worldOff = new World({ assets: await createPublicationAssets({ shaderManifestUrl: MANIFEST_URL }) });
   await spawnScene(worldOff, false);
   offFrames = await drawFrames(worldOff, SMOKE_MIN_FRAMES, 'skybox-off');
   pixelsOff = await readbackPixels(device);

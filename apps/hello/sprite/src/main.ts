@@ -1,3 +1,4 @@
+import type { AssetHandle } from '@forgeax/engine-types';
 import { configureRuntimeAssetCatalog, createRuntimeAssetImportTransport, runtimeBinding } from '@forgeax/apps-shared/asset-runtime-config';
 import { Update } from '@forgeax/engine-ecs';
 // apps/hello/sprite -- 2D sprite + Layer + transparent-sort double-scene
@@ -89,7 +90,7 @@ import { createApp } from '@forgeax/engine-app/browser';
 import type { World } from '@forgeax/engine-ecs';
 import { INPUT_SNAPSHOT_RESOURCE_KEY, type InputSnapshot } from '@forgeax/engine-input';
 import { AssetGuid } from '@forgeax/engine-pack/guid';
-import { HANDLE_NINESLICE_QUAD, HANDLE_QUAD } from '@forgeax/engine-assets-runtime';
+
 import { Transform } from '@forgeax/engine-scene';
 
 import { Camera, MeshFilter, MeshRenderer } from '@forgeax/engine-render';
@@ -101,8 +102,12 @@ import {
 } from '@forgeax/engine-render/authoring';
 import { Layer } from '@forgeax/engine-render';
 
-import { type Handle, type MaterialAsset, type TextureAsset } from '@forgeax/engine-types';
+import { type MaterialAsset } from '@forgeax/engine-types';
 import { forgeaxBundlerAdapter } from 'virtual:forgeax/bundler';
+import { AssetRegistry } from '@forgeax/engine-assets-runtime';
+
+import { createPrimitiveMesh } from '@forgeax/engine-geometry';
+
 
 // D-5 SSOT: the wood-container disk-schema GUID is the same identifier
 // learn-render-1.4-textures uses (the build-time importer stamps it
@@ -200,6 +205,8 @@ async function bootstrap(target: HTMLCanvasElement): Promise<void> {
   }
   configureRuntimeAssetCatalog(assets, runtimeBinding);
   const world = app.world;
+const primitiveQuad = assets.create(createPrimitiveMesh('quad').unwrap()).unwrap();
+
 
   // Step 2: resolve the wood-container texture through the production
   // loadByGuid fetch chain (returns the payload, D-17), then mint a
@@ -211,10 +218,10 @@ async function bootstrap(target: HTMLCanvasElement): Promise<void> {
     console.error('[sprite] WOOD_TEXTURE_GUID parse failed:', woodGuidRes.error.code);
     return;
   }
-  const texHandleRes = await assets.loadByGuid<TextureAsset>(woodGuidRes.value);
-  let textureHandle: Handle<'TextureAsset', 'shared'> | undefined;
+  const texHandleRes = await assets.load(woodGuidRes.value, 'texture');
+  let textureHandle: AssetHandle<'texture'> | undefined;
   if (texHandleRes.ok) {
-    textureHandle = world.allocSharedRef('TextureAsset', texHandleRes.value);
+    textureHandle = texHandleRes.value;
   } else {
     // charter P3 explicit failure: the sprite bucket warn-once
     // path (render-system-record.ts AC-18 path 4) will fire when the
@@ -238,7 +245,7 @@ async function bootstrap(target: HTMLCanvasElement): Promise<void> {
   // assets every frame. If textureHandle is undefined the material
   // still mints cleanly -- the sprite bucket missing-texture
   // warn-once path takes over at the record stage (charter P3).
-  const materialHandles: Record<SceneId, Handle<'MaterialAsset', 'shared'>[]> = {
+  const materialHandles: Record<SceneId, AssetHandle<'material'>[]> = {
     A: [],
     B: [],
   };
@@ -254,7 +261,7 @@ async function bootstrap(target: HTMLCanvasElement): Promise<void> {
         colorTint: tint,
         pivot: PIVOT_BY_SCENE[sceneId],
       });
-      materialHandles[sceneId].push(world.allocSharedRef('MaterialAsset', material));
+      materialHandles[sceneId].push(assets.create(material).unwrap());
     }
   }
 
@@ -384,7 +391,7 @@ async function bootstrap(target: HTMLCanvasElement): Promise<void> {
           data: {
             pos: [slot.pos[0], slot.pos[1], slot.pos[2]], scale: [0.16, 0.16, 1],},
         },
-        { component: MeshFilter, data: { assetHandle: HANDLE_QUAD } },
+        { component: MeshFilter, data: { assetHandle: primitiveQuad } },
         { component: MeshRenderer, data: { materials: [matHandle] } },
         { component: Layer, data: { value: slot.layer } },
       );
@@ -400,11 +407,11 @@ async function bootstrap(target: HTMLCanvasElement): Promise<void> {
 }
 
 function buildSpriteMaterial(args: {
-  texture: Handle<'TextureAsset', 'shared'> | undefined;
+  texture: AssetHandle<'texture'> | undefined;
   colorTint: readonly [number, number, number, number];
   pivot: readonly [number, number];
 }): MaterialAsset {
-  const texture = args.texture ?? (0 as unknown as Handle<'TextureAsset', 'shared'>);
+  const texture = args.texture ?? (0 as unknown as AssetHandle<'texture'>);
   // feat-20260626-sprite-transparent-collapse M3 — post M1/M2 SSOT
   // collapse: sprite is a regular MaterialAsset whose pass-side
   // `renderState.blend` drives the LDR split + premultiplied-alpha
@@ -465,9 +472,14 @@ function buildSpriteMaterial(args: {
 // in w19 acceptanceCheck enforces zero hits in this file).
 function setupNineSliceSection(
   world: World,
-  textureHandle: Handle<'TextureAsset', 'shared'> | undefined,
+  textureHandle: AssetHandle<'texture'> | undefined,
 ): void {
-  const texture = textureHandle ?? (0 as unknown as Handle<'TextureAsset', 'shared'>);
+const sceneAssets = world.assets;
+if (!(sceneAssets instanceof AssetRegistry)) throw new Error('Scene requires its runtime asset owner');
+
+const primitiveNineSliceQuad = sceneAssets.create(createPrimitiveMesh('nine-slice-quad').unwrap()).unwrap();
+
+  const texture = textureHandle ?? (0 as unknown as AssetHandle<'texture'>);
 
   // Stretch UI panel material: 4-corner anchors at 0.25 of region UV,
   // sliceMode=0 (stretch). Corners stay pixel-fixed at any scale; the
@@ -481,7 +493,7 @@ function setupNineSliceSection(
   //     baseColor / texture), pivotAndSize vec4 (was pivot + size split),
   //     slicesAndMode vec4 (was slices + sliceMode split). Tile mode is
   //     sentinel-encoded on .w (negative = tile).
-  const panelMat = world.allocSharedRef<'MaterialAsset', MaterialAsset>('MaterialAsset', {
+  const panelMat = sceneAssets.create({
     kind: 'material',
     passes: [
       { name: 'Forward', program: { module: 'forgeax::sprite' }, renderState: { ...{ blend: SPRITE_PREMULTIPLIED_ALPHA_BLEND }, tags: { LightMode: 'Forward' }, queue: 3000 } },
@@ -494,7 +506,7 @@ function setupNineSliceSection(
       pivotAndSize: [0.5, 0.5, 1, 1],
       slicesAndMode: [0.25, 0.25, 0.25, 0.25], // .w>=0 -> stretch
     },
-  });
+  }).unwrap();
 
   // Tile material: corners 0.30 of region UV, sliceMode=1 (tile). The
   // centre cell repeats N times along each axis when the entity's
@@ -503,7 +515,7 @@ function setupNineSliceSection(
   // copies (D-4). Different `slices` value from the panel material
   // so the AI user can grep on these literal numbers and see the two
   // configurations side by side. Tile sentinel: slicesAndMode.w < 0.
-  const tileMat = world.allocSharedRef<'MaterialAsset', MaterialAsset>('MaterialAsset', {
+  const tileMat = sceneAssets.create({
     kind: 'material',
     passes: [
       { name: 'Forward', program: { module: 'forgeax::sprite' }, renderState: { ...{ blend: SPRITE_PREMULTIPLIED_ALPHA_BLEND }, tags: { LightMode: 'Forward' }, queue: 3000 } },
@@ -516,7 +528,7 @@ function setupNineSliceSection(
       pivotAndSize: [0.5, 0.5, 1, 1],
       slicesAndMode: [0.3, 0.3, 0.3, -0.3], // .w<0 -> tile (sentinel)
     },
-  });
+  }).unwrap();
 
   // 2 stretch panels: same material, different scale. AC-06 falsifier
   // is "the four corners stretch with scale" — visible in one frame.
@@ -540,7 +552,7 @@ function setupNineSliceSection(
           data: {
             pos: [slot.pos[0], slot.pos[1], slot.pos[2]], scale: [slot.scale[0], slot.scale[1], 1],},
         },
-        { component: MeshFilter, data: { assetHandle: HANDLE_NINESLICE_QUAD } },
+        { component: MeshFilter, data: { assetHandle: primitiveNineSliceQuad } },
         { component: MeshRenderer, data: { materials: [panelMat] } },
         { component: Layer, data: { value: 200 } },
       )
@@ -558,7 +570,7 @@ function setupNineSliceSection(
         data: {
           pos: [0.0, -0.7, 0], scale: [0.36, 0.16, 1],},
       },
-      { component: MeshFilter, data: { assetHandle: HANDLE_NINESLICE_QUAD } },
+      { component: MeshFilter, data: { assetHandle: primitiveNineSliceQuad } },
       { component: MeshRenderer, data: { materials: [tileMat] } },
       { component: Layer, data: { value: 200 } },
     )

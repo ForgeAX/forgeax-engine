@@ -79,9 +79,9 @@ try {
       const light = lights[0].entity;
       for (const prefix of ['', 'orientation/']) {
         const guid = AssetGuid.derive(definePackageId('019fcaf0-0000-7000-8000-000000000001'), prefix + 'terrain');
-        const root = (await h.app.assets.loadByGuid(guid)).unwrap(); assert.equal(root.kind, 'terrain'); assert(h.app.assets.terrainClosureCurrent(root));
-        const handle = h.app.world.sharedRefs.acquire('TerrainAsset', root);
-        h.app.world.set(h.subjects.terrain, Terrain, { asset: handle, forcedLod: 2 }).unwrap(); h.app.world.sharedRefs.release(handle).unwrap();
+        const handle = (await h.app.assets.load(guid, 'terrain')).unwrap();
+        const root = h.app.assets.read(handle).unwrap(); assert.equal(root.kind, 'terrain');
+        h.app.world.set(h.subjects.terrain, Terrain, { asset: handle, forcedLod: 2 }).unwrap(); h.app.world.assets.release(handle).unwrap();
         for (const [filter, shadowFilter] of [['pcf1', DirectionalShadowFilterValue.pcf1], ['pcf3', DirectionalShadowFilterValue.pcf3], ['pcf5', DirectionalShadowFilterValue.pcf5]]) {
           for (const phase of [0, 0.04, 0.12]) {
             const name = `${renderPath}-${prefix ? 'opposed-ba' : 'vertical-ba'}-${filter}-${phase}`;
@@ -101,10 +101,10 @@ try {
       // The 12-bit oct carrier can move n.L across the old 0.01 bias guard.
       // Exercise both tangent directions, since oct quantization can move
       // the receiver cosine to either side of the original guard.
-      const grazingRoot = (await h.app.assets.loadByGuid(AssetGuid.derive(definePackageId('019fcaf0-0000-7000-8000-000000000001'), 'terrain'))).unwrap();
-      const grazingHandle = h.app.world.sharedRefs.acquire('TerrainAsset', grazingRoot);
+      const grazingHandle = (await h.app.assets.load(AssetGuid.derive(definePackageId('019fcaf0-0000-7000-8000-000000000001'), 'terrain'), 'terrain')).unwrap();
+      const grazingRoot = h.app.assets.read(grazingHandle).unwrap();
       h.app.world.set(h.subjects.terrain, Terrain, { asset: grazingHandle, forcedLod: 2 }).unwrap();
-      h.app.world.sharedRefs.release(grazingHandle).unwrap();
+      h.app.world.assets.release(grazingHandle).unwrap();
       h.app.world.set(h.subjects.terrain, Transform, { pos: [0, 0, 0] }).unwrap();
       for (const tangentSign of [-1, 1]) {
       for (const [filter, shadowFilter] of [['pcf3', DirectionalShadowFilterValue.pcf3], ['pcf5', DirectionalShadowFilterValue.pcf5]]) {
@@ -158,13 +158,13 @@ try {
       }
       // Real static Standard spheres touch the flat author cells or leave
       // a five-centimetre gap. Filter changes keep their World pose fixed.
-      const contactHandle=h.app.world.sharedRefs.acquire('TerrainAsset',grazingRoot);
-      h.app.world.set(h.subjects.terrain,Terrain,{asset:contactHandle,forcedLod:0}).unwrap();h.app.world.sharedRefs.release(contactHandle).unwrap();
+      const contactHandle = (await h.app.assets.load(AssetGuid.derive(definePackageId('019fcaf0-0000-7000-8000-000000000001'), 'terrain'), 'terrain')).unwrap();
+      h.app.world.set(h.subjects.terrain,Terrain,{asset:contactHandle,forcedLod:0}).unwrap();h.app.world.assets.release(contactHandle).unwrap();
       h.app.world.set(h.subjects.terrain,Transform,{pos:[0,0,0]}).unwrap();
       h.app.world.set(light,DirectionalLight,{direction:[0,-1,0],intensity:3,mapSize:512,castShadow:true}).unwrap();
       for(const gap of [0,0.05]) {
-        const mesh=h.app.world.sharedRefs.acquire('MeshAsset',createSphereGeometry(1,24,16).unwrap());
-        const material=h.app.world.sharedRefs.acquire('MaterialAsset',Materials.standard({baseColor:[0.8,0.2,0.04,1],roughness:0.8}));
+        const mesh=h.app.world.assets.create(createSphereGeometry(1,24,16).unwrap()).unwrap();
+        const material=h.app.world.assets.create(Materials.standard({baseColor:[0.8,0.2,0.04,1],roughness:0.8})).unwrap();
         const caster=h.app.world.spawn(
           {component:Transform,data:{pos:[1.5,1+gap,3.5]}},
           {component:Mobility,data:{kind:MobilityKindValue.static}},
@@ -172,7 +172,7 @@ try {
           {component:MeshRenderer,data:{materials:[material]}},
           {component:ShadowParticipation,data:{cast:true,receive:false}},
         ).unwrap();
-        h.app.world.sharedRefs.release(mesh).unwrap();h.app.world.sharedRefs.release(material).unwrap();
+        h.app.world.assets.release(mesh).unwrap();h.app.world.assets.release(material).unwrap();
         try {
           for(const [filter,shadowFilter] of [['pcf3',DirectionalShadowFilterValue.pcf3],['pcf5',DirectionalShadowFilterValue.pcf5]]) {
             h.app.world.set(light,DirectionalLight,{shadowFilter}).unwrap();

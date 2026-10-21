@@ -1,3 +1,5 @@
+import { AssetRegistry } from '@forgeax/engine/assets-runtime';
+import { animationClipContribution } from '@forgeax/engine/animation';
 import {
   AnimatedBy,
   AnimationPlayer,
@@ -19,13 +21,15 @@ import { vi } from 'vitest';
 import { PLAYER_RIG } from '../../player/player-rig.ts';
 
 const SceneInstance = defineComponent('SceneInstance', {
-  source: { type: 'shared<SceneAsset>' },
+  source: { type: 'asset<scene>' },
   mapping: { type: 'array<entity>' },
   state: { type: 'unique<SceneInstanceState>' },
 });
 
 export async function sceneWorldFixture() {
-  const world = new World();
+  const assets = new AssetRegistry();
+  assets.installDecoder(animationClipContribution.kind, animationClipContribution.decoder);
+  const world = new World({ assets });
   for (const component of [
     SceneInstance,
     ChildOf,
@@ -64,36 +68,35 @@ export async function sceneWorldFixture() {
     },
   };
   const ctx = await createWorldContext(world);
-  return { world, ctx, asset };
+  return { world, ctx, asset, assets };
 }
 
 export async function pluginFixture() {
-  const { world, ctx, asset } = await sceneWorldFixture();
-  const source = world.allocSharedRef('SceneAsset', asset);
+  const { world, ctx, asset, assets } = await sceneWorldFixture();
+  const source = assets.create(asset).unwrap();
   const root = worldInstantiateSceneAsset(
     world,
     source,
     asset,
     undefined,
     new Set(),
-    [],
     undefined,
     'scene/showcase',
   ).unwrap();
-  world.sharedRefs.release(source);
+  assets.release(source);
   const entity = (key: string) =>
     worldResolveSceneEntity(world, root, sceneEntity('scene/showcase', key)).unwrap();
   const clip: AnimationClip = { kind: 'animation-clip', duration: 1, channels: [] };
-  const loadByGuid = vi.fn(async () => ({ ok: true as const, value: clip }));
+  const load = vi.spyOn(assets, 'load').mockImplementation(async () => assets.create(clip));
   const unregisterRead = vi.fn();
   const registerRead = vi.fn(() => unregisterRead);
   const pointerLock = vi.fn();
   ctx.provide('physics', {} as never);
   ctx.provide('gameScene', { root, asset });
   ctx.provide('gameHost', {
-    assets: { loadByGuid },
+    assets,
     gameProjection: { registerRead },
     setPointerLockAllowed: pointerLock,
   } as never);
-  return { world, ctx, entity, loadByGuid, registerRead, unregisterRead, pointerLock };
+  return { world, ctx, assets, entity, load, registerRead, unregisterRead, pointerLock };
 }

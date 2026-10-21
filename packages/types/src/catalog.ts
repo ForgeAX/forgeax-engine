@@ -14,6 +14,7 @@ import type {
   SourceOverrideMap,
   TopologyDiff,
 } from './asset-producer';
+import { canonicalJson } from './canonical-json.js';
 import { err, ok, type Result } from './result';
 
 export type {
@@ -418,17 +419,6 @@ export function checkCatalogRevisionContinuity(
   return undefined;
 }
 
-function canonicalCatalogValue(value: unknown): string {
-  if (Array.isArray(value)) return `[${value.map(canonicalCatalogValue).join(',')}]`;
-  if (isRecord(value)) {
-    return `{${Object.entries(value)
-      .sort(([left], [right]) => left.localeCompare(right))
-      .map(([key, child]) => `${JSON.stringify(key)}:${canonicalCatalogValue(child)}`)
-      .join(',')}}`;
-  }
-  return JSON.stringify(value) ?? 'null';
-}
-
 function digestPart(value: string, seed: bigint): string {
   let hash = seed;
   for (let index = 0; index < value.length; index += 1) {
@@ -446,7 +436,7 @@ const CATALOG_DIGEST_SEEDS = [
 ];
 
 function catalogDigest(value: unknown): string {
-  const canonical = canonicalCatalogValue(value);
+  const canonical = canonicalJson(value);
   return `sha256:${CATALOG_DIGEST_SEEDS.map((seed) => digestPart(canonical, seed)).join('')}`;
 }
 

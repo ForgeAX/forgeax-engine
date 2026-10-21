@@ -1,3 +1,5 @@
+import { AssetRegistry } from '@forgeax/engine-assets-runtime';
+import { runtimeAssets } from '@forgeax/engine-assets-runtime/internal';
 import { World } from '@forgeax/engine-ecs';
 import { createBoxGeometry } from '@forgeax/engine-geometry';
 import { mat4, vec3 } from '@forgeax/engine-math';
@@ -7,22 +9,28 @@ import { rhi } from '@forgeax/engine-rhi-webgpu';
 import { createMaterialShaderProgram, type MaterialShaderArtifact } from '@forgeax/engine-shader';
 import { describe, expect, it, vi } from 'vitest';
 import { GpuResidencyCache } from '../device/gpu-residency';
-import { gpuDrivenMaterialArtifactKey } from '../extract/gpu-driven';
-import { BatchTopology, batchLodLevelCount } from '../gpu-driven/batch-topology';
+import { batchLodLevelCount } from '../gpu-driven/batch-layout';
+import { BatchTopology } from '../gpu-driven/batch-topology';
 import { FilteredPlanContributionOwner } from '../gpu-driven/filtered-plan-contributions';
-import { materialBindingKey } from '../gpu-driven/material-bindings';
 import { GpuDrivenProduction } from '../gpu-driven/production-raster';
-import { type FilteredProductionPlan, filteredPlan } from '../gpu-driven/production-raster-prepare';
+import type { FilteredProductionPlan } from '../gpu-driven/production-raster-prepare';
 import { shadowViewIdentityKey } from '../gpu-driven/shadow-views';
 import { GPU_DRIVEN_VIEW_WGSL } from '../gpu-driven/view-gpu';
 import { GpuScene } from '../gpu-scene';
+import { MaterialResource } from '../material-resource';
 import { buildGpuDrivenPbrInstancesBindGroupLayout } from '../pbr-pipeline';
-import { makeZeroCameraFallbackSnapshot, worldEntityKey } from '../record/frame-snapshot';
+import { worldRenderResources } from '../publication/resource-scope';
+import { makeZeroCameraFallbackSnapshot } from '../record/frame-snapshot';
 import { recordGpuDrivenShadowIndirect } from '../record/shadow-pass';
 import type { RenderPipelineFrame } from '../render-pipeline';
 import type { RenderableSnapshot } from '../render-system-extract';
 import { RenderScene } from '../scene/render-scene';
-import { preparedPbrSnapshot, standardPbrInputs } from './gpu-driven-production-fixture';
+import {
+  admitGpuFixture,
+  preparedPbrSnapshot,
+  standardPbrInputs,
+} from './gpu-driven-production-fixture';
+import { duplicateMeshVertices, editResidentMesh } from './managed-mesh-edit';
 import { nativeDeviceFixture } from './native-device-fixture';
 
 // A geometry witness, not a lighting surrogate: real production admission,
@@ -39,30 +47,25 @@ async function fixture(mergedSources = false) {
     requiredFeatures: ['depth32float-stencil8'],
   });
   const store = new GpuResidencyCache();
-  const configure = () =>
-    store.configureGpuDevice(
-      device,
-      undefined,
-      () => {
-        throw new Error('Unused cubemap registration');
-      },
-      device.caps,
-    );
+  const configure = () => store.configureGpuDevice(device, undefined, device.caps);
   configure();
-  const world = new World();
+  const assets = new AssetRegistry();
+  const world = new World({ assets });
   const pods = [-0.5, 0.5].map((x) => {
     const pod = createBoxGeometry(0.5, 0.5, 0.5).unwrap();
     const vertices = new Float32Array(pod.vertices);
     for (let i = 0; i < vertices.length; i += 12) vertices[i] = (vertices[i] ?? 0) + x;
-    return { ...pod, vertices };
+    const position = new Float32Array(defined(pod.attributes.position) as Float32Array);
+    for (let i = 0; i < position.length; i += 3) position[i] = (position[i] ?? 0) + x;
+    return { ...pod, vertices, attributes: { ...pod.attributes, position } };
   });
-  const handles = pods.map((pod) => world.allocSharedRef('MeshAsset', pod));
+  const handles = pods.map((pod) => assets.create(pod).unwrap());
   const meshes = pods.map((pod, index) =>
-    store.ensureResident(defined(handles[index]), pod, world).unwrap(),
+    store.ensureResident(defined(handles[index]), pod, worldRenderResources(world)).unwrap(),
   );
   const sharedLodMesh = mergedSources
     ? store
-        .ensureResident(defined(handles[0]), defined(pods[0]), world, [
+        .ensureResident(defined(handles[0]), defined(pods[0]), worldRenderResources(world), [
           {
             ...defined(pods[0]),
             indices: defined(pods[0]?.indices).slice(0, 12),
@@ -75,17 +78,19 @@ async function fixture(mergedSources = false) {
         .unwrap()
     : undefined;
   const projection = new RenderScene();
+  let sharedMaterial: MaterialResource | undefined;
   const snapshots = handles.map((handle, index): RenderableSnapshot => {
-    const material = {
+    const material = new MaterialResource({
       baseColor: vec3.create(1, 1, 1),
       metallic: 0,
       roughness: 1,
       materialHandle: index + 100,
-    };
+      passes: [],
+    });
     const matrix = mat4.identity(mat4.create());
     const transforms = new Float32Array(8 * 16);
     for (let ordinal = 0; ordinal < 8; ordinal++) transforms.set(matrix, ordinal * 16);
-    return preparedPbrSnapshot({
+    const prepared = preparedPbrSnapshot({
       worldId: 0,
       entityKey: index + 1,
       assetHandle: Number(mergedSources ? defined(handles[0]) : handle),
@@ -108,12 +113,13 @@ async function fixture(mergedSources = false) {
           topology: 'triangle-list',
           pipelineClass: 'fixture',
           materialResourceClass: 'fixture',
-          ...(mergedSources
-            ? { lodRanges: [{ first: index * 12, count: 12, baseVertex: 0 }] }
-            : {}),
+          ...(mergedSources ? { lodRanges: [{ first: 0, count: 12, baseVertex: 0 }] } : {}),
         },
       ],
     });
+    if (!mergedSources) return prepared;
+    sharedMaterial ??= prepared.material;
+    return { ...prepared, material: sharedMaterial, materials: [sharedMaterial] };
   });
   const delta = projection.apply(
     snapshots.map((snapshot) => ({
@@ -128,7 +134,9 @@ async function fixture(mergedSources = false) {
   availability.scene.sync(delta).unwrap();
   const topology = new BatchTopology();
   topology.rebuild(projection.slotsSnapshot());
-  expect(topology.plan().batches).toHaveLength(2);
+  expect(topology.query(topology.sourcePlan(), undefined).batches).toHaveLength(
+    mergedSources ? 1 : 2,
+  );
   const shader = (await rhi.createShaderModule(device, { code: WITNESS_WGSL })).unwrap();
   const selector = (await rhi.createShaderModule(device, { code: GPU_DRIVEN_VIEW_WGSL })).unwrap();
   const viewLayout = device
@@ -176,11 +184,11 @@ async function fixture(mergedSources = false) {
     .unwrap();
   const programs = standardPbrInputs(device, shader, viewLayout);
   const artifact = {
-    ...programs.standardPbrArtifact,
+    ...programs.materialArtifact,
     program: createMaterialShaderProgram(WITNESS_WGSL),
   } as MaterialShaderArtifact;
   const state = {
-    ...defined(programs.standardPbrPipelineState),
+    ...defined(programs.materialPipelineState),
     pbrPipelineLayout: pipelineLayout,
     gpuDrivenPbrPipelineLayout: pipelineLayout,
     meshBindGroupLayout: meshLayout,
@@ -197,11 +205,11 @@ async function fixture(mergedSources = false) {
       .map((slot, index) => [slot.slot, sharedLodMesh ?? defined(meshes[index])]),
   );
   const input = {
-    standardPbrArtifact: artifact,
-    standardPbrPipelineState: state,
+    materialArtifact: artifact,
+    materialPipelineState: state,
     scene: {
       scene: availability.scene,
-      plan: topology.plan(),
+      plan: topology.query(topology.sourcePlan(), undefined),
       slots: projection.slotsSnapshot(),
       slotAt: projection.slotAt,
     },
@@ -212,17 +220,18 @@ async function fixture(mergedSources = false) {
   };
   const prepare = () => {
     input.meshResidencyEpoch = store.meshResidencyEpoch;
-    const frame = production.prepare(input).unwrap();
+    const frame = production.prepare(admitGpuFixture(input)).unwrap();
     if (frame === undefined) throw new Error('Expected admitted prepared frame');
     return frame;
   };
   const unrelatedUpload = () => {
     const pod = createBoxGeometry(3, 3, 3).unwrap(),
-      handle = world.allocSharedRef('MeshAsset', pod);
-    return store.ensureResident(handle, pod, world).unwrap();
+      handle = assets.create(pod).unwrap();
+    return store.ensureResident(handle, pod, worldRenderResources(world)).unwrap();
   };
   return {
     device,
+    assets,
     native,
     viewGroup,
     materialGroup,
@@ -246,6 +255,7 @@ async function fixture(mergedSources = false) {
       production.dispose();
       availability.scene.dispose();
       store.destroyAll();
+      assets.dispose();
       device.destroyBuffer(uniforms);
       native.destroy();
     },
@@ -346,8 +356,14 @@ async function pixels(
         try {
           main.encode(f.viewGroup, pass, resources, {
             ...currentFrame.standardPbrFrameResources,
-            materialBindGroups: [f.materialGroup],
-            materialSlotIndicesByEntity: new Map(),
+            prepareMaterialBinding: (
+              (groups: readonly (import('@forgeax/engine-rhi').BindGroup | undefined)[]) =>
+              (slot: number) => {
+                const group = groups[slot];
+                return group === undefined ? undefined : { group, byteOffset: slot * 1280 };
+              }
+            )([f.materialGroup]),
+            materialSlotIndicesByBinding: new Map(),
             ...(stockRecording
               ? {
                   bundleDescriptor: {
@@ -416,8 +432,11 @@ async function pixels(
     recordedDraws.length = 0;
     const encoder = f.device.createCommandEncoder().unwrap();
     compiled.execute({ encoder } as RenderPipelineFrame).unwrap();
+    submitted._sealResourceReads().unwrap();
     f.device.queue.submit([encoder.finish().unwrap()]).unwrap();
-    await f.device.queue.onSubmittedWorkDone();
+    const completed = f.device.queue.onSubmittedWorkDone();
+    submitted._trackSubmittedWork(completed);
+    await completed;
     submitted._commitResourceReplacement();
     const mapped = (await readback.mapAsync(1)).unwrap();
     try {
@@ -485,12 +504,14 @@ describe('GPU-driven resident mesh epochs on native Dawn', () => {
       const handle = defined(f.handles[0]),
         pod = defined(f.pods[0]),
         old = defined(f.meshes[0]);
-      f.store.evictMesh(handle, f.world);
+      f.store.evictMesh(handle, worldRenderResources(f.world));
       expect(old.vertexBuffer.isDestroyed).toBe(true);
       const vertices = new Float32Array(pod.vertices);
       for (let index = 0; index < vertices.length; index += 12)
         vertices[index] = (vertices[index] ?? 0) + 4;
-      const changed = f.store.ensureResident(handle, { ...pod, vertices }, f.world).unwrap();
+      const changed = f.store
+        .ensureResident(handle, { ...pod, vertices }, worldRenderResources(f.world))
+        .unwrap();
       f.bySlot.set(0, changed);
       const moved = await read();
       expect(moved).not.toEqual(original);
@@ -499,9 +520,9 @@ describe('GPU-driven resident mesh epochs on native Dawn', () => {
       );
       expect(retained.compilations).toBe(1);
       expect(f.production.inspect().preparedBundleBuilds).toBeGreaterThan(firstBundleBuilds);
-      f.store.evictMesh(handle, f.world);
+      f.store.evictMesh(handle, worldRenderResources(f.world));
       expect(changed.vertexBuffer.isDestroyed).toBe(true);
-      const restored = f.store.ensureResident(handle, pod, f.world).unwrap();
+      const restored = f.store.ensureResident(handle, pod, worldRenderResources(f.world)).unwrap();
       f.bySlot.set(0, restored);
       expect(await read()).toEqual(original);
       expect(retained.compilations).toBe(1);
@@ -518,16 +539,6 @@ describe('GPU-driven resident mesh epochs on native Dawn', () => {
     const native = f.native;
     native.pushErrorScope('validation');
     try {
-      // Acquire private writable buffers before exercising exclusive in-place writes.
-      const initialMesh = defined(f.pods[0]);
-      f.store.updateMesh(
-        defined(f.handles[0]),
-        initialMesh.vertices,
-        new Uint16Array(defined(initialMesh.indices)),
-        f.world,
-      );
-      f.meshes[0] = defined(f.store.getMeshGpuHandles(defined(f.handles[0]), f.world));
-      f.bySlot.set(0, f.meshes[0]);
       const original = await pixels(f);
       expect(original.filter((v) => v !== 0).length).toBeGreaterThan(0);
       f.unrelatedUpload();
@@ -537,10 +548,23 @@ describe('GPU-driven resident mesh epochs on native Dawn', () => {
         pod = defined(f.pods[0]),
         old = defined(f.meshes[0]);
       const firstEpoch = old.contentEpoch;
-      const vertices = new Float32Array(pod.vertices);
-      for (let i = 0; i < vertices.length; i += 12) vertices[i] = (vertices[i] ?? 0) + 4;
-      f.store.updateMesh(handle, vertices, new Uint16Array(defined(pod.indices)), f.world);
-      expect(f.store.getMeshGpuHandles(handle, f.world)).toBe(old);
+      const position = pod.attributes.position;
+      if (!(position instanceof Float32Array)) throw new Error('Expected box position attribute');
+      const movedPosition = new Float32Array(position);
+      for (let index = 0; index < movedPosition.length; index += 3)
+        movedPosition[index] = (movedPosition[index] ?? 0) + 4;
+      editResidentMesh(
+        f.assets,
+        f.store,
+        handle,
+        () => {
+          f.assets
+            .writeRange(handle, { attribute: 'position', first: 0, values: movedPosition })
+            .unwrap();
+        },
+        worldRenderResources(f.world),
+      );
+      expect(f.store.getMeshGpuHandles(handle, worldRenderResources(f.world))).toBe(old);
       expect(old.contentEpoch).toBeGreaterThan(firstEpoch);
       const writtenEpoch = old.contentEpoch;
       const moved = await pixels(f);
@@ -549,23 +573,40 @@ describe('GPU-driven resident mesh epochs on native Dawn', () => {
         original.filter((v) => v !== 0).length,
       );
       expect(f.production.inspect().preparedBatchBuilds).toBe(1);
-      const grown = new Float32Array(vertices.length * 2);
-      grown.set(vertices);
-      grown.set(vertices, vertices.length);
-      f.store.updateMesh(handle, grown, new Uint16Array(defined(pod.indices)), f.world);
-      const replacement = defined(f.store.getMeshGpuHandles(handle, f.world));
+      const accepted = runtimeAssets(f.assets)
+        .borrow<import('@forgeax/engine-types').MeshAsset>(handle)
+        .unwrap();
+      editResidentMesh(
+        f.assets,
+        f.store,
+        handle,
+        () => {
+          f.assets.replace(handle, duplicateMeshVertices(accepted)).unwrap();
+        },
+        worldRenderResources(f.world),
+      );
+      const replacement = defined(f.store.getMeshGpuHandles(handle, worldRenderResources(f.world)));
       expect(replacement).not.toBe(old);
       expect(replacement.contentEpoch).toBeGreaterThan(writtenEpoch);
       expect(replacement.vertexBuffer).not.toBe(old.vertexBuffer);
       expect(old.vertexBuffer.isDestroyed).toBe(true);
-      expect(old.indexBuffer?.isDestroyed).toBe(true);
+      expect(replacement.indexBuffer).toBe(old.indexBuffer);
+      expect(old.indexBuffer?.isDestroyed).toBe(false);
       f.bySlot.set(0, replacement);
       expect(await pixels(f)).toEqual(moved);
       expect(f.production.inspect().preparedBatchBuilds).toBe(1);
-      f.store.evictMesh(handle, f.world);
-      expect(f.store.getMeshGpuHandles(handle, f.world)).toBeUndefined();
+      f.store.evictMesh(handle, worldRenderResources(f.world));
+      expect(f.store.getMeshGpuHandles(handle, worldRenderResources(f.world))).toBeUndefined();
       expect(replacement.vertexBuffer.isDestroyed).toBe(true);
-      const restored = f.store.ensureResident(handle, pod, f.world).unwrap();
+      const restored = editResidentMesh(
+        f.assets,
+        f.store,
+        handle,
+        () => {
+          f.assets.replace(handle, pod).unwrap();
+        },
+        worldRenderResources(f.world),
+      );
       expect(restored).not.toBe(replacement);
       expect(restored.contentEpoch).toBeGreaterThan(replacement.contentEpoch);
       f.bySlot.set(0, restored);
@@ -575,7 +616,7 @@ describe('GPU-driven resident mesh epochs on native Dawn', () => {
       // Residency destruction must clear the owner map before fresh admission.
       const restoredEpoch = restored.contentEpoch;
       f.configure();
-      expect(f.store.getMeshGpuHandles(handle, f.world)).toBe(restored);
+      expect(f.store.getMeshGpuHandles(handle, worldRenderResources(f.world))).toBe(restored);
       expect(restored.contentEpoch).toBe(restoredEpoch);
       expect(await pixels(f)).toEqual(original);
       expect(f.production.inspect().preparedBatchBuilds).toBe(0);
@@ -585,13 +626,15 @@ describe('GPU-driven resident mesh epochs on native Dawn', () => {
       const beforeDestroy = [...f.bySlot.values()];
       f.store.destroyAll();
       for (const ownedHandle of f.handles)
-        expect(f.store.getMeshGpuHandles(ownedHandle, f.world)).toBeUndefined();
+        expect(
+          f.store.getMeshGpuHandles(ownedHandle, worldRenderResources(f.world)),
+        ).toBeUndefined();
       for (const entry of beforeDestroy) expect(entry.vertexBuffer.isDestroyed).toBe(true);
       f.bySlot.clear();
       f.configure();
       for (let i = 0; i < f.pods.length; i++) {
         const entry = f.store
-          .ensureResident(defined(f.handles[i]), defined(f.pods[i]), f.world)
+          .ensureResident(defined(f.handles[i]), defined(f.pods[i]), worldRenderResources(f.world))
           .unwrap();
         expect(entry).not.toBe(beforeDestroy[i]);
         expect(entry.contentEpoch).toBeGreaterThan(defined(beforeDestroy[i]).contentEpoch);
@@ -624,7 +667,9 @@ describe('GPU-driven resident mesh epochs on native Dawn', () => {
         indices: defined(pod.indices).slice(0, 12),
         submeshes: pod.submeshes.map((submesh) => ({ ...submesh, indexCount: 12 })),
       };
-      const lodMesh = f.store.ensureResident(handle, pod, f.world, [lower]).unwrap();
+      const lodMesh = f.store
+        .ensureResident(handle, pod, worldRenderResources(f.world), [lower])
+        .unwrap();
       f.bySlot.set(0, lodMesh);
       const delta = f.projection.apply([
         {
@@ -642,12 +687,14 @@ describe('GPU-driven resident mesh epochs on native Dawn', () => {
         const index = f.handles.findIndex((value) => Number(value) === slot.snapshot.assetHandle);
         f.bySlot.set(
           slot.slot,
-          defined(f.store.getMeshGpuHandles(defined(f.handles[index]), f.world)),
+          defined(
+            f.store.getMeshGpuHandles(defined(f.handles[index]), worldRenderResources(f.world)),
+          ),
         );
       }
       f.input.scene = {
         ...f.input.scene,
-        plan: f.topology.plan(),
+        plan: f.topology.query(f.topology.sourcePlan(), undefined),
         slots: f.projection.slotsSnapshot(),
       };
       const lodWorld = new Float32Array(camera.world);
@@ -677,7 +724,7 @@ describe('GPU-driven resident mesh epochs on native Dawn', () => {
         expect(replacementDevice.device).not.toBe(f.device);
         const replacementEntry = replacementDevice.store.getMeshGpuHandles(
           defined(replacementDevice.handles[0]),
-          replacementDevice.world,
+          worldRenderResources(replacementDevice.world),
         );
         expect(replacementEntry).toBe(replacementDevice.meshes[0]);
         expect(replacementEntry).not.toBe(restored);
@@ -701,7 +748,7 @@ describe('incremental filtered contributions on native Dawn', () => {
     const f = await fixture(true),
       native = f.native;
     native.pushErrorScope('validation');
-    const bindings = new Map<string, string>();
+    let bindings = new Map<string, string>();
     const reference = new GpuDrivenProduction(f.device, {
       createShaderModule: () => ok(f.selector),
     });
@@ -711,22 +758,24 @@ describe('incremental filtered contributions on native Dawn', () => {
     const prepareInput = () => ({
       ...f.input,
       ...overrides,
+      materialBindingClasses: bindings,
       meshResidencyEpoch: f.store.meshResidencyEpoch,
     });
     const witness = async () => {
-      const actual = defined(f.production.prepare(prepareInput()).unwrap());
+      const actual = defined(f.production.prepare(admitGpuFixture(prepareInput())).unwrap());
       const commands: number[] = [];
       const value = await pixels(f, actual, commands, f.production.inspect().indirectDrawCount);
       // Reference traverses every prepared source contribution. Only this
       // synchronous prepare is instrumented; candidate uses its real cache owner.
+      const fullUpdate = FilteredPlanContributionOwner.prototype.update;
       const spy = vi
         .spyOn(FilteredPlanContributionOwner.prototype, 'update')
-        .mockImplementation((prepared, _scope, claims, materialBindings, profile) =>
-          filteredPlan(prepared, claims, materialBindings, profile),
+        .mockImplementation((prepared, materialBindings, profile) =>
+          fullUpdate.call(new FilteredPlanContributionOwner(), prepared, materialBindings, profile),
         );
       let old: ReturnType<GpuDrivenProduction['prepare']>;
       try {
-        old = reference.prepare(prepareInput());
+        old = reference.prepare(admitGpuFixture(prepareInput()));
       } finally {
         spy.mockRestore();
       }
@@ -743,9 +792,11 @@ describe('incremental filtered contributions on native Dawn', () => {
         ),
       ).toEqual(value);
       expect(commands).toEqual(oldCommands);
-      expect(actual.drawKeys).toEqual(oldFrame.drawKeys);
-      expect(actual.shadowDrawKeys).toEqual(oldFrame.shadowDrawKeys);
-      expect(actual.ownsAllDrawItems).toBe(oldFrame.ownsAllDrawItems);
+      for (const slot of f.projection.slotsSnapshot())
+        for (const [index, draw] of (slot.snapshot.gpuDrivenDraws ?? []).entries())
+          expect(actual.selection.owns(slot.snapshot, draw, index)).toBe(
+            oldFrame.selection.owns(slot.snapshot, draw, index),
+          );
       return { value, commands, frame: actual };
     };
     const publish = (changes: Parameters<RenderScene['apply']>[0]) => {
@@ -754,18 +805,22 @@ describe('incremental filtered contributions on native Dawn', () => {
       f.topology.apply(delta);
       f.bySlot.clear();
       for (const slot of f.projection.slotsSnapshot())
-        f.bySlot.set(slot.slot, defined(f.store.getMeshGpuHandles(defined(f.handles[0]), f.world)));
+        f.bySlot.set(
+          slot.slot,
+          defined(f.store.getMeshGpuHandles(defined(f.handles[0]), worldRenderResources(f.world))),
+        );
       f.input.scene = {
         ...f.input.scene,
-        plan: f.topology.plan(),
+        plan: f.topology.query(f.topology.sourcePlan(), undefined),
         slots: f.projection.slotsSnapshot(),
       };
     };
     try {
       const initial = await witness();
       expect(initial.value.some((value) => value !== 0)).toBe(true);
-      // Two actual topology sources merge after their physical LOD projection.
-      expect(f.input.scene.plan.batches).toHaveLength(2);
+      // Both author sources share one geometry/material binding.
+      expect(f.projection.slotsSnapshot()).toHaveLength(2);
+      expect(f.input.scene.plan.batches).toHaveLength(1);
       expect(f.production.inspect().batchCount).toBe(1);
       expect(
         initial.commands.filter((_, index) => index % 2 === 1).reduce((a, b) => a + b, 0),
@@ -792,30 +847,58 @@ describe('incremental filtered contributions on native Dawn', () => {
         12,
       );
       // Changing effective binding values in the same mutable Map splits and rejoins groups.
-      bindings.set(
-        materialBindingKey(first, first.material.materialHandle ?? -1),
-        'distinct-current-binding',
-      );
+      bindings = new Map(bindings);
+      bindings.set(`${first.worldId}:${first.entityKey}`, 'distinct-current-binding');
       await witness();
       expect(f.production.inspect().batchCount).toBe(2);
-      bindings.clear();
+      bindings = new Map();
       await witness();
       expect(f.production.inspect().batchCount).toBe(1);
-      overrides = {
-        ...overrides,
-        shadowCasterMembership: f.projection.slotsSnapshot().map((slot) => ({
-          worldEntity: worldEntityKey(slot.snapshot.worldId, slot.snapshot.entityKey),
-          renderableIndex: slot.slot,
-          drawItemIndex: 0,
-          materialHandle: slot.snapshot.material.materialHandle ?? -1,
-          passIndex: 0,
-          gpuDrivenEligible: slot.snapshot.entityKey === first.entityKey,
-        })),
-      };
+      const shadowMaterial = first.material;
+      shadowMaterial.adopt({
+        ...shadowMaterial.snapshot,
+        passes: [
+          ...shadowMaterial.snapshot.passes,
+          {
+            name: 'shadow',
+            program: { module: 'forgeax::default-standard-pbr' },
+            renderState: { tags: { LightMode: 'ShadowCaster' } },
+          },
+        ],
+        materialProgramKeys: {
+          ...shadowMaterial.snapshot.materialProgramKeys,
+          shadow: 'forgeax::default-standard-pbr',
+        },
+      });
+      f.scene.sync({ ...f.projection.apply([]), materialUpdates: [shadowMaterial] }).unwrap();
+      overrides = { ...overrides, shadowViews: true };
       const claims = await witness();
-      expect(claims.frame.shadowDrawKeys?.size).toBe(1);
-      overrides = { ...overrides, shadowCasterMembership: [] };
-      expect((await witness()).frame.shadowDrawKeys?.size).toBe(0);
+      const claimFrame = defined(f.production.prepare(admitGpuFixture(prepareInput())).unwrap());
+      const shadowIdentity = { kind: 'directional' as const, index: 0, layer: 'static' as const };
+      const firstSlot = defined(
+        f.projection.slotsSnapshot().find((slot) => slot.snapshot.entityKey === first.entityKey),
+      );
+      const countShadowSources = () => {
+        const selection = defined(claimFrame.shadowViewPool?.submission(shadowIdentity)).selection;
+        return f.projection
+          .slotsSnapshot()
+          .filter((slot) => selection.ownsSlot(slot.snapshot, 0, slot.slot, slot.generation))
+          .length;
+      };
+      defined(claimFrame.updateShadowViews)([
+        {
+          identity: shadowIdentity,
+          planes: new Float32Array(24),
+          candidatePrimitiveIndices: [firstSlot.slot],
+        },
+      ]).unwrap();
+      expect(countShadowSources()).toBe(1);
+      defined(claimFrame.updateShadowViews)([
+        { identity: shadowIdentity, planes: new Float32Array(24), candidatePrimitiveIndices: [] },
+      ]).unwrap();
+      expect(countShadowSources()).toBe(0);
+      expect(claims.value).toBeDefined();
+      claimFrame._abortResourceReplacement?.();
       publish([{ kind: 'remove', worldId: first.worldId, entityKey: first.entityKey }]);
       expect(
         (await witness()).commands.filter((_, index) => index % 2 === 1).reduce((a, b) => a + b, 0),
@@ -840,7 +923,7 @@ describe('incremental filtered contributions on native Dawn', () => {
       expect(f.production.inspect().preparedBatchBuilds).toBe(0);
       const reset = new GpuDrivenProduction(f.device, { createShaderModule: () => ok(f.selector) });
       try {
-        const resetFrame = defined(reset.prepare(prepareInput()).unwrap()),
+        const resetFrame = defined(reset.prepare(admitGpuFixture(prepareInput())).unwrap()),
           resetCommands: number[] = [];
         expect(
           await pixels(
@@ -873,7 +956,7 @@ it('reuses one compiled raster across binding order, unused keys and live split/
   try {
     const firstSource = defined(f.snapshots[0]);
     const bindings = new Map<string, string>([
-      [materialBindingKey(firstSource, firstSource.material.materialHandle ?? -1), 'split-binding'],
+      [`${firstSource.worldId}:${firstSource.entityKey}`, 'split-binding'],
     ]);
     const signatures: string[] = [];
     let baseline: number[] | undefined;
@@ -882,16 +965,13 @@ it('reuses one compiled raster across binding order, unused keys and live split/
       if (sequence === 2) bindings.clear();
       if (sequence === 3) {
         bindings.set('99:9999:12345', 'changed-unused');
-        bindings.set(
-          materialBindingKey(firstSource, firstSource.material.materialHandle ?? -1),
-          'split-again',
-        );
+        bindings.set(`${firstSource.worldId}:${firstSource.entityKey}`, 'split-again');
       }
       if (sequence === 4) bindings.delete('99:9999:12345');
       if (sequence === 5) bindings.clear();
-      const materialBindingClasses = sequence === 4 ? new Map([...bindings].reverse()) : bindings;
+      const materialBindingClasses = new Map(sequence === 4 ? [...bindings].reverse() : bindings);
       const input = { ...f.input, materialBindingClasses };
-      const frame = defined(f.production.prepare(input).unwrap());
+      const frame = defined(f.production.prepare(admitGpuFixture(input)).unwrap());
       const commands: number[] = [];
       const count = f.production.inspect().indirectDrawCount;
       expect(f.production.inspect().batchCount).toBe(sequence === 2 || sequence === 5 ? 1 : 2);
@@ -905,7 +985,7 @@ it('reuses one compiled raster across binding order, unused keys and live split/
       expect(
         commands.filter((_, index) => index % 2 === 1).reduce((sum, count) => sum + count, 0),
       ).toBe(16);
-      const fresh = defined(reference.prepare(input).unwrap());
+      const fresh = defined(reference.prepare(admitGpuFixture(input)).unwrap());
       const freshCommands: number[] = [];
       expect(
         await pixels(
@@ -936,18 +1016,29 @@ it('retains main pipelines and shadow depth across unique receipt churn and loca
   const f = await fixture();
   const retained: RetainedWitness = {};
   let production = f.production;
-  const main = f.input.standardPbrArtifact;
+  const main = f.input.materialArtifact;
   const receipt = defined(main.receipt);
-  const rows = f.snapshots.map((snapshot, index) => ({
-    ...snapshot,
-    gpuDrivenDraws: defined(snapshot.gpuDrivenDraws).map((draw) => ({
-      ...draw,
-      prepared: {
-        ...defined(draw.prepared),
-        receiptIdentity: `${receipt.receiptIdentity}:${index}`,
-      },
-    })),
-  }));
+  const rows = f.snapshots.map((snapshot, index) => {
+    const id = `fixture::receipt-churn-${index}`;
+    snapshot.material.adopt({
+      ...snapshot.material.snapshot,
+      materialShaderId: id,
+      passes: [
+        {
+          name: 'forward',
+          program: { module: id },
+          renderState: { tags: { LightMode: 'Forward' } },
+        },
+        {
+          name: 'shadow',
+          program: { module: id },
+          renderState: { tags: { LightMode: 'ShadowCaster' } },
+        },
+      ],
+      materialProgramKeys: { forward: id, shadow: id },
+    });
+    return snapshot;
+  });
   const delta = f.projection.apply(
     rows.map((snapshot) => ({
       kind: 'update' as const,
@@ -959,20 +1050,14 @@ it('retains main pipelines and shadow depth across unique receipt churn and loca
   f.scene.sync(delta).unwrap();
   f.topology.apply(delta);
   const materials = new Map(
-    f.topology.plan().batches.map((batch, index) => {
-      const prepared = defined(batch.prepared);
-      return [
-        gpuDrivenMaterialArtifactKey({
-          ...prepared.identity,
-          receiptIdentity: prepared.receiptIdentity,
-          receiptGeneration: prepared.receiptGeneration,
-        }),
-        {
-          ...main,
-          receipt: { ...receipt, receiptIdentity: `${receipt.receiptIdentity}:${index}` },
-        },
-      ];
-    }),
+    rows.map((snapshot, index) => [
+      defined(snapshot.material.snapshot.materialShaderId),
+      {
+        ...main,
+        material: defined(snapshot.material.snapshot.materialShaderId),
+        receipt: { ...receipt, receiptIdentity: `${receipt.receiptIdentity}:${index}` },
+      },
+    ]),
   );
   const mainModule = (await rhi.createShaderModule(f.device, { code: WITNESS_WGSL })).unwrap();
   const materialPipelineFactory: NonNullable<
@@ -996,7 +1081,7 @@ it('retains main pipelines and shadow depth across unique receipt churn and loca
     group2Contract: 'mesh',
     pipeline: f.device
       .createRenderPipeline({
-        layout: f.input.standardPbrPipelineState.pbrPipelineLayout,
+        layout: f.input.materialPipelineState.pbrPipelineLayout,
         vertex: {
           module: mainModule,
           entryPoint: 'vs_scene_index',
@@ -1079,22 +1164,35 @@ it('retains main pipelines and shadow depth across unique receipt churn and loca
         materialArtifacts: materials,
         materialPipelineFactory,
         shadowMaterialArtifacts: shadows,
-        scene: { ...f.input.scene, plan: f.topology.plan(), slots },
-        shadowCasterMembership: slots.map((slot, renderableIndex) => ({
-          worldEntity: slot.snapshot.entityKey,
-          renderableIndex,
-          drawItemIndex: 0,
-          materialHandle: slot.snapshot.material.materialHandle ?? -1,
-          passIndex: 0,
-          gpuDrivenEligible: renderableIndex !== 1 || index < 10 || index >= 20,
-        })),
+        scene: {
+          ...f.input.scene,
+          plan: f.topology.query(f.topology.sourcePlan(), undefined),
+          slots,
+        },
+        shadowViews: true,
       };
-      let frame = defined(production.prepare(input).unwrap());
-      frame.updateShadowViews?.(views).unwrap();
+      let frame = defined(production.prepare(admitGpuFixture(input)).unwrap());
+      frame
+        .updateShadowViews?.(
+          views.map((view, viewIndex) => ({
+            ...view,
+            candidatePrimitiveIndices:
+              viewIndex === 1 && index >= 10 && index < 20 ? [] : view.candidatePrimitiveIndices,
+          })),
+        )
+        .unwrap();
       if (index === 40) {
         frame._abortResourceReplacement?.();
-        frame = defined(production.prepare(input).unwrap());
-        frame.updateShadowViews?.(views).unwrap();
+        frame = defined(production.prepare(admitGpuFixture(input)).unwrap());
+        frame
+          .updateShadowViews?.(
+            views.map((view, viewIndex) => ({
+              ...view,
+              candidatePrimitiveIndices:
+                viewIndex === 1 && index >= 10 && index < 20 ? [] : view.candidatePrimitiveIndices,
+            })),
+          )
+          .unwrap();
       }
       const pool = defined(frame.shadowViewPool);
       if (compute === undefined || computeSignature !== frame.topologySignature) {
@@ -1128,7 +1226,7 @@ it('retains main pipelines and shadow depth across unique receipt churn and loca
               ).unwrap();
               pipeline = f.device
                 .createRenderPipeline({
-                  layout: f.input.standardPbrPipelineState.pbrPipelineLayout,
+                  layout: f.input.materialPipelineState.pbrPipelineLayout,
                   vertex: {
                     module,
                     entryPoint: 'vs_scene_index',

@@ -28,6 +28,7 @@ import { derive, type MeshAsset, type TextureAsset } from '@forgeax/engine-types
 import { expect } from 'vitest';
 import { drawReadyFrame } from '../../../../scripts/test/ready-render-frame.mjs';
 import testQuality from '../../../../scripts/test/render-quality.json' with { type: 'json' };
+import { testAssets } from './helpers/runtime-assets';
 import { renderValue } from './standard-gbuffer-replay.fixture';
 
 type Save = (name: string, bytes: Uint8Array) => void | Promise<void>;
@@ -154,24 +155,28 @@ export async function verifyStandardDisplacement(
   const off = renderer.subscribe((e) => {
     if (e.kind === 'error') errors.push(e.error);
   });
-  const texture = world.allocSharedRef('TextureAsset', {
-    kind: 'texture',
-    shape: { viewDimension: '2d', extent: { width: 16, height: 16 } },
-    format: 'rgba8unorm',
-    colorSpace: 'linear',
-    mips: { kind: 'none' },
-    data: heights,
-  } satisfies TextureAsset);
-  const sampler = world.allocSharedRef('SamplerAsset', {
-    kind: 'sampler',
-    minFilter: 'nearest',
-    magFilter: 'nearest',
-    addressModeU: 'clamp-to-edge',
-    addressModeV: 'clamp-to-edge',
-  });
+  const texture = testAssets(world)
+    .create({
+      kind: 'texture',
+      shape: { viewDimension: '2d', extent: { width: 16, height: 16 } },
+      format: 'rgba8unorm',
+      colorSpace: 'linear',
+      mips: { kind: 'none' },
+      data: heights,
+    } satisfies TextureAsset)
+    .unwrap();
+  const sampler = testAssets(world)
+    .create({
+      kind: 'sampler',
+      minFilter: 'nearest',
+      magFilter: 'nearest',
+      addressModeU: 'clamp-to-edge',
+      addressModeV: 'clamp-to-edge',
+    })
+    .unwrap();
   const dense = createPlaneGeometry(2, 2, 16, 16).unwrap();
   const coarse = createPlaneGeometry(2, 2).unwrap();
-  const mesh = world.allocSharedRef('MeshAsset', dense);
+  const mesh = testAssets(world).create(dense).unwrap();
   const object = world
     .spawn(
       { component: Transform, data: { quat: [0, -Math.sin(0.5), 0, Math.cos(0.5)] } },
@@ -179,11 +184,10 @@ export async function verifyStandardDisplacement(
       { component: MeshRenderer, data: { materials: [] } },
     )
     .unwrap();
-  const receiverMesh = world.allocSharedRef('MeshAsset', createPlaneGeometry(5, 5).unwrap());
-  const receiverMaterial = world.allocSharedRef(
-    'MaterialAsset',
-    Materials.standard({ baseColor: [0.25, 0.25, 0.25, 1], roughness: 1 }),
-  );
+  const receiverMesh = testAssets(world).create(createPlaneGeometry(5, 5).unwrap()).unwrap();
+  const receiverMaterial = testAssets(world)
+    .create(Materials.standard({ baseColor: [0.25, 0.25, 0.25, 1], roughness: 1 }))
+    .unwrap();
   world
     .spawn(
       { component: Transform, data: { pos: [0, 0, -0.8] } },
@@ -284,12 +288,16 @@ export async function verifyStandardDisplacement(
           const joint = world
             .spawn({ component: Transform, data: { quat: [0, -Math.sin(0.5), 0, Math.cos(0.5)] } })
             .unwrap();
-          const skeleton = world.allocSharedRef('SkeletonAsset', {
-            kind: 'skeleton',
-            jointCount: 1,
-            inverseBindMatrices: new Float32Array([1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1]),
-            bounds: new Float32Array([-1, -1, -1, 1, 1, 1]),
-          });
+          const skeleton = testAssets(world)
+            .create({
+              kind: 'skeleton',
+              jointCount: 1,
+              inverseBindMatrices: new Float32Array([
+                1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1,
+              ]),
+              bounds: new Float32Array([-1, -1, -1, 1, 1, 1]),
+            })
+            .unwrap();
           world
             .addComponent(object, {
               component: Skin,
@@ -298,7 +306,7 @@ export async function verifyStandardDisplacement(
             .unwrap();
         }
         world
-          .set(object, MeshFilter, { assetHandle: world.allocSharedRef('MeshAsset', geometry) })
+          .set(object, MeshFilter, { assetHandle: testAssets(world).create(geometry).unwrap() })
           .unwrap();
         let material = Materials.standard({
           baseColor: [0.65, 0.35, 0.15, 1],
@@ -333,7 +341,7 @@ export async function verifyStandardDisplacement(
         }
         world
           .set(object, MeshRenderer, {
-            materials: [world.allocSharedRef('MaterialAsset', material)],
+            materials: [testAssets(world).create(material).unwrap()],
           })
           .unwrap();
         let completedFrames = 0;
@@ -572,11 +580,22 @@ export async function verifyStandardDisplacement(
                 throw new Error('missing retained shadow pass');
               expect(stableShadowPass.desc.depthStencilAttachment?.depthLoadOp).toBe('load');
             } else {
-              expect(
-                stableShadowWorks.some(
-                  (work) => work.attachments?.depthStencilViewHandleId === shadowId,
+              // Compiled graphs may create a new view of the retained texture.
+              // Compare the physical subresource, not the old view handle.
+              const stableViews = textureViews(stableTape);
+              const stableShadow = required(
+                stableShadowWorks.find((work) =>
+                  stableViews.some(
+                    (view) =>
+                      view.resultHandleId === work.attachments?.depthStencilViewHandleId &&
+                      view.sourceHandleId === shadowTextureId &&
+                      (view.desc.baseArrayLayer ?? 0) === shadowLayer &&
+                      (view.desc.baseMipLevel ?? 0) === (shadowView.desc.baseMipLevel ?? 0) &&
+                      view.desc.arrayLayerCount === shadowView.desc.arrayLayerCount,
+                  ),
                 ),
-              ).toBe(true);
+              );
+              finalShadowId = required(stableShadow.attachments?.depthStencilViewHandleId);
             }
             const stableReplay = (
               await openReplay(stableTape, {

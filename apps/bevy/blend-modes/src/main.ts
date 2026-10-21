@@ -4,7 +4,7 @@
 // forgeax: construct MaterialAsset directly with per-sphere renderState.blend.
 
 import { createApp } from '@forgeax/engine-app/browser';
-import { HANDLE_CUBE } from '@forgeax/engine-assets-runtime';
+
 import { Transform } from '@forgeax/engine-scene';
 
 import { Camera, MeshFilter, MeshRenderer } from '@forgeax/engine-render';
@@ -16,6 +16,8 @@ import { PointLight } from '@forgeax/engine-render';
 import type { MaterialAsset } from '@forgeax/engine-runtime';
 import { createSphereGeometry } from '@forgeax/engine-geometry';
 import { forgeaxBundlerAdapter } from 'virtual:forgeax/bundler';
+import { createPrimitiveMesh } from '@forgeax/engine-geometry';
+
 
 const canvas = document.querySelector<HTMLCanvasElement>('#app');
 if (!canvas) throw new Error('bevy-blend-modes: missing <canvas id="app"> in index.html');
@@ -43,23 +45,27 @@ async function bootstrap(target: HTMLCanvasElement): Promise<void> {
     return;
   }
   const app = appResult.value;
+  const assets = app.assets;
+  if (assets === undefined) throw new Error('App asset service is unavailable');
   const world = app.world;
+const primitiveCube = assets.create(createPrimitiveMesh('cube').unwrap()).unwrap();
+
 
   // ── Ground plane ────────────────────────────────────────────────────────
-  const planeMat = world.allocSharedRef('MaterialAsset', Materials.unlit([0.3, 0.3, 0.3, 1]));
+  const planeMat = assets.create(Materials.unlit([0.3, 0.3, 0.3, 1])).unwrap();
   world.spawn(
     { component: Transform, data: { pos: [0, -1.5, 0], quat: [0, 0, 0, 1], scale: [16, 0.02, 16] } },
-    { component: MeshFilter, data: { assetHandle: HANDLE_CUBE } },
+    { component: MeshFilter, data: { assetHandle: primitiveCube } },
     { component: MeshRenderer, data: { materials: [planeMat] } },
   );
 
   // ── 5 spheres with different blend modes ────────────────────────────────
   const sphereGeom = createSphereGeometry(0.4, 32, 16);
   if (!sphereGeom.ok) { console.error('sphere geom failed'); return; }
-  const sphereHandle = world.allocSharedRef('MeshAsset', sphereGeom.value);
+  const sphereHandle = assets.create(sphereGeom.value).unwrap();
 
   // Opaque (no blend) — alpha=1 since there's no transparency
-  const opaqueMat = world.allocSharedRef('MaterialAsset', Materials.unlit([0.9, 0.2, 0.3, 1]));
+  const opaqueMat = assets.create(Materials.unlit([0.9, 0.2, 0.3, 1])).unwrap();
   world.spawn(
     { component: Transform, data: { pos: [-4, 0, 0], quat: [0, 0, 0, 1], scale: [1, 1, 1] } },
     { component: MeshFilter, data: { assetHandle: sphereHandle } },
@@ -67,10 +73,10 @@ async function bootstrap(target: HTMLCanvasElement): Promise<void> {
   );
 
   // Blend (standard alpha: src-alpha / one-minus-src-alpha)
-  const blendMat = world.allocSharedRef('MaterialAsset', blendMaterial([0.9, 0.2, 0.3, 0.5], {
+  const blendMat = assets.create(blendMaterial([0.9, 0.2, 0.3, 0.5], {
     color: { srcFactor: 'src-alpha', dstFactor: 'one-minus-src-alpha', operation: 'add' },
     alpha: { srcFactor: 'src-alpha', dstFactor: 'one-minus-src-alpha', operation: 'add' },
-  }));
+  })).unwrap();
   world.spawn(
     { component: Transform, data: { pos: [-2, 0, 0], quat: [0, 0, 0, 1], scale: [1, 1, 1] } },
     { component: MeshFilter, data: { assetHandle: sphereHandle } },
@@ -78,7 +84,7 @@ async function bootstrap(target: HTMLCanvasElement): Promise<void> {
   );
 
   // Premultiplied (one / one-minus-src-alpha)
-  const premultMat = world.allocSharedRef('MaterialAsset', blendMaterial([0.9, 0.2, 0.3, 0.5], SPRITE_PREMULTIPLIED_ALPHA_BLEND));
+  const premultMat = assets.create(blendMaterial([0.9, 0.2, 0.3, 0.5], SPRITE_PREMULTIPLIED_ALPHA_BLEND)).unwrap();
   world.spawn(
     { component: Transform, data: { pos: [0, 0, 0], quat: [0, 0, 0, 1], scale: [1, 1, 1] } },
     { component: MeshFilter, data: { assetHandle: sphereHandle } },
@@ -86,10 +92,10 @@ async function bootstrap(target: HTMLCanvasElement): Promise<void> {
   );
 
   // Add (one / one)
-  const addMat = world.allocSharedRef('MaterialAsset', blendMaterial([0.9, 0.2, 0.3, 0.5], {
+  const addMat = assets.create(blendMaterial([0.9, 0.2, 0.3, 0.5], {
     color: { srcFactor: 'one', dstFactor: 'one', operation: 'add' },
     alpha: { srcFactor: 'one', dstFactor: 'one', operation: 'add' },
-  }));
+  })).unwrap();
   world.spawn(
     { component: Transform, data: { pos: [2, 0, 0], quat: [0, 0, 0, 1], scale: [1, 1, 1] } },
     { component: MeshFilter, data: { assetHandle: sphereHandle } },
@@ -97,10 +103,10 @@ async function bootstrap(target: HTMLCanvasElement): Promise<void> {
   );
 
   // Multiply (dst / zero)
-  const mulMat = world.allocSharedRef('MaterialAsset', blendMaterial([0.9, 0.2, 0.3, 0.5], {
+  const mulMat = assets.create(blendMaterial([0.9, 0.2, 0.3, 0.5], {
     color: { srcFactor: 'dst', dstFactor: 'zero', operation: 'add' },
     alpha: { srcFactor: 'dst', dstFactor: 'zero', operation: 'add' },
-  }));
+  })).unwrap();
   world.spawn(
     { component: Transform, data: { pos: [4, 0, 0], quat: [0, 0, 0, 1], scale: [1, 1, 1] } },
     { component: MeshFilter, data: { assetHandle: sphereHandle } },

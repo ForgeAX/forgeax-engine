@@ -968,11 +968,11 @@
         }
       },
       "refs": [
-        "cbe42beb-8975-5096-b3a1-3dda4cb4c077",
+        "fc497c66-79e5-54d1-86f1-50bdb3b5f076",
         "5b67aad2-06b5-59ad-a0a9-4296afae8b87",
-        "ab20af21-0764-55be-a7f2-b80ab3d46a0a",
+        "2e1daf63-4701-5f00-8cc4-6d731d76594f",
         "87bdfd47-85ba-55e7-bc5e-a3b10964602c",
-        "95730fd2-9846-5f84-8658-0b3c971eb263",
+        "37e63925-1e6d-5af9-962c-aac4cb659332",
         "811d6d8b-0181-5a92-9e30-9487994d4fc5",
         "24804297-1cc2-5fce-ae1c-92bbf4418080",
         "cfbf50fa-510f-582b-a4ea-786d236691ae",
@@ -1055,7 +1055,7 @@
         }
       },
       "refs": [
-        "cbe42beb-8975-5096-b3a1-3dda4cb4c077",
+        "fc497c66-79e5-54d1-86f1-50bdb3b5f076",
         "6221a693-1b3c-599d-b15e-31a84ca38e75",
         "826eaa90-da96-58bf-92aa-dc713e1ff51e"
       ],
@@ -1232,7 +1232,9 @@
     "material/blue-ball": {
       "kind": "material",
       "payload": {
-        "staticSwitches": { "clearcoat": true },
+        "staticSwitches": {
+          "clearcoat": true
+        },
         "passes": [
           {
             "name": "Forward",
@@ -1268,7 +1270,8 @@
           "metallic": 0,
           "roughness": 0.6,
           "clearcoat": 0,
-          "clearcoatRoughness": 0.12
+          "clearcoatRoughness": 0.12,
+          "baseColorTexture": null
         }
       },
       "refs": [],

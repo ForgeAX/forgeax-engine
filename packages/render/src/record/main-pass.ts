@@ -15,8 +15,7 @@ import {
   getOrCreateHdrpBuffers,
   type SsaoBindOptions,
 } from '../hdrp-buffers';
-import type { SkylightBindGroupResources } from '../ibl/skylight-bind-group';
-import { buildBeginRenderPassDescriptor, standardTopologyBindGroupReady } from '../pipeline-spec';
+import { standardTopologyBindGroupReady } from '../pipeline-spec';
 import { POINTS_LINES_MATERIAL_SHADER_ID } from '../points-lines/record';
 import type { RenderResourceScope } from '../publication/resource-scope';
 import type { RenderRecordPhase } from '../render-contract';
@@ -26,61 +25,47 @@ import type {
   RenderPipelineGpuDrivenFilter,
   RenderPipelineGpuDrivenProjection,
 } from '../render-pipeline';
-import type { MaterialSnapshot } from '../render-system-extract';
+import type { DispatchList, MaterialSnapshot } from '../render-system-extract';
+import type { FrameList } from '../scene/frame-list';
+import { materialPasses } from '../scene/material-dispatch';
 import {
   COLOR_PASS_SELECTOR,
   DEFERRED_PASS_SELECTOR,
   FORWARD_PASS_SELECTOR,
   matchPass,
 } from '../systems/pass-selector';
-import { resolveReflectionProbeBinding } from './frame-lighting';
 import type { ValidatedRenderable } from './frame-snapshot';
-import { getOpaqueResourceIdentity, worldEntityKey } from './frame-snapshot';
+import { getOpaqueResourceIdentity } from './frame-snapshot';
 import { recordGeometryDraws } from './main-pass-geometry';
 import {
   buildPerSubmeshMaterialBg as buildPerSubmeshMaterialBgImpl,
+  materialDiagnosticsEnabled,
   type PerSubmeshMaterialBgDeps,
   prepareMaterialSkylight,
 } from './main-pass-material';
 import { recordSpritePass } from './main-pass-sprite-draws';
+import {
+  type MaterialRecordMode,
+  matchesRecordMode,
+  materialMatchesPass,
+} from './material-pass-selection';
+import { materialUniformSlot } from './material-uniforms';
 import { getOrCreateFromChainResult } from './mesh-ssbo';
+import { reflectionProbeMaterial } from './reflection-probe-material';
 import type { _InternalRenderPipelineContext } from './render-context';
-import { MATERIAL_UNIFORM_BYTES } from './render-context';
+import { MATERIAL_PER_ENTITY_STRIDE, MATERIAL_UNIFORM_BYTES } from './render-context';
 import { buildMatchedMaterialHandlesByRenderable, filterDispatchBySelector } from './shadow-pass';
 import { selectForwardFragmentEntry } from './standard-opaque-entry';
 
 /** Chain key standing in for the SSAO view when group(2) binds the fallback. */
 const NO_SSAO_VIEW = {};
-const CULLED_GPU_MATERIAL_SLOTS: readonly number[] = Object.freeze([]);
-
-function materialDiagnosticsEnabled(): boolean {
-  if (typeof globalThis !== 'object' || globalThis === null || !('process' in globalThis)) {
-    return false;
-  }
-  const processValue = (
-    globalThis as {
-      readonly process?: { readonly env?: Record<string, string | undefined> };
-    }
-  ).process;
-  return processValue?.env?.FORGEAX_MATERIAL_DIAGNOSTICS === '1';
-}
 
 export type MainPassOptions = {
   readonly bundleDescriptor?: RenderBundleEncoderDescriptor;
   readonly selection?: { readonly worldId: number; readonly entities: readonly number[] };
-  readonly colorViews?: readonly (TextureView | null)[];
   readonly colorFormats?: readonly GPUTextureFormat[];
-  readonly depthView?: TextureView | null;
   readonly passKind?: PassKind;
-  readonly clearColor?: readonly [number, number, number, number];
-  readonly recordMode?:
-    | 'opaque'
-    | 'transmission'
-    | 'transparent'
-    | 'oit-accumulate'
-    | 'oit-residual'
-    | 'single-layer-medium-nearest-layer'
-    | 'single-layer-medium-color';
+  readonly recordMode?: MaterialRecordMode;
   readonly gpuDrivenFilter?: RenderPipelineGpuDrivenFilter;
   /** Write transparent fragment depth for depth-bounded medium transport. */
   readonly transparentDepthWrite?: boolean;
@@ -105,37 +90,31 @@ export type MainPassOptions = {
   };
 };
 
-function isTransmissionMaterial(material: MaterialSnapshot): boolean {
-  return (
-    material.materialShaderId === 'forgeax::default-standard-pbr' &&
-    typeof material.paramSnapshot?.transmission === 'number' &&
-    material.paramSnapshot.transmission > 0
-  );
-}
-
-function matchesRecordMode(
-  material: MaterialSnapshot,
-  mode:
-    | 'opaque'
-    | 'transmission'
-    | 'transparent'
-    | 'oit-accumulate'
-    | 'oit-residual'
-    | 'single-layer-medium-nearest-layer'
-    | 'single-layer-medium-color',
-): boolean {
-  const medium =
-    material.surfaceModel === 'single-layer-medium' ||
-    material.materialShaderId === 'forgeax::single-layer-medium';
-  if (mode === 'single-layer-medium-nearest-layer' || mode === 'single-layer-medium-color') {
-    return medium;
+/** GPU membership is a shared material fact, independent of instance rows. */
+export function selectGpuMaterialSlots(
+  materials: readonly MaterialSnapshot[],
+  selector: PassSelector | undefined,
+  mode: MainPassOptions['recordMode'],
+  excludeSelector?: PassSelector,
+): ReadonlySet<number> | undefined {
+  if (selector === undefined && mode === undefined && excludeSelector === undefined)
+    return undefined;
+  const selected = new Set<number>();
+  for (let slot = 0; slot < materials.length; slot++) {
+    const snapshot = materials[slot];
+    if (snapshot === undefined || (mode !== undefined && !matchesRecordMode(snapshot, mode)))
+      continue;
+    if (
+      materialMatchesPass(
+        { snapshot, passes: materialPasses(snapshot) },
+        selector,
+        mode,
+        excludeSelector,
+      )
+    )
+      selected.add(slot);
   }
-  const transmission = isTransmissionMaterial(material);
-  if (mode === 'transmission') return transmission;
-  if (mode === 'transparent' || mode === 'oit-accumulate' || mode === 'oit-residual') {
-    return material.transparent === true && !transmission && !medium;
-  }
-  return !transmission && material.transparent !== true && !medium;
+  return selected;
 }
 
 /** Membership of the Standard transparent set (sorted or weighted blended). */
@@ -167,21 +146,25 @@ function preparationSubmeshExcluded(
   if (submesh === undefined) return true;
   return preparationMaterialExcluded(
     entry,
-    (entry.source.materials[submesh.materialSlot] ?? entry.source.material).materialHandle ?? 0,
+    (entry.source.materials[submesh.materialSlot] ?? entry.source.material).snapshot
+      .materialHandle ?? 0,
     selector,
   );
 }
 
 /** Explicit preparation is work even when no visible draw selects this lane. */
 export function hasMainPassPipelinePreparation(
-  c: Pick<_InternalRenderPipelineContext, 'pipelinePreparationEntries'>,
+  c: Pick<_InternalRenderPipelineContext, 'pipelinePreparationEntries' | 'materialFrame'>,
   selector: PassSelector,
   mode: MainPassOptions['recordMode'],
   excludeSelector?: PassSelector,
 ): boolean {
   for (const entry of c.pipelinePreparationEntries ?? []) {
     for (const sm of entry.mesh.submeshes) {
-      const material = entry.source.materials[sm.materialSlot] ?? entry.source.material;
+      const material = c.materialFrame?.get(
+        entry.source.materials[sm.materialSlot] ?? entry.source.material,
+      )?.snapshot;
+      if (material === undefined) throw new Error('Pipeline preparation has no accepted material');
       if (
         (mode !== undefined && !matchesRecordMode(material, mode)) ||
         preparationMaterialExcluded(entry, material.materialHandle ?? 0, excludeSelector)
@@ -249,7 +232,11 @@ export function prepareMainPassPipelines(
 
 type MaterialSelectionContext = Pick<
   _InternalRenderPipelineContext,
-  'dispatch' | 'validatedOrdered' | 'mainPassMaterialSelection'
+  | 'dispatch'
+  | 'validatedOrdered'
+  | 'mainPassMaterialSelection'
+  | 'materialSlots'
+  | 'materialSlotIndices'
 >;
 
 type MainPassMaterialSelection = ReadonlyMap<number, ReadonlySet<number>> | null;
@@ -257,6 +244,7 @@ type MainPassRecordMode = MainPassOptions['recordMode'];
 
 /** One finalized record frame owns its selections; nothing enters retained frameState. */
 export interface MainPassMaterialSelectionOwner {
+  selectDispatch?(input: MaterialSelectionContext, selector: PassSelector): DispatchList;
   resolve(
     input: MaterialSelectionContext,
     selector: PassSelector | undefined,
@@ -278,14 +266,16 @@ function recordModeIndex(mode: MainPassRecordMode): number {
   if (mode === 'opaque') return 1;
   if (mode === 'transmission') return 2;
   if (mode === 'transparent' || mode === 'oit-accumulate' || mode === 'oit-residual') return 3;
+  if (mode === 'translucent' || mode === 'translucent-before-transmission') return 5;
   return 4;
 }
 
 /** Capture finalized facts only after the record owner has ordered its validation rows. */
 export function createMainPassMaterialSelectionOwner(
-  input: Pick<MaterialSelectionContext, 'dispatch' | 'validatedOrdered'>,
+  input: Omit<MaterialSelectionContext, 'mainPassMaterialSelection'>,
 ): MainPassMaterialSelectionOwner {
-  const { dispatch, validatedOrdered } = input;
+  const { dispatch, validatedOrdered, materialSlots, materialSlotIndices } = input;
+  const selectedDispatch: (DispatchList | undefined)[] = [];
   // Four exact selector identities and five equivalent material modes bound
   // this scratch to sixteen lane pairs; no per-query key strings or hash maps.
   const selections: (
@@ -296,6 +286,13 @@ export function createMainPassMaterialSelectionOwner(
     | undefined
   )[] = [];
   return {
+    selectDispatch(c, selector) {
+      const index = stockSelectorIndex(selector);
+      if (c.dispatch !== dispatch || c.validatedOrdered !== validatedOrdered || index < 0)
+        return filterDispatchBySelector(c.dispatch, selector);
+      selectedDispatch[index] ??= filterDispatchBySelector(dispatch, selector);
+      return selectedDispatch[index];
+    },
     resolve(c, selector, mode, excludeSelector) {
       const selectorIndex = stockSelectorIndex(selector);
       const excludeIndex = stockSelectorIndex(excludeSelector);
@@ -303,6 +300,8 @@ export function createMainPassMaterialSelectionOwner(
       if (
         c.dispatch !== dispatch ||
         c.validatedOrdered !== validatedOrdered ||
+        c.materialSlots !== materialSlots ||
+        c.materialSlotIndices !== materialSlotIndices ||
         selectorIndex < 0 ||
         excludeIndex < 0
       )
@@ -332,50 +331,32 @@ export function createMainPassMaterialSelectionOwner(
   };
 }
 
-const EMPTY_MATERIAL_HANDLES: readonly number[] = Object.freeze([]);
-
 export function matchedMaterialsForRecordMode(
   c: MaterialSelectionContext,
   matchedMaterials: ReadonlyMap<number, ReadonlySet<number>> | null,
-  mode:
-    | 'opaque'
-    | 'transmission'
-    | 'transparent'
-    | 'oit-accumulate'
-    | 'oit-residual'
-    | 'single-layer-medium-nearest-layer'
-    | 'single-layer-medium-color'
-    | undefined,
+  mode: MaterialRecordMode | undefined,
 ): ReadonlyMap<number, ReadonlySet<number>> | null {
   if (mode === undefined) return matchedMaterials;
   const surfaceMode =
     mode === 'single-layer-medium-nearest-layer' || mode === 'single-layer-medium-color';
   const filtered = new Map<number, ReadonlySet<number>>();
-  for (const entry of c.validatedOrdered) {
+  if (mode === 'transmission' && matchedMaterials === null) return filtered;
+  for (const [row, entry] of c.validatedOrdered.entries()) {
     const dispatchHandles = matchedMaterials?.get(entry.renderableIndex);
-    // Surface graph membership is owned by the resolved surface model. A
-    // Surface-authored pass does not need to duplicate the generic Forward
-    // LightMode tag: its prepared direct program already carries the pass
-    // specialization selected by the material producer.
     if (!surfaceMode && matchedMaterials !== null && dispatchHandles === undefined) continue;
-    const candidates = surfaceMode
-      ? entry.source.materials
-      : (dispatchHandles ??
-        (mode === 'transmission' ? EMPTY_MATERIAL_HANDLES : entry.source.materials));
     let handles: Set<number> | undefined;
-    for (const candidate of candidates) {
-      const handle = typeof candidate === 'number' ? candidate : (candidate.materialHandle ?? 0);
-      const material =
-        entry.source.materials.find((candidate) => (candidate.materialHandle ?? 0) === handle) ??
-        entry.source.material;
+    for (const slot of c.materialSlotIndices[row] ?? []) {
+      const material = c.materialSlots[slot];
+      if (material === undefined) throw new Error('Material selection has no submitted material');
+      const handle = material.materialHandle ?? 0;
+      if (!surfaceMode && dispatchHandles !== undefined && !dispatchHandles.has(handle)) continue;
       if (!matchesRecordMode(material, mode)) continue;
       if (!surfaceMode && dispatchHandles?.size === 1) {
-        // This call owns the dispatch set; reuse it only after material matching.
         filtered.set(entry.renderableIndex, dispatchHandles);
-      } else {
-        handles ??= new Set<number>();
-        handles.add(handle);
+        break;
       }
+      handles ??= new Set<number>();
+      handles.add(handle);
     }
     if (handles !== undefined) filtered.set(entry.renderableIndex, handles);
   }
@@ -384,41 +365,33 @@ export function matchedMaterialsForRecordMode(
 
 /**
  * feat-20260529-rendergraph-pass-abstraction M4 / w13b: main forward
- * (geometry) pass recording, extracted verbatim from recordFrame. Uses the
- * SHARED frame encoder (c.encoder); the geometry + optional LDR sprite-split
- * sub-pass write into geometryColorView (HDR target or swap-chain view).
- * Driven by the render-graph 'main' pass execute closure.
+ * (geometry) pass recording into the graph-owned `pass`; the graph declares
+ * its attachments, load ops and resolves. The geometry + optional LDR
+ * sprite-split draws share that pass.
  */
-export function recordMainPass(
+export function encodeMainPass(
   c: _InternalRenderPipelineContext,
+  pass: RhiRenderPassEncoder,
   selector?: PassSelector,
   options?: MainPassOptions,
-  graphPass?: RhiRenderPassEncoder,
 ): GpuDrivenStandardPbrFrameResources | undefined {
   const {
     runtime,
     world,
     store,
     pipelineState,
-    encoder,
-    clear,
-    geometryColorView,
-    geometryDepthView,
     validatedOrdered,
     viewBindGroup,
     viewBindGroupDynamicOffset = 0,
     meshBindGroup,
     frameState,
     bindGroupCounts,
-    skyboxActive,
-    splitLdrSprite,
     msaaActive,
-    geometryColorResolveView,
     dispatch,
     hdrpClusterBindGroup,
     materialSlotIndices,
     materialSlots,
-    materialSlotOwners,
+    materialBindings,
     materialSlotCount,
     gpuDrivenStandardPbrFrameResources,
     gpuDrivenSceneMaterialBuffer,
@@ -436,6 +409,7 @@ export function recordMainPass(
   const surfaceNearestDepthView = options?.surfaceNearestDepthView;
   if (
     (recordMode === 'transmission' ||
+      recordMode === 'translucent' ||
       recordMode === 'single-layer-medium-nearest-layer' ||
       recordMode === 'single-layer-medium-color') &&
     transmissionBackdropView == null
@@ -446,14 +420,11 @@ export function recordMainPass(
       hint: 'the typed Standard backdrop pass must resolve its graph-paired color view',
     });
   }
-  const colorViews = options?.colorViews ?? [geometryColorView];
   const colorFormats = options?.colorFormats ?? [
     (c.tonemapActive || c.transparentColorFormat === 'rgba16float'
       ? 'rgba16float'
       : pipelineState.colorAttachmentFormat) as GPUTextureFormat,
   ];
-  const targetDepthView = options?.depthView ?? geometryDepthView;
-  const clearColor = options?.clearColor ?? clear;
   // feat-20260623-world-space-video-asset M4 / w17 (D-2 / AC-09): high-perf
   // GPUExternalTexture upload availability for video sources, resolved by the
   // explicit RhiCaps-based capability probe. The probe checks
@@ -472,12 +443,12 @@ export function recordMainPass(
   // treating that harmless absence as a frame error would make the full
   // clustered ABI incompatible with valid zero-renderable frames.
   const clusteredBindGroupMissing =
-    validatedOrdered.length > 0 &&
+    (validatedOrdered.length > 0 || (options?.gpuDriven !== undefined && materialSlotCount > 0)) &&
     !standardTopologyBindGroupReady(c.standardLighting, hdrpClusterBindGroup);
   // Standard clustered lighting swaps the
   // group(2) bindGroup for the unified 7-entry layout (mesh SSBO at binding 0
   // + cluster 4 buffer at bindings 3..6). The dynamic offset
-  // (`i * MESH_PER_ENTITY_STRIDE`) stays valid because the unified BGL binds
+  // from the draw's physical mesh slot stays valid because the unified BGL binds
   // the SAME mesh SSBO at binding 0; the cluster-forward shader reads the
   // cluster bindings off the rest of the layout. Plan D-1 (URP path zero
   // change) is preserved — when clustered lighting is not selected the
@@ -583,58 +554,6 @@ export function recordMainPass(
       };
     }
   }
-  // ── Geometry (main colour) pass ──────────────────────────────────
-  // D-2: tracks whether the geometry pass was explicitly ended inside
-  // the `if (validatedOrdered.length > 0)` block (sprite split path),
-  // to avoid a double-end at the unconditional `pass.end()` below.
-  let geometryPassEnded = false;
-  // feat-20260531-skybox-env-background M2 / w8: condition main colour
-  // loadOp on skyboxActive (AC-05). When skybox is active, the skybox
-  // pass writes the far plane + cubemap colour to hdrColor before main;
-  // main must load (not clear) to composite geometry on top. Depth
-  // loadOp stays 'clear' -- skybox does not write depth, so main's
-  // depth test naturally covers skybox pixels with foreground geometry.
-  const mainColorLoadOp = skyboxActive ? 'load' : 'clear';
-  // feat-20260604 M2 / w9-w10: MSAA resolve placement. When MSAA is active the
-  // geometry pass writes a count=4 multisample target. The resolve to the
-  // single-sample output (LDR swap-chain view / HDR hdrColor) happens at the
-  // LAST pass that writes that multisample target: the main pass itself when
-  // there is no LDR sprite split, or the sprite sub-pass end when there is
-  // (F-1 -- geometry + sprites share one multisample texture; resolving at the
-  // main pass would drop the sprites drawn after). The sprite sub-pass is
-  // LDR-only, so under HDR the main pass always resolves.
-  const mainPassResolves =
-    passKind === 'forward' && msaaActive && geometryColorResolveView !== null && !splitLdrSprite;
-  // forward main pass: depth32float-stencil8 auto-emits stencil ops via the
-  // helper's stencil-op gate (plan-strategy M4 R3/R5 stencil-op SSOT).
-  // mainColorLoadOp toggles between 'clear' and 'load' (skyboxActive case).
-  const pass: RhiRenderPassEncoder =
-    graphPass ??
-    encoder.beginRenderPass(
-      buildBeginRenderPassDescriptor(
-        {
-          colorFormats,
-          depthFormat: 'depth32float-stencil8',
-          sampleCount: msaaActive ? 4 : 1,
-        },
-        {
-          colorViews,
-          depthView: targetDepthView,
-          ...(mainPassResolves ? { resolveTargets: [geometryColorResolveView] } : {}),
-        },
-        passKind,
-        {
-          colorLoadOp: mainColorLoadOp,
-          clearColor: {
-            r: clearColor[0] ?? 0,
-            g: clearColor[1] ?? 0,
-            b: clearColor[2] ?? 0,
-            a: clearColor[3] ?? 1,
-          },
-        },
-      ) as never,
-    );
-
   // Geometry submission block: setPipeline + 4 bind groups + per-entity
   // material uploads + drawIndexed.
 
@@ -643,27 +562,34 @@ export function recordMainPass(
     const selection = options.selection;
     const entities = new Set(selection.entities);
     const selected = new Map<number, ReadonlySet<number>>();
-    for (const entry of validatedOrdered) {
+    for (const [index, entry] of validatedOrdered.entries()) {
       if (entry.source.worldId !== selection.worldId || !entities.has(entry.source.entityKey))
         continue;
       const handles = matchedMaterials?.get(entry.renderableIndex);
       if (matchedMaterials !== null && handles === undefined) continue;
       selected.set(
         entry.renderableIndex,
-        handles ?? new Set(entry.source.materials.map((material) => material.materialHandle ?? 0)),
+        handles ??
+          new Set(
+            (c.materialSlotIndices[index] ?? []).map(
+              (slot) => c.materialSlots[slot]?.materialHandle ?? 0,
+            ),
+          ),
       );
     }
     matchedMaterials = selected;
   }
   const selectedDispatch =
-    dispatch.length === 0
+    validatedOrdered.length === 0 || dispatch.length === 0
       ? undefined
-      : filterDispatchBySelector(
-          dispatch,
+      : selectMainPassDispatch(
+          c,
           selector ?? (passKind === 'deferred' ? DEFERRED_PASS_SELECTOR : FORWARD_PASS_SELECTOR),
         );
   const blendedRecordMode =
     recordMode === 'transparent' ||
+    recordMode === 'translucent' ||
+    recordMode === 'translucent-before-transmission' ||
     recordMode === 'oit-accumulate' ||
     recordMode === 'oit-residual';
   const recordContext =
@@ -687,15 +613,17 @@ export function recordMainPass(
     );
   }
 
-  // A selected empty CPU lane still performs the pass load/store operations,
-  // but has no material contract to assemble. GPU batches keep their own
-  // projection and cannot be inferred from the CPU selector's empty map.
+  const selectedGpuMaterialSlots =
+    options?.gpuDriven === undefined
+      ? undefined
+      : selectGpuMaterialSlots(materialSlots, selector, recordMode, options?.excludeSelector);
+  const hasGpuMaterials =
+    options?.gpuDriven !== undefined && (selectedGpuMaterialSlots?.size ?? materialSlotCount) > 0;
+  // Shared GPU materials are work even when there are no direct draw rows.
   if (
     !clusteredBindGroupMissing &&
-    ((validatedOrdered.length > 0 &&
-      (matchedMaterials === null ||
-        matchedMaterials.size > 0 ||
-        options?.gpuDriven !== undefined)) ||
+    ((validatedOrdered.length > 0 && (matchedMaterials === null || matchedMaterials.size > 0)) ||
+      hasGpuMaterials ||
       hasMainPassPipelinePreparation(
         c,
         selector ?? (passKind === 'deferred' ? DEFERRED_PASS_SELECTOR : FORWARD_PASS_SELECTOR),
@@ -757,7 +685,7 @@ export function recordMainPass(
           ? undefined
           : store.getCubemapIbl(c.skylight.equirectHandle, c.world);
       const prefilterViewMipCount =
-        activeCache?.prefilterFaceViewsByMip?.length ?? (activeViews === undefined ? 1 : 0);
+        activeCache?.prefilterLevelCount ?? (activeViews === undefined ? 1 : 0);
       frameState.iblBindingInspection = {
         status: 'binding-chain-consistent',
         frameId: frameState.frameNumber,
@@ -849,9 +777,7 @@ export function recordMainPass(
     // Selection keys use the extracted frame index, never RenderResourceScope.identity.
     const hasProbeBindings = (c.reflectionProbes?.table.rows.length ?? 0) > 0;
     const worldIndices = hasProbeBindings
-      ? new Map(
-          validatedOrdered.map((entry) => [entry.world ?? world, entry.source.worldId] as const),
-        )
+      ? new Map((c.resourceScopes ?? [world]).map((scope, index) => [scope, index] as const))
       : undefined;
     const perSubmeshMaterialBgDeps: PerSubmeshMaterialBgDeps = {
       runtime,
@@ -862,35 +788,17 @@ export function recordMainPass(
       videoHighPerfAvailable,
       skylightResources,
       resolveRenderTargetTextureSource: runtime.resolveRenderTargetTextureSource,
-      resolveReflectionProbeResources: (materialWorld, entityKey) => {
+      resolveReflectionProbeResources: (materialWorld, entityKey, resourceClass) => {
         const reflectionProbes = c.reflectionProbes;
-        if (reflectionProbes === undefined || !hasProbeBindings) return undefined;
-        const selection = reflectionProbes.selections.get(
-          `${worldIndices?.get(materialWorld)}:${entityKey}`,
-        );
-        if (selection === undefined) return undefined;
-        const binding = resolveReflectionProbeBinding(selection, reflectionProbes.table);
-        if (binding.useSkylight || binding.probeIndex === undefined) return undefined;
-        const row = reflectionProbes.table.rows.find(
-          (candidate) => candidate.index === binding.probeIndex,
-        );
-        if (
-          row?.filteredView === undefined ||
-          row.sampler === undefined ||
-          row.uniformBuffer === undefined
-        ) {
-          return undefined;
-        }
-        const probeResources: SkylightBindGroupResources = {
-          irradianceView: skylightResources.irradianceView,
-          irradianceSampler: skylightResources.irradianceSampler,
-          prefilterView: row.filteredView,
-          skylightPrefilterView: skylightResources.prefilterView,
-          prefilterSampler: row.sampler,
-          brdfLutView: skylightResources.brdfLutView,
-          intensityBuffer: row.uniformBuffer,
-        };
-        return { resources: probeResources, probeIndex: row.index };
+        return reflectionProbes === undefined || !hasProbeBindings
+          ? undefined
+          : reflectionProbeMaterial(
+              reflectionProbes,
+              skylightResources,
+              resourceClass,
+              worldIndices?.get(materialWorld),
+              entityKey,
+            );
       },
       ...(c.planarReflectionView === undefined
         ? {}
@@ -915,7 +823,7 @@ export function recordMainPass(
     const buildPerSubmeshMaterialBg = (
       materialSlot: number,
       submeshMaterial: MaterialSnapshot,
-      entityKey: number,
+      entityKey: number | undefined,
       materialWorld: RenderResourceScope = world,
       materialShaderId: string | undefined = submeshMaterial.materialShaderId,
     ): BindGroup =>
@@ -926,96 +834,86 @@ export function recordMainPass(
         materialWorld,
         materialShaderId,
         materialSlot,
+        materialBindings[materialSlot]?.resourceClass,
       );
-    // Static material resources are a property of the frame-local material
-    // slot, not of each submesh draw. Resolve them once here so the geometry
-    // loop only selects a prepared binding. Video fields remain entity-bound:
-    // their current frame view is keyed by entityKey and must be resolved at
-    // the draw site.
-    const preparedMaterialBindGroups = new Array<BindGroup | undefined>(materialSlotCount);
-    for (let materialSlot = 0; materialSlot < materialSlotCount; materialSlot += 1) {
-      const material = materialSlots[materialSlot];
-      if (material === undefined || (material.videoTextureFields?.size ?? 0) > 0) continue;
-      // A graph scene pass owns only the materials selected by its record
-      // mode. In particular, the opaque pass runs before the raw-depth
-      // producer and must not assemble medium bindings with resources that do
-      // not exist until the later nearest-layer/color passes. Keep holes for
-      // the other lanes; the GPU encoder validates the exact slot it consumes.
-      if (recordMode !== undefined && !matchesRecordMode(material, recordMode)) continue;
-      const owner = materialSlotOwners[materialSlot];
-      if (owner === undefined) continue;
-      preparedMaterialBindGroups[materialSlot] = buildPerSubmeshMaterialBg(
-        materialSlot,
-        material,
-        owner.source.entityKey,
-        owner.world ?? world,
-      );
-    }
+    // A pass prepares a material only when its first actual draw consumes it.
+    const preparedMaterialBindGroups = new Map<number, BindGroup>();
     // Direct Surface draws retain producer resources, but only indirect
     // encoding consumes the pass-local material slot projection.
     if (options?.gpuDriven !== undefined && gpuDrivenStandardPbrFrameResources !== undefined) {
-      gpuDrivenStandardPbrFrameResources.materialBindGroups.length = 0;
-      gpuDrivenStandardPbrFrameResources.materialBindGroups.push(...preparedMaterialBindGroups);
       gpuDrivenStandardPbrFrameResources.colorFormats = colorFormats;
       if (options?.bundleDescriptor === undefined)
         delete gpuDrivenStandardPbrFrameResources.bundleDescriptor;
       else gpuDrivenStandardPbrFrameResources.bundleDescriptor = options.bundleDescriptor;
-      const selectedMaterialSlots = new Set<number>();
-      if (matchedMaterials === null)
+      if (selectedGpuMaterialSlots === undefined)
         delete gpuDrivenStandardPbrFrameResources.selectedMaterialSlots;
-      else gpuDrivenStandardPbrFrameResources.selectedMaterialSlots = selectedMaterialSlots;
-      gpuDrivenStandardPbrFrameResources.materialSlotIndicesByEntity.clear();
-      for (let index = 0; index < validatedOrdered.length; index += 1) {
-        const entry = validatedOrdered[index];
-        if (entry === undefined) continue;
-        const selected = matchedMaterials?.get(entry.renderableIndex);
-        const materials =
-          entry.source.materials.length > 0 ? entry.source.materials : [entry.source.material];
-        for (let slot = 0; slot < materials.length; slot += 1) {
-          const handle = materials[slot]?.materialHandle ?? -1;
-          const globalSlot = materialSlotIndices[index]?.[slot];
-          if (globalSlot !== undefined && selected?.has(handle))
-            selectedMaterialSlots.add(globalSlot);
+      else gpuDrivenStandardPbrFrameResources.selectedMaterialSlots = selectedGpuMaterialSlots;
+      if (c.cameraVisible === undefined) delete gpuDrivenStandardPbrFrameResources.cameraVisible;
+      else gpuDrivenStandardPbrFrameResources.cameraVisible = c.cameraVisible;
+      const bindings = gpuDrivenStandardPbrFrameResources.materialSlotIndicesByBinding;
+      bindings.clear();
+      for (let slot = 0; slot < materialSlots.length; slot++) {
+        const binding = c.materialBindings[slot];
+        if (binding === undefined) continue;
+        const resource = binding.material;
+        let classes = bindings.get(resource);
+        if (classes === undefined) {
+          classes = new Map();
+          bindings.set(resource, classes);
         }
-        const entityKey = worldEntityKey(entry.source.worldId, entry.source.entityKey);
-        gpuDrivenStandardPbrFrameResources.materialSlotIndicesByEntity.set(
-          entityKey,
-          c.gpuRasterCull?.camera === c.camera && c.gpuRasterCull.entityKeys.has(entityKey)
-            ? CULLED_GPU_MATERIAL_SLOTS
-            : (materialSlotIndices[index] ?? []),
-        );
+        classes.set(binding.resourceClass, slot);
       }
     }
     const resolveMaterialBindGroup = (
       materialSlot: number,
       material: MaterialSnapshot,
-      entityKey: number,
+      entityKey: number | undefined,
       materialWorld: RenderResourceScope = world,
       materialShaderId: string | undefined = material.materialShaderId,
-    ): BindGroup =>
-      !hasProbeBindings &&
-      materialShaderId === material.materialShaderId &&
-      materialShaderId !== POINTS_LINES_MATERIAL_SHADER_ID
-        ? (preparedMaterialBindGroups[materialSlot] ??
-          buildPerSubmeshMaterialBg(
-            materialSlot,
+    ): BindGroup => {
+      const shared =
+        !hasProbeBindings &&
+        (material.videoTextureFields?.size ?? 0) === 0 &&
+        materialShaderId === material.materialShaderId &&
+        materialShaderId !== POINTS_LINES_MATERIAL_SHADER_ID;
+      const cached = shared ? preparedMaterialBindGroups.get(materialSlot) : undefined;
+      if (cached !== undefined) return cached;
+      const group = buildPerSubmeshMaterialBg(
+        materialSlot,
+        material,
+        entityKey,
+        materialWorld,
+        materialShaderId,
+      );
+      if (shared) preparedMaterialBindGroups.set(materialSlot, group);
+      return group;
+    };
+    if (gpuDrivenStandardPbrFrameResources !== undefined) {
+      gpuDrivenStandardPbrFrameResources.prepareMaterialBinding = (slot) => {
+        const material = materialSlots[slot];
+        const binding = materialBindings[slot];
+        if (material === undefined || binding === undefined) return undefined;
+        if (selectedGpuMaterialSlots !== undefined && !selectedGpuMaterialSlots.has(slot))
+          return undefined;
+        return {
+          group: resolveMaterialBindGroup(
+            slot,
             material,
-            entityKey,
-            materialWorld,
-            materialShaderId,
-          ))
-        : buildPerSubmeshMaterialBg(
-            materialSlot,
-            material,
-            entityKey,
-            materialWorld,
-            materialShaderId,
-          );
+            binding.entityKey,
+            binding.world ?? world,
+          ),
+          byteOffset: meshSsboBufferBinding(
+            pipelineState.materialUniformBuffer,
+            materialUniformSlot(runtime, material) * MATERIAL_PER_ENTITY_STRIDE,
+          ).byteOffset,
+        };
+      };
+    }
 
     // GPU-driven batches carry only opaque queues, so they encode before the
     // CPU list: a later-queue CPU draw (e.g. depthCompare 'always' x-ray) must
     // land after the opaque geometry it is meant to overdraw.
-    if (options?.gpuDriven !== undefined) {
+    if (hasGpuMaterials && options?.gpuDriven !== undefined) {
       if (viewBindGroup === null) {
         throw new RhiError({
           code: 'rhi-not-available',
@@ -1023,10 +921,7 @@ export function recordMainPass(
           hint: 'publish the current frame view/light/shadow bind group before GPU raster',
         });
       }
-      if (
-        gpuDrivenStandardPbrFrameResources === undefined ||
-        gpuDrivenStandardPbrFrameResources.materialBindGroups.length === 0
-      ) {
+      if (gpuDrivenStandardPbrFrameResources === undefined) {
         throw new RhiError({
           code: 'rhi-not-available',
           expected: 'complete main-pass Standard PBR material bind-group receipt',
@@ -1110,15 +1005,9 @@ export function recordMainPass(
       );
     }
 
-    // D-2: LDR sprite pass. Runs after the geometry pass when there are
-    // sprite entities in the draw list and the LDR path is active.
-    // The geometry pass used the bgra8unorm-srgb sRGB view (hardware sRGB
-    // encoding for unlit/standard/pbr output). The sprite pass uses the
-    // bgra8unorm storage view (loadOp=load) so the sprite LDR pipeline
-    // (target=bgra8unorm, blend=premultiplied-alpha) can write over the
-    // already-encoded geometry pixels. Depth is loaded from the geometry
-    // pass so sprite-vs-mesh occlusion (depthCompare=less-equal) is
-    // preserved (plan-strategy §2 D-2 + §4 R-4).
+    // LDR sprites record into the same graph pass after the geometry draws,
+    // sharing its depth attachment so sprite-vs-mesh occlusion
+    // (depthCompare=less-equal) is preserved.
     if (passKind === 'forward' && recordMode === undefined) {
       // Only legacy sprite recording consumes entity-level membership. Reuse
       // this invocation's selected dispatch; material/exclusion lanes have
@@ -1130,32 +1019,38 @@ export function recordMainPass(
         matchedIndices = new Set<number>();
         for (const entry of selectedDispatch) matchedIndices.add(entry.renderableIndex);
       }
-      geometryPassEnded = recordSpritePass(
+      recordSpritePass(
         c,
         pass,
         matchedIndices,
         materialSlotIndices,
         sampleCount,
         resolveMaterialBindGroup,
-        graphPass,
         selectedDispatch,
       );
     }
-  } // end if (validatedOrdered.length > 0) -- Case E falls through to pass.end()
-
-  if (!geometryPassEnded && graphPass === undefined) {
-    pass.end();
   }
   return gpuDrivenStandardPbrFrameResources;
 }
 
 /** One CPU material selection for graph admission and geometry recording. */
+export function selectMainPassDispatch(
+  c: MaterialSelectionContext,
+  selector: PassSelector,
+): DispatchList {
+  return (
+    c.mainPassMaterialSelection?.selectDispatch?.(c, selector) ??
+    filterDispatchBySelector(c.dispatch, selector)
+  );
+}
+
 export function selectMainPassMaterials(
   c: MaterialSelectionContext,
   selector: PassSelector | undefined,
   recordMode: MainPassOptions['recordMode'],
   excludeSelector?: PassSelector,
 ): ReadonlyMap<number, ReadonlySet<number>> | null {
+  if (c.validatedOrdered.length === 0) return new Map();
   return c.mainPassMaterialSelection === undefined
     ? selectMainPassMaterialsUncached(c, selector, recordMode, excludeSelector)
     : c.mainPassMaterialSelection.resolve(c, selector, recordMode, excludeSelector);
@@ -1179,47 +1074,39 @@ function selectMainPassMaterialsUncached(
 /** Qualify the same receiver selection used by the mandatory geometry pass.
  * This is a selection-domain check, not a replacement for cooked output ABI validation. */
 export function hasSsrSceneInputs(
-  c: MaterialSelectionContext,
+  c: {
+    readonly renderables: FrameList<import('../render-system-extract').RenderableSnapshot>;
+    readonly dispatch: import('../render-system-extract').DispatchList;
+    readonly materialFrame: import('../scene/material-dispatch').MaterialFrame;
+  },
   renderPath: 'forward' | 'deferred',
 ): boolean {
-  if (renderPath === 'forward') {
+  const read = (resource: import('../material-resource').MaterialResource) => {
+    const material = c.materialFrame?.get(resource)?.snapshot;
+    if (material === undefined)
+      throw new Error('SSR admission requires the accepted material frame');
+    return material;
+  };
+  if (renderPath === 'forward')
     return (
-      c.validatedOrdered.length > 0 &&
-      c.validatedOrdered.every(
-        (entry) => entry.source.material.materialShaderId === 'forgeax::default-standard-pbr',
+      c.renderables.length > 0 &&
+      c.renderables.every(
+        (source) => read(source.material).materialShaderId === 'forgeax::default-standard-pbr',
       )
     );
-  }
-  const selected = selectMainPassMaterials(c, DEFERRED_PASS_SELECTOR, 'opaque');
+  const selected = buildMatchedMaterialHandlesByRenderable(c.dispatch, DEFERRED_PASS_SELECTOR);
   if (selected === null) return false;
-  let receiverCount = 0;
-  for (const entry of c.validatedOrdered) {
-    const handles = selected.get(entry.renderableIndex);
+  let receivers = 0;
+  for (const [index, source] of c.renderables.entries()) {
+    const handles = selected.get(index);
     if (handles === undefined) continue;
-    for (const handle of handles) {
-      const material =
-        entry.source.materials.find((candidate) => (candidate.materialHandle ?? 0) === handle) ??
-        ((entry.source.material.materialHandle ?? 0) === handle
-          ? entry.source.material
-          : undefined);
-      if (
-        material === undefined ||
-        material.deferredPass !== true ||
-        material.surfaceModel === 'single-layer-medium' ||
-        material.transparent === true
-      )
-        return false;
-      receiverCount += 1;
+    for (const resource of source.materials.length === 0 ? [source.material] : source.materials) {
+      const material = read(resource);
+      if (!handles.has(material.materialHandle ?? 0) || !matchesRecordMode(material, 'opaque'))
+        continue;
+      if (material.deferredPass !== true) return false;
+      receivers++;
     }
   }
-  return receiverCount > 0;
-}
-
-export function encodeMainPass(
-  c: _InternalRenderPipelineContext,
-  pass: RhiRenderPassEncoder,
-  selector?: PassSelector,
-  options?: MainPassOptions,
-): GpuDrivenStandardPbrFrameResources | undefined {
-  return recordMainPass(c, selector, options, pass);
+  return receivers > 0;
 }

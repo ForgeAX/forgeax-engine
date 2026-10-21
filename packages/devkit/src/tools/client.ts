@@ -7,6 +7,7 @@ import {
   operationCommandPath,
   TOOL_REALMS,
   type ToolApi,
+  type ToolApiProviderInput,
   type ToolCommandHelp,
   type ToolCommandRegistry,
   type ToolContribution,
@@ -61,12 +62,9 @@ export interface ToolClient extends Pick<ToolCommandRegistry, 'help' | 'tree'> {
   readonly dispose?: () => Promise<void>;
 }
 
-interface ClientProviderInput {
-  readonly realm: import('@forgeax/engine-tool-runtime').ToolRealm;
-  readonly tools: readonly ToolContribution[];
-  readonly sourceId: string;
-  readonly providerId?: string;
-  readonly module?: string;
+interface ClientProviderInput
+  extends Pick<ToolApiProviderInput, 'realm' | 'tools' | 'sourceId' | 'module'> {
+  readonly providerId?: ToolApiProviderInput['providerId'];
 }
 
 interface HelpArgs {

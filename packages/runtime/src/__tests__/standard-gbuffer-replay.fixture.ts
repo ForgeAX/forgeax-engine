@@ -1,3 +1,4 @@
+import type { AssetRegistry } from '@forgeax/engine-assets-runtime';
 import { World } from '@forgeax/engine-ecs';
 import { createBoxGeometry } from '@forgeax/engine-geometry';
 import { halfFloat } from '@forgeax/engine-math';
@@ -118,10 +119,11 @@ async function verifyMissingLightingFalsifier(
 /** Production Renderer frames, strict v7 decode, fresh-device replay and post-work reads. */
 export async function verifyStandardGBufferReplay(
   renderer: Renderer,
+  assets: AssetRegistry,
   recorder: RecorderAttachment,
   save: SaveEvidence,
 ) {
-  const world = new World();
+  const world = new World({ assets });
   const original = renderer.inspect().profile;
   const errors: unknown[] = [];
   // Keep native devices until the live journey ends. Destroying a replay
@@ -133,25 +135,26 @@ export async function verifyStandardGBufferReplay(
   });
   const baseColor = [0.002, 0.02, 0.6, 0.37] as const;
   const emissive = [4, 2, 0.5] as const;
-  const material = world.allocSharedRef(
-    'MaterialAsset',
-    Materials.standard({
-      baseColor,
-      emissive,
-      emissiveIntensity: 1,
-      metallic: 0,
-      roughness: 0.13,
-      specularColor: [0.04, 0.2, 0.8],
-      ior: 1.8,
-    }),
-  );
+  const material = assets
+    .create(
+      Materials.standard({
+        baseColor,
+        emissive,
+        emissiveIntensity: 1,
+        metallic: 0,
+        roughness: 0.13,
+        specularColor: [0.04, 0.2, 0.8],
+        ior: 1.8,
+      }),
+    )
+    .unwrap();
   const receiver = world
     .spawn(
       { component: Transform, data: { pos: [0, 0, -6] } },
       {
         component: MeshFilter,
         data: {
-          assetHandle: world.allocSharedRef('MeshAsset', createBoxGeometry(4, 4, 0.1).unwrap()),
+          assetHandle: assets.create(createBoxGeometry(4, 4, 0.1).unwrap()).unwrap(),
         },
       },
       { component: MeshRenderer, data: { materials: [material] } },
@@ -244,29 +247,29 @@ export async function verifyStandardGBufferReplay(
           .unwrap();
         world
           .spawn(
-            { component: Transform, data: { pos: [2, 0, -6] } },
+            // Meet the rotated receiver within the default 0.25 m AO radius.
+            // The old 2 m placement only exposed quantized-normal self-occlusion.
+            { component: Transform, data: { pos: [1.4, 0, -6] } },
             {
               component: MeshFilter,
               data: {
-                assetHandle: world.allocSharedRef(
-                  'MeshAsset',
-                  createBoxGeometry(0.1, 4, 8).unwrap(),
-                ),
+                assetHandle: assets.create(createBoxGeometry(0.1, 4, 8).unwrap()).unwrap(),
               },
             },
             {
               component: MeshRenderer,
               data: {
                 materials: [
-                  world.allocSharedRef(
-                    'MaterialAsset',
-                    Materials.standard({
-                      baseColor: [0.3, 0.6, 0.1, 1],
-                      emissive: [0.2, 4, 0.4],
-                      metallic: 0,
-                      roughness: 0.8,
-                    }),
-                  ),
+                  assets
+                    .create(
+                      Materials.standard({
+                        baseColor: [0.3, 0.6, 0.1, 1],
+                        emissive: [0.2, 4, 0.4],
+                        metallic: 0,
+                        roughness: 0.8,
+                      }),
+                    )
+                    .unwrap(),
                 ],
               },
             },
@@ -425,17 +428,23 @@ export async function verifyStandardGBufferReplay(
           geometryPixels.filter((_, i) => i % 4 === 3),
         );
         const packed: number[] = [];
-        for (const resourceId of geometry.attachments.colorViewHandleIds.slice(1, 5)) {
+        let dielectricWord: number | undefined;
+        for (const [index, resourceId] of geometry.attachments.colorViewHandleIds
+          .slice(1, 5)
+          .entries()) {
           const read = (await replay.readResourceAtWork(resourceId, geometry.workIndex)).unwrap();
-          expect(read.format).toBe('r32uint');
-          expect(read.bytes.byteLength).toBe(64 * 64 * 4);
+          const channels = index === 1 ? 2 : 1;
+          expect(read.format).toBe(channels === 2 ? 'rg32uint' : 'r32uint');
+          expect(read.bytes.byteLength).toBe(64 * 64 * 4 * channels);
           const words = new Uint32Array(
             read.bytes.buffer,
             read.bytes.byteOffset,
             read.bytes.byteLength / 4,
           );
-          packed.push(words[32 * 64 + 32] ?? NaN);
-          await save(`${mode}-${resourceId.replace(':', '-')}.r32uint`, read.bytes);
+          const offset = (32 * 64 + 32) * channels;
+          packed.push(words[offset] ?? NaN);
+          if (channels === 2) dielectricWord = words[offset + 1];
+          await save(`${mode}-${resourceId.replace(':', '-')}.${read.format}`, read.bytes);
         }
         const [normalWord, f0Word, colorWord, contextWord] = packed;
         if (
@@ -446,6 +455,9 @@ export async function verifyStandardGBufferReplay(
         )
           throw new Error('missing packed GBuffer attachment');
         expect((normalWord >>> 24) / 255).toBeCloseTo(0.13, 2);
+        // This nonmetallic material has identical mixed and dielectric F0;
+        // both occlusion and dielectric F90 are one.
+        expect(dielectricWord).toBe(f0Word);
         expect(f0Word >>> 24).toBe(255);
         expect(colorWord >>> 24).toBe(0);
         expect(contextWord & 0xffffff).toBeGreaterThan(0);

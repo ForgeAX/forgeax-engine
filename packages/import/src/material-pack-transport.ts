@@ -1,4 +1,4 @@
-import { createMaterialArtifactDigest } from '@forgeax/engine-pack';
+import { createMaterialArtifactDigest, encodeMaterialProgramWire } from '@forgeax/engine-pack';
 
 function object(value: unknown): Record<string, unknown> | undefined {
   return value !== null && typeof value === 'object' && !Array.isArray(value)
@@ -84,7 +84,7 @@ export function projectMaterialPackTransport(pack: unknown): unknown {
   if (pack === null || typeof pack !== 'object') return pack;
   const document = pack as Record<string, unknown>;
   if (!Array.isArray(document.assets)) return pack;
-  return {
+  return encodeMaterialProgramWire({
     ...document,
     assets: document.assets.map((raw: unknown) => {
       if (raw === null || typeof raw !== 'object') return raw;
@@ -93,5 +93,5 @@ export function projectMaterialPackTransport(pack: unknown): unknown {
       const payload = projectMaterialPayloadTransport(asset.payload, asset.artifacts);
       return payload === asset.payload ? raw : { ...asset, payload };
     }),
-  };
+  });
 }

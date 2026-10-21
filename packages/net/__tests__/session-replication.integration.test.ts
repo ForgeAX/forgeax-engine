@@ -170,11 +170,12 @@ describe('NetSession replication integration', () => {
     const baseline = authority.publish().unwrap();
     const encoded = codec.encodeReplicationPacket(baseline, replication.limits).unwrap();
     const decode = vi.spyOn(codec, 'decodeReplicationPacket');
+    const apply = vi.spyOn(replica, 'apply');
     try {
       for (const expectedOutcome of ['accepted', 'duplicate']) {
         expect(authorityEndpoint.send(remotePeer.peerId, encoded).ok).toBe(true);
         expect(session.receiveEvents()).toEqual([]);
-        expect(replica.lastPacketOutcome).toBe(expectedOutcome);
+        expect(apply.mock.results.at(-1)?.value.unwrap()).toBe(expectedOutcome);
         const acknowledgements = authorityEndpoint.poll().filter((event) => event.kind === 'message');
         expect(acknowledgements).toHaveLength(1);
         const acknowledgement = acknowledgements[0];
@@ -201,6 +202,7 @@ describe('NetSession replication integration', () => {
       expect(replicaWorld.get(replicatedEntity, PositionSession).unwrap().x).toBe(11);
     } finally {
       decode.mockRestore();
+      apply.mockRestore();
       session.dispose();
     }
   });

@@ -2,7 +2,7 @@ import { randomUUID } from 'node:crypto';
 import { readdir, readFile, stat, writeFile } from 'node:fs/promises';
 import { basename, dirname, extname, resolve } from 'node:path';
 import { runCliFbx } from '@forgeax/engine-fbx/cli-fbx';
-import { bakeFont, realGeneratorFactory } from '@forgeax/engine-font/cli-font';
+import { bakeFont } from '@forgeax/engine-font/cli-font';
 import { runCliGltf } from '@forgeax/engine-gltf/cli-gltf';
 import { importMeshFile } from '@forgeax/engine-mesh-io';
 import { decodeCatalogWire } from '@forgeax/engine-pack';
@@ -183,7 +183,7 @@ async function addFont(sourcePath: string, dryRun: boolean): Promise<CommandResu
     };
   }
   try {
-    await bakeFont(sourcePath, output, realGeneratorFactory);
+    await bakeFont(sourcePath, output);
   } catch (cause) {
     if (cause !== null && typeof cause === 'object' && 'code' in cause) {
       const candidate = cause as Partial<CommandError>;
@@ -564,6 +564,22 @@ export async function assetVerifyCommand(
 export async function assetInspectCommand(
   options: AssetInspectOptions,
 ): Promise<CommandResult<unknown>> {
+  if (options.parametersOnly) {
+    const facts = await readProjectFacts(options.root);
+    if (!facts.ok) return facts;
+    const gateway = createFileSystemPackAuthoringGateway({ gameRoot: facts.value.root });
+    try {
+      const inspected = await gateway.execute({
+        operation: 'asset.inspect',
+        requestId: randomUUID(),
+        subject: options.subject,
+        parametersOnly: true,
+      });
+      return inspected.ok ? { ok: true, value: inspected.value } : ownerFailure(inspected.error);
+    } finally {
+      gateway.dispose?.();
+    }
+  }
   const packSource = await packSourceList(options);
   if (!packSource.ok) {
     return ownerFailure(packSource.error);

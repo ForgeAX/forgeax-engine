@@ -65,7 +65,7 @@ export default defineFeature({
   expect:
     'subscribe precedes enumerate, an early delta survives the baseline, changes replace rows by GUID, replacement releases the old source.',
   async run(checks) {
-    const assets = new AssetRegistry({} as never);
+    const assets = new AssetRegistry({ shaderRegistry: {} as never });
     const first = probeSource('first', (emit) =>
       emit({ added: [row(B, 'early')] as never, changed: [], removed: [] }),
     );

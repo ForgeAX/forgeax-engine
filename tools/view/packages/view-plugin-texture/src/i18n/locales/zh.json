@@ -29,6 +29,21 @@
     "white": "白色",
     "grayscale": "灰度",
     "rotateHint": "拖动旋转 · 滚轮缩放",
-    "panHint": "拖动平移 · 滚轮缩放"
+    "panHint": "拖动平移 · 滚轮缩放",
+    "information": "纹理信息",
+    "valueUnavailable": "不可用",
+    "yes": "是",
+    "no": "否",
+    "stats": {
+      "dimensions": "数据尺寸",
+      "dimension": "纹理维度",
+      "layers": "数组层数",
+      "depth": "深度",
+      "format": "格式",
+      "colorSpace": "色彩空间",
+      "mipPolicy": "Mip 策略",
+      "packedMips": "已打包 Mip 层数",
+      "dataBytes": "像素数据（字节）"
+    }
   }
 }

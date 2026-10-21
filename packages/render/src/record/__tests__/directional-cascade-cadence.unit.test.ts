@@ -1,8 +1,13 @@
 import { World } from '@forgeax/engine-ecs';
 import { createRenderReadLease } from '@forgeax/engine-ecs/projection';
 import { describe, expect, it } from 'vitest';
+import { MeshChanges, ShadowMeshReads } from '../../device/mesh-changes';
+import { worldRenderResources } from '../../publication/resource-scope';
 import type { ExtractedLights } from '../../render-system-extract';
+import { MaterialFrame } from '../../scene/material-dispatch';
+import { MeshFrame } from '../../scene/mesh-frame';
 import type { PersistentShadowCasterProjection } from '../../scene/render-scene';
+import { RenderScene } from '../../scene/render-scene';
 import {
   type DirectionalCascadeCadenceState,
   directionalCascadeDue,
@@ -56,10 +61,21 @@ describe('authored CPU directional cascade cadence', () => {
       directionalShadowQuality: { kind: 'pcf', kernel: 3 },
     } as unknown as ExtractedLights;
     const owner = {};
-    const shadowMesh = { contentEpoch: 1 };
+    const changes = new MeshChanges();
+    const reads = new ShadowMeshReads(changes);
+    reads.add(changes.create());
     const casters = (dispatchRevision: number) =>
       ({
-        content: { owner, sceneRevision: 1, dispatchRevision },
+        content: {
+          owner,
+          sceneRevision: 1,
+          dispatchRevision,
+          materials: new MaterialFrame(undefined),
+          meshes: new MeshFrame(),
+          subsurface: { source: 0, authorVisible: 0, admitted: 0 },
+        },
+        meshDraws: new RenderScene(),
+        prepareDrawDispatch: () => [],
         renderables: [],
         dispatch: [],
         worldBoundsOf: () => undefined,
@@ -68,11 +84,11 @@ describe('authored CPU directional cascade cadence', () => {
       prepareDirectionalShadowCache(
         internals,
         state,
-        [world],
+        [world].map(worldRenderResources),
         proven ? [lease] : undefined,
         input,
         1024,
-        [{ mesh: shadowMesh }] as never,
+        { reads, epoch: changes.epoch, change: 'quiet' },
         casters(dispatchRevision),
       );
     try {
@@ -89,6 +105,8 @@ describe('authored CPU directional cascade cadence', () => {
       expect(state.directionalShadowCache).toBe(accepted);
       expect(decide(2, false)).toEqual({ miss: 'uncached', next: null });
     } finally {
+      reads.release();
+      changes.reset();
       lease.dispose();
     }
   });
@@ -183,11 +201,20 @@ describe('authored CPU directional cascade cadence', () => {
         version: lease.captureVersion(),
       };
       const source = {
-        worlds: [world],
+        worlds: [worldRenderResources(world)],
+        shadowMaterials: undefined,
         worldStateTokens: [worldStateToken],
         assetCatalogEpoch: 1,
-        meshContent: [],
-        casterContent: { owner: {}, sceneRevision: 1, dispatchRevision: 1 },
+        meshReads: {} as ShadowMeshReads,
+        lodSelection: undefined,
+        casterContent: {
+          owner: {},
+          sceneRevision: 1,
+          dispatchRevision: 1,
+          materials: new MaterialFrame(undefined),
+          meshes: new MeshFrame(),
+          subsurface: { source: 0, authorVisible: 0, admitted: 0 },
+        },
       };
       expect(
         directionalShadowSourceChanged(source, {
@@ -195,9 +222,11 @@ describe('authored CPU directional cascade cadence', () => {
           casterContent: { ...source.casterContent, sceneRevision: 2 },
         }),
       ).toBe(false);
+      const unrelatedCatalog = { ...source, assetCatalogEpoch: 2 };
+      expect(directionalShadowSourceChanged(source, unrelatedCatalog)).toBe(false);
       for (const changed of [
-        { ...source, assetCatalogEpoch: 2 },
-        { ...source, meshContent: [{ mesh: {} as never, contentEpoch: 1 }] },
+        { ...source, meshReads: {} as ShadowMeshReads },
+        { ...source, lodSelection: {} },
         { ...source, worlds: [] },
         { ...source, casterContent: { ...source.casterContent, owner: {} } },
         { ...source, casterContent: { ...source.casterContent, dispatchRevision: 2 } },

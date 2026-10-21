@@ -62,6 +62,41 @@ async function scriptablePackFixture(count: number): Promise<string> {
 }
 
 describe('asset commands', () => {
+  it('checks only the requested parameter source even when the project has broken assets and output', async () => {
+    const root = await fixture();
+    try {
+      await writeFile(
+        resolve(root, 'assets', 'scene.pack.ts'),
+        `
+        throw new Error('must not import the scene for parameter inspection');
+        export default definePack({
+          schemaVersion: '2.0.0', packageId: definePackageId('01900000-0000-7000-8000-000000000099'),
+          parameters: [{ name: 'sunIntensity', type: 'f32', default: 3.2,
+            apply: { asset: 'scene/main', path: ['entities', 'sun', 'components', 'DirectionalLight', 'intensity'] } }],
+          build() { throw new Error('must not generate'); },
+        });
+      `,
+      );
+      await writeFile(
+        resolve(root, 'assets', 'broken.pack.ts'),
+        'throw new Error("unrelated source");',
+      );
+      await mkdir(resolve(root, 'dist'));
+      await writeFile(resolve(root, 'dist', 'asset-index.json'), 'invalid old output');
+      expect(
+        await assetInspectCommand({ root, subject: 'assets/scene.pack.ts', parametersOnly: true }),
+      ).toMatchObject({
+        ok: true,
+        value: {
+          status: 'identity',
+          parameters: [{ name: 'sunIntensity', mode: 'runtime', type: 'f32', default: 3.2 }],
+        },
+      });
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
   it('adds an image once and reuses its GUID', async () => {
     const root = await fixture();
     const first = await assetAddCommand({ root, path: 'assets/hero.png' });

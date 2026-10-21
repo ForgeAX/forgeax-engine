@@ -1,11 +1,11 @@
-import { HANDLE_CUBE } from '@forgeax/engine-assets-runtime';
+import { AssetRegistry } from '@forgeax/engine-assets-runtime';
 import { World } from '@forgeax/engine-ecs';
+import { createPrimitiveMesh } from '@forgeax/engine-geometry';
 import { type RhiNullDevice, rhi } from '@forgeax/engine-rhi-null';
-import { handleSlot } from '@forgeax/engine-types';
 import { expect, it, vi } from 'vitest';
 import { GpuResidencyCache } from '../device/gpu-residency';
-import { GpuDrivenMaterialProgramProjection } from '../gpu-driven/material-artifacts';
 import { RhiErrorListenerRegistry } from '../lifecycle';
+import { worldRenderResources } from '../publication/resource-scope';
 import { captureDispatchOverlays } from '../record/dispatch-overlays';
 import { validateRenderables } from '../record/fold-buckets';
 import type { RenderFrameState } from '../record/frame-snapshot';
@@ -21,14 +21,16 @@ it.each([
   true,
   'mismatch',
 ] as const)('captures the last dispatch overlay before residency callbacks (retained: %s)', async (retained) => {
-  const world = new World();
+  const assets = new AssetRegistry();
+  const world = new World({ assets });
+  const handle = assets.create(createPrimitiveMesh('cube').unwrap()).unwrap();
   const device = (
     await (await rhi.requestAdapter()).unwrap().requestDevice()
   ).unwrap() as RhiNullDevice;
-  const slot = handleSlot(HANDLE_CUBE),
+  const slot = handle,
     index = 42;
   const rows = Array<RenderableSnapshot>(index + 1);
-  rows[index] = preparedSnapshot(1, slot);
+  rows[index] = { ...preparedSnapshot(1, slot), assetHandle: handle };
   const entry = (passIndex: number, stencilReference: number): DispatchEntry => ({
     entityIndex: 0,
     renderableIndex: index,
@@ -43,7 +45,6 @@ it.each([
     vertexEntry: undefined,
     fragmentEntry: undefined,
     materialShaderId: undefined,
-    paramSnapshot: undefined,
   });
   const lastDispatch = entry(1, 11);
   const dispatch = [entry(0, 7), lastDispatch];
@@ -52,18 +53,17 @@ it.each([
     gpuStore: new GpuResidencyCache(),
     errorRegistry: new RhiErrorListenerRegistry(),
   } as RenderSystemInternals;
+  internals.gpuStore.configureGpuDevice(device, undefined, device.caps);
   const pipeline = { meshes: new Map([[slot, mesh(device)]]) } as unknown as PipelineState;
   const overlays = retained
-    ? new GpuDrivenMaterialProgramProjection().project(
-        retained === 'mismatch' ? [...dispatch] : dispatch,
-      ).overlays
+    ? captureDispatchOverlays(retained === 'mismatch' ? [...dispatch] : dispatch)
     : undefined;
   const writes = vi.spyOn(Map.prototype, 'set');
   try {
     const validated = validateRenderables(
       internals,
-      world,
-      [world],
+      worldRenderResources(world),
+      [world].map(worldRenderResources),
       pipeline,
       {} as RenderFrameState,
       rows,
@@ -104,7 +104,6 @@ it('retains undefined last-dispatch fields instead of earlier pass values', () =
     vertexEntry: undefined,
     fragmentEntry: undefined,
     materialShaderId: undefined,
-    paramSnapshot: undefined,
   };
   const first: DispatchEntry = {
     ...last,

@@ -6,7 +6,7 @@ import type {
   ToolSchema,
 } from '@forgeax/engine-tool-runtime';
 import type { ResourcePreviewFailure } from '../evidence/errors.js';
-import type { PreviewAssetLoadResult, PreviewHostMechanisms } from '../host/preview-host.js';
+import type { PreviewHostMechanisms } from '../host/preview-host.js';
 import { previewHostCapability } from '../host/preview-host.js';
 import { REQUIRED_PREVIEW_EVIDENCE } from '../host.js';
 import type { PreviewSubjectKind } from '../kit/presentation.js';
@@ -15,41 +15,33 @@ import { isNonemptyString, isRecord } from '../request-schema.js';
 /** Mechanisms sampled once by the existing preview Host session. */
 export type ResourcePreviewInput = Pick<
   PreviewHostMechanisms,
-  'assets' | 'renderer' | 'runId' | 'artifacts'
+  'subject' | 'renderer' | 'runId' | 'artifacts'
 >;
 
-export interface ResourceSubject extends Pick<PreviewAssetLoadResult, 'digest' | 'ownerFacts'> {
+export interface ResourceSubject
+  extends Pick<NonNullable<PreviewHostMechanisms['subject']>, 'digest' | 'ownerFacts'> {
   readonly guid: string;
   readonly asset: unknown;
 }
 
-export async function loadResourceSubject(
+export function readResourceSubject(
   guid: string,
   input: ResourcePreviewInput,
   kind: PreviewSubjectKind,
 ) {
-  if (input.assets === undefined)
+  const subject = input.subject;
+  if (subject === undefined || subject.guid !== guid)
     return subjectFailure(
       'resource-preview-subject-invalid',
-      'resource preview host to expose the existing AssetRegistry',
-      { phase: 'asset-registry', runId: input.runId },
+      `the Host to supply the requested ${kind} source facts`,
+      {
+        phase: 'subject',
+        runId: input.runId,
+        requestedGuid: guid,
+        suppliedGuid: subject?.guid ?? null,
+      },
     );
-  const loaded = await input.assets.loadByGuid<Record<string, unknown>>(guid);
-  if (!loaded.ok)
-    return assetLoadFailure(
-      `AssetRegistry.loadByGuid to resolve the requested ${kind}`,
-      input.runId,
-      loaded.error,
-    );
-  return {
-    ok: true as const,
-    value: {
-      guid,
-      asset: loaded.value,
-      ...(loaded.digest === undefined ? {} : { digest: loaded.digest }),
-      ...(loaded.ownerFacts === undefined ? {} : { ownerFacts: loaded.ownerFacts }),
-    },
-  };
+  return { ok: true as const, value: subject };
 }
 
 export interface ResourcePreviewArgs {
@@ -155,42 +147,10 @@ export function subjectFailure(
     error: {
       code,
       expected,
-      hint: 'Load the requested GUID through AssetRegistry.loadByGuid and repair the owner facts before retrying.',
+      hint: 'Read the requested source through the Catalog owner and repair its facts before retrying.',
       detail,
     },
   };
-}
-
-export function assetLoadFailure(
-  expected: string,
-  runId: string,
-  error: unknown,
-): ResourceSubjectFailure {
-  const owner = isRecord(error) ? error : undefined;
-  const ownerCode = typeof owner?.code === 'string' ? owner.code : undefined;
-  const ownerExpected = typeof owner?.expected === 'string' ? owner.expected : undefined;
-  const ownerHint = typeof owner?.hint === 'string' ? owner.hint : undefined;
-  const ownerDetail = owner?.detail;
-  return subjectFailure('resource-preview-subject-invalid', expected, {
-    phase: 'asset-load',
-    runId,
-    ...(ownerCode === undefined ? {} : { ownerCode }),
-    ...(ownerExpected === undefined ? {} : { ownerExpected }),
-    ...(ownerHint === undefined ? {} : { ownerHint }),
-    ...(ownerDetail === undefined ? {} : { ownerDetail: toJsonValue(ownerDetail) }),
-  });
-}
-
-function toJsonValue(value: unknown): JsonValue {
-  if (value === null || typeof value === 'string' || typeof value === 'boolean') return value;
-  if (typeof value === 'number' && Number.isFinite(value)) return value;
-  if (Array.isArray(value)) return value.map((entry) => toJsonValue(entry));
-  if (isRecord(value)) {
-    return Object.fromEntries(
-      Object.entries(value).map(([key, entry]) => [key, toJsonValue(entry)]),
-    );
-  }
-  return String(value);
 }
 
 // Keep emitted preview declarations tied to the declared Engine plugin owner.

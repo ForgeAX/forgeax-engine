@@ -1,19 +1,19 @@
-import { AssetRegistry, RuntimeMaterialValue } from '@forgeax/engine-assets-runtime';
+import { AssetRegistry } from '@forgeax/engine-assets-runtime';
 import { World } from '@forgeax/engine-ecs';
+import { createRenderReadLease } from '@forgeax/engine-ecs/projection';
 import { packInterleavedVertexAttributes } from '@forgeax/engine-geometry';
 import { mat4 } from '@forgeax/engine-math';
 import { registerPropagateTransforms, Transform } from '@forgeax/engine-scene';
-import { ShaderRegistry } from '@forgeax/engine-shader';
 import { Skin } from '@forgeax/engine-skinning';
 import type { MaterialAsset, MeshAsset } from '@forgeax/engine-types';
 import { expect, it } from 'vitest';
 import { MeshFilter, MeshRenderer } from '../components';
-import type { MaterialSnapshotCachesByWorld } from '../render-system-extract';
 import { extractFrames } from '../render-system-extract-tail';
+import { PersistentRenderScene } from '../scene/render-scene';
 
-function source() {
+function source(): MaterialAsset {
   return {
-    kind: 'material' as const,
+    kind: 'material',
     passes: [
       {
         name: 'forward',
@@ -22,25 +22,13 @@ function source() {
       },
     ],
     values: { baseColor: [1, 0, 0, 1] },
-  } satisfies MaterialAsset;
+  };
 }
-function freeze<T>(value: T): T {
-  if (value !== null && typeof value === 'object') {
-    for (const child of Object.values(value)) freeze(child);
-    Object.freeze(value);
-  }
-  return value;
-}
-function fixture(material: MaterialAsset, registry?: ShaderRegistry) {
-  const world = new World();
+
+function fixture(material = source()) {
+  const assets = new AssetRegistry();
+  const world = new World({ assets });
   registerPropagateTransforms(world);
-  const assets = new AssetRegistry(
-    registry ??
-      ({
-        materialArtifact: () => undefined,
-        findMaterialArtifact: () => ({ ok: false, error: Error('not registered') }),
-      } as unknown as ShaderRegistry),
-  );
   const attributes = {
     position: new Float32Array([0, 0, 0, 1, 0, 0, 0, 1, 0]),
     skinIndex: new Uint16Array(12),
@@ -57,13 +45,11 @@ function fixture(material: MaterialAsset, registry?: ShaderRegistry) {
     ],
     materialSlots: [{ slotName: 'body' }],
   };
-  const mesh = world.allocSharedRef('MeshAsset', geometry),
-    handle = world.allocSharedRef('MaterialAsset', material);
-  const skeleton = world.allocSharedRef('SkeletonAsset', {
-    kind: 'skeleton',
-    jointCount: 1,
-    inverseBindMatrices: mat4.identity(mat4.create()),
-  });
+  const mesh = assets.create(geometry).unwrap();
+  const handle = assets.create(material).unwrap();
+  const skeleton = assets
+    .create({ kind: 'skeleton', jointCount: 1, inverseBindMatrices: mat4.identity(mat4.create()) })
+    .unwrap();
   const joint = world.spawn({ component: Transform, data: {} }).unwrap();
   const spawn = () =>
     world
@@ -75,137 +61,153 @@ function fixture(material: MaterialAsset, registry?: ShaderRegistry) {
       )
       .unwrap();
   const first = spawn(),
-    second = spawn(),
-    caches: MaterialSnapshotCachesByWorld = new WeakMap();
+    second = spawn();
+  const scene = new PersistentRenderScene();
+  const caches = scene.materialSnapshotCacheStore();
+  const lease = createRenderReadLease(world);
+  let requestedEntities = 0;
   const extract = () => {
     world.update(1 / 60).unwrap();
-    return extractFrames([world], 0, assets, undefined, caches);
+    return scene.extractComposition(
+      [world],
+      { cameraOwner: 0, resourceOwner: 0 },
+      assets,
+      (request) => {
+        if (typeof request !== 'string' && request.kind === 'partial')
+          for (const entities of request.entitiesByWorld) requestedEntities += entities?.size ?? 0;
+        return extractFrames([world], 0, assets, undefined, caches, {
+          cull: 'none',
+          retainHidden: true,
+          renderables: request,
+        });
+      },
+      [lease],
+    );
   };
-  return { world, assets, geometry, mesh, handle, joint, first, second, spawn, extract };
+  return {
+    world,
+    assets,
+    geometry,
+    mesh,
+    handle,
+    joint,
+    first,
+    second,
+    spawn,
+    extract,
+    requested: () => requestedEntities,
+    dispose: () => {
+      scene.dispose();
+      lease.dispose();
+      assets.dispose();
+    },
+  };
 }
 
-it('reuses frozen skin materials across real poses but observes runtime value writes and retirement', () => {
-  const f = fixture(freeze(source()));
+it('adopts a shared skin material without extracting its entities or mutating an earlier snapshot', () => {
+  const f = fixture();
   try {
+    for (let i = 0; i < 126; i++) f.spawn();
     const initial = f.extract().renderables;
-    expect(initial).toHaveLength(2);
-    expect(initial[0]?.material).toBe(initial[1]?.material);
-    expect(initial[0]?.material.immutableValues).toBe(true);
+    expect(initial).toHaveLength(128);
+    const resource = initial.at(0)?.material;
+    if (resource === undefined) throw new Error('missing skin material');
+    const snapshot = resource.snapshot;
+    expect(initial.every((row) => row.material === resource)).toBe(true);
+    expect(snapshot.immutableValues).toBe(true);
     f.world.set(f.joint, Transform, { pos: [2, 0, 0] }).unwrap();
     const moved = f.extract().renderables;
-    expect(moved[0]?.material).toBe(initial[0]?.material);
-    expect(moved[0]?.skinPose?.jointWorlds[0]?.[12]).toBe(2);
-    const value = f.world
-      .spawn({
-        component: RuntimeMaterialValue,
-        data: { asset: f.handle, parameter: 'baseColor', kind: 2, value: [0, 1, 0, 1] },
-      })
-      .unwrap();
-    const green = f.extract().renderables[0]?.material;
-    expect(Array.from(green?.baseColor ?? [])).toEqual([0, 1, 0]);
-    expect(green).not.toBe(initial[0]?.material);
-    f.world.despawn(value).unwrap();
-    expect(Array.from(f.extract().renderables[0]?.material.baseColor ?? [])).toEqual([1, 0, 0]);
-    expect(Array.from(initial[0]?.material.baseColor ?? [])).toEqual([1, 0, 0]);
+    expect(moved.at(0)?.material).toBe(resource);
+    expect(moved.at(0)?.skinPose?.jointWorlds[0]?.[12]).toBe(2);
+    const requested = f.requested();
+    f.assets.update(f.handle, { values: { baseColor: [0, 1, 0, 1] } }).unwrap();
+    const green = f.extract().renderables;
+    expect(f.requested()).toBe(requested);
+    expect(green.at(0)?.material).toBe(resource);
+    expect(Array.from(resource.snapshot.baseColor)).toEqual([0, 1, 0]);
+    expect(Array.from(snapshot.baseColor)).toEqual([1, 0, 0]);
   } finally {
-    f.assets.invalidateAll();
+    f.dispose();
   }
 });
 
-it('does not use a shared frozen snapshot to admit a later invalid skin mesh', () => {
-  const f = fixture(freeze(source()));
+it('validates each skin binding even when another entity already admitted the shared material', () => {
+  const f = fixture();
   try {
     f.extract();
-    const invalid = { ...f.geometry, attributes: { position: f.geometry.attributes.position } };
-    const mesh = f.world.allocSharedRef('MeshAsset', invalid);
+    const position = f.geometry.attributes.position;
+    if (position === undefined) throw new Error('missing fixture positions');
+    const attributes = { position };
+    const mesh = f.assets
+      .create({
+        ...f.geometry,
+        attributes,
+        vertices: packInterleavedVertexAttributes(attributes, 3).unwrap().vertices,
+      })
+      .unwrap();
     f.world.set(f.second, MeshFilter, { assetHandle: mesh }).unwrap();
     const next = f.extract().renderables;
     expect(next.some((row) => row.entityKey === f.first)).toBe(true);
     expect(next.some((row) => row.entityKey === f.second)).toBe(false);
   } finally {
-    f.assets.invalidateAll();
+    f.dispose();
   }
 });
 
-it('keeps mutable and getter-bearing skin material sources on the original projection path', () => {
-  const material = source(),
-    f = fixture(material);
+it('owns mutable author input and rejects accessors without executing them', () => {
+  const input = source();
+  const f = fixture(input);
   try {
     const first = f.extract().renderables;
-    expect(first[0]?.material).not.toBe(first[1]?.material);
-    material.values.baseColor[0] = 0;
-    material.values.baseColor[2] = 1;
-    expect(Array.from(f.extract().renderables[0]?.material.baseColor ?? [])).toEqual([0, 0, 1]);
+    expect(first.at(0)?.material).toBe(first.at(1)?.material);
+    const color = input.values?.baseColor as number[];
+    color[0] = 0;
+    color[2] = 1;
+    expect(Array.from(f.extract().renderables.at(0)?.material.snapshot.baseColor ?? [])).toEqual([
+      1, 0, 0,
+    ]);
+    let reads = 0;
+    expect(
+      f.assets.create({
+        ...input,
+        get values() {
+          reads++;
+          return input.values ?? {};
+        },
+      }).ok,
+    ).toBe(false);
+    expect(reads).toBe(0);
   } finally {
-    f.assets.invalidateAll();
-  }
-  let reads = 0;
-  const value = freeze(source()),
-    accessor = Object.freeze({
-      ...value,
-      get values() {
-        reads++;
-        return value.values;
-      },
-    }),
-    other = fixture(accessor);
-  try {
-    const first = other.extract().renderables;
-    const before = reads;
-    const second = other.extract().renderables;
-    expect(reads).toBeGreaterThan(before);
-    expect(first[0]?.material).not.toBe(first[1]?.material);
-    expect(second[0]?.material).not.toBe(first[0]?.material);
-  } finally {
-    other.assets.invalidateAll();
+    f.dispose();
   }
 });
 
-it('invalidates a frozen skin snapshot when its late shader artifact is admitted', () => {
-  const registry = new ShaderRegistry({ manifestUrl: undefined });
-  const f = fixture(freeze(source()), registry);
+it('shares program-context resources between primary and secondary material slots', () => {
+  const f = fixture();
   try {
-    const initial = f.extract().renderables[0]?.material;
-    registry.installMaterialArtifact('forgeax::pbr-skin', {
-      source: 'fn admitted() {}',
-      paramSchema: [],
-    });
-    const admitted = f.extract().renderables[0]?.material;
-    expect(admitted).toBeDefined();
-    expect(admitted).not.toBe(initial);
-    expect(f.extract().renderables[0]?.material).toBe(admitted);
-  } finally {
-    f.assets.invalidateAll();
-  }
-});
-
-it('keeps secondary material resolution separate from primary skin admission', () => {
-  const red = freeze(source()),
-    blue = freeze({ ...source(), values: { baseColor: [0, 0, 1, 1] } });
-  const f = fixture(red);
-  try {
-    const blueHandle = f.world.allocSharedRef('MaterialAsset', blue);
+    const blue = f.assets.create({ ...source(), values: { baseColor: [0, 0, 1, 1] } }).unwrap();
     const submesh = f.geometry.submeshes[0];
-    if (submesh === undefined) throw Error('fixture submesh is required');
-    const geometry = {
-      ...f.geometry,
-      materialSlots: [{ slotName: 'body' }, { slotName: 'other' }],
-      submeshes: [...f.geometry.submeshes, { ...submesh, materialSlot: 1 }],
-    };
-    const mesh = f.world.allocSharedRef('MeshAsset', geometry);
+    if (submesh === undefined) throw new Error('missing fixture submesh');
+    const mesh = f.assets
+      .create({
+        ...f.geometry,
+        materialSlots: [{ slotName: 'body' }, { slotName: 'other' }],
+        submeshes: [submesh, { ...submesh, materialSlot: 1 }],
+      })
+      .unwrap();
     f.world.set(f.first, MeshFilter, { assetHandle: mesh }).unwrap();
     f.world.set(f.second, MeshFilter, { assetHandle: mesh }).unwrap();
-    f.world.set(f.first, MeshRenderer, { materials: [f.handle, blueHandle] }).unwrap();
-    f.world.set(f.second, MeshRenderer, { materials: [blueHandle, f.handle] }).unwrap();
+    f.world.set(f.first, MeshRenderer, { materials: [f.handle, blue] }).unwrap();
+    f.world.set(f.second, MeshRenderer, { materials: [blue, f.handle] }).unwrap();
     const first = f.extract().renderables;
     expect(first).toHaveLength(2);
-    expect(Array.from(first[0]?.materials?.[1]?.baseColor ?? [])).toEqual([0, 0, 1]);
-    expect(Array.from(first[1]?.material.baseColor ?? [])).toEqual([0, 0, 1]);
-    expect(first[1]?.material).not.toBe(first[0]?.materials?.[1]);
-    const second = f.extract().renderables;
-    expect(second[0]?.material).toBe(first[0]?.material);
-    expect(second[1]?.material).toBe(first[1]?.material);
+    expect(first.at(0)?.material).toBe(first.at(1)?.materials[1]);
+    expect(first.at(1)?.material).toBe(first.at(0)?.materials[1]);
+    f.assets.update(blue, { values: { baseColor: [0, 1, 0, 1] } }).unwrap();
+    const next = f.extract().renderables;
+    expect(next.at(0)?.materials[1]).toBe(first.at(1)?.material);
+    expect(Array.from(first.at(1)?.material.snapshot.baseColor ?? [])).toEqual([0, 1, 0]);
   } finally {
-    f.assets.invalidateAll();
+    f.dispose();
   }
 });

@@ -1,3 +1,5 @@
+import type { AssetHandle } from '@forgeax/engine-types';
+
 // apps/tetris — Tetris built on @forgeax/engine-runtime.
 //
 // Architecture: pure game state in `./game` + `./pieces`; a pool of ECS
@@ -9,8 +11,9 @@
 // entities. Empty cells are hidden by collapsing the transform scale to 0
 // (vertices collapse to a single NDC point, no fragments emitted).
 
-import { HANDLE_CUBE } from '@forgeax/engine-assets-runtime';
+import { AssetRegistry } from '@forgeax/engine-assets-runtime';
 import { type EntityHandle, World } from '@forgeax/engine-ecs';
+import { createPrimitiveMesh } from '@forgeax/engine-geometry';
 import {
   Camera,
   DirectionalLight,
@@ -19,14 +22,8 @@ import {
   MeshRenderer,
   perspective,
 } from '@forgeax/engine-render';
-import {
-  createRenderer,
-  EngineEnvironmentError,
-  type Handle,
-  type MaterialAsset,
-} from '@forgeax/engine-runtime';
+import { createRenderer, EngineEnvironmentError } from '@forgeax/engine-runtime';
 import { Transform } from '@forgeax/engine-scene';
-
 import {
   BOARD_H,
   BOARD_W,
@@ -67,7 +64,10 @@ resizeCanvas(canvas);
 window.addEventListener('resize', () => resizeCanvas(canvas));
 
 const game = createGame();
-const world = new World();
+const sceneAssets = new AssetRegistry();
+const world = new World({ assets: sceneAssets });
+
+const primitiveCube = sceneAssets.create(createPrimitiveMesh('cube').unwrap()).unwrap();
 
 // Entity pools: one per board cell + one per preview cell. References stay
 // stable for the lifetime of the page; the per-frame render walk only mutates
@@ -231,7 +231,7 @@ function spawnGrid(w: World, count: number): EntityHandle[] {
           scale: [HIDDEN_SCALE, HIDDEN_SCALE, HIDDEN_SCALE],
         },
       },
-      { component: MeshFilter, data: { assetHandle: HANDLE_CUBE } },
+      { component: MeshFilter, data: { assetHandle: primitiveCube } },
       {
         component: MeshRenderer,
         data: {},
@@ -247,7 +247,7 @@ function spawnGrid(w: World, count: number): EntityHandle[] {
 // reused thereafter via a Map keyed on the quantised RGB string. AI users
 // reading this pattern see one MaterialAsset per palette entry, not one
 // per cell — the AssetRegistry keeps the handle space bounded.
-const materialCache = new Map<string, Handle<'MaterialAsset', 'shared'>>();
+const materialCache = new Map<string, AssetHandle<'material'>>();
 
 function colorKey(r: number, g: number, b: number): string {
   // Quantise to 1/256 so floating-point drift between paint frames does
@@ -258,14 +258,11 @@ function colorKey(r: number, g: number, b: number): string {
   return `${qr},${qg},${qb}`;
 }
 
-function materialFor(r: number, g: number, b: number): Handle<'MaterialAsset', 'shared'> | null {
+function materialFor(r: number, g: number, b: number): AssetHandle<'material'> | null {
   const key = colorKey(r, g, b);
   const cached = materialCache.get(key);
   if (cached !== undefined) return cached;
-  const handle = world.allocSharedRef<'MaterialAsset', MaterialAsset>(
-    'MaterialAsset',
-    Materials.unlit([r, g, b, 1]),
-  );
+  const handle = sceneAssets.create(Materials.unlit([r, g, b, 1])).unwrap();
   materialCache.set(key, handle);
   return handle;
 }

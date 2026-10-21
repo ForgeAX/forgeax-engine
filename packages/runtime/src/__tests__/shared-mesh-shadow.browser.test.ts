@@ -13,6 +13,7 @@ import { propagateTransforms, scenePlugin, Transform } from '@forgeax/engine-sce
 import { expect, it } from 'vitest';
 import { drawReadyFrame } from '../../../../scripts/test/ready-render-frame.mjs';
 import { constructRuntimeRendererHost } from '../renderer-host';
+import { testAssets } from './helpers/runtime-assets';
 
 it.each([
   { vertexColor: false, lod: true },
@@ -39,13 +40,11 @@ it.each([
   const unsubscribe = renderer.subscribe((event) => {
     if (event.kind === 'error') errors.push(event.error.message);
   });
-  const world = new World();
+  const world = new World({ assets });
   const context = await createWorldContext(world, [scenePlugin()]);
-  const material = world.allocSharedRef(
-    'MaterialAsset',
-    Materials.standard({ baseColor: [0.6, 0.6, 0.6, 1], roughness: 1 }),
-  );
-  const lowerGuid = assets.parseGuid('00000000-0000-7000-8000-000000000021');
+  const material = testAssets(world)
+    .create(Materials.standard({ baseColor: [0.6, 0.6, 0.6, 1], roughness: 1 }))
+    .unwrap();
   const base = createBoxGeometry(1, 3, 1).unwrap();
   const positions = base.attributes.position;
   if (!(positions instanceof Float32Array) || base.indices === undefined) {
@@ -60,10 +59,12 @@ it.each([
   })
     .build()
     .unwrap();
-  assets.catalog(lowerGuid, colored).unwrap();
-  const box = lod ? { ...colored, lods: [{ mesh: lowerGuid, screenCoverage: 0.25 }] } : colored;
-  const shared = world.allocSharedRef('MeshAsset', box);
-  const floor = world.allocSharedRef('MeshAsset', createBoxGeometry(24, 0.2, 24).unwrap());
+  const lowerHandle = assets.create(colored).unwrap();
+  const box = lod ? { ...colored, lods: [{ mesh: lowerHandle, screenCoverage: 0.25 }] } : colored;
+  const shared = testAssets(world).create(box).unwrap();
+  const floor = testAssets(world)
+    .create(createBoxGeometry(24, 0.2, 24).unwrap())
+    .unwrap();
   world
     .spawn(
       { component: Transform, data: { pos: [0, -0.1, 0] } },
@@ -176,9 +177,11 @@ it.each([
     expect(ownership.gpuOwnedEntityCount).toBeGreaterThan(0);
     if (!lod) expect(ownership.cpuFallbackDrawItems, 'GPU-only retained shadow workload').toBe(0);
     for (const entity of casters) {
-      const independent = world.allocSharedRef('MeshAsset', { ...box });
+      const independent = testAssets(world)
+        .create({ ...box })
+        .unwrap();
       world.set(entity, MeshFilter, { assetHandle: independent }).unwrap();
-      world.sharedRefs.release(independent).unwrap();
+      testAssets(world).release(independent).unwrap();
     }
     const separate = await capture();
     world.set(sun, DirectionalLight, { castShadow: false }).unwrap();

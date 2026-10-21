@@ -83,6 +83,26 @@ it('preserves only fields belonging to failed consumers and retires unrelated fi
   }
 });
 
+it('reuses an unchanged accepted scene without enumerating its Mesh holders', async () => {
+  const f = await fixture();
+  try {
+    f.owner.begin();
+    const first = f.owner.prepare('a', f.request, f.source());
+    f.owner.complete(true);
+    const source = f.source();
+    Object.defineProperty(source.retained, 'slots', {
+      get() {
+        throw new Error('unchanged Scene SDF must not enumerate scene slots');
+      },
+    });
+    f.owner.begin();
+    expect(f.owner.prepare('a', f.request, source).buffer).toBe(first.buffer);
+    f.owner.complete(true);
+  } finally {
+    f.owner.dispose();
+  }
+});
+
 it.each([
   { world: -1 },
   { world: 0.5 },

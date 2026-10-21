@@ -111,6 +111,7 @@ export function createPackAuthoringContributions(
                     ? await assets.assetInspectCommand({
                         root: projectRoot,
                         subject: String(raw.subject ?? ''),
+                        ...(raw.parametersOnly === true ? { parametersOnly: true } : {}),
                       })
                     : await assets.assetResolveCommand({
                         root: projectRoot,

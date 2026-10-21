@@ -18,7 +18,7 @@ import { createUiImporter } from '@forgeax/engine-ui/importer';
 import { createServer } from 'vite';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
-  createAssetRegistry,
+  AssetRegistry,
   createCatalogHotSubscription,
   createCatalogSource,
   defineAssetKind,
@@ -136,7 +136,7 @@ describe('DevSession through a real Vite server', () => {
         },
       },
     });
-    const registry = createAssetRegistry({ catalog: source });
+    const registry = new AssetRegistry({ catalog: source });
     const kind = defineAssetKind<UiAsset, 'ui'>('ui');
     registry.installDecoder(kind, {
       async decode({ envelope }) {
@@ -154,7 +154,11 @@ describe('DevSession through a real Vite server', () => {
     try {
       const loaded = await registry.load(GUID, kind);
       expect(loaded.ok, JSON.stringify(loaded)).toBe(true);
-      expect(loaded).toMatchObject({ ok: true, value: { guid: GUID, html: '<div>guide</div>' } });
+      const reference = loaded.unwrap();
+      expect(registry.read(reference).unwrap()).toMatchObject({
+        guid: GUID,
+        html: '<div>guide</div>',
+      });
       expect(imported).toHaveBeenCalledTimes(1);
       const after = decodeCatalogWire(await (await fetch(catalogUrl)).json()).unwrap();
       expect(after.find((row) => row.guid === GUID)).toMatchObject({
@@ -164,15 +168,16 @@ describe('DevSession through a real Vite server', () => {
       expect(after.find((row) => row.guid === unused)).toMatchObject({
         lifecycle: 'missing',
       });
-      expect(registry.snapshot().ready).toEqual([GUID]);
+      expect(registry.inspectSource()?.ready).toEqual([GUID]);
       expect(send).toHaveBeenCalledWith(
         expect.objectContaining({ type: 'custom', event: 'forgeax:catalog-delta' }),
       );
       const refreshed = await registry.load(GUID, kind);
       expect(refreshed.ok, JSON.stringify(refreshed)).toBe(true);
-      expect(refreshed).toMatchObject({
-        ok: true,
-        value: { guid: GUID, html: '<div>guide</div>' },
+      expect(refreshed.unwrap()).toBe(reference);
+      expect(registry.read(refreshed.unwrap()).unwrap()).toMatchObject({
+        guid: GUID,
+        html: '<div>guide</div>',
       });
     } finally {
       registry.dispose();

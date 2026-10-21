@@ -31,4 +31,20 @@ describe('exclusive tool timing', () => {
     timing.end('lookup');
     expect(() => timing.end('lookup')).toThrow();
   });
+
+  it.each(['record', 'end'] as const)('keeps %s observations closed across every entrypoint', (close) => {
+    const timing = createExclusiveTiming(() => 10);
+    if (close === 'record') timing.record('lookup', 3);
+    else {
+      timing.begin('lookup');
+      timing.end('lookup');
+    }
+    const first = timing.finish();
+    expect(() => timing.begin('lookup')).toThrow('already closed');
+    expect(() => timing.record('lookup', 2)).toThrow('already closed');
+    timing.record('execute', 5);
+    expect(first.phases.execute).toEqual({ status: 'not-applicable' });
+    expect(timing.finish().phases.lookup).toEqual(first.phases.lookup);
+  });
+
 });

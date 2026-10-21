@@ -1,5 +1,9 @@
 import type { RhiCanvasTarget } from '@forgeax/engine-rhi';
-import { limitExceeded, shaderCompileFailed } from '@forgeax/engine-rhi';
+import {
+  limitExceeded,
+  projectAdapterCapabilities,
+  shaderCompileFailed,
+} from '@forgeax/engine-rhi';
 // @forgeax/engine-rhi-webgpu — thin WebGPU shim implementing the @forgeax/engine-rhi interface shape.
 //
 // Shape rules (shared between README + AGENTS.md '## RHI / WebGPU' section):
@@ -352,22 +356,11 @@ function makeRhiAdapter(rawAdapter: GpuAdapterLike): RhiAdapter {
   // (the spec mandates them on real adapters, but unit-test mocks
   // historically expose only `requestDevice`). Defaults to empty
   // projections; real adapters always supply both fields.
-  const rawFeatures = rawAdapter.features as unknown as ReadonlySet<GPUFeatureName> | undefined;
-  const features: ReadonlySet<GPUFeatureName> =
-    rawFeatures !== undefined && rawFeatures !== null
-      ? new Set(rawFeatures)
-      : new Set<GPUFeatureName>();
-  const limitsRaw = (rawAdapter.limits as unknown as Record<string, unknown> | undefined) ?? {};
-  const limits: Record<string, number> = {};
-  for (const key in limitsRaw) {
-    const v = limitsRaw[key];
-    if (typeof v === 'number') {
-      limits[key] = v;
-    }
-  }
   return {
-    features,
-    limits: limits as Readonly<Record<string, number>>,
+    ...projectAdapterCapabilities(
+      rawAdapter.features as unknown as ReadonlySet<GPUFeatureName> | undefined,
+      rawAdapter.limits as unknown as Record<string, unknown> | undefined,
+    ),
     async requestDevice(
       opts?: ForgeaXRequestDeviceOptions | undefined,
     ): Promise<Result<RhiDevice, RhiError>> {

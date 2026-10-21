@@ -1,3 +1,4 @@
+import type { RenderTextureSourceToken } from '@forgeax/engine-types';
 import { mipDimension, numMipLevels } from '@forgeax/engine-types';
 import type { RenderError } from '../errors/render';
 import {
@@ -64,7 +65,6 @@ export function renderTargetLayerCount(descriptor: RenderTargetDescriptor): numb
 }
 
 declare const RenderTargetBrand: unique symbol;
-declare const RenderTargetTextureSourceBrand: unique symbol;
 declare const RenderTargetReadbackTicketBrand: unique symbol;
 
 /** Opaque logical target lease owned by one Renderer. */
@@ -81,8 +81,8 @@ export interface RenderTargetTextureSourceOptions {
 }
 
 /** Renderer-local runtime material source; it is not an asset handle. */
-export interface RenderTargetTextureSource {
-  readonly [RenderTargetTextureSourceBrand]: 'RenderTargetTextureSource';
+export interface RenderTargetTextureSource extends RenderTextureSourceToken {
+  readonly source: 'target';
 }
 
 export interface RenderTargetReadbackRequest {

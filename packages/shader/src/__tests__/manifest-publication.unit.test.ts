@@ -21,8 +21,9 @@ const digest = sourceDigest([wgsl]);
 
 function publication() {
   return {
-    schemaVersion: '4.0.0',
+    schemaVersion: '5.0.0',
     receipts: [],
+    entryPoints: [],
     fragments: ['fn main() {}\n'],
     sources: { [digest]: [0] },
     entries: [{ hash: 'a', bindings: '[]', sourceDigest: digest }],
@@ -39,6 +40,62 @@ function publication() {
 }
 
 describe('shader publication admission', () => {
+  it('owns shared entry-read facts before awaiting and rejects invalid or unused references', async () => {
+    const fields = ['roughness'];
+    const reads = [
+      {
+        name: 'main',
+        stage: 'fragment',
+        bindings: [{ group: 1, binding: 0, fields }],
+      },
+    ];
+    const value = {
+      ...publication(),
+      entryPoints: [reads, []],
+      entries: [{ ...publication().entries[0], entryPointsIndex: 0 }],
+      materialShaders: [
+        {
+          ...publication().materialShaders[0],
+          entryPointsIndex: 0,
+          variants: [{ ...publication().materialShaders[0]?.variants[0], entryPointsIndex: 1 }],
+        },
+      ],
+    };
+    const pending = readShaderManifestPublication(value);
+    fields[0] = 'changed during verification';
+    const expanded = (await pending) as {
+      entries: { entryPoints: typeof reads }[];
+      materialShaders: { entryPoints: typeof reads; variants: { entryPoints: typeof reads }[] }[];
+    };
+    expect(expanded.entries[0]?.entryPoints[0]?.bindings[0]?.fields).toEqual(['roughness']);
+    expect(expanded.materialShaders[0]?.entryPoints).toBe(expanded.entries[0]?.entryPoints);
+    expect(expanded.materialShaders[0]?.variants[0]?.entryPoints).toEqual([]);
+    expect(Object.isFrozen(expanded.entries[0]?.entryPoints[0]?.bindings[0]?.fields)).toBe(true);
+    for (const entryPointsIndex of [-1, 2, 0.5, '0', null, undefined]) {
+      await expect(
+        readShaderManifestPublication({
+          ...value,
+          entries: [{ ...value.entries[0], entryPointsIndex }],
+        }),
+      ).rejects.toThrow('entry points reference');
+    }
+    await expect(
+      readShaderManifestPublication({ ...value, entryPoints: [...value.entryPoints, []] }),
+    ).rejects.toThrow('entry points table has unused entries');
+    await expect(
+      readShaderManifestPublication({ ...value, entryPoints: [null, []] }),
+    ).rejects.toThrow('Invalid shader manifest publication');
+    await expect(
+      readShaderManifestPublication({
+        ...value,
+        entries: [{ ...value.entries[0], entryPoints: reads }],
+      }),
+    ).rejects.toThrow('one source digest');
+    await expect(
+      readShaderManifestPublication({ ...value, schemaVersion: '4.0.0' }),
+    ).rejects.toThrow('Unsupported shader manifest publication version');
+  });
+
   it('matches boot aliases without expanding unselected material sources', async () => {
     const expanded = (await readShaderManifestPublication(publication())) as {
       materialShaders: { composedWgsl: string; variants: { composedWgsl: string }[] }[];
@@ -112,8 +169,9 @@ describe('shader publication admission', () => {
     });
     try {
       const expanded = (await readShaderManifestPublication({
-        schemaVersion: '4.0.0',
+        schemaVersion: '5.0.0',
         receipts: [],
+        entryPoints: [],
         fragments,
         sources: Object.fromEntries(digests.map((hash, index) => [hash, [index]])),
         entries: digests.map((sourceDigest, index) => ({
@@ -205,8 +263,9 @@ describe('shader publication admission', () => {
     const fragments = ['fn a() {}\n', 'fn b() {}\n'];
     const digest = sourceDigest(fragments);
     const value = {
-      schemaVersion: '4.0.0',
+      schemaVersion: '5.0.0',
       receipts: [],
+      entryPoints: [],
       fragments,
       sources: { [digest]: [0, 1] },
       entries: [{ hash: 'ordered', bindings: '[]', sourceDigest: digest }],
@@ -240,8 +299,9 @@ describe('shader publication admission', () => {
     };
     vi.stubGlobal('crypto', { subtle });
     await readShaderManifestPublication({
-      schemaVersion: '4.0.0',
+      schemaVersion: '5.0.0',
       receipts: [],
+      entryPoints: [],
       fragments,
       sources: { [first]: [0, 1], [second]: [0, 2] },
       entries: [first, second].map((sourceDigest) => ({ sourceDigest })),
@@ -259,8 +319,9 @@ describe('shader publication admission', () => {
     const fragments = Array.from({ length: 35 }, (_, i) => `fn shader_${i}() {}\n`);
     const digests = fragments.map((source) => sourceDigest([source]));
     const value = {
-      schemaVersion: '4.0.0',
+      schemaVersion: '5.0.0',
       receipts: [],
+      entryPoints: [],
       fragments,
       sources: Object.fromEntries(digests.map((hash, i) => [hash, [i]])),
       entries: digests.map((sourceDigest, i) => ({
@@ -291,8 +352,9 @@ describe('shader publication admission', () => {
     const complete = [...fragments];
     const digests = complete.map((source) => sourceDigest([source]));
     const value = {
-      schemaVersion: '4.0.0',
+      schemaVersion: '5.0.0',
       receipts: [],
+      entryPoints: [],
       fragments,
       sources: Object.fromEntries(digests.map((hash, i) => [hash, [i]])),
       entries: digests.map((sourceDigest) => ({ sourceDigest })),
@@ -358,8 +420,9 @@ describe('shader publication admission', () => {
     const fragments = Array.from({ length: 129 }, (_, i) => `fn shader_${i}() {}\n`);
     const digests = fragments.map((source) => sourceDigest([source]));
     const value = {
-      schemaVersion: '4.0.0',
+      schemaVersion: '5.0.0',
       receipts: [],
+      entryPoints: [],
       fragments,
       sources: Object.fromEntries(digests.map((hash, i) => [hash, [i]])),
       entries: digests.map((sourceDigest) => ({ sourceDigest })),

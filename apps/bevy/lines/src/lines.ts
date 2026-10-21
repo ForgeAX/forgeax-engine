@@ -1,16 +1,19 @@
 import { type World } from '@forgeax/engine-ecs';
-import { buildMeshAttributeMapForUvSets } from '@forgeax/engine-geometry';
+import { buildMeshAttributeMapForUvSets, deriveVertexLayoutProjection, unpackInterleavedVertexAttributes } from '@forgeax/engine-geometry';
 import { Transform } from '@forgeax/engine-scene';
 
 import { Camera, MeshFilter, MeshRenderer } from '@forgeax/engine-render';
 import { perspective } from '@forgeax/engine-render';
-import { type MaterialAsset } from '@forgeax/engine-runtime';
+
 import { Materials } from '@forgeax/engine-render';
 
 import type { MeshAsset } from '@forgeax/engine-types';
 import { quat } from '@forgeax/engine-math';
+import { AssetRegistry } from '@forgeax/engine-assets-runtime';
 
-const FLOATS_PER_VERTEX = 12;
+
+const VERTEX_LAYOUT = deriveVertexLayoutProjection(buildMeshAttributeMapForUvSets(1));
+const FLOATS_PER_VERTEX = VERTEX_LAYOUT.arrayStride / Float32Array.BYTES_PER_ELEMENT;
 
 function greenLineList(): MeshAsset {
   // Wireframe cube — 12 edges, visible from any angle
@@ -25,7 +28,6 @@ function greenLineList(): MeshAsset {
   ];
   const vertexCount = edges.length * 2;
   const vertices = new Float32Array(vertexCount * FLOATS_PER_VERTEX);
-  const positionAttr = new Float32Array(vertexCount * 3);
   let v = 0;
   for (const [a, b] of edges) {
     for (const ci of [a, b]) {
@@ -34,16 +36,15 @@ function greenLineList(): MeshAsset {
       vertices[vi] = corner[0];
       vertices[vi + 1] = corner[1];
       vertices[vi + 2] = corner[2];
-      positionAttr[v * 3] = corner[0];
-      positionAttr[v * 3 + 1] = corner[1];
-      positionAttr[v * 3 + 2] = corner[2];
       v++;
     }
   }
+  const attributes = unpackInterleavedVertexAttributes(vertices, VERTEX_LAYOUT);
+  if (attributes === undefined) throw new Error('Wireframe vertices must match their layout');
   return {
     kind: 'mesh',
     vertices,
-    attributes: { ...buildMeshAttributeMapForUvSets(1), position: positionAttr },
+    attributes,
     submeshes: [{ indexOffset: 0, indexCount: 0, vertexCount, topology: 'line-list', materialSlot: 0 }],
     materialSlots: [{ slotName: 'Default' }],
   };
@@ -62,7 +63,6 @@ function blueLineStrip(): MeshAsset {
   ];
   const vertexCount = edges.length * 2;
   const vertices = new Float32Array(vertexCount * FLOATS_PER_VERTEX);
-  const positionAttr = new Float32Array(vertexCount * 3);
   let v = 0;
   for (const [a, b] of edges) {
     for (const ci of [a, b]) {
@@ -71,28 +71,27 @@ function blueLineStrip(): MeshAsset {
       vertices[vi] = corner[0];
       vertices[vi + 1] = corner[1];
       vertices[vi + 2] = corner[2];
-      positionAttr[v * 3] = corner[0];
-      positionAttr[v * 3 + 1] = corner[1];
-      positionAttr[v * 3 + 2] = corner[2];
       v++;
     }
   }
+  const attributes = unpackInterleavedVertexAttributes(vertices, VERTEX_LAYOUT);
+  if (attributes === undefined) throw new Error('Wireframe vertices must match their layout');
   return {
     kind: 'mesh',
     vertices,
-    attributes: { ...buildMeshAttributeMapForUvSets(1), position: positionAttr },
+    attributes,
     submeshes: [{ indexOffset: 0, indexCount: 0, vertexCount, topology: 'line-list', materialSlot: 0 }],
     materialSlots: [{ slotName: 'Default' }],
   };
 }
 
 export function buildLinesWorld(world: World): void {
+const sceneAssets = world.assets;
+if (!(sceneAssets instanceof AssetRegistry)) throw new Error('Scene requires its runtime asset owner');
+
   // Green line-list entity at (-1.5, 0, 0) — scaled up
-  const greenMat = world.allocSharedRef<'MaterialAsset', MaterialAsset>(
-    'MaterialAsset',
-    Materials.unlit([0, 1, 0, 1]),
-  );
-  const greenMesh = world.allocSharedRef<'MeshAsset', MeshAsset>('MeshAsset', greenLineList());
+  const greenMat = sceneAssets.create(Materials.unlit([0, 1, 0, 1])).unwrap();
+  const greenMesh = sceneAssets.create(greenLineList()).unwrap();
   world.spawn(
     { component: Transform, data: { pos: [-1.5, 0, 0], quat: [0, 0, 0, 1], scale: [1.5, 1.5, 1.5] } },
     { component: MeshFilter, data: { assetHandle: greenMesh } },
@@ -100,11 +99,8 @@ export function buildLinesWorld(world: World): void {
   );
 
   // Blue line-strip entity at (0.5, 0, 0) — scaled up
-  const blueMat = world.allocSharedRef<'MaterialAsset', MaterialAsset>(
-    'MaterialAsset',
-    Materials.unlit([0, 0, 1, 1]),
-  );
-  const blueMesh = world.allocSharedRef<'MeshAsset', MeshAsset>('MeshAsset', blueLineStrip());
+  const blueMat = sceneAssets.create(Materials.unlit([0, 0, 1, 1])).unwrap();
+  const blueMesh = sceneAssets.create(blueLineStrip()).unwrap();
   world.spawn(
     { component: Transform, data: { pos: [0.5, 0, 0], quat: [0, 0, 0, 1], scale: [1.5, 1.5, 1.5] } },
     { component: MeshFilter, data: { assetHandle: blueMesh } },

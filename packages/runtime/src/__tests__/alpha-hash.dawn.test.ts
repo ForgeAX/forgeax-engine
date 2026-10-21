@@ -55,7 +55,7 @@ it.each([
   const directory = `artifacts/alpha-hash/${kind}${taaRenderPath === 'deferred' ? '-taa-deferred' : ''}`;
   mkdirSync(directory, { recursive: true });
   try {
-    const evidence = await verifyAlphaHash(host.renderer, {
+    const evidence = await verifyAlphaHash(host.renderer, host.assets, {
       kind,
       taaRenderPath,
       recorder,
@@ -79,7 +79,7 @@ it.each([
             work.pipeline.shaders.some((shader) => shader.entryPoint === 'fs_gbuffer'),
           );
           expect(producer).toBeDefined();
-          if (!producer) throw new Error('Missing Deferred temporal producer');
+          if (!producer?.attachments) throw new Error('Missing Deferred temporal producer');
           expect(producer.attachments.colorViewHandleIds).toHaveLength(7);
           const temporalId = producer.attachments.colorViewHandleIds[6];
           if (!temporalId) throw new Error('Missing merged temporal attachment');

@@ -426,6 +426,7 @@ it('lights, blocks, converges, reprojects, replays and recovers in the ordinary 
     const early = await flicker(h.image, 3);
     await h.settle(24);
     const late = await flicker(h.image, 8);
+    if (raw === 0) await captureMotionImage('temporal-raw-failed');
     expect(raw).toBeGreaterThan(0);
     expect(late).toBeLessThan(0.5 * raw);
     expect(late).toBeLessThan(early);

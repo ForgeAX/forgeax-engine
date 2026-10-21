@@ -1,3 +1,7 @@
+import { MaterialResource } from '../../../render/src/material-resource';
+import { matchedMaterialsForRecordMode } from '../../../render/src/record/main-pass';
+import { installDefaultAssetDecoders } from '../asset-contributions';
+import { testAssets } from './helpers/runtime-assets';
 // Consolidated by feat-20260608-ci-time-cut M5 w13/w14: merges
 //   - render-system-record-pbr-ubo-stable.test.ts
 //   - render-system-record-scale-too-small.test.ts
@@ -20,13 +24,7 @@ import {
   type ShaderRegistryDevice,
   STANDARD_PIPELINE_PARAM_SCHEMA,
 } from '@forgeax/engine-shader';
-import type {
-  Handle,
-  MaterialAsset,
-  MaterialPass,
-  MeshAsset,
-  ParamSchemaEntry,
-} from '@forgeax/engine-types';
+import type { AssetHandle, MaterialPass, ParamSchemaEntry } from '@forgeax/engine-types';
 import { derive } from '@forgeax/engine-types';
 import { describe, expect, it } from 'vitest';
 import { createEngineMetrics } from '../../../render/src/engine-metrics';
@@ -81,7 +79,7 @@ import { extractFrame } from '../../../render/src/render-system-extract-tail';
       expect(typeof mod.buildPbrMaterialUboPayload).toBe('function');
     });
 
-    it('1456 B payload size + standard PBR slot layout (baseline)', () => {
+    it('1472 B payload size + standard PBR slot layout (baseline)', () => {
       if (typeof mod.buildPbrMaterialUboPayload !== 'function') {
         throw new Error('helper not exported yet');
       }
@@ -95,7 +93,7 @@ import { extractFrame } from '../../../render/src/render-system-extract-tail';
         specularColor: [0.11, 0.22, 0.33],
       });
       const buf = mod.buildPbrMaterialUboPayload(snap);
-      expect(buf.byteLength).toBe(1456);
+      expect(buf.byteLength).toBe(1472);
       const f32 = new Float32Array(buf.buffer, buf.byteOffset, buf.byteLength / 4);
       // feat-20260613 fix-issue-1 (D-8 channelMap split): the 4 channelMap
       // u32 slots collapse into 4 independent f32 channel selectors at
@@ -120,12 +118,12 @@ import { extractFrame } from '../../../render/src/render-system-extract-tail';
       // occlusionStrength and alphaCutoff (offsets 80 and 84).
       expect(f32[20]).toBe(1);
       expect(f32[21]).toBe(0);
-      // specularColor vec3 (offsets 96..108).
-      expect(f32[24]).toBeCloseTo(0.11);
-      expect(f32[25]).toBeCloseTo(0.22);
-      expect(f32[26]).toBeCloseTo(0.33);
+      // specularColor vec3 follows alpha output controls (offsets 112..124).
+      expect(f32[28]).toBeCloseTo(0.11);
+      expect(f32[29]).toBeCloseTo(0.22);
+      expect(f32[30]).toBeCloseTo(0.33);
       // The vec2 strength aligns to 8 bytes after specularColor.
-      expect(f32.slice(28, 30)).toEqual(new Float32Array([1, 1]));
+      expect(f32.slice(32, 34)).toEqual(new Float32Array([1, 1]));
     });
 
     it('writes schema-carried alphaCutoff into the baseline PBR payload', () => {
@@ -357,29 +355,26 @@ import { extractFrame } from '../../../render/src/render-system-extract-tail';
     };
   }
 
-  function registerSpriteMesh(world: World): Handle<'MeshAsset', 'shared'> {
+  function registerSpriteMesh(world: World): AssetHandle<'mesh'> {
     const positions = new Float32Array([0, 0, 0, 1, 0, 0, 0, 1, 0]);
-    return world.allocSharedRef<'MeshAsset', MeshAsset>('MeshAsset', {
-      kind: 'mesh',
-      vertices: new Float32Array([
-        0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 1, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 1, 0,
-        1, 0, 0, 0, 0,
-      ]),
-      indices: new Uint16Array([0, 1, 2]),
-      attributes: { position: positions },
-      aabb: new Float32Array([0, 0, 0, 1, 1, 1]),
-      submeshes: [
-        {
-          indexOffset: 0,
-          indexCount: 3,
-          vertexCount: 36,
-          topology: 'triangle-list',
-          materialSlot: 0,
-        },
-      ],
-
-      materialSlots: [{ slotName: 'Default' }],
-    });
+    return testAssets(world)
+      .create({
+        kind: 'mesh',
+        vertices: positions,
+        indices: new Uint16Array([0, 1, 2]),
+        attributes: { position: positions },
+        submeshes: [
+          {
+            indexOffset: 0,
+            indexCount: 3,
+            vertexCount: 3,
+            topology: 'triangle-list',
+            materialSlot: 0,
+          },
+        ],
+        materialSlots: [{ slotName: 'Default' }],
+      })
+      .unwrap();
   }
 
   function spawnCamera(world: World): void {
@@ -406,14 +401,17 @@ import { extractFrame } from '../../../render/src/render-system-extract-tail';
 
   describe('SpriteRegionOverride compose 9-slice (M4 / w17b, AC-14)', () => {
     it('(1) entity without override uses asset-side region', () => {
-      const world = new World();
-      const assets = new AssetRegistry(makeShaderRegistryWithSprite());
+      const assets = new AssetRegistry({ shaderRegistry: makeShaderRegistryWithSprite() });
+      installDefaultAssetDecoders(assets);
+      const world = new World({ assets });
       const mesh = registerSpriteMesh(world);
-      const matHandle = world.allocSharedRef<'MaterialAsset', MaterialAsset>('MaterialAsset', {
-        kind: 'material',
-        passes: [SPRITE_PASS],
-        values: { region: [0.1, 0.1, 0.8, 0.8] },
-      });
+      const matHandle = testAssets(world)
+        .create({
+          kind: 'material',
+          passes: [SPRITE_PASS],
+          values: { region: [0.1, 0.1, 0.8, 0.8] },
+        })
+        .unwrap();
       spawnCamera(world);
       world
         .spawn(
@@ -427,21 +425,26 @@ import { extractFrame } from '../../../render/src/render-system-extract-tail';
       // feat-20260625 M3 / w12: sprite filter is now materialShaderId, not
       // shadingModel; region lands on paramSnapshot.region (D-8 / AC-07).
       const sprite = frame.renderables.find(
-        (r) => r.material.materialShaderId === 'forgeax::sprite',
+        (r) => r.material.snapshot.materialShaderId === 'forgeax::sprite',
       );
       expect(sprite).toBeDefined();
-      expect(sprite?.material.paramSnapshot?.region).toEqual([0.1, 0.1, 0.8, 0.8]);
+      expect(sprite?.spriteRegion ?? sprite?.material.snapshot.paramSnapshot?.region).toEqual([
+        0.1, 0.1, 0.8, 0.8,
+      ]);
     });
 
     it('(2) entity with override uses the override region in the snapshot', () => {
-      const world = new World();
-      const assets = new AssetRegistry(makeShaderRegistryWithSprite());
+      const assets = new AssetRegistry({ shaderRegistry: makeShaderRegistryWithSprite() });
+      installDefaultAssetDecoders(assets);
+      const world = new World({ assets });
       const mesh = registerSpriteMesh(world);
-      const matHandle = world.allocSharedRef<'MaterialAsset', MaterialAsset>('MaterialAsset', {
-        kind: 'material',
-        passes: [SPRITE_PASS],
-        values: { region: [0.0, 0.0, 1.0, 1.0] },
-      });
+      const matHandle = testAssets(world)
+        .create({
+          kind: 'material',
+          passes: [SPRITE_PASS],
+          values: { region: [0.0, 0.0, 1.0, 1.0] },
+        })
+        .unwrap();
       spawnCamera(world);
       world
         .spawn(
@@ -457,28 +460,33 @@ import { extractFrame } from '../../../render/src/render-system-extract-tail';
       propagateTransforms(world);
       const frame = extractFrame(world, prepareExtractContext(world, { assets }));
       const sprite = frame.renderables.find(
-        (r) => r.material.materialShaderId === 'forgeax::sprite',
+        (r) => r.material.snapshot.materialShaderId === 'forgeax::sprite',
       );
       expect(sprite).toBeDefined();
       // The override displaces the asset-side [0, 0, 1, 1] region with the
       // half-width [0, 0, 0.5, 1] override, so downstream consumers (record
       // stage UBO write, 9-slice anchor budget) see the override values via
       // paramSnapshot.region (post-w12).
-      expect(sprite?.material.paramSnapshot?.region).toEqual([0, 0, 0.5, 1]);
+      expect(sprite?.spriteRegion ?? sprite?.material.snapshot.paramSnapshot?.region).toEqual([
+        0, 0, 0.5, 1,
+      ]);
     });
 
     it('(3) two entities sharing one material diverge on effective region (compose with 9-slice)', () => {
-      const world = new World();
-      const assets = new AssetRegistry(makeShaderRegistryWithSprite());
+      const assets = new AssetRegistry({ shaderRegistry: makeShaderRegistryWithSprite() });
+      installDefaultAssetDecoders(assets);
+      const world = new World({ assets });
       const mesh = registerSpriteMesh(world);
-      const matHandle = world.allocSharedRef<'MaterialAsset', MaterialAsset>('MaterialAsset', {
-        kind: 'material',
-        passes: [SPRITE_PASS],
-        values: {
-          region: [0.0, 0.0, 1.0, 1.0],
-          slicesAndMode: [0.25, 0.25, 0.25, 0.25],
-        },
-      });
+      const matHandle = testAssets(world)
+        .create({
+          kind: 'material',
+          passes: [SPRITE_PASS],
+          values: {
+            region: [0.0, 0.0, 1.0, 1.0],
+            slicesAndMode: [0.25, 0.25, 0.25, 0.25],
+          },
+        })
+        .unwrap();
       spawnCamera(world);
       // entity A: no override, sees the asset-side region.
       world
@@ -503,10 +511,12 @@ import { extractFrame } from '../../../render/src/render-system-extract-tail';
       propagateTransforms(world);
       const frame = extractFrame(world, prepareExtractContext(world, { assets }));
       const sprites = frame.renderables.filter(
-        (r) => r.material.materialShaderId === 'forgeax::sprite',
+        (r) => r.material.snapshot.materialShaderId === 'forgeax::sprite',
       );
       expect(sprites.length).toBe(2);
-      const regions = sprites.map((s) => s.material.paramSnapshot?.region);
+      const regions = sprites.map(
+        (s) => s.spriteRegion ?? s.material.snapshot.paramSnapshot?.region,
+      );
       // One renderable lands on the asset-side region; the other lands on the
       // override. Order is archetype-walk order (we check the set, not which is
       // which, so the test stays robust to archetype iteration order).
@@ -516,7 +526,7 @@ import { extractFrame } from '../../../render/src/render-system-extract-tail';
       // stretch encoding (positive .w, plan-strategy D-3); effective region
       // governs UV sampling, not the slices unit.
       for (const s of sprites) {
-        expect(s.material.paramSnapshot?.slicesAndMode).toEqual([0.25, 0.25, 0.25, 0.25]);
+        expect(s.material.snapshot.paramSnapshot?.slicesAndMode).toEqual([0.25, 0.25, 0.25, 0.25]);
       }
     });
   });
@@ -718,7 +728,6 @@ import { extractFrame } from '../../../render/src/render-system-extract-tail';
       vertexEntry: undefined,
       fragmentEntry: undefined,
       materialShaderId: 'forgeax::default-unlit',
-      paramSnapshot: undefined,
     };
   }
 
@@ -762,8 +771,8 @@ import { extractFrame } from '../../../render/src/render-system-extract-tail';
       ];
       const result = filterDispatchBySelector(dispatch, { LightMode: ['ShadowCaster'] });
       expect(result.length).toBe(1);
-      expect(result[0]?.tags.LightMode).toBe('ShadowCaster');
-      expect(result[0]?.renderableIndex).toBe(1);
+      expect(result.at(0)?.tags.LightMode).toBe('ShadowCaster');
+      expect(result.at(0)?.renderableIndex).toBe(1);
     });
 
     it('AC-18: multiple ShadowCaster passes per entity -> filtered count equals N', () => {
@@ -784,9 +793,9 @@ import { extractFrame } from '../../../render/src/render-system-extract-tail';
         expect(e.renderableIndex).toBe(0);
       }
       // Each pass has a distinct passIndex.
-      expect(result[0]?.passIndex).toBe(0);
-      expect(result[1]?.passIndex).toBe(1);
-      expect(result[2]?.passIndex).toBe(2);
+      expect(result.at(0)?.passIndex).toBe(0);
+      expect(result.at(1)?.passIndex).toBe(1);
+      expect(result.at(2)?.passIndex).toBe(2);
     });
 
     it('selector with non-matching key returns empty array', () => {
@@ -811,7 +820,7 @@ import { extractFrame } from '../../../render/src/render-system-extract-tail';
         RenderQueue: ['Geometry'],
       });
       expect(result.length).toBe(1);
-      expect(result[0]?.renderableIndex).toBe(0);
+      expect(result.at(0)?.renderableIndex).toBe(0);
     });
 
     it('entry with empty tags is filtered out by a non-empty selector', () => {
@@ -824,7 +833,7 @@ import { extractFrame } from '../../../render/src/render-system-extract-tail';
       ];
       const result = filterDispatchBySelector(dispatch, { LightMode: ['Forward'] });
       expect(result.length).toBe(1);
-      expect(result[0]?.renderableIndex).toBe(1);
+      expect(result.at(0)?.renderableIndex).toBe(1);
     });
   });
 }
@@ -1022,7 +1031,7 @@ import { extractFrame } from '../../../render/src/render-system-extract-tail';
   describe('applyParamSnapshotToUbo: standard-pbr byte-identical via derive (M1 / w2)', () => {
     it('derive(standard-pbr).uboLayout matches the published Standard layout', () => {
       const { uboLayout } = derive(STANDARD_PBR_SCHEMA);
-      expect(uboLayout.totalBytes).toBe(864);
+      expect(uboLayout.totalBytes).toBe(880);
       const byName = new Map(uboLayout.entries.map((e) => [e.name, e]));
       expect(byName.get('baseColor')?.offset).toBe(0);
       expect(byName.get('metallic')?.offset).toBe(16);
@@ -1037,7 +1046,7 @@ import { extractFrame } from '../../../render/src/render-system-extract-tail';
       expect(byName.get('emissiveIntensity')?.offset).toBe(76);
       expect(byName.get('occlusionStrength')?.offset).toBe(80);
       expect(byName.get('alphaCutoff')?.offset).toBe(84);
-      expect(byName.get('specularColor')?.offset).toBe(96);
+      expect(byName.get('specularColor')?.offset).toBe(112);
     });
 
     it('generic writer over standard-pbr snapshot equals buildPbrMaterialUboPayload bytes', () => {
@@ -1125,7 +1134,7 @@ import { extractFrame } from '../../../render/src/render-system-extract-tail';
       if (typeof mod.applyParamSnapshotToUbo !== 'function') {
         throw new Error('helper not exported yet (red phase)');
       }
-      const buf = new ArrayBuffer(864);
+      const buf = new ArrayBuffer(880);
       // f32-exact values (powers of 2 / sums) so we can assert toEqual on
       // every slot; toBeCloseTo would let off-by-one-bit drifts hide.
       const snapshot = {
@@ -1196,8 +1205,8 @@ import { extractFrame } from '../../../render/src/render-system-extract-tail';
 
   type DispatchEntryLike = {
     readonly source: {
-      readonly material: MaterialSnapshot;
-      readonly materials: readonly MaterialSnapshot[];
+      readonly material: MaterialResource;
+      readonly materials: readonly MaterialResource[];
     };
   };
 
@@ -1207,28 +1216,23 @@ import { extractFrame } from '../../../render/src/render-system-extract-tail';
       tonemapActive: boolean,
     ) => boolean;
   };
-  const mod = recordModule as unknown as {
-    isEntityFullyTransparent?: (source: {
-      material: MaterialSnapshot;
-      materials?: readonly MaterialSnapshot[];
-    }) => boolean;
-  };
-
   function makeTransparentSnap(opts: {
     transparent?: boolean;
     materialShaderId?: string;
-  }): MaterialSnapshot {
-    return {
-      baseColor: [1, 1, 1, 1] as const,
+  }): MaterialResource {
+    return new MaterialResource({
+      passes: [],
+      materialHandle: opts.transparent === true ? 2 : 1,
+      baseColor: new Float32Array([1, 1, 1]) as MaterialSnapshot['baseColor'],
       metallic: 0,
       roughness: 1,
       materialShaderId: opts.materialShaderId ?? 'forgeax::unlit-test',
       paramSnapshot: {},
       ...(opts.transparent === true && { transparent: true }),
-    } as unknown as MaterialSnapshot;
+    } as unknown as MaterialSnapshot);
   }
 
-  function makeValidatedEntry(material: MaterialSnapshot): DispatchEntryLike {
+  function makeValidatedEntry(material: MaterialResource): DispatchEntryLike {
     return { source: { material, materials: [material] } };
   }
 
@@ -1300,13 +1304,14 @@ import { extractFrame } from '../../../render/src/render-system-extract-tail';
       // `materialShaderId: 'forgeax::sprite'` but no `transparent: true`
       // declaration MUST NOT trigger the LDR split (forces explicit
       // transparent attribution on the asset side; AC-04 / AC-05).
-      const legacySpriteNoTransparent = {
-        baseColor: [1, 1, 1, 1] as const,
+      const legacySpriteNoTransparent = new MaterialResource({
+        baseColor: new Float32Array([1, 1, 1]) as MaterialSnapshot['baseColor'],
         metallic: 0,
         roughness: 1,
         materialShaderId: 'forgeax::sprite',
         paramSnapshot: {},
-      } as unknown as MaterialSnapshot;
+        passes: [],
+      });
       const splitWithoutTransparent = spriteMod.computeSplitLdrSprite(
         [makeValidatedEntry(legacySpriteNoTransparent)],
         false,
@@ -1315,10 +1320,10 @@ import { extractFrame } from '../../../render/src/render-system-extract-tail';
 
       // Same snapshot with `transparent: true` declared on the pass DOES
       // trigger the split (the only path that should).
-      const spriteTransparent = {
-        ...legacySpriteNoTransparent,
+      const spriteTransparent = new MaterialResource({
+        ...legacySpriteNoTransparent.snapshot,
         transparent: true,
-      } as unknown as MaterialSnapshot;
+      });
       const splitWithTransparent = spriteMod.computeSplitLdrSprite(
         [makeValidatedEntry(spriteTransparent)],
         false,
@@ -1382,21 +1387,24 @@ import { extractFrame } from '../../../render/src/render-system-extract-tail';
       expect(spriteMod.computeSplitLdrSprite([opaqueMixed], false)).toBe(false);
     });
 
-    it('isEntityFullyTransparent classifies mixed meshes', () => {
-      if (typeof mod.isEntityFullyTransparent !== 'function') {
-        throw new Error('per-submesh transparency helpers not exported yet');
-      }
+    it('selects only transparent submesh materials in mixed meshes', () => {
       const opaque = makeTransparentSnap({ transparent: false });
-      const transp = makeTransparentSnap({ transparent: true });
-      // Mixed: opaque[0] + transparent[1] is not fully transparent.
-      const mixed = { material: opaque, materials: [opaque, transp] };
-      expect(mod.isEntityFullyTransparent(mixed)).toBe(false);
-      // Fully transparent (e.g. a sprite / 4.3 window quad).
-      const full = { material: transp, materials: [transp] };
-      expect(mod.isEntityFullyTransparent(full)).toBe(true);
-      // Fully opaque.
-      const none = { material: opaque, materials: [opaque, opaque] };
-      expect(mod.isEntityFullyTransparent(none)).toBe(false);
+      const transparent = makeTransparentSnap({ transparent: true });
+      const selected = matchedMaterialsForRecordMode(
+        {
+          validatedOrdered: [0, 1, 2].map((renderableIndex) => ({ renderableIndex })),
+          materialSlots: [opaque.snapshot, transparent.snapshot],
+          materialSlotIndices: [[0, 1], [1], [0, 0]],
+        } as never,
+        null,
+        'transparent',
+      );
+      expect(selected).toEqual(
+        new Map([
+          [0, new Set([2])],
+          [1, new Set([2])],
+        ]),
+      );
     });
   });
 }
@@ -1451,7 +1459,7 @@ import { extractFrame } from '../../../render/src/render-system-extract-tail';
 
   function makeSnap(materialShaderId: string | undefined): MaterialSnapshot {
     return {
-      baseColor: [1, 1, 1, 1] as const,
+      baseColor: new Float32Array([1, 1, 1]) as MaterialSnapshot['baseColor'],
       metallic: 0,
       roughness: 1,
       materialShaderId,

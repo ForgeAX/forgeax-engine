@@ -1,36 +1,36 @@
+import { validateArtifactPath } from '@forgeax/engine-pack/artifact-path';
 import type { RuntimePackEnvelope } from '@forgeax/engine-pack/runtime';
-import { ShaderRegistry } from '@forgeax/engine-shader';
+import type { ShaderRegistry } from '@forgeax/engine-shader';
 import { terrainDerivedClosureValid } from '@forgeax/engine-terrain';
 import type { PackageFetcher } from '@forgeax/engine-types';
 import {
-  type ArtifactDescriptor,
   type Asset,
+  type AssetDecoderContributionRef,
+  type AssetDecoderInput,
   AssetError,
+  type AssetKind,
   type CatalogEntry,
   err,
-  type LoadContext,
-  type Loader,
   ok,
   type Result,
 } from '@forgeax/engine-types';
 import type { AssetRegistry } from './asset-registry.js';
 import type { CatalogSource } from './catalog-source.js';
+import { DecoderRegistry } from './internal/decoder-registry';
 import { PackReader } from './internal/pack-reader.js';
 import { validatePublicationReferences } from './internal/publication-references.js';
-import type { LoaderRegistry } from './loader-registry.js';
 import {
   assertPrivateMeshStorage,
   prepareAssetPayload,
   validateAssetReferences,
 } from './prepare-payload.js';
-import { readArtifact } from './registry/artifact-io.js';
-import { createDefaultLoaderRegistry } from './wire-default-loaders.js';
+import { artifactUrl, readArtifact } from './registry/artifact-io.js';
 
 export interface PublicationPreparationServices {
   readonly registry?: AssetRegistry;
   readonly shaderRegistry?: ShaderRegistry;
   readonly pack?: RuntimePackEnvelope | undefined;
-  readonly loaders?: readonly Loader<unknown>[];
+  readonly decoders?: readonly AssetDecoderContributionRef[];
   readonly dependencies?: ReadonlyMap<
     string,
     { readonly asset?: unknown; readonly row: CatalogEntry }
@@ -46,47 +46,14 @@ export async function validateAssetPublication(
 ): Promise<Result<ReadonlyMap<string, Asset | (() => Promise<Asset>)>, unknown>> {
   if (services.registry)
     return services.registry.preparePublication(rows, fetcher, external, services);
-  const shaderRegistry = services.shaderRegistry ?? new ShaderRegistry({ manifestUrl: undefined });
-  const context: LoadContext = {
-    fetchBinary: async (url) => {
-      const response = await fetcher(url);
-      return response.ok
-        ? ok(new Uint8Array(await response.arrayBuffer()))
-        : err(
-            new AssetError({
-              code: 'asset-fetch-failed',
-              expected: `asset bytes at ${url}`,
-              hint: 'restore the source artifact',
-            }),
-          );
-    },
-    resolveRef: async (guid) =>
-      services.dependencies?.has(guid) || rows.some((row) => row.guid === guid)
-        ? ok(0)
-        : err(
-            new AssetError({
-              code: 'asset-not-found',
-              expected: `fixed dependency ${guid}`,
-              hint: 'retain the complete dependency closure',
-            }),
-          ),
-    getMaterialShaderTextureFieldNames: (id) => {
-      const result = shaderRegistry.findMaterialArtifact(id);
-      return result.ok
-        ? result.value.paramSchemaProjection.derivedInterface.textureFieldNames
-        : undefined;
-    },
-    device: undefined,
-    transcodeCaps: { bc: false, etc2: false, astc: false },
-  };
-  return preparePublicationPayloads(
-    rows,
-    fetcher,
-    external,
-    services,
-    createDefaultLoaderRegistry(services.loaders as readonly Loader[] | undefined),
-    context,
-  );
+  const decoders = new DecoderRegistry();
+  try {
+    for (const contribution of services.decoders ?? [])
+      decoders.install(contribution.kind as AssetKind<unknown>, contribution.decoder);
+    return await preparePublicationPayloads(rows, fetcher, external, services, decoders);
+  } finally {
+    decoders.dispose();
+  }
 }
 
 /** Private staging uses the owner's domain loaders; no Catalog or temporary Registry is installed. */
@@ -95,8 +62,7 @@ export async function preparePublicationPayloads(
   fetcher: PackageFetcher,
   external: { readonly catalog: CatalogSource; readonly fetcher: PackageFetcher } | undefined,
   services: PublicationPreparationServices,
-  loaders: LoaderRegistry,
-  context: LoadContext,
+  decoders: DecoderRegistry,
 ): Promise<Result<ReadonlyMap<string, Asset>, unknown>> {
   const reader = new PackReader();
   try {
@@ -109,7 +75,7 @@ export async function preparePublicationPayloads(
       catalog.set(row.guid, row);
     }
     const prepared = new Map<string, Asset>();
-    const packs = new Map<string, RuntimePackEnvelope>();
+    const packs = new Map<string, import('./internal/pack-reader').VerifiedPack>();
     const read: PackageFetcher = async (input, init) => {
       const response = await fetcher(input, init);
       return response.status === 404 && external ? external.fetcher(input, init) : response;
@@ -119,43 +85,75 @@ export async function preparePublicationPayloads(
         catalog.get(guid.toLowerCase()),
       );
       if (!references.ok) return references;
-      let pack = packs.get(row.packageUrl) ?? services.pack;
-      if (!pack) {
-        const response = await read(row.packageUrl);
-        if (!response.ok) throw new TypeError('candidate Pack unavailable');
-        pack = (await response.json()) as RuntimePackEnvelope;
-      }
-      if (!packs.has(row.packageUrl)) {
+      let pack = packs.get(row.packageUrl);
+      if (pack === undefined) {
+        let input = services.pack;
+        if (input === undefined) {
+          const response = await read(row.packageUrl);
+          if (!response.ok) throw new TypeError('candidate Pack unavailable');
+          input = (await response.json()) as RuntimePackEnvelope;
+        }
         const tuple = row.publication;
         if (!tuple) throw new TypeError('candidate publication missing');
-        const verified = reader.verify(pack, { ...tuple, scopeId: pack.scopeId });
+        const verified = reader.verify(input, { ...tuple, scopeId: input.scopeId });
         if (!verified.ok) return verified;
+        pack = verified.value;
         packs.set(row.packageUrl, pack);
       }
       const envelope = pack.assets.find((asset) => asset.guid === row.guid);
       if (!envelope || envelope.kind !== row.kind)
         throw new TypeError('candidate output differs from its Catalog');
-      const artifacts: Record<string, { descriptor: ArtifactDescriptor; bytes: Uint8Array }> = {};
-      for (const [key, raw] of Object.entries(envelope.artifacts)) {
-        const descriptor = raw as ArtifactDescriptor;
-        const bytes = await readArtifact(
-          { guid: row.guid, packageUrl: row.packageUrl, artifactKey: key, descriptor },
-          read,
-        );
-        if (!bytes.ok) return bytes;
-        artifacts[key] = { descriptor, bytes: bytes.value };
-      }
-      const loaded = await loaders.loadPack(
-        {
-          guid: row.guid,
-          kind: row.kind,
-          payload: envelope.payload as Record<string, unknown>,
-          refs: envelope.refs,
-          artifacts,
+      const consumedArtifacts = new Set<string>();
+      const input: AssetDecoderInput<unknown> = {
+        envelope,
+        signal: new AbortController().signal,
+        artifacts: {
+          locate: (descriptor) => {
+            const valid = validateArtifactPath(descriptor.path, {
+              packageRoot: row.packageUrl,
+              guid: row.guid,
+              artifactKey: descriptor.path,
+            });
+            if (!valid.ok) return undefined;
+            consumedArtifacts.add(descriptor.path);
+            return artifactUrl(row.packageUrl, valid.value);
+          },
+          read: async (descriptor) => {
+            const result = await readArtifact(
+              {
+                guid: row.guid,
+                packageUrl: row.packageUrl,
+                artifactKey: descriptor.path,
+                descriptor,
+              },
+              read,
+            );
+            if (result.ok) consumedArtifacts.add(descriptor.path);
+            return result.ok
+              ? result
+              : err({
+                  code: 'asset-integrity-failed',
+                  expected: result.error.expected,
+                  hint: result.error.hint,
+                  detail: {
+                    guid: row.guid,
+                    artifactKey: descriptor.path,
+                    expectedDigest: descriptor.integrity?.digest ?? 'verified artifact',
+                    actualDigest: result.error.code,
+                  },
+                });
+          },
         },
-        context,
-      );
+      };
+      const loaded = await decoders.loadByKind(row.kind, input);
       if (!loaded.ok) return err(loaded.error);
+      // Admission verifies the complete delivered output, including attachments
+      // unused by this consumer. A decoder's locate() keeps streaming bodies lazy.
+      for (const descriptor of Object.values(envelope.artifacts)) {
+        if (consumedArtifacts.has(descriptor.path)) continue;
+        const verified = await input.artifacts.read(descriptor);
+        if (!verified.ok) return verified;
+      }
       if (
         !loaded.value ||
         typeof loaded.value !== 'object' ||

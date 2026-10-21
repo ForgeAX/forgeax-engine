@@ -18,6 +18,7 @@ import { Skin } from '@forgeax/engine-skinning';
 import { expect } from 'vitest';
 import { drawReadyFrame } from '../../../../scripts/test/ready-render-frame.mjs';
 import testQuality from '../../../../scripts/test/render-quality.json' with { type: 'json' };
+import { testAssets } from './helpers/runtime-assets';
 
 function unwrap<T>(result: RenderResult<T, unknown> | undefined): T {
   if (result === undefined) throw new Error('required Renderer operation is unavailable');
@@ -56,7 +57,7 @@ export async function verifyStandardDeferredParity(
       vertices: packInterleavedVertexAttributes(attributes, count).unwrap().vertices,
     };
   }
-  const mesh = world.allocSharedRef('MeshAsset', geometry);
+  const mesh = testAssets(world).create(geometry).unwrap();
   const baseMaterial = Materials.standard({
     baseColor: [0.42, 0.16, 0.07, 1],
     metallic: 0.35,
@@ -79,7 +80,7 @@ export async function verifyStandardDeferredParity(
         })),
       }
     : baseMaterial;
-  const material = world.allocSharedRef('MaterialAsset', materialAsset);
+  const material = testAssets(world).create(materialAsset).unwrap();
   const receiver = world
     .spawn(
       { component: Transform, data: {} },
@@ -94,12 +95,14 @@ export async function verifyStandardDeferredParity(
           {
             component: MeshFilter,
             data: {
-              assetHandle: world.allocSharedRef('MeshAsset', createBoxGeometry(2, 2, 1).unwrap()),
+              assetHandle: testAssets(world)
+                .create(createBoxGeometry(2, 2, 1).unwrap())
+                .unwrap(),
             },
           },
           {
             component: MeshRenderer,
-            data: { materials: [world.allocSharedRef('MaterialAsset', baseMaterial)] },
+            data: { materials: [testAssets(world).create(baseMaterial).unwrap()] },
           },
         )
         .unwrap()
@@ -112,12 +115,14 @@ export async function verifyStandardDeferredParity(
     };
     const inverseBindMatrices = new Float32Array(16);
     for (const lane of [0, 5, 10, 15]) inverseBindMatrices[lane] = 1;
-    const skeleton = world.allocSharedRef('SkeletonAsset', {
-      kind: 'skeleton',
-      jointCount: 1,
-      inverseBindMatrices,
-      bounds: new Float32Array([-1, -1, -1, 1, 1, 1]),
-    });
+    const skeleton = testAssets(world)
+      .create({
+        kind: 'skeleton',
+        jointCount: 1,
+        inverseBindMatrices,
+        bounds: new Float32Array([-1, -1, -1, 1, 1, 1]),
+      })
+      .unwrap();
     world
       .addComponent(receiver, {
         component: Skin,
@@ -295,12 +300,14 @@ export async function verifyStandardDeferredParity(
         {
           component: MeshFilter,
           data: {
-            assetHandle: world.allocSharedRef('MeshAsset', createBoxGeometry(2, 2, 1).unwrap()),
+            assetHandle: testAssets(world)
+              .create(createBoxGeometry(2, 2, 1).unwrap())
+              .unwrap(),
           },
         },
         {
           component: MeshRenderer,
-          data: { materials: [world.allocSharedRef('MaterialAsset', baseMaterial)] },
+          data: { materials: [testAssets(world).create(baseMaterial).unwrap()] },
         },
       )
       .unwrap();
@@ -344,17 +351,19 @@ export async function verifyStandardDeferredParity(
     ).toBeGreaterThan(0.1);
     // Emissive is HDR SceneColor initialization, not a normalized G-buffer
     // attribute. Lighting must add once and preserve geometry-authored alpha.
-    const hdr = world.allocSharedRef('MaterialAsset', {
-      ...materialAsset,
-      values: {
-        ...materialAsset.values,
-        baseColor: [0.002, 0.02, 0.6, 0.37],
-        emissive: [4, 2, 0.5],
-        specularColor: [0.04, 0.2, 0.8],
-        ior: 1.8,
-        roughness: 0.13,
-      },
-    });
+    const hdr = testAssets(world)
+      .create({
+        ...materialAsset,
+        values: {
+          ...materialAsset.values,
+          baseColor: [0.002, 0.02, 0.6, 0.37],
+          emissive: [4, 2, 0.5],
+          specularColor: [0.04, 0.2, 0.8],
+          ior: 1.8,
+          roughness: 0.13,
+        },
+      })
+      .unwrap();
     world.set(receiver, MeshRenderer, { materials: [hdr] }).unwrap();
     const forwardHdr = await sample('forward', false, false, false, true);
     const deferredHdr = await sample('deferred', false, false, false, true);
@@ -369,10 +378,12 @@ export async function verifyStandardDeferredParity(
     // The mixed primitive identity control has been captured. The existing
     // alpha-cutout falsifier now measures only its deliberately clipped receiver.
     if (backdrop !== undefined) world.despawn(backdrop).unwrap();
-    const clipped = world.allocSharedRef('MaterialAsset', {
-      ...materialAsset,
-      values: { ...baseMaterial.values, baseColor: [0.42, 0.16, 0.07, 0.25], alphaCutoff: 0.5 },
-    });
+    const clipped = testAssets(world)
+      .create({
+        ...materialAsset,
+        values: { ...baseMaterial.values, baseColor: [0.42, 0.16, 0.07, 0.25], alphaCutoff: 0.5 },
+      })
+      .unwrap();
     world.set(receiver, MeshRenderer, { materials: [clipped] }).unwrap();
     for (const renderPath of ['forward', 'deferred'] as const) {
       const empty = await sample(renderPath, false, false, true);

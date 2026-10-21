@@ -8,14 +8,13 @@ export {
   type UiInspectionReader,
   type UiInspectionRequest,
 } from './inspection.js';
-export { createUiLoader } from './loader.js';
+export { createUiLoader, uiAssetContribution } from './loader.js';
 export type { MountOptions } from './mount.js';
 export { mountUi } from './mount.js';
 export {
   createUiPreviewSession,
   type UiPreviewAssetChanged,
   type UiPreviewAssetChangeSubscription,
-  type UiPreviewAssetSource,
   type UiPreviewRect,
   type UiPreviewScenario,
   type UiPreviewScenarioContext,

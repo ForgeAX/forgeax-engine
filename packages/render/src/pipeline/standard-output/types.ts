@@ -18,11 +18,8 @@ const STANDARD_OUTPUT_LOGICAL_STAGES = [
 ] as const;
 
 export type StandardOutputLogicalStage = (typeof STANDARD_OUTPUT_LOGICAL_STAGES)[number];
-type StandardOutputLane = 'direct' | 'clustered';
-type StandardOutputEncoding = 'explicit-oetf' | 'srgb-attachment';
 
 export interface StandardOutputRequest {
-  readonly lane: StandardOutputLane;
   readonly temporal: boolean;
   readonly meter: boolean;
   readonly bloom: boolean;
@@ -39,7 +36,6 @@ export interface StandardOutputRequest {
   readonly lensEffects?: boolean;
   readonly fxaa: boolean;
   readonly smaa?: boolean;
-  readonly outputEncoding: StandardOutputEncoding;
 }
 
 export interface StandardOutputPhysicalStage {
@@ -49,7 +45,6 @@ export interface StandardOutputPhysicalStage {
 }
 
 export interface StandardOutputPlan {
-  readonly lane: StandardOutputLane;
   readonly features: Readonly<
     Pick<
       StandardOutputRequest,
@@ -68,12 +63,8 @@ export interface StandardOutputPlan {
       | 'smaa'
     >
   >;
-  readonly outputEncoding: StandardOutputEncoding;
   readonly logicalStages: readonly StandardOutputLogicalStage[];
   readonly physicalStages: readonly StandardOutputPhysicalStage[];
-  readonly finalWriterCount: 1;
-  readonly outputEncodingCount: 1;
   readonly incrementalResources: readonly string[];
   readonly incrementalBindings: number;
-  readonly incrementalTimestamps: number;
 }

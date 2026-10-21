@@ -133,10 +133,7 @@ export interface SubresourceSlice {
 }
 
 /** Full subresource layout of a texture snapshot blob. */
-export interface TextureLayout {
-  readonly blockWidth: number;
-  readonly blockHeight: number;
-  readonly bytesPerBlock: number;
+export interface TextureLayout extends TextureFormatBlock {
   readonly layerCount: number;
   readonly mipLevelCount: number;
   readonly slices: readonly SubresourceSlice[];

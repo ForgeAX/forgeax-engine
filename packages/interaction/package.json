@@ -32,7 +32,8 @@
     "@forgeax/engine-math": "workspace:*",
     "@forgeax/engine-picking": "workspace:*",
     "@forgeax/engine-geometry": "workspace:*",
-    "@forgeax/engine-types": "workspace:*"
+    "@forgeax/engine-types": "workspace:*",
+    "@forgeax/engine-assets-runtime": "workspace:*"
   },
   "forgeax": {
     "metrics": {

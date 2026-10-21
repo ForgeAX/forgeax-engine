@@ -1,21 +1,26 @@
-import { type AssetRegistry, resolveAssetHandle } from '@forgeax/engine-assets-runtime';
+import type { AssetRegistry } from '@forgeax/engine-assets-runtime';
+import {
+  runtimeAssetReference,
+  runtimeAssetSource,
+  runtimeAssets,
+} from '@forgeax/engine-assets-runtime/internal';
 import { type EntityHandle, Time, type World } from '@forgeax/engine-ecs';
-import { AssetGuid } from '@forgeax/engine-pack/guid';
 import type { RhiCaps } from '@forgeax/engine-rhi';
 import { ChildOf, Children, readPresentationWorldMatrix } from '@forgeax/engine-scene';
-import { type Asset, err, type Handle, ok, type Result } from '@forgeax/engine-types';
+import { type Asset, err, ok, type Result } from '@forgeax/engine-types';
 import { Visibility } from '../components';
 import { stereoEyeCameras } from '../components/stereo-camera';
 import { renderMaterialContext } from '../extract/material-context';
 import { fullscreenRenderFeatureDeclaration } from '../features/fullscreen';
 import type { RenderFeature } from '../features/types';
 import { renderFeatureCameraView } from '../features/view';
+import { MaterialResource } from '../material-resource';
 import {
-  internSharedRefFromGuid,
   type MaterialSnapshot,
   type MaterialSnapshotCachesByWorld,
   type RenderableSnapshot,
   resolveMaterialSnapshot,
+  resolveRuntimeAssetReference,
 } from '../render-system-extract';
 import { extractFrames } from '../render-system-extract-tail';
 import {
@@ -28,6 +33,8 @@ import { getTransparentSortConfig } from '../systems/transparent-sort-config';
 import { renderTargetMaterialSourceIdentity } from '../targets/material-source';
 import { type CanvasTextureSource, isCanvasTextureSource } from '../textures/canvas-texture';
 import { isExternalTextureSource } from '../textures/external-texture';
+import { renderTextureSourceKey } from '../textures/source-token';
+import { PublishedAssetClosure } from './asset-closure';
 import { type PublishedCanvasFrame, publicationCanvasFrames } from './canvas';
 import {
   type RenderPublication,
@@ -35,8 +42,10 @@ import {
   type RenderPublicationIdentity,
   type RenderPublicationTemplate,
 } from './contract';
-import { publicationDependencies, publicationFrameDependencies } from './dependencies';
+import { publicationFrameDependencies, renderableAssetRoots } from './dependencies';
+import { beginSourcePreparation, type SourcePreparationObservation } from './observation';
 import { publicationMaterialProgramKeys } from './programs';
+import { worldRenderResources } from './resource-scope';
 import { publicationTargetSources, type RenderPublicationTargetOwner } from './targets';
 import {
   materialCanvasSources,
@@ -45,15 +54,19 @@ import {
 } from './texture-consumers';
 import { publicationVideoFrames } from './video';
 
+const EMPTY_ASSET_ROWS: readonly (readonly [number, Asset, number])[] = Object.freeze([]);
+const EMPTY_IDENTITIES: readonly number[] = Object.freeze([]);
+const EMPTY_MATERIAL_ROWS: RenderPublication['materials'] = Object.freeze([]);
+
 function publicationKeyValue(key: string, value: unknown): unknown {
   return value instanceof Map
     ? key === 'textureSources'
       ? [...value].map(([name, source]) => [
           name,
           isCanvasTextureSource(source)
-            ? `canvas:${source.canvasTextureId}`
+            ? renderTextureSourceKey(source)
             : isExternalTextureSource(source)
-              ? `external:${source.externalTextureId}`
+              ? renderTextureSourceKey(source)
               : renderTargetMaterialSourceIdentity(source),
         ])
       : [...value]
@@ -64,14 +77,16 @@ function publicationKeyValue(key: string, value: unknown): unknown {
 
 function publicationAssetBrand(asset: Asset | undefined) {
   return asset?.kind === 'material'
-    ? 'MaterialAsset'
+    ? 'material'
     : asset?.kind === 'mesh'
-      ? 'MeshAsset'
+      ? 'mesh'
       : 'RenderFeatureAsset';
 }
 
 export interface RenderPublicationCandidate {
   readonly packet: RenderPublication;
+  /** Source-local diagnostic; never serialized with the packet. */
+  readonly observation?: SourcePreparationObservation;
   /** Call synchronously after successful postMessage; never wait for remote ACK. */
   accept(): void;
   discard(): void;
@@ -88,20 +103,43 @@ export function createRenderPublisher(
   limits?: Readonly<Record<string, number>>,
   maxInFlight: 2 | 3 | 4 = 2,
 ) {
+  world.bindAssets(assets).unwrap();
+  const assetObserver = assets.observe().unwrap();
+  const assetClosure = new PublishedAssetClosure();
+  const materialIds = new WeakMap<MaterialResource, number>();
+  const materialRecords = new Map<
+    number,
+    {
+      readonly resource: MaterialResource;
+      readonly snapshot: MaterialSnapshot;
+      readonly holds: number;
+    }
+  >();
+  const materialsByEntity = new Map<number, readonly number[]>();
+  const materialRows = new Map<number, MaterialSnapshot>();
+  const materialSources = new Map<number, MaterialResource>();
+  const nextMaterialDependencies = new Map<number, readonly number[]>();
+  const materialHolds = new Map<number, number>();
+  let nextMaterialId = 1;
   if (maxInFlight !== 2 && maxInFlight !== 3 && maxInFlight !== 4)
     throw new RenderPublicationError({ reason: 'shape', subject: 'publication capacity' });
+  let activeObservation: SourcePreparationObservation | undefined;
   const publishedFullscreenFeatures = new Map<string, object>();
-  const pendingMeshContent = new Set<Handle<string, 'shared'>>();
-  const releaseTransforms = registerRenderSourceSystems(world, assets, {
-    updateMesh: (handle) => pendingMeshContent.add(handle),
-  });
+  const releaseTransforms = registerRenderSourceSystems(world);
   const source = createRenderSourceState(world);
   const transforms = createGlobalTransformChangeQuery(world);
   const caches: MaterialSnapshotCachesByWorld = new WeakMap();
   const members = new Set<number>();
   const publishedPrograms = new Set<string>();
-  const dependencies = new Map<number, readonly Handle<string, 'shared'>[]>();
-  const consumers = new Map<Handle<string, 'shared'>, Set<number>>();
+  const publishedMaterialProjections = new Map<
+    number,
+    ReturnType<AssetRegistry['getMaterialProjectionForPayload']>
+  >();
+  let assetVersions = new Map<
+    string,
+    { readonly handle: number; readonly revision: number; readonly value: Asset }
+  >();
+  const dependencies = new Map<number, readonly number[]>();
   const pending = new Set<number>();
   let canvasConsumers = new Map<number, readonly CanvasTextureSource[]>();
   let videoConsumers = new Map<number, readonly number[]>();
@@ -143,9 +181,8 @@ export function createRenderPublisher(
       users.add(entity);
     }
   };
-  let frameDependencies = new Set<Handle<string, 'shared'>>();
-  let catalogEpoch = -1,
-    revision = 0,
+  let frameDependencies = new Set<number>();
+  let revision = 0,
     disposed = false,
     active = false;
   let lastScannedRows = 0,
@@ -180,7 +217,7 @@ export function createRenderPublisher(
     inspect: () => ({
       revision,
       members: members.size,
-      assetCount: consumers.size,
+      assetCount: assetClosure.size,
       scannedRows: lastScannedRows,
       inFlight: flights.size > 0,
       inFlightCount: flights.size,
@@ -189,21 +226,40 @@ export function createRenderPublisher(
     prepare(
       sampleTimeSeconds: number,
       temporalReset = false,
+      execution?: { readonly frameId: number },
     ): Result<RenderPublicationCandidate, RenderPublicationError> {
       if (disposed) return fail('disposed', 'publisher');
       if (active || flights.size >= maxInFlight)
         return fail('in-flight', 'publication slots are occupied');
+      materialRows.clear();
+      materialSources.clear();
+      nextMaterialDependencies.clear();
+      materialHolds.clear();
       const baseline = revision === 0;
+      const observation = beginSourcePreparation(
+        world,
+        identity.source,
+        identity.epoch,
+        revision + 1,
+        execution?.frameId,
+        baseline,
+      );
+      activeObservation = observation;
       const featureSources = [...features];
       const batch = source.projection.read();
       lastScannedRows = batch.scannedRows;
+      observation?.fact('scannedRows', batch.scannedRows);
+      observation?.fact('batchIndices', batch.indices.length);
+      observation?.fact('changedComponentKinds', batch.changedComponents.length);
+      observation?.fact('membershipChanged', batch.membershipChanged);
+      observation?.fact('pending', pending.size);
       const changed = new Set(pending),
         removed = new Set<number>();
-      const invalidated = new Set<Handle<string, 'shared'>>(pendingMeshContent);
-      const runtimeChanged =
-        batch.membershipChanged ||
-        batch.changedComponents.includes(source.runtimeMaterialValue) ||
-        batch.changedComponents.includes(source.runtimeMeshVertices);
+      const invalidated = new Set<number>();
+      const assetBatch = assetObserver.read().unwrap();
+      observation?.fact('assetChanges', assetBatch.changes.length);
+      for (const change of assetBatch.changes)
+        if (!change.removed) invalidated.add(change.handle as unknown as number);
       for (const index of batch.indices) {
         const previous = source.entities.get(index),
           current = source.projection.entity(index);
@@ -213,45 +269,28 @@ export function createRenderPublisher(
           (current !== previous || !isRenderableMember(world, previous))
         )
           removed.add(previous);
-        if (runtimeChanged) {
-          const priorHandles = source.contentHandles.get(index);
-          const material =
-            current !== undefined && world.hasComponent(current, source.runtimeMaterialValue)
-              ? world.get(current, source.runtimeMaterialValue).unwrap().asset
-              : undefined;
-          const mesh =
-            current !== undefined && world.hasComponent(current, source.runtimeMeshVertices)
-              ? world.get(current, source.runtimeMeshVertices).unwrap().asset
-              : undefined;
-          // A migration can change the table without changing runtime content.
-          // Compare the existing owner handles and per-component write evidence,
-          // rather than invalidating every content row in a changed batch.
-          if (
-            (priorHandles !== undefined || material !== undefined || mesh !== undefined) &&
-            (previous !== current ||
-              priorHandles?.some((handle) => handle !== material && handle !== mesh) ||
-              (current !== undefined &&
-                (source.projection.changed(current, source.runtimeMaterialValue) ||
-                  source.projection.changed(current, source.runtimeMeshVertices))))
-          ) {
-            for (const handle of priorHandles ?? [])
-              invalidated.add(handle as Handle<string, 'shared'>);
-            if (material !== undefined) invalidated.add(material);
-            if (mesh !== undefined) invalidated.add(mesh);
-          }
-        }
         if (previous !== undefined)
-          for (const consumer of skinConsumers.get(previous) ?? []) changed.add(consumer);
+          for (const consumer of skinConsumers.get(previous) ?? []) {
+            const size = observation === undefined ? 0 : changed.size;
+            changed.add(consumer);
+            observation?.count('skin-component', changed.size !== size);
+          }
         if (current === undefined) continue;
         if (
           isRenderableMember(world, current) &&
           (baseline ||
             !members.has(current) ||
-            source.renderableComponents.some((component) =>
-              source.projection.changed(current, component),
-            ))
-        )
+            source.renderableComponents.some((component) => {
+              const dirty = source.projection.changed(current, component);
+              if (dirty && observation !== undefined && component.name === 'MeshFilter')
+                observation.count('mesh-filter-write');
+              return dirty;
+            }))
+        ) {
+          const size = observation === undefined ? 0 : changed.size;
           changed.add(current);
+          observation?.count('renderable-component-or-new', changed.size !== size);
+        }
         if (
           batch.membershipChanged ||
           source.projection.changed(current, ChildOf) ||
@@ -263,7 +302,11 @@ export function createRenderPublisher(
             const entity = queue.pop() as EntityHandle;
             if (visited.has(entity)) continue;
             visited.add(entity);
-            if (isRenderableMember(world, entity)) changed.add(entity);
+            if (isRenderableMember(world, entity)) {
+              const size = observation === undefined ? 0 : changed.size;
+              changed.add(entity);
+              observation?.count('hierarchy', changed.size !== size);
+            }
             if (world.hasComponent(entity, Children))
               queue.push(
                 ...Array.from(
@@ -274,20 +317,24 @@ export function createRenderPublisher(
           }
         }
       }
-      if (baseline || catalogEpoch !== assets.catalogEpoch) {
+      if (baseline) {
         for (const entity of members) changed.add(entity);
         for (const entity of source.entities.values())
-          if (isRenderableMember(world, entity)) changed.add(entity);
-      }
-      for (const handle of invalidated) {
-        caches.get(world)?.delete(handle);
-        for (const entity of consumers.get(handle) ?? []) changed.add(entity);
+          if (isRenderableMember(world, entity)) {
+            const size = observation === undefined ? 0 : changed.size;
+            changed.add(entity);
+            observation?.count('catalog-source', changed.size !== size);
+          }
       }
       const matrixRows = new Map<number, ArrayLike<number>>();
       for (const span of transforms.spans().unwrap()) {
         for (let row = 0; row < span.entities.length; row++) {
           const entity = span.entities[row] as EntityHandle;
-          for (const consumer of skinConsumers.get(entity) ?? []) changed.add(consumer);
+          for (const consumer of skinConsumers.get(entity) ?? []) {
+            const size = observation === undefined ? 0 : changed.size;
+            changed.add(consumer);
+            observation?.count('skin-transform', changed.size !== size);
+          }
           if (members.has(entity) && !removed.has(entity)) {
             const matrix = readPresentationWorldMatrix(world, entity);
             if (matrix !== undefined) matrixRows.set(entity, matrix);
@@ -295,10 +342,15 @@ export function createRenderPublisher(
           }
         }
       }
+      observation?.fact('changed', changed.size);
+      observation?.fact('removed', removed.size);
+      observation?.fact('invalidated', invalidated.size);
+      observation?.fact('matrixRows', matrixRows.size);
       for (const entity of changed) pending.add(entity);
       let canvasFrames: readonly PublishedCanvasFrame[] = [];
       let videoFrames: RenderPublication['videoFrames'] = [];
       try {
+        observation?.phase('extract');
         const frame = extractFrames(
           [world],
           { cameraOwner: 0, resourceOwner: 0 },
@@ -312,14 +364,14 @@ export function createRenderPublisher(
             renderables: changed.size ? { kind: 'partial', entitiesByWorld: [changed] } : 'none',
           },
         );
+        observation?.phase('templates');
+        observation?.fact('renderables', frame.renderables.length);
         const meshCounts = new Map<number, number>();
         for (const row of frame.renderables)
-          meshCounts.set(row.assetHandle, (meshCounts.get(row.assetHandle) ?? 0) + 1);
+          if (row.assetHandle !== undefined)
+            meshCounts.set(row.assetHandle, (meshCounts.get(row.assetHandle) ?? 0) + 1);
         const templates: RenderPublicationTemplate[] = [],
-          templateIds = new Map<
-            string,
-            { index: number; dependencies: readonly Handle<string, 'shared'>[] }
-          >();
+          templateIds = new Map<string, { index: number; dependencies: readonly number[] }>();
         // Dispatch entries share their material's parameter snapshot. Intern
         // both so each pass/entity does not serialize that same payload again.
         // The value table lives only for this preparation.
@@ -344,24 +396,21 @@ export function createRenderPublisher(
         const upserts: number[] = [];
         const programs = new Map<string, RenderPublication['programs'][number]>();
         const programMaterials = new Set<MaterialSnapshot>();
-        const nextDependencies = new Map<number, readonly Handle<string, 'shared'>[]>();
-        const assetRows = new Map<Handle<string, 'shared'>, Asset>();
-        const publishAsset = (handle: Handle<string, 'shared'>) => {
-          if (assetRows.has(handle)) return;
-          if (
-            !baseline &&
-            (consumers.has(handle) || frameDependencies.has(handle)) &&
-            !invalidated.has(handle)
-          ) {
-            if (catalogEpoch === assets.catalogEpoch) return;
-            // Catalog changes refresh resolved snapshots and GUID dependencies,
-            // but do not change an independently owned World payload.
-            const payload = world.sharedRefs.resolve<string, Asset>(handle);
-            if (payload.ok && assets.guidOf(payload.value) === undefined) return;
+        const nextDependencies = new Map<number, readonly number[]>();
+        let closure: ReturnType<PublishedAssetClosure['begin']> | undefined;
+        const publicationClosure = () => (closure ??= assetClosure.begin(assets));
+        const publishMaterial = (resource: MaterialResource): number => {
+          let id = materialIds.get(resource);
+          if (id === undefined) {
+            if (nextMaterialId > 0xffffffff)
+              throw new Error('material publication identity capacity exhausted');
+            id = nextMaterialId++;
+            materialIds.set(resource, id);
           }
-          const value = resolveAssetHandle(world, handle);
-          if (!value.ok) throw value.error;
-          assetRows.set(handle, value.value);
+          materialSources.set(id, resource);
+          if (materialRecords.get(id)?.snapshot !== resource.snapshot)
+            materialRows.set(id, resource.snapshot);
+          return id;
         };
         const byRenderable = new Map<number, RenderPublicationTemplate['dispatch'][number][]>();
         for (const { entityIndex: _entity, renderableIndex, ...dispatch } of frame.dispatch) {
@@ -378,6 +427,9 @@ export function createRenderPublisher(
             key,
             shader: {
               source: shader.value.source,
+              ...(shader.value.program.entryPoints === undefined
+                ? {}
+                : { entryPoints: shader.value.program.entryPoints }),
               paramSchema: shader.value.paramSchema,
               ...(shader.value.receipt === undefined ? {} : { receipt: shader.value.receipt }),
             },
@@ -391,16 +443,67 @@ export function createRenderPublisher(
             for (const key of publicationMaterialProgramKeys(material)) publishProgram(key);
           }
         };
+        for (const handle of invalidated) {
+          for (const { cache, geometry, vertexColor } of caches
+            .get(worldRenderResources(world))
+            ?.values() ?? []) {
+            if (!cache.has(handle)) continue;
+            const context =
+              capabilities === undefined
+                ? undefined
+                : renderMaterialContext(capabilities, limits).materialContext;
+            const snapshot = resolveMaterialSnapshot(
+              handle,
+              worldRenderResources(world),
+              assets,
+              undefined,
+              cache,
+              context === undefined ? undefined : { ...context, geometry },
+              undefined,
+              vertexColor,
+            );
+            const resource = MaterialResource.from(snapshot);
+            const id = materialIds.get(resource);
+            if (id !== undefined && materialRecords.has(id)) {
+              publishMaterial(resource);
+              publishPrograms([snapshot]);
+            }
+          }
+        }
         for (let i = 0; i < frame.renderables.length; i++) {
-          const row = frame.renderables[i] as RenderableSnapshot;
+          const row = frame.renderables.at(i) as RenderableSnapshot;
           if (row.skin) return fail('unsupported', 'source GPU skin receipt');
           if (
-            row.materials.some((material) =>
-              [...(material.textureSources?.values() ?? [])].some(isExternalTextureSource),
+            [...row.materials, ...(row.materialOverrides ?? [])].some((material) =>
+              [...(material?.snapshot.textureSources?.values() ?? [])].some(
+                isExternalTextureSource,
+              ),
             )
           )
             return fail('unsupported', 'renderer-local external texture source');
-          const { worldId: _world, entityKey, transform, ...snapshot } = row;
+          const {
+            worldId: _world,
+            entityKey,
+            transform,
+            material,
+            materials,
+            materialOverrides,
+            ...content
+          } = row;
+          const materialReferences = materials.map(publishMaterial);
+          const overrides = materialOverrides?.map((resource) =>
+            resource === undefined ? 0 : publishMaterial(resource),
+          );
+          nextMaterialDependencies.set(entityKey, [
+            ...materialReferences,
+            ...(overrides ?? []).filter((id) => id !== 0),
+          ]);
+          const snapshot = {
+            ...content,
+            material: publishMaterial(material),
+            materials: materialReferences,
+            ...(overrides === undefined ? {} : { materialOverrides: overrides }),
+          };
           const template = { snapshot, dispatch: byRenderable.get(i) ?? [] };
           // These payloads already contain the source entity identity. They
           // cannot share a template, regardless of equal pose/instance bytes.
@@ -410,14 +513,15 @@ export function createRenderPublisher(
             snapshot.skinPose !== undefined ||
             snapshot.pointsLines !== undefined;
           const key =
-            entityOwned || meshCounts.get(snapshot.assetHandle) === 1
+            entityOwned ||
+            (snapshot.assetHandle !== undefined && meshCounts.get(snapshot.assetHandle) === 1)
               ? undefined
               : JSON.stringify(
                   {
                     snapshot: {
                       ...snapshot,
-                      material: valueId(snapshot.material),
-                      materials: snapshot.materials.map((material) => valueId(material)),
+                      material: snapshot.material,
+                      materials: snapshot.materials,
                     },
                     dispatch: template.dispatch,
                   },
@@ -427,25 +531,25 @@ export function createRenderPublisher(
           if (known === undefined) {
             const index = templates.length;
             templates.push(template);
-            publishPrograms(row.materials);
-            const handles = publicationDependencies(row);
-            for (const lod of row.lods ?? []) {
-              const handle = internSharedRefFromGuid(
-                world,
-                assets,
-                AssetGuid.format(lod.mesh),
-                'MeshAsset',
-              );
-              if (handle !== undefined) handles.push(handle);
-            }
+            publishPrograms(
+              [
+                ...row.materials,
+                ...(materialOverrides ?? []).filter((resource) => resource !== undefined),
+              ].map((material) => material.snapshot),
+            );
+            const handles = renderableAssetRoots(row);
             known = { index, dependencies: handles };
             if (key !== undefined) templateIds.set(key, known);
-            for (const handle of handles) publishAsset(handle);
           }
           upserts.push(entityKey, known.index);
           matrixRows.set(entityKey, transform.world);
           nextDependencies.set(entityKey, known.dependencies);
         }
+        observation?.phase('feature');
+        const nextAssetVersions = new Map<
+          string,
+          { readonly handle: number; readonly revision: number; readonly value: Asset }
+        >();
         const featureRows = featureSources.map((feature) => {
           const data = feature
             .extract({
@@ -469,19 +573,25 @@ export function createRenderPublisher(
                     : { frame: { cloudLayer: frame.cloudLayer } }),
                 })),
               visibilitySnapshots: frame.featureVisibilitySnapshots,
+              referenceAssetVersion: (sourceWorldIndex, version) => {
+                if (sourceWorldIndex !== 0)
+                  throw new TypeError('fixed asset source World mismatch');
+                const key = `${version.handle}:${version.revision}`;
+                const prior = nextAssetVersions.get(key) ?? assetVersions.get(key);
+                nextAssetVersions.set(key, prior ?? version);
+              },
               referenceAsset: (sourceWorldIndex, identity, captured) => {
                 if (sourceWorldIndex !== 0) return undefined;
                 const handle =
                   typeof identity === 'string'
-                    ? internSharedRefFromGuid(
-                        world,
-                        assets,
+                    ? resolveRuntimeAssetReference(
+                        worldRenderResources(world),
                         identity,
                         publicationAssetBrand(captured),
                       )
                     : identity;
                 if (handle === undefined) return undefined;
-                const current = resolveAssetHandle(world, handle);
+                const current = runtimeAssets(world.assets).resolveAsset(handle);
                 return current.ok && current.value === captured ? handle : undefined;
               },
             })
@@ -496,60 +606,22 @@ export function createRenderPublisher(
               : { fullscreen }),
           };
         });
+        observation?.phase('packet');
         const nextFrameDependencies = new Set(publicationFrameDependencies(frame));
-        const pendingGuids = featureSources.flatMap((feature) => {
+        for (const feature of featureSources) {
           const row = featureRows.find((row) => row.identity === feature.identity);
-          return row === undefined ? [] : [...(feature.assetDependencies?.(row.data) ?? [])];
-        });
-        const seenGuids = new Set<string>();
-        for (const guid of pendingGuids) {
-          if (typeof guid !== 'string') {
-            nextFrameDependencies.add(guid);
-            continue;
-          }
-          const key = guid.toLowerCase();
-          if (seenGuids.has(key)) continue;
-          seenGuids.add(key);
-          const asset = assets.lookup(key);
-          // Dynamic asset content is keyed by the canonical World handle. Feature
-          // dependencies must share the same identity as ordinary scene consumers.
-          const handle = internSharedRefFromGuid(world, assets, key, publicationAssetBrand(asset));
-          if (asset === undefined || handle === undefined)
-            throw new Error(`Missing feature asset ${guid}`);
-          nextFrameDependencies.add(handle);
-          for (const ref of assets.assetCatalog.get(key)?.refs ?? []) pendingGuids.push(ref.guid);
-          if (asset.kind === 'material') {
-            const material = resolveMaterialSnapshot(
-              handle,
-              world,
-              assets,
-              undefined,
-              undefined,
-              capabilities === undefined
-                ? undefined
-                : renderMaterialContext(capabilities, limits).materialContext,
-              undefined,
-              undefined,
-              // A feature dependency is not a Mesh binding. Retain its complete
-              // program closure; the consuming feature admits the actual layout.
-              true,
-            );
-            publishPrograms([material]);
-            const source = world.sharedRefs.resolve<string, Asset>(handle).unwrap();
-            const projection =
-              source.kind === 'material'
-                ? assets.getMaterialProjectionForPayload(source)
-                : undefined;
-            for (const pass of projection?.passes ?? [])
-              for (const program of pass.programs) publishProgram(program.specializationKey);
-            for (const dependency of publicationDependencies({
-              assetHandle: handle,
-              materials: [material],
-            }))
-              nextFrameDependencies.add(dependency);
+          if (row === undefined) continue;
+          for (const identity of feature.assetDependencies?.(row.data) ?? []) {
+            const handle =
+              typeof identity === 'string' ? runtimeAssetReference(assets, identity) : identity;
+            if (handle === undefined || !assets.validate(handle).ok)
+              throw new Error(`Missing feature asset ${identity}`);
+            // The accepted runtime record holds its complete dependency closure.
+            // Publication residency acquires it once; source Catalog rows are not
+            // another dependency or current-content authority.
+            nextFrameDependencies.add(handle);
           }
         }
-        for (const handle of nextFrameDependencies) publishAsset(handle);
         const emitted = new Set(frame.renderables.map((row) => row.entityKey));
         for (const entity of changed)
           if (members.has(entity) && !emitted.has(entity)) removed.add(entity);
@@ -587,39 +659,82 @@ export function createRenderPublisher(
           visibilitySnapshots: _visibility,
           featureVisibilitySnapshots: _features,
           hiddenEntityReports: _hidden,
-          shadowCasterEntityKeys: _casters,
-          shadowCasterDrawKeys: _draws,
-          shadowCasterMembership: _membership,
           ...metadata
         } = frame;
-        const retired = new Set<Handle<string, 'shared'>>();
         const removedConsumers = new Set([...removed, ...nextDependencies.keys()]);
-        const nextHandles = new Set([...nextDependencies.values()].flat());
-        const removedCounts = new Map<Handle<string, 'shared'>, number>();
+        // New holds precede old releases so a rebinding keeps shared closure members resident.
+        for (const handles of nextDependencies.values())
+          for (const handle of handles) publicationClosure().acquire(handle);
         for (const entity of removedConsumers)
-          for (const handle of dependencies.get(entity) ?? [])
-            removedCounts.set(handle, (removedCounts.get(handle) ?? 0) + 1);
-        for (const [handle, count] of removedCounts)
-          if (
-            count === consumers.get(handle)?.size &&
-            !nextHandles.has(handle) &&
-            !nextFrameDependencies.has(handle)
-          )
-            retired.add(handle);
-        for (const handle of frameDependencies) {
-          if (
-            !nextFrameDependencies.has(handle) &&
-            !nextHandles.has(handle) &&
-            (consumers.get(handle)?.size ?? 0) === (removedCounts.get(handle) ?? 0)
-          )
-            retired.add(handle);
+          for (const handle of dependencies.get(entity) ?? []) publicationClosure().release(handle);
+        for (const handle of nextFrameDependencies)
+          if (!frameDependencies.has(handle)) publicationClosure().acquire(handle);
+        for (const handle of frameDependencies)
+          if (!nextFrameDependencies.has(handle)) publicationClosure().release(handle);
+        for (const change of assetBatch.changes)
+          if (!change.removed) publicationClosure().update(change.handle, change);
+        const assetRows = closure?.rows() ?? EMPTY_ASSET_ROWS;
+        const retired = closure?.retired() ?? EMPTY_IDENTITIES;
+        const materialProjections = new Map<
+          number,
+          ReturnType<AssetRegistry['getMaterialProjectionForPayload']>
+        >();
+        // New dependency materials need their immutable program closure even
+        // when a Mesh or Terrain edit produces no entity upsert.
+        for (const [handle, value] of assetRows) {
+          if (value.kind !== 'material') continue;
+          const source = runtimeAssets(world.assets).resolveAsset(handle).unwrap();
+          const projection =
+            source.kind === 'material' ? assets.getMaterialProjectionForPayload(source) : undefined;
+          materialProjections.set(handle, projection);
+          if (projection !== undefined) {
+            for (const pass of projection.passes)
+              for (const program of pass.programs) publishProgram(program.specializationKey);
+          } else {
+            const snapshot = resolveMaterialSnapshot(
+              handle,
+              worldRenderResources(world),
+              assets,
+              undefined,
+              undefined,
+              capabilities === undefined
+                ? undefined
+                : renderMaterialContext(capabilities, limits).materialContext,
+            );
+            publishPrograms([snapshot]);
+          }
         }
+        const holdMaterial = (id: number, delta: number) =>
+          materialHolds.set(
+            id,
+            (materialHolds.get(id) ?? materialRecords.get(id)?.holds ?? 0) + delta,
+          );
+        for (const ids of nextMaterialDependencies.values())
+          for (const id of ids) holdMaterial(id, 1);
+        for (const entity of new Set([...removed, ...nextMaterialDependencies.keys()]))
+          for (const id of materialsByEntity.get(entity) ?? []) holdMaterial(id, -1);
+        const retiredMaterials =
+          materialHolds.size === 0
+            ? EMPTY_IDENTITIES
+            : [...materialHolds].flatMap(([id, count]) => (count === 0 ? [id] : []));
+        const publishedMaterials =
+          materialRows.size === 0
+            ? EMPTY_MATERIAL_ROWS
+            : [...materialRows]
+                .filter(
+                  ([id]) => (materialHolds.get(id) ?? materialRecords.get(id)?.holds ?? 0) > 0,
+                )
+                .map(([id, value]) => ({ id, value }));
         const upsertColumn = new Uint32Array(buffer(0, upserts.length * 4), 0, upserts.length);
         upsertColumn.set(upserts);
         const removedColumn = new Uint32Array(buffer(1, removed.size * 4), 0, removed.size);
         removedColumn.set([...removed]);
+        observation?.phase('packet');
         const packet: RenderPublication = {
           ...identity,
+          protocol: 2,
+          materials: publishedMaterials,
+          retiredMaterials,
           revision: revision + 1,
           base: revision,
           baseline,
@@ -632,46 +747,88 @@ export function createRenderPublisher(
           videoFrames,
           ...(canvasFrames.length > 0 ? { canvasFrames } : {}),
           targets: targetOwner?.snapshot() ?? [],
-          targetSources: publicationTargetSources(templates),
+          targetSources: publicationTargetSources(publishedMaterials),
           features: featureRows,
+          assetVersions: [...nextAssetVersions].flatMap(([key, version]) =>
+            assetVersions.has(key) ? [] : [{ ...version, value: structuredClone(version.value) }],
+          ),
+          retiredAssetVersions: [...assetVersions].flatMap(([key, { handle, revision }]) =>
+            nextAssetVersions.has(key) ? [] : [{ handle, revision }],
+          ),
           programs: [...programs.values()],
           upserts: upsertColumn,
           removed: removedColumn,
           transformEntities,
           transforms: matrices,
-          assets: [...assetRows].map(([handle, value]) => {
+          assets: [...assetRows].map(([handle, value, revision]) => {
             // Runtime content is a projection, so GUID identity stays with the
             // underlying catalogued payload rather than the projected object.
-            const source = world.sharedRefs.resolve<string, Asset>(handle);
-            const guid = assets.guidOf(source.ok ? source.value : value);
+            const guid = runtimeAssetSource(assets, handle);
             const sourceKey = guid === undefined ? undefined : assets.sourceKeyOf(guid);
+            const isMesh = value.kind === 'mesh';
+            if (isMesh) observation?.phase('clone');
+            const packetValue = structuredClone(value);
+            if (isMesh) {
+              observation?.phase('packet');
+              observation?.mesh(handle, guid === undefined, packetValue);
+            }
             return {
-              handle,
+              handle: handle as number,
+              revision,
               // Assets stay with their source owner. An admitted mesh owns a
               // detached packet copy so its large buffers can move to Render
               // without another receiver-side structured-clone allocation.
-              value: value.kind === 'mesh' ? structuredClone(value) : value,
+              value: packetValue,
+              ...(value.kind !== 'material' ||
+              (publishedMaterialProjections.has(handle) &&
+                publishedMaterialProjections.get(handle) === materialProjections.get(handle))
+                ? {}
+                : { materialProjection: structuredClone(materialProjections.get(handle) ?? null) }),
               ...(guid === undefined ? {} : { guid }),
               ...(sourceKey === undefined ? {} : { sourceKey }),
             };
           }),
-          retiredAssets: [...retired],
-          invalidatedAssets: [...invalidated],
+          retiredAssets: retired as number[],
+          assetPatches: closure?.patches() ?? [],
         };
+        observation?.fact('assets', packet.assets.length);
+        observation?.fact('templates', templates.length);
+        observation?.fact('upsertRows', upserts.length / 2);
+        observation?.phase('candidate');
         batch.validate();
         active = true;
         let closed = false;
         return ok({
           packet,
+          ...(observation === undefined ? {} : { observation }),
           accept: () => {
             if (closed)
               throw new RenderPublicationError({ reason: 'revision', subject: 'closed candidate' });
+            observation?.phase('accept');
             batch.accept();
+            assetBatch.accept();
+            assetVersions = nextAssetVersions;
+            for (const handle of retired) publishedMaterialProjections.delete(handle);
+            for (const [handle, projection] of materialProjections)
+              publishedMaterialProjections.set(handle, projection);
+            closure?.commit();
+            for (const [id, holds] of materialHolds) {
+              const resource = materialSources.get(id) ?? materialRecords.get(id)?.resource;
+              if (holds === 0) materialRecords.delete(id);
+              else if (resource !== undefined)
+                materialRecords.set(id, { resource, holds, snapshot: resource.snapshot });
+            }
+            for (const { id, value } of publishedMaterials) {
+              const previous = materialRecords.get(id);
+              if (previous !== undefined) materialRecords.set(id, { ...previous, snapshot: value });
+            }
+            for (const entity of removed) materialsByEntity.delete(entity);
+            for (const [entity, ids] of nextMaterialDependencies)
+              materialsByEntity.set(entity, ids);
             for (const row of featureRows) {
               if (row.fullscreen !== undefined)
                 publishedFullscreenFeatures.set(row.identity, row.fullscreen);
             }
-            for (const handle of invalidated) pendingMeshContent.delete(handle);
             for (const key of programs.keys()) publishedPrograms.add(key);
             closed = true;
             active = false;
@@ -692,14 +849,7 @@ export function createRenderPublisher(
             videoConsumers = nextVideoConsumers;
             canvasConsumers = nextCanvasConsumers;
             frameDependencies = nextFrameDependencies;
-            catalogEpoch = assets.catalogEpoch;
-            for (const entity of removedConsumers) {
-              for (const handle of dependencies.get(entity) ?? []) {
-                consumers.get(handle)?.delete(entity);
-                if (consumers.get(handle)?.size === 0) consumers.delete(handle);
-              }
-              dependencies.delete(entity);
-            }
+            for (const entity of removedConsumers) dependencies.delete(entity);
             for (const entity of removed) updateSkinConsumers(entity, undefined);
             for (const row of frame.renderables)
               updateSkinConsumers(row.entityKey, row.skinJointEntities);
@@ -707,14 +857,6 @@ export function createRenderPublisher(
             for (const [entity, handles] of nextDependencies) {
               members.add(entity);
               dependencies.set(entity, handles);
-              for (const handle of handles) {
-                let users = consumers.get(handle);
-                if (!users) {
-                  users = new Set();
-                  consumers.set(handle, users);
-                }
-                users.add(entity);
-              }
             }
             for (const entity of matrixRows.keys()) pending.delete(entity);
             for (const entity of removed) pending.delete(entity);
@@ -722,18 +864,12 @@ export function createRenderPublisher(
               const entity = source.projection.entity(sourceIndex);
               if (entity === undefined) {
                 source.entities.delete(sourceIndex);
-                source.contentHandles.delete(sourceIndex);
               } else {
                 source.entities.set(sourceIndex, entity);
-                const handles: number[] = [];
-                if (world.hasComponent(entity, source.runtimeMaterialValue))
-                  handles.push(world.get(entity, source.runtimeMaterialValue).unwrap().asset);
-                if (world.hasComponent(entity, source.runtimeMeshVertices))
-                  handles.push(world.get(entity, source.runtimeMeshVertices).unwrap().asset);
-                if (handles.length) source.contentHandles.set(sourceIndex, handles);
-                else source.contentHandles.delete(sourceIndex);
               }
             }
+            observation?.finish('accepted');
+            activeObservation = undefined;
           },
           discard: () => {
             if (!closed) {
@@ -741,10 +877,14 @@ export function createRenderPublisher(
               active = false;
               for (const row of videoFrames) row.frame.close();
               for (const row of canvasFrames) row.frame?.close();
+              observation?.finish('discarded');
+              activeObservation = undefined;
             }
           },
         });
       } catch (cause) {
+        observation?.finish('prepare-error');
+        activeObservation = undefined;
         for (const row of videoFrames) row.frame.close();
         for (const row of canvasFrames) row.frame?.close();
         return fail('unsupported', cause instanceof Error ? cause.message : String(cause));
@@ -794,12 +934,18 @@ export function createRenderPublisher(
     dispose() {
       if (disposed) return;
       disposed = true;
+      activeObservation?.finish('retired');
+      activeObservation = undefined;
       releaseTransforms();
       members.clear();
       dependencies.clear();
-      consumers.clear();
+      assetObserver.dispose();
+      assetClosure.clear();
+      assetVersions.clear();
+      publishedMaterialProjections.clear();
+      materialRecords.clear();
+      materialsByEntity.clear();
       pending.clear();
-      pendingMeshContent.clear();
       videoConsumers.clear();
       canvasConsumers.clear();
       flights.clear();

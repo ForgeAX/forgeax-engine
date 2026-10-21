@@ -11,10 +11,12 @@ import {
   GPU_BUFFER_USAGE_MAP_READ,
   GPU_BUFFER_USAGE_UNIFORM,
 } from '../gpu-usage';
+import { MaterialResource } from '../material-resource';
 import type { CameraSnapshot } from '../render-contract';
 import type { RenderPipelineFrame } from '../render-pipeline';
-import type { MaterialSnapshot, RenderableSnapshot } from '../render-system-extract';
+import type { RenderableSnapshot } from '../render-system-extract';
 import { RenderScene } from '../scene/render-scene';
+import { updateGpuView } from './helpers/gpu-input-read-domain';
 
 /**
  * This fixture deliberately exercises only the generic GPU view owner. The
@@ -50,12 +52,13 @@ fn fs_main() -> @location(0) vec4<f32> {
 
 function snapshot(entityKey: number, kind: 'indexed' | 'non-indexed'): RenderableSnapshot {
   const world = mat4.identity(mat4.create());
-  const material = {
-    baseColor: new Float32Array([0.25, 0.5, 0.75]),
+  const material = new MaterialResource({
+    baseColor: vec3.create(0.25, 0.5, 0.75),
+    passes: [],
     metallic: 0,
     roughness: 1,
     materialShaderId: 'fixture::indirect-raster',
-  } as MaterialSnapshot;
+  });
   return {
     assetHandle: entityKey,
     transform: { world: new Float32Array(world) },
@@ -75,6 +78,16 @@ function snapshot(entityKey: number, kind: 'indexed' | 'non-indexed'): Renderabl
         topology: 'triangle-list',
         pipelineClass: 'fixture::indirect-raster|triangle-list|null',
         materialResourceClass: 'fixture',
+        geometry: {
+          receipt: {
+            identity: 'indirect-triangle',
+            vertexInputs: [],
+            topology: 'triangle-list',
+            indexed: kind === 'indexed',
+          },
+          draw: { kind, first: 0, count: 3, baseVertex: 0, topology: 'triangle-list' },
+          deformation: 'rigid',
+        },
       },
     ],
   };
@@ -222,7 +235,14 @@ export async function runGpuDrivenIndirectRasterEvidence(): Promise<GpuDrivenInd
   const renderables = [
     {
       ...indexed,
-      gpuDrivenDraws: [indexedDraw, { ...indexedDraw, first: 3 }],
+      gpuDrivenDraws: [
+        indexedDraw,
+        {
+          ...indexedDraw,
+          first: 3,
+          geometry: { ...indexedDraw.geometry, draw: { ...indexedDraw.geometry.draw, first: 3 } },
+        },
+      ],
     },
     { ...nonIndexed, gpuDrivenDraws: [nonIndexedDraw] },
   ];
@@ -233,12 +253,12 @@ export async function runGpuDrivenIndirectRasterEvidence(): Promise<GpuDrivenInd
   availability.scene.sync(delta).unwrap();
   const topology = new BatchTopology();
   topology.rebuild(projection.slotsSnapshot());
-  const plan = topology.plan();
+  const plan = topology.query(topology.sourcePlan(), undefined);
   const gpuView = GpuDrivenView.create({
     device,
     shaderModuleFactory: { createShaderModule: () => ok(viewShader) },
   }).unwrap();
-  gpuView.update(plan, availability.scene, viewPlanes(camera())).unwrap();
+  updateGpuView(gpuView, plan, availability.scene, viewPlanes(camera())).unwrap();
 
   const readbackBuffer = device
     .createBuffer({

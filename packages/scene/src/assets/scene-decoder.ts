@@ -66,7 +66,7 @@ function resolveSkinGuids(
   const resolved: string[] = [];
   for (let index = 0; index < skinGuids.length; index += 1) {
     const value = skinGuids[index];
-    if (typeof value === 'string') {
+    if (typeof value === 'string' && value.length > 0) {
       resolved.push(value);
       continue;
     }
@@ -100,7 +100,13 @@ function resolveSceneWireRefs(
           };
         }
       | undefined;
-    if (key.length === 0 || entity === undefined || typeof entity !== 'object') {
+    if (
+      key.length === 0 ||
+      entity === undefined ||
+      entity === null ||
+      typeof entity !== 'object' ||
+      Array.isArray(entity)
+    ) {
       return { ok: false, reason: `entities[${JSON.stringify(key)}] is malformed` };
     }
     if (
@@ -122,7 +128,7 @@ function resolveSceneWireRefs(
       }
       // Component schema lookup is World-local after the ECS core reduction.
       // The runtime projection owns the World-local schema and converts
-      // authored GUID fields into World.sharedRefs handles. Keep this loader
+      // authored GUID fields into managed asset handles. Keep this loader
       // boundary POD-only instead of consulting a removed process-global ECS
       // component registry.
       components[componentName] = { ...(rawFields as Record<string, unknown>) };
@@ -153,6 +159,7 @@ function resolveSceneWireRefs(
             typeof rawOverride !== 'object' ||
             Array.isArray(rawOverride) ||
             !Array.isArray((rawOverride as { readonly target?: unknown }).target) ||
+            (rawOverride as { readonly target: unknown[] }).target.length === 0 ||
             (rawOverride as { readonly target?: unknown[] }).target?.some(
               (part) => typeof part !== 'string' || part.length === 0,
             )
@@ -192,12 +199,10 @@ function resolveSceneWireRefs(
     };
   }
 
+  if (payload.skinGuids !== undefined && !Array.isArray(payload.skinGuids))
+    return { ok: false, reason: 'skinGuids must be an array' };
   const skinGuids = resolveSkinGuids(
-    Array.isArray(payload.skinGuids)
-      ? (payload.skinGuids as readonly (number | string)[])
-      : payload.skinGuids === undefined
-        ? undefined
-        : ([] as readonly (number | string)[]),
+    payload.skinGuids as readonly (number | string)[] | undefined,
     refs,
   );
   if (!skinGuids.ok) return skinGuids;
@@ -217,6 +222,9 @@ export const sceneAssetDecoder: AssetDecoder<SceneAsset> = {
   async decode({ envelope }): Promise<Result<SceneAsset, AssetLoadError>> {
     const payload = envelope.payload;
     if (
+      payload === null ||
+      typeof payload !== 'object' ||
+      Array.isArray(payload) ||
       payload.kind !== 'scene' ||
       payload.entities === null ||
       typeof payload.entities !== 'object'

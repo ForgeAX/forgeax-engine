@@ -155,7 +155,7 @@ export function decodeToRgba8(
   format: string,
   width: number,
   height: number,
-  aspect: 'all' | 'depth-only' | 'stencil-only' = 'all',
+  aspect: GPUTextureAspect = 'all',
 ): Uint8ClampedArray<ArrayBuffer> | null {
   if (format.startsWith('depth')) {
     return decodeDepthToRgba8(bytes, format, width, height, aspect);
@@ -202,7 +202,7 @@ function decodeDepthToRgba8(
   format: string,
   width: number,
   height: number,
-  aspect: 'all' | 'depth-only' | 'stencil-only',
+  aspect: GPUTextureAspect,
 ): Uint8ClampedArray<ArrayBuffer> | null {
   const combined = format.endsWith('-stencil8');
   if (combined && aspect === 'all') return null;

@@ -15,7 +15,7 @@
 // w20) to prevent bilinear edge artifacts on RGBA transparent borders.
 //
 // Textures are loaded through the GUID asset pipeline:
-//   configureRuntimeAssetCatalog(...) + loadByGuid<TextureAsset>.
+//   configureRuntimeAssetCatalog(...) + assets.load(guid, 'texture').
 //
 // GREP anchors for AI users:
 //   - "// 1. engine usage"    public engine API consumed
@@ -26,7 +26,7 @@
 import { configureRuntimeAssetCatalog, createRuntimeAssetImportTransport, runtimeBinding } from '@forgeax/apps-shared/asset-runtime-config';
 import { createApp } from '@forgeax/engine-app/browser';
 import { AssetGuid } from '@forgeax/engine-pack/guid';
-import { HANDLE_CUBE, HANDLE_QUAD } from '@forgeax/engine-assets-runtime';
+
 import { Transform } from '@forgeax/engine-scene';
 
 import { Camera, DirectionalLight, MeshFilter, MeshRenderer } from '@forgeax/engine-render';
@@ -34,14 +34,16 @@ import { perspective } from '@forgeax/engine-render';
 
 import { TransparentSort } from '@forgeax/engine-render/authoring';
 
-import type { MaterialAsset, TextureAsset } from '@forgeax/engine-types';
-import { RenderQueue, unwrapHandle } from '@forgeax/engine-types';
+
+import { RenderQueue } from '@forgeax/engine-types';
 import { forgeaxBundlerAdapter } from 'virtual:forgeax/bundler';
 import { addFirstPersonSystem } from '../../../../shared/src/learn-render-first-person';
 
 // 2. example glue
 
 import './alpha-test.wgsl';
+import { createPrimitiveMesh } from '@forgeax/engine-geometry';
+
 
 const ALPHA_TEST_SHADER_ID = 'learn_render::alpha_test';
 
@@ -107,7 +109,13 @@ async function bootstrap(target: HTMLCanvasElement): Promise<void> {
     return;
   }
   const app = appRes.value;
+if (app.assets === undefined) throw new Error('This scene requires the App asset owner');
+
   const world = app.world;
+const primitiveQuad = app.assets.create(createPrimitiveMesh('quad').unwrap()).unwrap();
+
+const primitiveCube = app.assets.create(createPrimitiveMesh('cube').unwrap()).unwrap();
+
   app.onError((error) => {
     console.error('[learn-render 4.3 blending] app.onError:', error.code, error.hint);
     const bus = (globalThis as unknown as { __learnRenderErrors?: LearnRenderErrorRecord[] }).__learnRenderErrors;
@@ -152,10 +160,10 @@ async function bootstrap(target: HTMLCanvasElement): Promise<void> {
   }
 
   // Load textures through the GUID asset pipeline.
-  const metalHandleRes = await assets.loadByGuid<TextureAsset>(metalGuidRes.value);
-  const marbleHandleRes = await assets.loadByGuid<TextureAsset>(marbleGuidRes.value);
-  const grassHandleRes = await assets.loadByGuid<TextureAsset>(grassGuidRes.value);
-  const windowHandleRes = await assets.loadByGuid<TextureAsset>(windowGuidRes.value);
+  const metalHandleRes = await assets.load(metalGuidRes.value, 'texture');
+  const marbleHandleRes = await assets.load(marbleGuidRes.value, 'texture');
+  const grassHandleRes = await assets.load(grassGuidRes.value, 'texture');
+  const windowHandleRes = await assets.load(windowGuidRes.value, 'texture');
   if (
     !metalHandleRes.ok ||
     !marbleHandleRes.ok ||
@@ -163,7 +171,7 @@ async function bootstrap(target: HTMLCanvasElement): Promise<void> {
     !windowHandleRes.ok
   ) {
     console.error(
-      '[learn-render 4.3 blending] loadByGuid failed:',
+      '[learn-render 4.3 blending] load failed:',
       metalHandleRes.ok ? null : metalHandleRes.error.code,
       marbleHandleRes.ok ? null : marbleHandleRes.error.code,
       grassHandleRes.ok ? null : grassHandleRes.error.code,
@@ -178,13 +186,13 @@ async function bootstrap(target: HTMLCanvasElement): Promise<void> {
     }
     return;
   }
-  const metalTex = unwrapHandle(world.allocSharedRef('TextureAsset', metalHandleRes.value));
-  const marbleTex = unwrapHandle(world.allocSharedRef('TextureAsset', marbleHandleRes.value));
-  const grassTex = unwrapHandle(world.allocSharedRef('TextureAsset', grassHandleRes.value));
-  const windowTex = unwrapHandle(world.allocSharedRef('TextureAsset', windowHandleRes.value));
+  const metalTex = Number(metalHandleRes.value);
+  const marbleTex = Number(marbleHandleRes.value);
+  const grassTex = Number(grassHandleRes.value);
+  const windowTex = Number(windowHandleRes.value);
 
   // ── Floor material: PBR with metal.png texture ───────────────────
-  const floorMat = world.allocSharedRef<'MaterialAsset', MaterialAsset>('MaterialAsset', {
+  const floorMat = assets.create({
     kind: 'material',
     passes: [
       { name: 'Forward', program: { module: 'forgeax::default-standard-pbr' }, renderState: { tags: { LightMode: 'Forward' } } },
@@ -195,10 +203,10 @@ async function bootstrap(target: HTMLCanvasElement): Promise<void> {
       roughness: 0.9,
       baseColorTexture: metalTex,
     },
-  });
+  }).unwrap();
 
   // ── Cube material: PBR with marble.jpg texture ───────────────────
-  const cubeMat = world.allocSharedRef<'MaterialAsset', MaterialAsset>('MaterialAsset', {
+  const cubeMat = assets.create({
     kind: 'material',
     passes: [
       { name: 'Forward', program: { module: 'forgeax::default-standard-pbr' }, renderState: { tags: { LightMode: 'Forward' } } },
@@ -209,13 +217,13 @@ async function bootstrap(target: HTMLCanvasElement): Promise<void> {
       roughness: 0.5,
       baseColorTexture: marbleTex,
     },
-  });
+  }).unwrap();
 
   // ── Grass material: alpha-test discard shader, Transparent queue ─
   // Reuses existing alpha-test.wgsl (discard fragments where sampled
   // alpha < 0.1). Grass texture uses clamp-to-edge (meta sidecar, w20)
   // to prevent grey border artifacts from bilinear edge sampling.
-  const grassMat = world.allocSharedRef<'MaterialAsset', MaterialAsset>('MaterialAsset', {
+  const grassMat = assets.create({
     kind: 'material',
     passes: [
       { name: 'Forward', program: { module: ALPHA_TEST_SHADER_ID }, renderState: { ...{ depthWriteEnabled: false }, tags: { LightMode: 'Forward' }, queue: RenderQueue.Transparent as number } },
@@ -226,13 +234,13 @@ async function bootstrap(target: HTMLCanvasElement): Promise<void> {
       roughness: 0.5,
       baseColorTexture: grassTex,
     },
-  });
+  }).unwrap();
 
   // ── Window material: semi-transparent blend, Transparent queue ───
   // blend SRC_ALPHA / ONE_MINUS_SRC_ALPHA mirrors LO glBlendFunc. Window
   // texture uses clamp-to-edge (meta sidecar, w20) to prevent border
   // artifacts. depthWriteEnabled=false so farther windows are not occluded.
-  const windowMat = world.allocSharedRef<'MaterialAsset', MaterialAsset>('MaterialAsset', {
+  const windowMat = assets.create({
     kind: 'material',
     passes: [
       { name: 'Forward', program: { module: 'forgeax::default-standard-pbr' }, renderState: { ...{
@@ -249,7 +257,7 @@ async function bootstrap(target: HTMLCanvasElement): Promise<void> {
       roughness: 0.5,
       baseColorTexture: windowTex,
     },
-  });
+  }).unwrap();
 
   // ── Spawn entities ────────────────────────────────────────────────
 
@@ -260,7 +268,7 @@ async function bootstrap(target: HTMLCanvasElement): Promise<void> {
       data: {
         pos: [0, FLOOR_Y, 0], quat: [SIN_NEG_90, 0, 0, COS_NEG_90], scale: [FLOOR_SCALE, FLOOR_SCALE, FLOOR_SCALE],},
     },
-    { component: MeshFilter, data: { assetHandle: HANDLE_QUAD } },
+    { component: MeshFilter, data: { assetHandle: primitiveQuad } },
     { component: MeshRenderer, data: { materials: [floorMat] } },
   ).unwrap();
 
@@ -271,7 +279,7 @@ async function bootstrap(target: HTMLCanvasElement): Promise<void> {
       data: {
         pos: [CUBE_POS[0], CUBE_POS[1], CUBE_POS[2]],},
     },
-    { component: MeshFilter, data: { assetHandle: HANDLE_CUBE } },
+    { component: MeshFilter, data: { assetHandle: primitiveCube } },
     { component: MeshRenderer, data: { materials: [cubeMat] } },
   ).unwrap();
 
@@ -282,7 +290,7 @@ async function bootstrap(target: HTMLCanvasElement): Promise<void> {
         component: Transform,
         data: { pos: [p[0], p[1], p[2]]},
       },
-      { component: MeshFilter, data: { assetHandle: HANDLE_QUAD } },
+      { component: MeshFilter, data: { assetHandle: primitiveQuad } },
       { component: MeshRenderer, data: { materials: [grassMat] } },
     ).unwrap();
   }
@@ -297,7 +305,7 @@ async function bootstrap(target: HTMLCanvasElement): Promise<void> {
         component: Transform,
         data: { pos: [p[0], p[1], p[2]]},
       },
-      { component: MeshFilter, data: { assetHandle: HANDLE_QUAD } },
+      { component: MeshFilter, data: { assetHandle: primitiveQuad } },
       { component: MeshRenderer, data: { materials: [windowMat] } },
     ).unwrap();
   }

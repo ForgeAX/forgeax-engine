@@ -11,7 +11,8 @@
 
 import type { AssetError, MeshAsset } from '@forgeax/engine-types';
 import { err, type Result } from '@forgeax/engine-types';
-import { degenerate, FACTORY_FLOATS_PER_VERTEX, meshFromInterleaved } from './box';
+import { degenerate } from './box';
+import { createPrimitiveAttributes, finishPrimitiveMesh } from './primitive-attributes';
 
 export function createTorusGeometry(
   radius: number,
@@ -28,7 +29,7 @@ export function createTorusGeometry(
 
   const vertexCount = (rs + 1) * (ts + 1);
   const indexCount = rs * ts * 6;
-  const vertices = new Float32Array(vertexCount * FACTORY_FLOATS_PER_VERTEX);
+  const attributes = createPrimitiveAttributes(vertexCount);
   const indices = new Uint32Array(indexCount);
 
   let vIdx = 0;
@@ -50,15 +51,14 @@ export function createTorusGeometry(
       const ny = y - centerY;
       const nz = z;
       const nlen = Math.sqrt(nx * nx + ny * ny + nz * nz) || 1;
-      const base = vIdx * FACTORY_FLOATS_PER_VERTEX;
-      vertices[base + 0] = x;
-      vertices[base + 1] = y;
-      vertices[base + 2] = z;
-      vertices[base + 3] = nx / nlen;
-      vertices[base + 4] = ny / nlen;
-      vertices[base + 5] = nz / nlen;
-      vertices[base + 6] = i / ts;
-      vertices[base + 7] = j / rs;
+      attributes.position[vIdx * 3 + 0] = x;
+      attributes.position[vIdx * 3 + 1] = y;
+      attributes.position[vIdx * 3 + 2] = z;
+      attributes.normal[vIdx * 3 + 0] = nx / nlen;
+      attributes.normal[vIdx * 3 + 1] = ny / nlen;
+      attributes.normal[vIdx * 3 + 2] = nz / nlen;
+      attributes.uv[vIdx * 2 + 0] = i / ts;
+      attributes.uv[vIdx * 2 + 1] = j / rs;
       vIdx++;
     }
   }
@@ -79,5 +79,5 @@ export function createTorusGeometry(
     }
   }
 
-  return meshFromInterleaved(vertices, indices);
+  return finishPrimitiveMesh(attributes, indices);
 }

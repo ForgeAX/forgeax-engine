@@ -22,6 +22,8 @@ import { readFile } from 'node:fs/promises';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { emitSmokeReceipt } from '../../../../shared/scripts/smoke-receipt.mjs';
+import { createPrimitiveMesh } from '@forgeax/engine-geometry';
+
 
 const SMOKE_MIN_FRAMES = Number.parseInt(process.env.SMOKE_MIN_FRAMES ?? '60', 10);
 // feat-20260615-ci-smoke-time-budget: 800x600 → 200x150 (lavapipe fragment-bound)
@@ -159,9 +161,7 @@ const enginePkg = await import('@forgeax/engine-runtime');
 const { Materials } = await import('@forgeax/engine-render');
 const { Camera, DirectionalLight, MeshFilter, MeshRenderer, perspective } = await import('@forgeax/engine-render');
 const { Transform } = await import('@forgeax/engine-scene');
-const {
-  HANDLE_CUBE,
-} = await import('@forgeax/engine-assets-runtime');
+
 // createApp lives in @forgeax/engine-app, not @forgeax/engine-runtime.
 const { createApp } = await import('@forgeax/engine-app/browser');
 const { buildEngineShaderManifest } = await import(
@@ -183,6 +183,8 @@ if (!appRes.ok) {
 const app = appRes.value;
 const renderer = app.renderer;
 const world = app.world;
+const primitiveCube = app.assets.create(createPrimitiveMesh('cube').unwrap()).unwrap();
+
 const assets = app.assets;
 
 console.log(`[learn-render-7-advanced-glsl-ubo] backend=${renderer.inspect().capabilities.backendKind}`);
@@ -196,11 +198,11 @@ renderer.subscribe((event) => { if (event.kind === 'error') errors.push({ code: 
 // --- 5. Spawn minimal proof scene (AC-05) ---
 
 // Three cubes in a row with standard PBR material.
-const matHandle = world.allocSharedRef('MaterialAsset', Materials.standard({
+const matHandle = world.assets.create(Materials.standard({
   baseColor: [0.8, 0.8, 0.8, 1],
   metallic: 0.0,
   roughness: 0.5,
-}));
+})).unwrap();
 
 // Spawn three cubes: left, center, right.
 for (let i = -1; i <= 1; i++) {
@@ -209,7 +211,7 @@ for (let i = -1; i <= 1; i++) {
       component: Transform,
       data: { pos: [i * 1.5, 0, 0]},
     },
-    { component: MeshFilter, data: { assetHandle: HANDLE_CUBE } },
+    { component: MeshFilter, data: { assetHandle: primitiveCube } },
     { component: MeshRenderer, data: { materials: [matHandle] } },
   );
 }

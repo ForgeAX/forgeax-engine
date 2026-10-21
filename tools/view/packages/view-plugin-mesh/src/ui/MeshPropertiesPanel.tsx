@@ -5,11 +5,12 @@ import type { ResourceAssetActionResolver } from '@forgeax/view-workspace-core/f
 import { VIEW_WORKSPACE_TAB_ID } from '@forgeax/view-workspace-core/contract';
 import { unwrapWorkspaceInspection } from '@forgeax/view-workspace-core/inspection-presentation';
 import { selectWorkspaceResourcePreview, selectWorkspaceResourceSubject } from '@forgeax/view-workspace-core/resource-open';
-import { createWorkspaceStateReader } from '@forgeax/view-workspace-core/workspace-state';
+import { createWorkspaceObservation, createWorkspaceStateReader } from '@forgeax/view-workspace-core/workspace-state';
 import { resourceAssetName } from '@forgeax/view-workspace-core/page-title';
 import { RESOURCE_KINDS } from '../identity.ts';
 import { useTranslation } from '../i18n/useTranslation';
 import './mesh.css';
+import { boundPreviewInspection } from '@forgeax/view-workspace-core/preview-facts';
 
 export function MeshPropertiesPanel({
   client,
@@ -51,7 +52,7 @@ function LiveProperties({ client, assetActions }: { client: ViewWorkspaceClient;
       setFailed(false);
       return undefined;
     }
-    const controller = new AbortController();
+    const controller = createWorkspaceObservation(reader, state => state?.project?.id === projectId && selectWorkspaceResourceSubject(state, RESOURCE_KINDS)?.guid === subject.guid && !selectWorkspaceResourcePreview(state, subject.guid)?.assetBinding);
     void client.inspectAsset(subject.guid, {
       projectId,
       tabId: VIEW_WORKSPACE_TAB_ID,
@@ -66,8 +67,8 @@ function LiveProperties({ client, assetActions }: { client: ViewWorkspaceClient;
         setFailed(true);
       }
     });
-    return () => controller.abort();
-  }, [client, subject?.guid, projectId, previewTarget?.targetId, previewTarget?.generation, Boolean(binding)]);
+    return () => controller.dispose();
+  }, [client, reader, subject?.guid, projectId, previewTarget?.targetId, previewTarget?.generation, Boolean(binding)]);
 
   if (!subject) {
     return (
@@ -83,7 +84,7 @@ function LiveProperties({ client, assetActions }: { client: ViewWorkspaceClient;
       </div>
     );
   }
-  const displayed = binding ? { guid: subject.guid, asset: subject, ...binding } : inspection;
+  const displayed = binding ? boundPreviewInspection(subject, binding) : inspection;
   const name = resourceAssetName(subject) ?? resourceAssetName(workspace?.assets?.find(asset => asset.guid === subject.guid)) ?? subject.guid;
   return (
     <div className="fx-asset-viewer fx-ui" data-testid="panel-mesh-properties" data-view-readonly="true">

@@ -7,13 +7,28 @@
     "outDir": "./dist",
     "rootDir": "./src",
     "tsBuildInfoFile": "./dist/.tsbuildinfo",
-    "types": ["node"]
+    "types": [
+      "node"
+    ]
   },
-  "include": ["src/**/*"],
+  "include": [
+    "src/**/*"
+  ],
   "references": [
-    { "path": "../assets-runtime" },
-    { "path": "../ecs" },
-    { "path": "../plugin" },
-    { "path": "../types" }
+    {
+      "path": "../assets-runtime"
+    },
+    {
+      "path": "../ecs"
+    },
+    {
+      "path": "../plugin"
+    },
+    {
+      "path": "../types"
+    }
+  ],
+  "exclude": [
+    "src/**/__tests__/**/*.ts"
   ]
 }

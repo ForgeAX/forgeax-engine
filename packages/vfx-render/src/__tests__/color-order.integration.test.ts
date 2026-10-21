@@ -1,4 +1,5 @@
-import { resolveAssetHandle } from '@forgeax/engine-assets-runtime';
+import { AssetRegistry } from '@forgeax/engine-assets-runtime';
+import { runtimeAssetRegistry, runtimeAssets } from '@forgeax/engine-assets-runtime/internal';
 import { createWorldContext, World } from '@forgeax/engine-ecs';
 import { createBoxGeometry } from '@forgeax/engine-geometry';
 import type { MaterialAsset, ParticleEffectAsset } from '@forgeax/engine-types';
@@ -7,6 +8,10 @@ import { cookParticleCodeProgram } from '@forgeax/engine-vfx-compiler';
 import { expect, it } from 'vitest';
 import { resolveFeatureWorkResources } from '../../../render/src/features/frame-plan';
 import { renderFeaturePlanSignature } from '../../../render/src/features/plan';
+import {
+  effectFixtureReference,
+  runtimeEffectFixture,
+} from '../../../vfx/src/__tests__/runtime-effect-fixture';
 import { gpuParticleRenderFeature } from '../feature/gpu-particle-feature';
 import { freezeVfxPlan } from './vfx-frame-fixture';
 
@@ -69,8 +74,10 @@ fn vfx_update(ctx: VfxUpdateContext, particle: ptr<function, VfxParticle>) {}`,
     emitters: emitters.map(({ id, capacity }) => ({ id, capacity })),
     program: { ...cooked.program, fingerprint: cooked.fingerprint },
   };
-  const world = new World();
-  const effect = world.allocSharedRef('ParticleEffectAsset', asset);
+  const world = new World({ assets: new AssetRegistry() });
+  const effect = runtimeAssetRegistry(world.assets)
+    .create(runtimeEffectFixture(world, asset))
+    .unwrap();
   for (let i = 0; i < 2; i++)
     world
       .spawn({
@@ -80,16 +87,17 @@ fn vfx_update(ctx: VfxUpdateContext, particle: ptr<function, VfxParticle>) {}`,
       .unwrap();
   const context = await createWorldContext(world, [vfxGpuRuntimePlugin()]);
   const geometry = createBoxGeometry(1, 1, 1).unwrap();
-  const material = (guid: string): MaterialAsset => ({
+  const material = (guid: string | number): MaterialAsset => ({
     kind: 'material',
-    ...(guid === 'flash' || guid === 'smoke'
+    ...(guid === effectFixtureReference(world, 'flash', 'material') ||
+    guid === effectFixtureReference(world, 'smoke', 'material')
       ? {
           passes: [
             {
               name: passName,
               program: { module: 'test::mesh' },
               renderState:
-                guid === 'flash'
+                guid === effectFixtureReference(world, 'flash', 'material')
                   ? { blend, depthWriteEnabled: false }
                   : { depthWriteEnabled: true },
             },
@@ -134,7 +142,8 @@ fn vfx_update(ctx: VfxUpdateContext, particle: ptr<function, VfxParticle>) {}`,
       const plan = receiver
         .plan(structuredClone(extracted), {
           views,
-          resolveAsset: (_index, handle) => resolveAssetHandle(world, handle),
+          resolveAsset: (_index, handle, revision) =>
+            runtimeAssets(world.assets).resolveAsset(handle, revision),
           caps: {} as never,
           frame: { frameNumber },
           generation: 0,
@@ -162,11 +171,18 @@ fn vfx_update(ctx: VfxUpdateContext, particle: ptr<function, VfxParticle>) {}`,
         expect(draws).toHaveLength(16);
         expect(draws.every((draw) => (draw.enabled !== false) === visible)).toBe(true);
         expect(raster.map((pass) => pass.enabled)).toEqual(Array(2).fill(visible));
-        const copies = work.passes.filter((pass) => pass.name.endsWith('.copy'));
-        expect(copies).toHaveLength(16);
-        // Hidden mesh shadow casters still consume their view copies. Other
-        // hidden renderers keep their declarations without executing them.
-        expect(copies.filter((pass) => pass.enabled !== false)).toHaveLength(visible ? 16 : 4);
+        const copies = work.passes.flatMap((pass) =>
+          pass.kind === 'copy'
+            ? pass.copies.map((copy) => ({
+                ...copy,
+                enabled: pass.enabled !== false && copy.enabled !== false,
+              }))
+            : [],
+        );
+        // Every renderer still gets its own indirect state inside the coalesced copy pass.
+        const indirectCopies = copies.filter((copy) => copy.destination.endsWith('.indirect'));
+        expect(indirectCopies).toHaveLength(16);
+        expect(indirectCopies.filter((copy) => copy.enabled)).toHaveLength(visible ? 16 : 4);
         const blended = draws.map((draw) => {
           const program = draw === undefined ? undefined : programs.get(draw.program);
           if (program === undefined) throw new Error('Missing particle graphics program');

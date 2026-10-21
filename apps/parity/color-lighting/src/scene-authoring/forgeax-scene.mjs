@@ -25,7 +25,11 @@ import { forgeaxBundlerAdapter } from 'virtual:forgeax/bundler';
 /** @param {HTMLCanvasElement} canvas */
 export async function createForgeaxScene(canvas) {
   const app = (await createApp(canvas, { rhi }, forgeaxBundlerAdapter())).unwrap();
-  const { world } = app;
+  const { world, assets } = app;
+  if (assets === undefined) {
+    (await app.dispose()).unwrap();
+    throw new Error('Scene authoring requires the App AssetRegistry');
+  }
   const unsubscribe = app.onError((error) => {
     throw error;
   });
@@ -119,12 +123,12 @@ export async function createForgeaxScene(canvas) {
         { component: Transform, data: { pos: position } },
         {
           component: MeshFilter,
-          data: { assetHandle: world.allocSharedRef('MeshAsset', geometry) },
+          data: { assetHandle: assets.create(geometry).unwrap() },
         },
         {
           component: MeshRenderer,
           data: {
-            materials: [world.allocSharedRef('MaterialAsset', Materials.standard(parameters))],
+            materials: [assets.create(Materials.standard(parameters)).unwrap()],
           },
         },
         { component: ShadowParticipation, data: {} },

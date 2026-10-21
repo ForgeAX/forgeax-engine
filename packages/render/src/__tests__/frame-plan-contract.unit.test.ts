@@ -8,7 +8,7 @@ const atmosphereParameters = earthAtmosphere;
 const sun = { entityKey: 99, direction: [0, -1, 0], color: [1, 1, 1], intensity: 1 } as const;
 
 function select(environments: readonly EnvironmentCandidate[], fogs: readonly FogCandidate[]) {
-  return selectEnvironment({ environments, fogs, suns: [sun], lane: 'direct' });
+  return selectEnvironment({ environments, fogs, suns: [sun] });
 }
 
 function unwrapFrame(result: ReturnType<typeof select>): EnvironmentFrame {

@@ -32,12 +32,12 @@ it.each([
     `${source}
 @group(1) @binding(0) var<storage, read_write> result: array<vec4<f32>>;
 @compute @workgroup_size(1) fn probe_history() {
-  // Half-resolution history centers are full pixels 0.5 and 2.5. A
-  // half-full-pixel jitter change is a quarter-history-pixel displacement.
-  let coordinates = array<vec2<f32>, 5>(vec2<f32>(0.125), vec2<f32>(0.25, 0.125),
-    vec2<f32>(0.375), vec2<f32>(0.5, 0.125), vec2<f32>(0.625));
+  // Full-resolution history centers are pixels 0.5 and 1.5.
+  // Probe quarter-pixel steps through their bilinear footprint.
+  let coordinates = array<vec2<f32>, 5>(vec2<f32>(0.25), vec2<f32>(0.375, 0.25),
+    vec2<f32>(0.5), vec2<f32>(0.625, 0.25), vec2<f32>(0.75));
   for (var i = 0u; i < 5u; i++) {
-    result[i] = sampleSsrHistory(coordinates[i], vec2<u32>(4u), 4.0, vec3<f32>(0.0, 0.0, 1.0)).color;
+    result[i] = sampleSsrHistory(coordinates[i], vec2<u32>(2u), 4.0, vec3<f32>(0.0, 0.0, 1.0)).color;
   }
 }`,
     {

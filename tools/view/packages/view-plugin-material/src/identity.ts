@@ -12,6 +12,7 @@ export const PAGE_TITLE_I18N_KEY = 'view.pages.material';
 export const PAGE_ORDER = 30;
 export const PREVIEW_SLOT = 'material-preview';
 export const PROPERTIES_SLOT = 'material-properties';
+export const STATS_SLOT = 'material-stats';
 export const SLOT = PROPERTIES_SLOT;
 export const RESOURCE_KINDS = Object.freeze(['material']);
 export const RESOURCE_SELECTOR = Object.freeze({ kinds: RESOURCE_KINDS });

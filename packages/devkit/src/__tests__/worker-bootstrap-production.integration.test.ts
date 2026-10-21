@@ -125,7 +125,7 @@ describe('generated Engine Worker bootstrap production bundle', () => {
           outDir,
           emptyOutDir: true,
           rollupOptions: {
-            preserveEntrySignatures: 'strict',
+            preserveEntrySignatures: 'allow-extension',
             input: { 'execution-bootstrap': resolve(generatedRoot, 'execution-bootstrap.ts') },
             output: { entryFileNames: 'assets/execution-bootstrap.js' },
           },
@@ -227,7 +227,7 @@ describe('generated Engine Worker bootstrap production bundle', () => {
       expect(generatedHost).toContain(
         "import.meta.env.DEV ? './execution-bootstrap.ts' : './execution-bootstrap.js'",
       );
-      expect(config.build?.rollupOptions?.preserveEntrySignatures).toBe('strict');
+      expect(config.build?.rollupOptions?.preserveEntrySignatures).toBe('allow-extension');
       expect(config.build?.rollupOptions?.input).toEqual({
         index: resolve(generatedRoot, 'index.html'),
         'execution-bootstrap': resolve(generatedRoot, 'execution-bootstrap.ts'),

@@ -5,7 +5,7 @@
 // Assertions:
 // - TilesetAsset durable fields (kind / atlases / tileWidth / tileHeight /
 //   columns / rows / regions / tiles); `atlases` is a plural composite
-//   `readonly Handle<'TextureAsset','shared'>[]` (D-7 atlases[] one-cut, no
+//   `readonly (AssetGuid | string | AssetHandle<'texture'>)[]` (D-7 atlases[] one-cut, no
 //   intermediate single-`atlas` form).
 // - TilesetRegion 4 required fields (x / y / width / height); M0 schema has
 //   no optional `atlasIndex` field (M1 boundary).
@@ -21,13 +21,23 @@
 // + §D-7 (atlases[] one-cut); plan-tasks m0-t1.
 
 import { describe, expectTypeOf, it } from 'vitest';
-import type { Asset, TagOf, TilesetAsset, TilesetRegion, TilesetTileEntry } from '../index';
+import type {
+  Asset,
+  AssetGuid,
+  AssetHandle,
+  TagOf,
+  TilesetAsset,
+  TilesetRegion,
+  TilesetTileEntry,
+} from '../index';
 
 describe('TilesetAsset POD shape (M0 baseline)', () => {
   it('type-level: 9 fields with required types', () => {
     expectTypeOf<TilesetAsset['kind']>().toEqualTypeOf<'tileset'>();
     expectTypeOf<TilesetAsset>().not.toHaveProperty('guid');
-    expectTypeOf<TilesetAsset['atlases']>().toEqualTypeOf<readonly string[]>();
+    expectTypeOf<TilesetAsset['atlases']>().toEqualTypeOf<
+      readonly (AssetGuid | string | AssetHandle<'texture'>)[]
+    >();
     expectTypeOf<TilesetAsset['tileWidth']>().toEqualTypeOf<number>();
     expectTypeOf<TilesetAsset['tileHeight']>().toEqualTypeOf<number>();
     expectTypeOf<TilesetAsset['columns']>().toEqualTypeOf<number>();

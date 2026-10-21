@@ -1,9 +1,8 @@
+import { AssetRegistry } from '@forgeax/engine/assets-runtime';
 import { createPlaneGeometry } from '@forgeax/engine/geometry';
 import { ANTIALIAS_TAA, DynamicResolution, Materials } from '@forgeax/engine/render';
 import { CheckList, defineFeature } from '../../lab/feature';
 import { spawnMesh, spawnStage } from '../../lab/stage';
-
-const LOWER_LOD_GUID = '019a0000-0000-7000-8000-00000000f1a1';
 
 export default defineFeature({
   title: 'TAAU coverage for GPU-driven meshes',
@@ -14,6 +13,10 @@ export default defineFeature({
   expect:
     'All checks pass: the standard-scene-coverage pass is scheduled, dynamic resolution is fixed at 0.5, the main view runs the GPU-driven cull/indirect passes with a resident GPU Scene and no output error is reported.',
   setup({ app, world, frames }) {
+    const sceneAssets = world.assets;
+    if (!(sceneAssets instanceof AssetRegistry))
+      throw new Error('Scene requires its runtime asset owner');
+
     const assets = app.assets;
     const { camera } = spawnStage(world, {
       eye: [0, 3, 6],
@@ -28,16 +31,19 @@ export default defineFeature({
       .unwrap();
     if (assets !== undefined) {
       const plane = createPlaneGeometry(1, 1, 1, 1).unwrap();
-      assets.catalog(assets.parseGuid(LOWER_LOD_GUID), plane).unwrap();
-      const mesh = world.allocSharedRef('MeshAsset', {
-        ...plane,
-        lods: [{ mesh: assets.parseGuid(LOWER_LOD_GUID), screenCoverage: 0.01 }],
-        lodHysteresis: 0,
-      });
-      const mat = world.allocSharedRef(
-        'MaterialAsset',
-        Materials.standard({ baseColor: [0.9, 0.5, 0.2, 1], renderState: { cullMode: 'none' } }),
-      );
+      const lower = assets.create(plane).unwrap();
+      const mesh = sceneAssets
+        .create({
+          ...plane,
+          lods: [{ mesh: lower, screenCoverage: 0.01 }],
+          lodHysteresis: 0,
+        })
+        .unwrap();
+      const mat = sceneAssets
+        .create(
+          Materials.standard({ baseColor: [0.9, 0.5, 0.2, 1], renderState: { cullMode: 'none' } }),
+        )
+        .unwrap();
       for (let x = 0; x < 6; x++) {
         for (let z = 0; z < 6; z++)
           spawnMesh(world, mesh as never, mat, {

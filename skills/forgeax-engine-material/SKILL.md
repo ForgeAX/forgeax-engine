@@ -239,14 +239,14 @@ Skylight irradiance fallback. Read pixels only after the matching
 `FrameReceipt.completed` promise resolves.
 
 A caller `GPUTexture` or a video uses `renderer.importTexture({ kind:
-'gpu-texture' | 'video', ... })`; bind `handle.source` through
-`world.allocSharedRef('ExternalTextureSource', ...)` into any texture slot
-(ordinary slots copy video frames). For zero-copy video, the root declares a
-`texture_external` parameter and the entity uses a child material
-`{ kind: 'material', parent: rootGuid, values: { slot: source } }`; spreading the
-loaded root payload into a new object loses its cooked projection. Branch on
-`external-texture-invalid` / `external-texture-state-invalid` `detail.reason`
-(`packages/render/README.md` §External textures).
+'gpu-texture' | 'video', ... })`. Bind `{ source: importedHandle.source }`
+through `assets.update(materialHandle, { values: { slot: source } })`;
+ordinary slots copy video frames. Zero-copy video uses a root parameter of
+type `texture_external`. Update the loaded material handle or use
+`assets.copy` to preserve its admitted program contract; constructing a fresh
+material from a detached payload does not transfer a cooked projection.
+Branch on `external-texture-invalid` / `external-texture-state-invalid`
+`detail.reason` ([Render external textures](../../packages/render/README.md#external-textures)).
 
 Standard PBR always applies geometric specular anti-aliasing: roughness widens
 by the screen-space normal spread in Forward, Deferred, IBL, and clearcoat.
@@ -269,12 +269,13 @@ const material: MaterialAsset = {
 };
 
 assets.configurePackIndex('/pack-index.json');
-const loaded = await assets.loadByGuid<MaterialAsset>(materialGuid);
+const loaded = await assets.load(materialGuid, 'material');
 if (!loaded.ok) {
   report(loaded.error.code, loaded.error.detail, loaded.error.hint);
   return;
 }
-const handle = world.allocSharedRef('MaterialAsset', loaded.value);
+const handle = loaded.value;
+// Bind directly to MeshRenderer.materials; release the caller reference after binding.
 ```
 
 For a custom module, put `passes[].program.module` in the root contract. The

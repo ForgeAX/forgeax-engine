@@ -4,7 +4,7 @@ import {
   type MaterialCookProgramContext,
   materialLayerPlanIdentity,
   validateCookedMaterialRecord,
-} from '@forgeax/engine-pack';
+} from '@forgeax/engine-pack/material-cook';
 import type { MaterialProgramAddress } from '@forgeax/engine-types';
 import { isRetainedMaterialAbi } from '../internal/retained-material-facts.js';
 

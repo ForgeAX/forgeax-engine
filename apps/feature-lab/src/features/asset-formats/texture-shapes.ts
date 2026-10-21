@@ -1,10 +1,7 @@
 import { AssetRegistry } from '@forgeax/engine/assets-runtime';
+import { textureContribution } from '@forgeax/engine/image';
 import { AssetGuid } from '@forgeax/engine/pack/guid';
-import {
-  deriveTextureLayout,
-  type TextureAsset,
-  validateTextureShape,
-} from '@forgeax/engine/types';
+import { deriveTextureLayout, validateTextureShape } from '@forgeax/engine/types';
 import { defineFeature } from '../../lab/feature';
 import { errorCode, guid, installMemoryPack } from './fixtures/memory-pack';
 
@@ -79,8 +76,9 @@ export default defineFeature({
       'texture-shape-invalid',
     );
 
-    const registry = new AssetRegistry({} as never);
-    installMemoryPack(
+    const registry = new AssetRegistry();
+    registry.installDecoder(textureContribution.kind, textureContribution.decoder);
+    await installMemoryPack(
       registry,
       [
         rawTexture(
@@ -107,11 +105,14 @@ export default defineFeature({
         checks.ok(`${name} GUID parses`, false);
         continue;
       }
-      const loaded = await registry.loadByGuid<TextureAsset>(parsed.value);
+      const loaded = await registry.load(parsed.value, 'texture');
       checks.equal(
         `${name} Pack row loads`,
         loaded.ok
-          ? [loaded.value.shape.viewDimension, loaded.value.data.byteLength]
+          ? [
+              registry.read(loaded.value).unwrap().shape.viewDimension,
+              registry.read(loaded.value).unwrap().data.byteLength,
+            ]
           : errorCode(loaded.error),
         [name, bytes],
       );

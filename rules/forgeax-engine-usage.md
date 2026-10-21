@@ -34,7 +34,7 @@ adding a new package surface.
 | 加 pass / 后处理 / tonemap / bloom / fxaa / skybox | `forgeax-engine-render-pipeline` |
 | Assemble a renderer, diagnose backend selection, or recover a lost renderer | `forgeax-engine-app` + `packages/runtime/README.md` assembly owner |
 | Vec/Mat/Quat/Color / 从 mat4 读 pose / screenToRay | `forgeax-engine-math` |
-| authored package → cook/catalog → loadByGuid（glTF .glb/.gltf / FBX .fbx）| `forgeax-engine-assets` |
+| authored package → cook/catalog → assets.load（glTF .glb/.gltf / FBX .fbx）| `forgeax-engine-assets` |
 | Procedural asset / generator delivery review, Scriptable Pack / Runtime Pack provenance, parameters, cold recovery | `forgeax-scriptable-pack-review` |
 | Code-first GPU VFX source / WGSL hooks and imports / Pack v2 cook and GUID load / `ParticleEffectPlayer` / persistent GPU billboard or mesh output | `forgeax-engine-vfx`; add `forgeax-engine-assets` when changing shared Pack/catalog transport and `forgeax-engine-render-pipeline` when changing the generic RenderFeature graph seam |
 | inspector (JSON-RPC WS) / kubectl 式 CLI 子命令 | `forgeax-engine-cli` |

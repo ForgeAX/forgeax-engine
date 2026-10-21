@@ -14,7 +14,7 @@ import { configureRuntimeAssetCatalog, createRuntimeAssetImportTransport, runtim
 import { createFullscreenRenderFeature, type App } from '@forgeax/engine-app';
 import { createApp } from '@forgeax/engine-app/browser';
 import { AssetGuid } from '@forgeax/engine-pack/guid';
-import { HANDLE_QUAD } from '@forgeax/engine-assets-runtime';
+
 import { Transform } from '@forgeax/engine-scene';
 
 import {
@@ -27,11 +27,13 @@ import { perspective } from '@forgeax/engine-render';
 
 import { PointLight } from '@forgeax/engine-render';
 
-import type { MaterialAsset, TextureAsset } from '@forgeax/engine-types';
-import { unwrapHandle } from '@forgeax/engine-types';
+
+
 import { forgeaxBundlerAdapter } from 'virtual:forgeax/bundler';
 import { addFirstPersonSystem } from '../../../../shared/src/learn-render-first-person';
 import { captureCanvasPixels } from '@forgeax/apps-shared/canvas-capture';
+import { createPrimitiveMesh } from '@forgeax/engine-geometry';
+
 
 // 2. example glue
 
@@ -128,7 +130,11 @@ async function bootstrap(target: HTMLCanvasElement): Promise<void> {
     return;
   }
   const app = appRes.value;
+if (app.assets === undefined) throw new Error('This scene requires the App asset owner');
+
   const world = app.world;
+const primitiveQuad = app.assets.create(createPrimitiveMesh('quad').unwrap()).unwrap();
+
   app.onError((error) => {
     console.error('[learn-render 5.2 gamma-correction] app.onError:', error.code, error.hint);
     const bus = (
@@ -152,7 +158,7 @@ async function bootstrap(target: HTMLCanvasElement): Promise<void> {
     console.error('[learn-render 5.2 gamma-correction] wood GUID parse failed');
     return;
   }
-  const woodHandleRes = await assets.loadByGuid<TextureAsset>(woodGuidRes.value);
+  const woodHandleRes = await assets.load(woodGuidRes.value, 'texture');
   if (!woodHandleRes.ok) {
     console.error(
       '[learn-render 5.2 gamma-correction] wood loadByGuid failed:',
@@ -162,7 +168,7 @@ async function bootstrap(target: HTMLCanvasElement): Promise<void> {
   }
   const woodTex = woodHandleRes.value;
 
-  const planeMat = world.allocSharedRef<'MaterialAsset', MaterialAsset>('MaterialAsset', {
+  const planeMat = assets.create({
     kind: 'material',
     passes: [
       { name: 'Forward', program: { module: 'forgeax::default-standard-pbr' }, renderState: { tags: { LightMode: 'Forward' } } },
@@ -171,9 +177,9 @@ async function bootstrap(target: HTMLCanvasElement): Promise<void> {
       baseColor: [1.0, 1.0, 1.0, 1.0],
       metallic: 0.0,
       roughness: 0.8,
-      baseColorTexture: unwrapHandle(world.allocSharedRef('TextureAsset', woodTex)),
+      baseColorTexture: Number(woodTex),
     },
-  });
+  }).unwrap();
 
   // HANDLE_QUAD lies in XY facing +Z; place at origin so the camera at
   // (0,0,3) looks straight at it. A single textured plane is enough to
@@ -181,7 +187,7 @@ async function bootstrap(target: HTMLCanvasElement): Promise<void> {
   world
     .spawn(
       { component: Transform, data: { pos: [0, 0, 0]} },
-      { component: MeshFilter, data: { assetHandle: HANDLE_QUAD } },
+      { component: MeshFilter, data: { assetHandle: primitiveQuad } },
       { component: MeshRenderer, data: { materials: [planeMat] } },
     )
     .unwrap();

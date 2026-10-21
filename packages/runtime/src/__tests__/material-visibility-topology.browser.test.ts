@@ -15,10 +15,11 @@ import {
   scenePlugin,
   Transform,
 } from '@forgeax/engine-scene';
-import type { Handle } from '@forgeax/engine-types';
+import type { AssetHandle } from '@forgeax/engine-types';
 import { expect, it } from 'vitest';
 import { commands } from 'vitest/browser';
 import { constructRuntimeRendererHost } from '../renderer-host';
+import { testAssets } from './helpers/runtime-assets';
 
 function value<T>(result: { ok: true; value: T } | { ok: false; error: unknown }): T {
   if (!result.ok) throw result.error;
@@ -42,9 +43,7 @@ it('retains the graph and static shadow targets across camera material visibilit
   const off = renderer.subscribe((event) => {
     if (event.kind === 'error') errors.push(event.error);
   });
-  let residentCube:
-    | { mesh: Handle<'MeshAsset', 'shared'>; material: Handle<'MaterialAsset', 'shared'> }
-    | undefined;
+  let residentCube: { mesh: AssetHandle<'mesh'>; material: AssetHandle<'material'> } | undefined;
   for (const [size, pos, color] of [
     [
       [24, 0.2, 24],
@@ -62,14 +61,12 @@ it('retains the graph and static shadow targets across camera material visibilit
       [0.05, 0.05, 1, 1],
     ],
   ] as const) {
-    const mesh = world.allocSharedRef(
-      'MeshAsset',
-      createBoxGeometry(size[0], size[1], size[2]).unwrap(),
-    );
-    const material = world.allocSharedRef(
-      'MaterialAsset',
-      Materials.standard({ baseColor: color, roughness: 1, specular: 0 }),
-    );
+    const mesh = testAssets(world)
+      .create(createBoxGeometry(size[0], size[1], size[2]).unwrap())
+      .unwrap();
+    const material = testAssets(world)
+      .create(Materials.standard({ baseColor: color, roughness: 1, specular: 0 }))
+      .unwrap();
     if (pos[0] === 2) residentCube = { mesh, material };
     world
       .spawn(

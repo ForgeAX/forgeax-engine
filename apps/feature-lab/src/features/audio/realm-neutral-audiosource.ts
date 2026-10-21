@@ -1,3 +1,4 @@
+import { AssetRegistry } from '@forgeax/engine/assets-runtime';
 import { AUDIO_ENGINE_RESOURCE_KEY, AudioSource } from '@forgeax/engine/audio';
 import { defineFeature } from '../../lab/feature';
 import { createIntentWorld, kinds } from './support/intents';
@@ -13,15 +14,22 @@ export default defineFeature({
   async run(checks) {
     const lab = await createIntentWorld();
     const { world } = lab;
+    const sceneAssets = world.assets;
+    if (!(sceneAssets instanceof AssetRegistry))
+      throw new Error('Scene requires its runtime asset owner');
+
     checks.ok(
       'AudioEngine resource is inserted',
       world.getResource(AUDIO_ENGINE_RESOURCE_KEY) === lab.backend,
     );
-    const clip = world.allocSharedRef('AudioClipAsset', {
-      kind: 'audio',
-      sourceKey: 'lab-tone',
-      bytes: Uint8Array.of(1, 2, 3, 4),
-    });
+    const clip = sceneAssets
+      .create({
+        kind: 'audio',
+        mediaType: 'audio/wav',
+        sourceKey: 'lab-tone',
+        bytes: Uint8Array.of(1, 2, 3, 4),
+      })
+      .unwrap();
     const first = world
       .spawn({ component: AudioSource, data: { clip, playing: false, bus: 'music', loop: true } })
       .unwrap();

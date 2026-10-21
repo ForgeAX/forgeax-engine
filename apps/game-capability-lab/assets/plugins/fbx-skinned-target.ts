@@ -1,3 +1,4 @@
+import type { AssetHandle } from '@forgeax/engine-types';
 import type { AssetRegistry } from '@forgeax/engine-assets-runtime';
 import type { EntityHandle, World } from '@forgeax/engine-ecs';
 import type { PhysicsWorld } from '@forgeax/engine-physics';
@@ -10,7 +11,6 @@ import {
 } from '@forgeax/engine-render';
 import { GlobalTransform, Transform, worldDespawnScene } from '@forgeax/engine-scene';
 import { Skin } from '@forgeax/engine-skinning';
-import type { AnimationClip, Handle, SceneAsset } from '@forgeax/engine-types';
 import { vec3 } from '@forgeax/engine-math';
 import { installFbxTargetCompanionSystem } from './systems/fbx-target-companion';
 
@@ -70,26 +70,33 @@ export async function createFbxSkinnedTarget(args: Args): Promise<FbxSkinnedTarg
   const clipGuid = parseGuid(GAME_DEFAULT_FBX_SKIN_CLIP_GUID);
   if (!sceneGuid.ok || !clipGuid.ok) return undefined;
 
-  const sceneResult = await args.assets.loadByGuid<SceneAsset>(sceneGuid.value);
+  const sceneResult = await args.assets.load(sceneGuid.value, 'scene');
   if (!sceneResult.ok) {
     console.warn(`[game] FBX skin scene unavailable: ${sceneResult.error.code} — ${sceneResult.error.hint}`);
     return undefined;
   }
-  const clipResult = await args.assets.loadByGuid<AnimationClip>(clipGuid.value);
+  const clipResult = await args.assets.load(clipGuid.value, 'animation-clip');
   if (!clipResult.ok) {
+    args.assets.release(sceneResult.value).unwrap();
     console.warn(`[game] FBX skin clip unavailable: ${clipResult.error.code} — ${clipResult.error.hint}`);
     return undefined;
   }
 
-  const sceneHandle = args.world.allocSharedRef('SceneAsset', sceneResult.value);
+  const sceneHandle = sceneResult.value;
   const instanceResult = args.assets.instantiate(sceneHandle, args.world);
+  args.assets.release(sceneHandle).unwrap();
   if (!instanceResult.ok) {
+    args.assets.release(clipResult.value).unwrap();
     console.warn(`[game] FBX skin instantiate failed: ${instanceResult.error.code} — ${instanceResult.error.hint}`);
     return undefined;
   }
   const root = instanceResult.value;
   const instance = args.world.get(root, SceneInstance);
-  if (!instance.ok) return undefined;
+  if (!instance.ok) {
+    args.assets.release(clipResult.value).unwrap();
+    worldDespawnScene(args.world, root);
+    return undefined;
+  }
   let skinEntity: EntityHandle | undefined;
   for (const raw of instance.value.mapping) {
     if (raw === undefined || raw === 0 || raw === 0xffffffff) continue;
@@ -99,7 +106,11 @@ export async function createFbxSkinnedTarget(args: Args): Promise<FbxSkinnedTarg
       break;
     }
   }
-  if (skinEntity === undefined) return undefined;
+  if (skinEntity === undefined) {
+    args.assets.release(clipResult.value).unwrap();
+    worldDespawnScene(args.world, root);
+    return undefined;
+  }
 
   const targetTransform = args.target === undefined ? undefined : args.world.get(args.target, Transform);
   const targetPlacementTransform = targetTransform?.ok === true
@@ -139,11 +150,12 @@ export async function createFbxSkinnedTarget(args: Args): Promise<FbxSkinnedTarg
     scale: skinPlacementTransform.scale,
   });
 
-  const clipHandle: Handle<'AnimationClip', 'shared'> = args.world.allocSharedRef('AnimationClip', clipResult.value);
+  const clipHandle: AssetHandle<'animation-clip'> = clipResult.value;
   args.world.addComponent(skinEntity, {
     component: AnimationPlayer,
     data: { clips: [clipHandle], times: [0], weights: [1], speeds: [1], looping: true },
-  });
+  }).unwrap();
+  args.assets.release(clipHandle).unwrap();
 
   const rootVisibility = args.world.get(root, Visibility);
   const rootInitialVisibility = rootVisibility.ok

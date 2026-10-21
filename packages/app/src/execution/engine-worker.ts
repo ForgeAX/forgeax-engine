@@ -19,7 +19,7 @@ export interface EngineWorkerSession {
   dispose(): Promise<Result<void, AppErrorType>>;
 }
 
-export interface StartEngineWorkerOptions
+interface StartEngineWorkerOptions
   extends Omit<ExecutionInitMessage, 'kind' | 'startupTimeoutMs' | 'canvas'> {
   readonly canvas: HTMLCanvasElement;
   readonly timeoutMs: ExecutionInitMessage['startupTimeoutMs'];

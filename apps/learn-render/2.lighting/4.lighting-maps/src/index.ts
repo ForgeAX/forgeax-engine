@@ -1,3 +1,4 @@
+import { createBoxGeometry } from '@forgeax/engine-geometry';
 import { configureRuntimeAssetCatalog, createRuntimeAssetImportTransport, runtimeBinding } from '@forgeax/apps-shared/asset-runtime-config';
 import { Update } from '@forgeax/engine-ecs';
 // LearnOpenGL section 2.lighting 4.1/4.2 lighting_maps (forgeax mapping).
@@ -15,20 +16,15 @@ import { createApp } from '@forgeax/engine-app/browser';
 import type { App, CanvasAppError } from '@forgeax/engine-app';
 import { INPUT_SNAPSHOT_RESOURCE_KEY, type InputBackend, type InputSnapshot } from '@forgeax/engine-input';
 import { AssetGuid } from '@forgeax/engine-pack/guid';
-import { HANDLE_CUBE, resolveAssetHandle } from '@forgeax/engine-assets-runtime';
+
 import { Transform } from '@forgeax/engine-scene';
 
 import { Camera, MeshFilter, MeshRenderer } from '@forgeax/engine-render';
 import { EngineEnvironmentError } from '@forgeax/engine-runtime';
 import { PointLight } from '@forgeax/engine-render';
 
-import type {
-  MaterialAsset,
-  MaterialValue,
-  MeshAsset,
-  TextureAsset,
-} from '@forgeax/engine-types';
-import { unwrapHandle } from '@forgeax/engine-types';
+import type { MaterialAsset, MaterialValue } from '@forgeax/engine-types';
+
 import { forgeaxBundlerAdapter } from 'virtual:forgeax/bundler';
 import materialPackJson from '../assets/material-container2.pack.json';
 import {
@@ -38,6 +34,8 @@ import {
   createFirstPersonControls,
   createScrollFovAccumulator,
 } from '../../../../shared/src/learn-render-first-person';
+import { createPrimitiveMesh } from '@forgeax/engine-geometry';
+
 
 // 2. example-specific glue
 const CONTAINER2_TEXTURE_GUID = '019e3969-1d46-7945-a75a-ef97d537531e';
@@ -102,7 +100,11 @@ async function bootstrap(target: HTMLCanvasElement): Promise<void> {
   }
 
   const app = appRes.value;
+if (app.assets === undefined) throw new Error('This scene requires the App asset owner');
+
   const world = app.world;
+const primitiveCube = app.assets.create(createPrimitiveMesh('cube').unwrap()).unwrap();
+
   app.onError((error) => {
     console.error('[learn-render 2.4 lighting-maps] app.onError:', error.code, error.hint);
     const bus = (globalThis as unknown as { __learnRenderErrors?: Array<{ code: string; hint?: string }> }).__learnRenderErrors;
@@ -124,8 +126,8 @@ async function bootstrap(target: HTMLCanvasElement): Promise<void> {
     return;
   }
 
-  const diffuseTextureRes = await assets.loadByGuid<TextureAsset>(diffuseGuid);
-  const specularTextureRes = await assets.loadByGuid<TextureAsset>(specularGuid);
+  const diffuseTextureRes = await assets.load(diffuseGuid, 'texture');
+  const specularTextureRes = await assets.load(specularGuid, 'texture');
   const useTextures = diffuseTextureRes.ok && specularTextureRes.ok;
   if (!diffuseTextureRes.ok) {
     console.warn(
@@ -142,12 +144,12 @@ async function bootstrap(target: HTMLCanvasElement): Promise<void> {
     );
   }
 
-  const cubeAssetRes = resolveAssetHandle<MeshAsset>(world, HANDLE_CUBE);
+  const cubeAssetRes = createBoxGeometry(1, 1, 1);
   if (!cubeAssetRes.ok) {
     console.error('[learn-render 2.4 lighting-maps] HANDLE_CUBE asset unavailable');
     return;
   }
-  assets.catalog<MeshAsset>(cubeGuid, cubeAssetRes.value);
+
 
   const materialEntry = readMaterialPackEntry(materialPackJson);
   if (materialEntry === null) {
@@ -170,16 +172,16 @@ async function bootstrap(target: HTMLCanvasElement): Promise<void> {
   for (const [k, v] of Object.entries(valuesIn)) {
     if (k === 'baseColorTexture') {
       if (!diffuseTextureRes.ok) continue;
-      filteredValues[k] = unwrapHandle(
-        world.allocSharedRef('TextureAsset', diffuseTextureRes.value),
+      filteredValues[k] = Number(
+        diffuseTextureRes.value,
       );
       continue;
     }
     if (k === 'metallicRoughnessTexture') {
       if (OMIT_SPECULAR_MAP) continue;
       if (!specularTextureRes.ok) continue;
-      filteredValues[k] = unwrapHandle(
-        world.allocSharedRef('TextureAsset', specularTextureRes.value),
+      filteredValues[k] = Number(
+        specularTextureRes.value,
       );
       continue;
     }
@@ -190,14 +192,11 @@ async function bootstrap(target: HTMLCanvasElement): Promise<void> {
     passes,
     values: filteredValues,
   };
-  const materialHandle = world.allocSharedRef<'MaterialAsset', MaterialAsset>(
-    'MaterialAsset',
-    materialAsset,
-  );
+  const materialHandle = assets.create(materialAsset).unwrap();
   // The materialGuid round-trip is no longer needed — the demo uses the
   // minted handle directly.
   void materialGuid;
-  const cubeHandleRes = await assets.loadByGuid<MeshAsset>(cubeGuid);
+  const cubeHandleRes = assets.create(cubeAssetRes.value);
   if (!cubeHandleRes.ok) {
     console.error(
       '[learn-render 2.4 lighting-maps] loadByGuid mesh failed:',
@@ -206,7 +205,7 @@ async function bootstrap(target: HTMLCanvasElement): Promise<void> {
     return;
   }
   // loadByGuid returns the payload (M8 D-17); mint a user-tier column handle.
-  const cubeHandle = world.allocSharedRef('MeshAsset', cubeHandleRes.value);
+  const cubeHandle = cubeHandleRes.value;
   void useTextures;
 
   world
@@ -247,11 +246,11 @@ async function bootstrap(target: HTMLCanvasElement): Promise<void> {
   // renders a small white cube at lightPos via lightCubeShader; here the
   // unlit baseColor=(1,1,1) cube fills the same role, while the PointLight
   // on the same entity reads its position from the companion Transform.
-  const lampMatHandle = world.allocSharedRef<'MaterialAsset', MaterialAsset>('MaterialAsset', {
+  const lampMatHandle = assets.create({
     kind: 'material',
     passes: [{ name: 'Forward', program: { module: 'forgeax::default-unlit' }, renderState: { tags: { LightMode: 'Forward' }, queue: 2000 } }],
     values: { baseColor: [1, 1, 1, 1] },
-  });
+  }).unwrap();
 
   const lampComponents = [
     {
@@ -262,7 +261,7 @@ async function bootstrap(target: HTMLCanvasElement): Promise<void> {
         scale: [LAMP_SCALE, LAMP_SCALE, LAMP_SCALE],
       },
     },
-    { component: MeshFilter, data: { assetHandle: HANDLE_CUBE } },
+    { component: MeshFilter, data: { assetHandle: primitiveCube } },
     { component: MeshRenderer, data: { materials: [lampMatHandle] } },
     ...(OMIT_POINT_LIGHT
       ? []

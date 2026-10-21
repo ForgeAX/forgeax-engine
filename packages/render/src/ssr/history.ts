@@ -17,6 +17,7 @@ import {
   GPU_TEXTURE_USAGE_TEXTURE_BINDING,
 } from '../gpu-texture-usage';
 import { GPU_BUFFER_USAGE_COPY_DST, GPU_BUFFER_USAGE_UNIFORM } from '../gpu-usage';
+import type { TemporalFrameStage } from '../temporal/frame-coordinator';
 
 export const SSR_HISTORY_FORMAT = 'rgba16float' as const;
 export type SsrHistoryResetReason =
@@ -28,7 +29,6 @@ export type SsrHistoryResetReason =
   | 'reflection-generation'
   | 'device-recovery'
   | 'disable';
-export type SsrHistoryFailureStage = 'build' | 'encode' | 'finish' | 'submit';
 export type SsrHistoryState =
   | 'first-frame'
   | 'stable'
@@ -77,7 +77,7 @@ export interface SsrHistoryInspection {
   readonly retiringBytes: number;
   readonly resetCount: number;
   readonly resetReason: SsrHistoryResetReason | undefined;
-  readonly lastFailure: SsrHistoryFailureStage | undefined;
+  readonly lastFailure: TemporalFrameStage | undefined;
 }
 export interface SsrHistoryError {
   readonly code:
@@ -88,7 +88,7 @@ export interface SsrHistoryError {
   readonly expected: string;
   readonly hint: string;
   readonly detail?: Readonly<{
-    readonly stage?: SsrHistoryFailureStage;
+    readonly stage?: TemporalFrameStage;
     readonly reason?: SsrHistoryResetReason;
   }>;
 }
@@ -226,7 +226,7 @@ export class SsrHistoryOwner {
   private valid = false;
   private state: SsrHistoryState = 'first-frame';
   private resetReason: SsrHistoryResetReason | undefined = 'first-enable';
-  private lastFailure: SsrHistoryFailureStage | undefined;
+  private lastFailure: TemporalFrameStage | undefined;
   private resetCount = 0;
 
   private constructor(
@@ -315,7 +315,7 @@ export class SsrHistoryOwner {
     return ok(undefined);
   }
 
-  abortFrame(candidate: SsrHistoryCandidate, stage: SsrHistoryFailureStage): void {
+  abortFrame(candidate: SsrHistoryCandidate, stage: TemporalFrameStage): void {
     if (this.activeCandidate !== candidate) return;
     this.activeCandidate = undefined;
     this.state = 'aborted';

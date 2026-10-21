@@ -1,3 +1,5 @@
+import { AssetRegistry } from '@forgeax/engine-assets-runtime';
+import { runtimeAssetRegistry, runtimeAssets } from '@forgeax/engine-assets-runtime/internal';
 import { FixedTime, FixedUpdate, World } from '@forgeax/engine-ecs';
 import { createBoxGeometry } from '@forgeax/engine-geometry';
 import { Transform } from '@forgeax/engine-scene';
@@ -9,9 +11,9 @@ import { ResidencyLifetime } from '../device/residency-lifetime';
 import { createDynamicGeometryLifecycle, type DynamicGeometryCandidate } from '../dynamic-geometry';
 
 function fixture(maxCandidates = 32) {
-  const world = new World();
+  const world = new World({ assets: new AssetRegistry() });
   const mesh = createBoxGeometry(1, 1, 1).unwrap();
-  const previous = world.allocSharedRef('MeshAsset', mesh);
+  const previous = runtimeAssetRegistry(world.assets).create(mesh).unwrap();
   const lifecycle = createDynamicGeometryLifecycle(maxCandidates);
   const consumed = new Set<number>();
   const destroyed: number[] = [];
@@ -65,13 +67,13 @@ function fixture(maxCandidates = 32) {
       world,
       entity: target,
       mesh,
-      meshHandle: world.allocSharedRef('MeshAsset', mesh),
+      meshHandle: runtimeAssetRegistry(world.assets).create(mesh).unwrap(),
       revision,
     }));
     try {
       return (await host.prepareDynamicGeometryCandidates(inputs)).unwrap();
     } finally {
-      for (const input of inputs) world.sharedRefs.release(input.meshHandle).unwrap();
+      for (const input of inputs) runtimeAssets(world.assets).release(input.meshHandle).unwrap();
     }
   };
   const accept = (candidates: readonly DynamicGeometryCandidate[]) => {
@@ -136,9 +138,9 @@ it('admits 33 serial World transactions while CPU-culled residents wait for real
   expect(f.destroyed).toHaveLength(66);
   for (const candidate of accepted) {
     if (candidate.meshHandle === undefined) throw new Error('missing handle');
-    expect(f.world.sharedRefs.resolve(candidate.meshHandle).ok).toBe(false);
+    expect(runtimeAssets(f.world.assets).resolveAsset(candidate.meshHandle).ok).toBe(false);
   }
-  expect(f.world.sharedRefs.refcount(f.previous)).toBe(1);
+  expect(runtimeAssets(f.world.assets).refcount(f.previous)).toBe(1);
 });
 
 it('reclaims replaced unpublished residents only after their physical release fence', async () => {
@@ -181,7 +183,7 @@ it('reclaims replaced unpublished residents only after their physical release fe
   await new Promise<void>((resolve) => setImmediate(resolve));
   expect(f.lifecycle.inspect()).toMatchObject({ accepted: 0, prepared: 0, meshBytes: 0 });
   expect(f.destroyed).toContain(Number(second.meshHandle));
-  expect(f.world.sharedRefs.resolve(first.meshHandle).ok).toBe(false);
-  expect(f.world.sharedRefs.resolve(second.meshHandle).ok).toBe(false);
-  expect(f.world.sharedRefs.refcount(f.previous)).toBe(1);
+  expect(runtimeAssets(f.world.assets).resolveAsset(first.meshHandle).ok).toBe(false);
+  expect(runtimeAssets(f.world.assets).resolveAsset(second.meshHandle).ok).toBe(false);
+  expect(runtimeAssets(f.world.assets).refcount(f.previous)).toBe(1);
 });

@@ -30,7 +30,6 @@ export type {
   CompileOptions,
   ComputePassDescriptor,
   InternalizedGraph,
-  InternalizedPass,
   PassDescriptor,
   PassInfo,
   ResolveContext,
@@ -56,13 +55,8 @@ export {
   type ColorDomainConnection,
   type ColorDomainConversion,
   type ColorDomainValidation,
-  type ColorResourceDescriptor,
   type ColorValueDomain,
-  deserializeColorResourceDescriptor,
-  deserializeColorValueDomain,
   isColorValueDomain,
-  serializeColorResourceDescriptor,
-  serializeColorValueDomain,
   validateColorDomainConnection,
 } from './pipeline/color-value-domain.js';
 export type {

@@ -3,7 +3,7 @@ import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { bakeFont, realGeneratorFactory } from '@forgeax/engine/font/cli-font';
+import { bakeFont } from '@forgeax/engine/font/cli-font';
 import { errorCode } from '../../features/asset-formats/fixtures/memory-pack';
 import { defineFeature } from '../../lab/feature';
 
@@ -44,7 +44,7 @@ export default defineFeature({
     const out = await mkdtemp(join(tmpdir(), 'feature-lab-font-'));
     try {
       await checks.run('bakeFont completes', async () => {
-        const result = await bakeFont(ttf, out, realGeneratorFactory);
+        const result = await bakeFont(ttf, out);
         const png = await readFile(result.atlasPath);
         checks.equal('atlas is a PNG', Array.from(png.subarray(1, 4)), [0x50, 0x4e, 0x47]);
         const sidecar = JSON.parse(await readFile(result.sidecarPath, 'utf8')) as Sidecar;
@@ -60,7 +60,7 @@ export default defineFeature({
       });
       const bogus = join(out, 'bogus.ttf');
       await writeFile(bogus, new Uint8Array([0x77, 0x4f, 0x46, 0x32, 0, 0, 0, 0]));
-      const rejection = await bakeFont(bogus, out, realGeneratorFactory).then(
+      const rejection = await bakeFont(bogus, out).then(
         () => 'resolved',
         (error: unknown) => errorCode(error),
       );

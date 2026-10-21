@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+import { useImportedAssetSource } from '../../../shared/scripts/source-publication.mjs';
 import { drawReadyFrame } from '../../../../scripts/test/ready-render-frame.mjs';
 // hello-fbx-cube dawn smoke (M4 / T17): structural gate + pixel readback.
 //
@@ -201,16 +202,14 @@ if (!meshAsset || !matAsset) {
   process.exit(1);
 }
 
-console.log(`[smoke] mesh vertices=${meshAsset.payload.vertices.length} submeshes=${meshAsset.payload.submeshes.length}`);
-
-const world = new World();
+await useImportedAssetSource(assets, results.value, 'cube.fbx');
+const meshHandle = (await assets.load(meshAsset.guid, 'mesh')).unwrap();
+const matHandle = (await assets.load(matAsset.guid, 'material')).unwrap();
+const meshPayload = assets.read(meshHandle).unwrap();
+console.log(`[smoke] mesh vertices=${meshPayload.vertices.length} submeshes=${meshPayload.submeshes.length}`);
+const world = new World({ assets });
 const worldAttachment1 = renderer.attach(world);
 if (!worldAttachment1.ok) throw worldAttachment1.error;
-
-// feat-20260614 M8: AssetRegistry register* deleted; mint user-tier column
-// handles via world.allocSharedRef (bare Handle, not a Result).
-const meshHandle = world.allocSharedRef('MeshAsset', meshAsset.payload);
-const matHandle = world.allocSharedRef('MaterialAsset', matAsset.payload);
 world.spawn(
   { component: Transform, data: { pos: [0, 0, 0], quat: [0, 0, 0, 1], scale: [1, 1, 1]} },
   { component: MeshFilter, data: { assetHandle: meshHandle } },

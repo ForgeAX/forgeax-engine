@@ -1,9 +1,9 @@
 ---
 name: forgeax-view-start
 description: >-
-  Bind a local Engine checkout and compose independent ForgeaX backend, View,
-  project, browser and run operations. Use when opening a project with View, starting View, switching a project to
-  local Engine, or diagnosing a startup that stalls before the interface opens.
+  Open or preview ForgeaX projects and assets in View with a published npm SDK
+  or a local Engine checkout. Use for project/asset preview requests, View startup,
+  local Engine binding, and failures before the interface opens.
 ---
 
 # ForgeaX View startup
@@ -12,7 +12,110 @@ After startup, use [forgeax-view-cli](../forgeax-view-cli/SKILL.md) for View
 actions and demonstrations. It owns API/CLI naming, capability discovery and
 exact page/target arguments. Browser tools verify the resulting presentation.
 
-## Open a project with one script
+## Select this workflow
+
+A request to preview, inspect, open, or show a ForgeaX project or its assets
+selects this skill. The same applies to an unqualified "preview" while working
+on a ForgeaX project, including "make the game playable, then preview". Finish
+requested development and the game guide's required checks before opening View.
+For inspection alone, check project and asset readiness first. Use Engine game
+execution when the user explicitly asks to play the running game. Questions
+about View itself do not start services.
+
+Project/asset preview is complete when the returned View URL is open in a browser
+and the requested project and its assets are visible there. `project preview`,
+a game runtime URL, a standalone asset image, and a connected but empty View
+Shell do not establish that result. Use [forgeax-view-cli](../forgeax-view-cli/SKILL.md)
+for asset and panel actions after startup.
+
+## Published npm SDK
+
+Use this path for an SDK installed from npm, including its expanded source
+archive. Use the installed SDK's `bin/forgeax.mjs` for both Engine and View; the
+local-checkout helper below needs Git provenance and is not the npm entry.
+Keep the game's pinned Engine release and the installed View/SDK release matched.
+Read the SDK and game `AGENTS.md` before changing or delivering the game. Published
+Engine/View outputs are built already; do not rebuild them to inspect assets.
+
+The Engine backend owns the workspace and loads View's `host.pack.json` at
+`backend start`. That selected Host Pack contributes `forgeax view` commands to
+the backend's command tree. The View package being installed is insufficient:
+`help view` and `view status` may return `tool-command-not-found` before a
+compatible backend is ready, or when called with another backend `--root`.
+The same `--root` must select the backend for every later View command.
+
+Run the sequence in one **persistent terminal session**, using the same SDK
+CLI path, environment and `WORKSPACE_ROOT` throughout. Separate Node invocations
+in that terminal are fine. A backend launched through a short-lived command
+environment may end with it; keep the owning terminal alive while starting View,
+opening the browser and handing it to the user. `GAME_ROOT` is the absolute
+project directory. It may equal `WORKSPACE_ROOT`; choose a separate backend
+workspace when the game already owns a host root.
+
+1. Resolve View's Host Pack from the SDK CLI runtime, not from the SDK's bare
+   `packages/view` directory. Set absolute `SDK_ROOT`, `WORKSPACE_ROOT` and
+   `GAME_ROOT` in that persistent terminal.
+2. Run `backend status` with `WORKSPACE_ROOT`. Reuse a ready backend only when
+   its reported `hostPack` is the resolved View Pack. If stopped, start it with
+   that Pack in the same terminal. Inspect ownership before changing an
+   incompatible ready backend; do not silently stop another workflow.
+3. Once backend status is ready, discover `help view`, check `view status`, then
+   run `view start --project` with the absolute `GAME_ROOT`, always using the
+   same CLI and `WORKSPACE_ROOT`.
+4. Open the returned URL in a browser. Confirm the project name/path, an exact
+   project target, and the requested assets in the Content Browser or asset
+   pages. A ready service or URL alone is not visual acceptance. Keep the
+   terminal alive through this check and handoff.
+
+For POSIX shells, the commands in that one terminal are:
+
+```sh
+SDK_CLI="$SDK_ROOT/bin/forgeax.mjs"
+VIEW_HOST_PACK="$(node -e '
+  const { createRequire } = require("node:module");
+  const { join } = require("node:path");
+  const sdkRequire = createRequire(join(process.argv[1], ".forgeax/cli-runtime/package.json"));
+  console.log(sdkRequire.resolve("@forgeax/view/host.pack.json"));
+' "$SDK_ROOT")"
+
+node "$SDK_CLI" backend status --root "$WORKSPACE_ROOT" --json
+# Only if no compatible backend is ready:
+node "$SDK_CLI" backend start --root "$WORKSPACE_ROOT" --host-pack "$VIEW_HOST_PACK" --json
+# Only after backend readiness:
+node "$SDK_CLI" help view --root "$WORKSPACE_ROOT" --tree --json
+node "$SDK_CLI" view status --root "$WORKSPACE_ROOT" --json
+node "$SDK_CLI" view start --root "$WORKSPACE_ROOT" --project "$GAME_ROOT" --json
+```
+
+For Windows, keep one interactive PowerShell or CMD session open. If an agent's
+command tool creates a fresh shell for each call, open one persistent terminal
+and send every subsequent command to that session. This PowerShell sequence
+uses the same conditional `backend start` step:
+
+```powershell
+$SDK_ROOT = 'C:\absolute\path\to\forgeax-sdk'
+$WORKSPACE_ROOT = 'C:\absolute\path\to\backend-workspace'
+$GAME_ROOT = 'C:\absolute\path\to\game'
+$SDK_CLI = Join-Path $SDK_ROOT 'bin/forgeax.mjs'
+$VIEW_HOST_PACK = node -e 'const {createRequire}=require("node:module"); const {join}=require("node:path"); console.log(createRequire(join(process.argv[1], ".forgeax/cli-runtime/package.json")).resolve("@forgeax/view/host.pack.json"))' $SDK_ROOT
+
+node $SDK_CLI backend status --root $WORKSPACE_ROOT --json
+# Only if no compatible backend is ready:
+node $SDK_CLI backend start --root $WORKSPACE_ROOT --host-pack $VIEW_HOST_PACK --json
+# Only after backend readiness:
+node $SDK_CLI help view --root $WORKSPACE_ROOT --tree --json
+node $SDK_CLI view status --root $WORKSPACE_ROOT --json
+node $SDK_CLI view start --root $WORKSPACE_ROOT --project $GAME_ROOT --json
+```
+
+On Windows, pass the absolute path as `--project` and use the CLI's returned
+URL; do not build or re-encode a URL from the filesystem path. A missing View
+command after backend readiness calls for checking that exact root's backend
+status, selected `hostPack`, SDK CLI/runtime package resolution and backend logs.
+Repair the failing stage and retry it; a game server is not a substitute for
+the requested View preview.
+
+## Local Engine checkout: one script
 
 Use the fixed `tools/view` source in the selected Engine checkout. The helper installs from the shared workspace and calls Engine `build:tools`, which supplies the native diagnostic plugins. For a known game project, run:
 
@@ -42,9 +145,8 @@ silently replace those owners. Progress and command diagnostics go to stderr.
 The manual composition below remains useful for a narrower service-only
 request or diagnosis of a failed stage.
 
-This helper uses Git provenance from contributor checkouts. For a public SDK or its
-expanded source archive, use the installed Engine CLI operations below; the SDK
-launcher resolves its paired tool from the dedicated tool runtime without Git.
+This helper uses Git provenance from contributor checkouts. For a public SDK or
+its expanded source archive, follow [Published npm SDK](#published-npm-sdk).
 
 Read [Start here](../../README.md#start-here) for the current commands and Pack
 PluginAsset root. Check the selected Engine package's public exports and CLI help
@@ -124,9 +226,10 @@ substitute for the requested local repository binding.
 
 ## Compose only the requested operations
 
-Inspect `backend status` and `view status` for the chosen workspace root. Reuse
-an existing healthy service with the requested Engine. A binding change does
-not update running owners; apply it with an explicit backend restart, and keep
+Inspect `backend status` for the chosen workspace root first; inspect
+`view status` only after a compatible backend is ready. Reuse an existing
+healthy service with the requested Engine. A binding change does not update
+running owners; apply it with an explicit backend restart, and keep
 independent runs under their separate lifecycle. Select the installed View
 package's `host.pack.json` with `backend start --host-pack <absolute-pack-path>`.
 The game needs no View asset or changed `roots.host`. If it already owns a host
@@ -199,7 +302,7 @@ runs, and borrowed browser resources remain with their caller.
 
 | Evidence | Next action |
 |:--|:--|
-| Command missing | Verify the selected Engine CLI version, backend `hostPack` status, built View exports, and packaged `host.pack.json` |
+| Command missing | Check the same CLI and `--root`, confirm a ready backend with View's selected `hostPack`, then inspect installed View exports and package resolution |
 | Pack module initialization timeout | Retain the source filename and diagnostic; inspect actual resolved imports before claiming whole-Engine compilation |
 | Terminal Pack/catalog failure | Return the producer error; repair and explicitly reopen the project instead of adding another readiness wait |
 | Shell ready, rendering failed | Report target failure separately; inspect Engine's original renderer error while keeping View available |

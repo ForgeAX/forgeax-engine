@@ -4,6 +4,29 @@ import * as vite from 'vite';
 const packageRoot = resolve(import.meta.dirname, '../..');
 export function createRemoteBundler(allow) {
   const cache = new Map();
+  let activeReads = 0;
+  const waitingReads = [];
+  // Source parsing shares this event loop with connection establishment. Bound
+  // reads across builds so a wide import graph cannot starve loopback sockets.
+  async function readSource(url) {
+    if (activeReads === 4) await new Promise((resolve) => waitingReads.push(resolve));
+    else activeReads++;
+    try {
+      const response = await fetch(url, {
+        headers: { accept: 'text/javascript' },
+        signal: AbortSignal.timeout(30000),
+      }).catch((cause) => {
+        throw new Error(`Vite source fetch failed: ${url.origin}${url.pathname}`, { cause });
+      });
+      if (!response.ok)
+        throw new Error(`Vite source HTTP ${response.status}: ${url.pathname}`);
+      return await response.text();
+    } finally {
+      const next = waitingReads.shift();
+      if (next) next();
+      else activeReads--;
+    }
+  }
   async function bundle(url, kind = 'module', inlineSource) {
     const key = `${kind}:${url}`;
     if (cache.has(key)) return cache.get(key);
@@ -35,15 +58,7 @@ export function createRemoteBundler(allow) {
               return 'export default {injectIntoGlobalHook(){},register(){},createSignatureFunctionForTransform(){return x=>x;}}';
             let code;
             if (inlineSource !== undefined && href === url) code = inlineSource;
-            else {
-              const response = await fetch(href, {
-                headers: { accept: 'text/javascript' },
-                signal: AbortSignal.timeout(30000),
-              });
-              if (!response.ok)
-                throw new Error(`Vite source HTTP ${response.status}: ${u.pathname}`);
-              code = await response.text();
-            }
+            else code = await readSource(u);
             code = code
               .replace(/import\.meta\.hot\s*=\s*[^;]+;/g, '')
               .replaceAll('import.meta.hot', 'undefined');

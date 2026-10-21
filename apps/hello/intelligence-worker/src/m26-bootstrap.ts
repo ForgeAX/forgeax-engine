@@ -10,9 +10,13 @@ import {
   type ActivityRef,
   type IntelligencePortClient,
 } from '@forgeax/engine-intelligence';
-import { HANDLE_CUBE } from '@forgeax/engine-assets-runtime';
+
 import { Camera, DirectionalLight, MeshFilter, MeshRenderer } from '@forgeax/engine-render';
 import { Transform } from '@forgeax/engine-scene';
+import { AssetRegistry } from '@forgeax/engine-assets-runtime';
+
+import { createPrimitiveMesh } from '@forgeax/engine-geometry';
+
 
 const M26_OUTPUT_LIMIT = 8;
 const M26_LIMITS = {
@@ -157,6 +161,11 @@ const bootstrap: ExecutionBootstrapEntry = (data) => {
     inject: ['world', 'intelligence'],
     apply(ctx) {
       const world = ctx.world;
+const sceneAssets = world.assets;
+if (!(sceneAssets instanceof AssetRegistry)) throw new Error('Scene requires its runtime asset owner');
+
+const primitiveCube = sceneAssets.create(createPrimitiveMesh('cube').unwrap()).unwrap();
+
       const intelligence = ctx.intelligence as IntelligencePortClient | undefined;
       if (intelligence === undefined) throw new Error('M26 intelligence service was not provided');
 
@@ -699,7 +708,7 @@ const bootstrap: ExecutionBootstrapEntry = (data) => {
         world
           .spawn(
             { component: Transform, data: { pos: [0, 0, 0] } },
-            { component: MeshFilter, data: { assetHandle: HANDLE_CUBE } },
+            { component: MeshFilter, data: { assetHandle: primitiveCube } },
             { component: MeshRenderer, data: {} },
           )
           .unwrap(),

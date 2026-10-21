@@ -4,6 +4,7 @@ import type {
   CatalogDiagnostic,
   ImportSubAsset,
   PackErrorCode,
+  PackIndexEntry,
   ProviderProvenance,
   ResourceRevision,
   SourceOverrideDescriptor,
@@ -13,6 +14,7 @@ import { PackError } from './errors.js';
 import { PackageId } from './guid.js';
 import {
   type AnyScriptablePackDefinition,
+  type DirectPackJsonAsset,
   type PackAuthoringError,
   type PackParameterInheritanceSubject,
   type PackParameterValue,
@@ -30,8 +32,8 @@ import { validateMeta, validatePack } from './schema-compiled.js';
 import type { ScriptablePackSourceClosureEntry } from './scriptable-pack.js';
 import {
   inventoryScriptablePackSource,
+  type LoadScriptablePackOptions,
   loadScriptablePack,
-  type ScriptablePackModuleExecutor,
 } from './scriptable-pack-node.js';
 import {
   createScriptablePackSourceSnapshot,
@@ -65,14 +67,7 @@ export interface ScanOptions {
 }
 
 /** One bounded executor policy shared by ScriptablePack inventory and production. */
-export interface ScriptablePackScanOptions {
-  readonly sourceSnapshot?: ScriptablePackSourceSnapshot;
-  readonly timeoutMs?: number;
-  readonly buildTimeoutMs?: number;
-  readonly executor?: ScriptablePackModuleExecutor;
-  /** Path-only scans must release the isolated loader before returning. */
-  readonly metadataOnly?: boolean;
-}
+export interface ScriptablePackScanOptions extends LoadScriptablePackOptions {}
 
 /** Stable default policy shared by inventory and production owners. */
 export const STANDARD_SCRIPTABLE_PACK_SCAN_OPTIONS = Object.freeze({
@@ -83,13 +78,9 @@ export const STANDARD_SCRIPTABLE_PACK_SCAN_OPTIONS = Object.freeze({
   timeoutMs: 120_000,
 }) satisfies ScriptablePackScanOptions;
 
-export interface InventoryDeclaration {
-  readonly guid: string;
-  readonly kind: string;
-  readonly sourcePath: string;
+export interface InventoryDeclaration
+  extends Pick<PackIndexEntry, 'guid' | 'kind' | 'sourcePath' | 'sourceKey' | 'sourceIndex'> {
   readonly sourceRevision: string;
-  readonly sourceKey?: string;
-  readonly sourceIndex?: number;
 }
 
 export interface ScanInventory {
@@ -148,16 +139,11 @@ export interface LegacyPackInventoryDocument {
 /** Producer-owned legacy package, or the v3 authored source already parsed by the scanner. */
 export type PackInventoryDocument = LegacyPackInventoryDocument | ParsedPackJson;
 
-export interface PackInventoryAsset {
+export interface PackInventoryAsset extends DirectPackJsonAsset {
   readonly guid: string;
-  readonly kind: string;
-  readonly name?: string;
   readonly execution?: 'direct' | 'cooked';
   readonly sourceKey?: string;
   readonly sourceIndex?: number;
-  readonly payload: Readonly<Record<string, unknown>>;
-  readonly refs: readonly string[];
-  readonly artifacts?: Readonly<Record<string, Readonly<Record<string, unknown>>>>;
 }
 
 /**

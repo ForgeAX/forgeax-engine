@@ -1,17 +1,16 @@
-import {
-  resolveAssetHandle,
-  walkMaterialPassesOverSharedRefs,
-} from '@forgeax/engine-assets-runtime';
+import { readMaterialContent, runtimeAssets } from '@forgeax/engine-assets-runtime/internal';
 import type { World } from '@forgeax/engine-ecs';
 import { readRenderArrayView } from '@forgeax/engine-ecs/projection';
 import { mat4, vec3 } from '@forgeax/engine-math';
 import { GlobalTransform } from '@forgeax/engine-scene';
-import { type SamplerAsset, type TextureAsset, toShared } from '@forgeax/engine-types';
+import type { AssetHandle, SamplerAsset, TextureAsset } from '@forgeax/engine-types';
+import { worldRenderResources } from '../publication/resource-scope';
 import { deriveRenderDataTexture } from '../render-data';
 import {
   collectAuthoredMaterialSamplerFields,
   collectAuthoredMaterialTextureFields,
   type MaterialSnapshot,
+  materialSnapshotContext,
   type PreparedExtractContext,
   resolveMaterialSnapshot,
 } from '../render-system-extract';
@@ -93,17 +92,21 @@ export function extractProjectedDecals(
       )
     )
       throw new ProjectedDecalInvalidError('transform', 'a stable float32 inverse');
-    const handle = toShared<'MaterialAsset'>(Number(data.material));
+    const handle = Number(data.material) as AssetHandle<'material'>;
     if (context.assets === undefined || context.assets === null || Number(data.material) === 0)
       throw new ProjectedDecalInvalidError('material', 'a loaded Standard MaterialAsset');
-    const resolved = walkMaterialPassesOverSharedRefs(world, handle, context.assets);
+    const resolved = readMaterialContent(runtimeAssets(world.assets), handle);
     if (!resolved.ok) throw new ProjectedDecalInvalidError('material', resolved.error.expected);
     const material = resolveMaterialSnapshot(
       Number(handle),
-      world,
+      worldRenderResources(world),
       context.assets,
       undefined,
-      context.materialSnapshotCache,
+      materialSnapshotContext(
+        context.materialSnapshotContexts,
+        context.materialContext?.geometry ?? 'mesh',
+        false,
+      ),
       context.materialContext,
     );
     if (!material.deferredPass || material.materialShaderId !== 'forgeax::default-standard-pbr')
@@ -136,7 +139,7 @@ export function extractProjectedDecals(
           throw new ProjectedDecalInvalidError(field, 'a resolved static 2D texture');
         return undefined;
       }
-      const texture = resolveAssetHandle<TextureAsset>(world, textureHandle);
+      const texture = runtimeAssets(world.assets).resolveAsset<TextureAsset>(textureHandle);
       if (!texture.ok) throw new ProjectedDecalInvalidError(field, texture.error.expected);
       if (texture.value.kind !== 'texture' || texture.value.shape.viewDimension !== '2d')
         throw new ProjectedDecalInvalidError(field, 'a static 2D texture');
@@ -163,7 +166,7 @@ export function extractProjectedDecals(
           throw new ProjectedDecalInvalidError(field, 'a resolved sampler');
         return undefined;
       }
-      const resolved = resolveAssetHandle<SamplerAsset>(world, sampler);
+      const resolved = runtimeAssets(world.assets).resolveAsset<SamplerAsset>(sampler);
       if (!resolved.ok) throw new ProjectedDecalInvalidError(field, resolved.error.expected);
       if (resolved.value.compare !== undefined)
         throw new ProjectedDecalInvalidError(field, 'a color sampler without comparison');

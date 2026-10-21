@@ -1,3 +1,4 @@
+import { AssetRegistry } from '@forgeax/engine/assets-runtime';
 import { createPlaneGeometry } from '@forgeax/engine/geometry';
 import { defineFeature } from '../../lab/feature';
 import { spawnCamera, spawnMesh, spawnSun, standard } from '../../lab/stage';
@@ -13,9 +14,13 @@ export default defineFeature({
   expect:
     'ON: the dense orange plane rises into a grid of lit, shadowed hills. OFF: the same mesh and height map without displacement is a flat sheet.',
   setup({ world }) {
+    const sceneAssets = world.assets;
+    if (!(sceneAssets instanceof AssetRegistry))
+      throw new Error('Scene requires its runtime asset owner');
+
     spawnCamera(world, { eye: [0, 3.2, 4.2], target: [0, 0, 0] });
     spawnSun(world, { direction: [-0.8, -0.6, -0.3] });
-    const plane = world.allocSharedRef('MeshAsset', createPlaneGeometry(4, 4, 128, 128).unwrap());
+    const plane = sceneAssets.create(createPlaneGeometry(4, 4, 128, 128).unwrap()).unwrap();
     const hills = heightMap(
       world,
       (u, v) => 0.5 + 0.5 * Math.sin(u * Math.PI * 6) * Math.sin(v * Math.PI * 6),

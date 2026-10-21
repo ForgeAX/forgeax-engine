@@ -1,10 +1,6 @@
 import assert from 'node:assert/strict';
 import { readFile, writeFile } from 'node:fs/promises';
-import {
-  AssetRegistry,
-  createAssetRegistry,
-  createCatalogSource,
-} from '@forgeax/engine-assets-runtime';
+import { AssetRegistry, createCatalogSource } from '@forgeax/engine-assets-runtime';
 import { createWorldContext, World } from '@forgeax/engine-ecs';
 import { prepareRuntimePackContent } from '@forgeax/engine-import';
 import {
@@ -59,7 +55,9 @@ const baseFetcher = async (input) => {
   privateReads++;
   return new Response(JSON.stringify(basePack.pack));
 };
-const assets = new AssetRegistry(new ShaderRegistry({ manifestUrl: undefined }));
+const assets = new AssetRegistry({
+  shaderRegistry: new ShaderRegistry({ manifestUrl: undefined }),
+});
 function baseRow() {
   return {
     ...projectPackageCatalog(
@@ -108,7 +106,7 @@ const runtimePacks = assembleRuntimePacks(context, assembly, {
   },
 });
 const producer = runtimePacks.producer;
-const frontendReader = createAssetRegistry({
+const frontendReader = new AssetRegistry({
   catalog: runtimePacks.catalog,
   fetcher: runtimePacks.fetcher,
   scopeId: 'test',
@@ -177,7 +175,7 @@ basePack = createRuntimePackPublication({
 baseRows[0] = baseRow();
 for (const listener of baseListeners)
   listener({ scopeId: 'test', generation: 1, added: [], changed: [baseRows[0]], removed: [] });
-await assets.refreshCatalog();
+(await assets.enumerateCatalog()).unwrap();
 assert.equal(
   (await assets.enumerateCatalog()).unwrap().find((row) => row.guid === baseGuid).packageUrl,
   baseUrl,

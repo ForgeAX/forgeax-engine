@@ -15,13 +15,14 @@ import type { RenderPipeline, RenderPipelineFrame } from '../render-pipeline';
 import type { ExtractedFrame, ExtractedLights, RenderableSnapshot } from '../render-system-extract';
 import type { PersistentRenderScene } from '../scene/render-scene';
 import { createTemporalFrameTransaction } from '../temporal/frame';
+import { admitPbrDawnFixture } from './gpu-driven-raster-class-dawn-fixture';
 
 /** Read real cooked Standard color through both live material-pass filters. */
 export async function verifyRetainedRasterRouting(input: {
   readonly device: RhiDevice;
   readonly native: GPUDevice;
   readonly production: GpuDrivenProduction;
-  readonly prepareInput: Parameters<GpuDrivenProduction['prepare']>[0];
+  readonly prepareInput: Parameters<typeof admitPbrDawnFixture>[0];
   readonly source: RenderableSnapshot;
   readonly persistentScene: PersistentRenderScene;
   readonly persistentWorld: World;
@@ -31,7 +32,7 @@ export async function verifyRetainedRasterRouting(input: {
   readonly materialBindGroup: BindGroup;
 }): Promise<void> {
   const { device } = input;
-  const originalMesh = input.prepareInput.meshBySlot.values().next().value;
+  const originalMesh = input.prepareInput.meshBySlot?.values().next().value;
   if (originalMesh === undefined) throw Error('missing resident Standard triangle');
   let mesh: MeshGpuHandles = originalMesh;
   let current: PreparedGpuDrivenFrame;
@@ -93,7 +94,13 @@ export async function verifyRetainedRasterRouting(input: {
                 resources,
                 {
                   ...current.standardPbrFrameResources,
-                  materialBindGroups: [input.materialBindGroup],
+                  prepareMaterialBinding: (
+                    (groups: readonly (import('@forgeax/engine-rhi').BindGroup | undefined)[]) =>
+                    (slot: number) => {
+                      const group = groups[slot];
+                      return group === undefined ? undefined : { group, byteOffset: slot * 1280 };
+                    }
+                  )([input.materialBindGroup]),
                 },
                 filter,
                 'fs_opaque',
@@ -181,35 +188,27 @@ export async function verifyRetainedRasterRouting(input: {
           }),
         };
       }
-      const material = { ...input.source.material, deferredPass: deferred };
-      input.persistentScene.extractComposition(
-        [input.persistentWorld],
-        { cameraOwner: 0, resourceOwner: 0 },
-        frame + 1,
-        () => ({
-          ...input.persistentFrame,
-          renderables: [{ ...input.source, material, materials: [material] }],
-        }),
-        [input.persistentLease],
-      );
-      const scene = input.persistentScene.compositionGpuDrivenState();
-      if (scene === undefined) throw Error('missing published routing source');
+      input.source.material.adopt({ ...input.source.material.snapshot, deferredPass: deferred });
+      const scene = input.prepareInput.scene;
+      if (scene === undefined) throw Error('missing retained routing source');
       const prepared = input.production
-        .prepare({
-          ...input.prepareInput,
-          scene,
-          meshBySlot: new Map(scene.slots.map((slot) => [slot.slot, mesh])),
-          meshResidencyEpoch: frame < 30 ? 1 : 2,
-          shadowCasterDrawKeys: new Set(),
-          shadowCasterMembership: [],
-        })
+        .prepare(
+          admitPbrDawnFixture({
+            ...input.prepareInput,
+            scene,
+            meshBySlot: new Map(scene.slots.map((slot) => [slot.slot, mesh])),
+            shadowViews: false,
+          }),
+        )
         .unwrap();
       if (prepared === undefined) throw Error('missing prepared routing frame');
       current = prepared;
       current.updateShadowViews?.([]).unwrap();
       resourceGeneration ??= current.standardPbrFrameResources.resourceGeneration;
       expect(current.standardPbrFrameResources.resourceGeneration).toBe(resourceGeneration);
-      expect(current.ownsAllDrawItems).toBe(true);
+      const sourceDraw = input.source.gpuDrivenDraws?.[0];
+      if (sourceDraw === undefined) throw Error('missing source draw');
+      expect(current.selection.owns(input.source, sourceDraw, 0)).toBe(true);
       const graph = compile();
       if (frame === 0) {
         firstGraph = graph;

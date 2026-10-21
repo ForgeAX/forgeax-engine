@@ -24,13 +24,17 @@
 // (curve beads render, pass through the control points, and bend smoothly) — no per-frame motion.
 
 import type { World } from '@forgeax/engine-ecs';
-import { HANDLE_SPHERE } from '@forgeax/engine-assets-runtime';
+
 import { Transform } from '@forgeax/engine-scene';
 import { Camera, DirectionalLight, MeshFilter, MeshRenderer } from '@forgeax/engine-render';
 import { perspective } from '@forgeax/engine-render';
 import { Materials } from '@forgeax/engine-render';
-import type { MaterialAsset } from '@forgeax/engine-runtime';
+
 import { quat, vec3 } from '@forgeax/engine-math';
+import { AssetRegistry } from '@forgeax/engine-assets-runtime';
+
+import { createPrimitiveMesh } from '@forgeax/engine-geometry';
+
 
 /** The control points the curve passes through (a wavy path in the XY plane, z=0). */
 export const CONTROL_POINTS: ReadonlyArray<readonly [number, number, number]> = [
@@ -82,21 +86,20 @@ export function sampleCurve(
  * at the curve plane.
  */
 export function buildCubicSplinesWorld(world: World): void {
-  const beadMat = world.allocSharedRef<'MaterialAsset', MaterialAsset>(
-    'MaterialAsset',
-    Materials.standard({ baseColor: [0.3, 0.6, 1.0, 1] }),
-  );
-  const ctrlMat = world.allocSharedRef<'MaterialAsset', MaterialAsset>(
-    'MaterialAsset',
-    Materials.standard({ baseColor: [1.0, 0.7, 0.15, 1], emissive: [0.5, 0.3, 0.05] }),
-  );
+const sceneAssets = world.assets;
+if (!(sceneAssets instanceof AssetRegistry)) throw new Error('Scene requires its runtime asset owner');
+
+const primitiveSphere = sceneAssets.create(createPrimitiveMesh('sphere').unwrap()).unwrap();
+
+  const beadMat = sceneAssets.create(Materials.standard({ baseColor: [0.3, 0.6, 1.0, 1] })).unwrap();
+  const ctrlMat = sceneAssets.create(Materials.standard({ baseColor: [1.0, 0.7, 0.15, 1], emissive: [0.5, 0.3, 0.05] })).unwrap();
 
   // Curve beads.
   const samples = sampleCurve(CONTROL_POINTS, SAMPLES_PER_SEGMENT);
   for (const [x, y, z] of samples) {
     world.spawn(
       { component: Transform, data: { pos: [x, y, z], quat: [0, 0, 0, 1], scale: [0.12, 0.12, 0.12] } },
-      { component: MeshFilter, data: { assetHandle: HANDLE_SPHERE } },
+      { component: MeshFilter, data: { assetHandle: primitiveSphere } },
       { component: MeshRenderer, data: { materials: [beadMat] } },
     );
   }
@@ -105,7 +108,7 @@ export function buildCubicSplinesWorld(world: World): void {
   for (const [x, y, z] of CONTROL_POINTS) {
     world.spawn(
       { component: Transform, data: { pos: [x, y, z], quat: [0, 0, 0, 1], scale: [0.4, 0.4, 0.4] } },
-      { component: MeshFilter, data: { assetHandle: HANDLE_SPHERE } },
+      { component: MeshFilter, data: { assetHandle: primitiveSphere } },
       { component: MeshRenderer, data: { materials: [ctrlMat] } },
     );
   }

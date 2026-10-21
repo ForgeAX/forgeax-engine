@@ -1,9 +1,11 @@
-import { resolveAssetHandle } from '@forgeax/engine-assets-runtime';
+import { AssetRegistry } from '@forgeax/engine-assets-runtime';
+import { runtimeAssetRegistry, runtimeAssets } from '@forgeax/engine-assets-runtime/internal';
 import { createWorldContext, World } from '@forgeax/engine-ecs';
-import type { ParticleEffectAsset, TextureAsset } from '@forgeax/engine-types';
+import type { ParticleEffectAsset } from '@forgeax/engine-types';
 import { ParticleEffectPlayer, vfxGpuRuntimePlugin } from '@forgeax/engine-vfx';
 import { cookParticleCodeProgram, createVfxVectorFieldTexture } from '@forgeax/engine-vfx-compiler';
 import { expect, it } from 'vitest';
+import { runtimeEffectFixture } from '../../../vfx/src/__tests__/runtime-effect-fixture';
 import { gpuParticleRenderFeature } from '../feature/gpu-particle-feature.js';
 import { planPasses, planResources, singleViewContext } from './vfx-frame-fixture.js';
 
@@ -47,19 +49,41 @@ fn vfx_update(ctx:VfxUpdateContext,p:ptr<function,VfxParticle>){vfx_apply_force_
       },
     )
   ).unwrap();
+  const make = () =>
+    createVfxVectorFieldTexture({
+      resolution: [8, 8, 8],
+      field: { kind: 'constant', value: [0.5, 0.25, -0.125] },
+    }).unwrap();
+  const assets = new AssetRegistry();
+  const texture = assets.create(make()).unwrap();
   const asset: ParticleEffectAsset = {
     kind: 'particle-effect',
     schemaVersion: 3,
     programFingerprint: cooked.fingerprint,
     emitters: [{ id: 'shared-id', capacity: 4 }],
-    program: { ...cooked.program, fingerprint: cooked.fingerprint },
+    program: {
+      ...cooked.program,
+      fingerprint: cooked.fingerprint,
+      emitters: cooked.program.emitters.map((emitter) => ({
+        ...emitter,
+        ...(emitter.forceFields === undefined
+          ? {}
+          : {
+              forceFields: emitter.forceFields.map((field) =>
+                field.kind === 'vector' ? { ...field, texture } : field,
+              ),
+            }),
+      })),
+    },
   };
-  const world = new World();
+  const world = new World({ assets });
   world
     .spawn({
       component: ParticleEffectPlayer,
       data: {
-        effect: world.allocSharedRef('ParticleEffectAsset', { ...asset, guid: 'effect' }),
+        effect: runtimeAssetRegistry(world.assets)
+          .create(runtimeEffectFixture(world, { ...asset, guid: 'effect' }))
+          .unwrap(),
         playing: true,
         seed: 21,
         timeScale: 1,
@@ -67,12 +91,6 @@ fn vfx_update(ctx:VfxUpdateContext,p:ptr<function,VfxParticle>){vfx_apply_force_
     })
     .unwrap();
   const context = await createWorldContext(world, [vfxGpuRuntimePlugin()]);
-  const make = () =>
-    createVfxVectorFieldTexture({
-      resolution: [8, 8, 8],
-      field: { kind: 'constant', value: [0.5, 0.25, -0.125] },
-    }).unwrap();
-  let texture: TextureAsset = make();
   const camera = {
     position: new Float32Array(3),
     right: new Float32Array([1, 0, 0]),
@@ -81,7 +99,6 @@ fn vfx_update(ctx:VfxUpdateContext,p:ptr<function,VfxParticle>){vfx_apply_force_
   };
   const source = gpuParticleRenderFeature({
     camera: { read: () => camera },
-    texture: { read: () => texture },
   });
   const consumer = gpuParticleRenderFeature({ camera: { read: () => undefined } });
   let frameNumber = 0;
@@ -112,7 +129,8 @@ fn vfx_update(ctx:VfxUpdateContext,p:ptr<function,VfxParticle>){vfx_apply_force_
         data,
         singleViewContext({
           targets,
-          resolveAsset: (_index, handle) => resolveAssetHandle(world, handle),
+          resolveAsset: (_index, handle, revision) =>
+            runtimeAssets(world.assets).resolveAsset(handle, revision),
           caps: {} as never,
           frame: { frameNumber },
           generation,
@@ -142,7 +160,15 @@ fn vfx_update(ctx:VfxUpdateContext,p:ptr<function,VfxParticle>){vfx_apply_force_
       .unwrap();
     const field = planResources(plan).find((r) => r.name.includes('.force-fields.'));
     expect(field).toBeDefined();
-    return { data, plan, field };
+    return {
+      data,
+      plan,
+      field,
+      uploads: planResources(plan).filter(
+        (r) =>
+          r.kind === 'buffer' && r.name.includes('.force-fields.') && r.name.includes('.upload.'),
+      ),
+    };
   };
   const accept = (candidate: ReturnType<typeof frame>) => {
     consumer.onFrameSubmitted?.(candidate.data);
@@ -191,7 +217,8 @@ fn vfx_update(ctx:VfxUpdateContext,p:ptr<function,VfxParticle>){vfx_apply_force_
           invalid,
           singleViewContext({
             targets,
-            resolveAsset: (_index, handle) => resolveAssetHandle(world, handle),
+            resolveAsset: (_index, handle, revision) =>
+              runtimeAssets(world.assets).resolveAsset(handle, revision),
             caps: {} as never,
             frame: { frameNumber: frameNumber + 1 },
             generation: 0,
@@ -211,28 +238,59 @@ fn vfx_update(ctx:VfxUpdateContext,p:ptr<function,VfxParticle>){vfx_apply_force_
       consumer.onFrameAborted?.(invalid);
     }
     const first = frame();
-    expect(first.field).toHaveProperty('data');
+    expect(first.uploads.length).toBeGreaterThan(0);
     consumer.onFrameAborted?.(first.data);
     const retry = frame();
     expect(retry.field?.name).toBe(first.field?.name);
-    expect(retry.field).toHaveProperty('data');
+    expect(retry.uploads.length).toBeGreaterThan(0);
     accept(retry);
     world.update(1 / 60).unwrap();
     const hot = frame();
     expect(hot.field?.name).toBe(first.field?.name);
-    expect(hot.field).not.toHaveProperty('data');
+    expect(hot.uploads).toHaveLength(0);
     accept(hot);
-    texture = make();
-    new DataView(texture.data.buffer).setFloat32(0, 2, true);
+    const nextTexture = make();
+    new DataView(nextTexture.data.buffer).setFloat32(0, 2, true);
+    assets.update(texture, { data: nextTexture.data }).unwrap();
     world.update(1 / 60).unwrap();
+    const earlier = frame();
+    consumer.onFrameAborted?.(earlier.data);
+    const laterTexture = make();
+    new DataView(laterTexture.data.buffer).setFloat32(0, 3, true);
+    assets.update(texture, { data: laterTexture.data }).unwrap();
+    world.update(1 / 60).unwrap();
+    const mixed = frame();
+    const fieldResources = planResources(mixed.plan).filter(
+      (r) =>
+        r.kind === 'buffer' && r.name.includes('.force-fields.') && !r.name.includes('.upload.'),
+    );
+    expect(fieldResources).toHaveLength(2);
+    const tickBindings = planResources(mixed.plan).filter(
+      (r) => r.kind === 'compute-bindings' && r.name.endsWith('.simulation-bindings'),
+    );
+    const references = tickBindings.map((r) =>
+      r.kind === 'compute-bindings' ? r.entries.find((e) => e.binding === 17)?.resource : undefined,
+    );
+    expect(new Set(references).size).toBe(2);
+    expect(
+      mixed.uploads
+        .filter((r) => r.name.endsWith('.upload.1'))
+        .map((r) =>
+          r.kind === 'buffer' && r.data !== undefined
+            ? new DataView(r.data.buffer, r.data.byteOffset, r.data.byteLength).getFloat32(0, true)
+            : undefined,
+        ),
+    ).toEqual([2, 3]);
+    // Accept the two-tick batch, then the retained projection keeps its latest input.
+    accept(mixed);
     const replacement = frame();
     expect(replacement.field?.name).not.toBe(first.field?.name);
-    expect(replacement.field).toHaveProperty('data');
+    expect(replacement.uploads).toHaveLength(0);
     accept(replacement);
     world.update(1 / 60).unwrap();
     const recovery = frame(1);
     expect(recovery.field?.name).toBe(replacement.field?.name);
-    expect(recovery.field).toHaveProperty('data');
+    expect(recovery.uploads.length).toBeGreaterThan(0);
     expect(
       planPasses(recovery.plan).filter((p) => p.name.endsWith('.simulate')).length,
     ).toBeGreaterThan(1);
@@ -244,7 +302,9 @@ fn vfx_update(ctx:VfxUpdateContext,p:ptr<function,VfxParticle>){vfx_apply_force_
       .spawn({
         component: ParticleEffectPlayer,
         data: {
-          effect: world.allocSharedRef('ParticleEffectAsset', { ...asset, guid: 'second-effect' }),
+          effect: runtimeAssetRegistry(world.assets)
+            .create(runtimeEffectFixture(world, { ...asset, guid: 'second-effect' }))
+            .unwrap(),
           playing: true,
           seed: 22,
           timeScale: 1,
@@ -255,7 +315,10 @@ fn vfx_update(ctx:VfxUpdateContext,p:ptr<function,VfxParticle>){vfx_apply_force_
     const catchUp = frame(1, true);
     const shared = catchUp.plan.work.find((work) => work.scope === 'frame');
     expect(
-      shared?.resources.filter((resource) => resource.name.includes('.force-fields.')),
+      shared?.resources.filter(
+        (resource) =>
+          resource.name.includes('.force-fields.') && !resource.name.includes('.upload.'),
+      ),
     ).toHaveLength(2);
     expect(
       shared?.passes.filter((pass) => pass.enabled !== false && pass.name.endsWith('.simulate')),
@@ -275,5 +338,6 @@ fn vfx_update(ctx:VfxUpdateContext,p:ptr<function,VfxParticle>){vfx_apply_force_
     ).toBe(false);
   } finally {
     await context.fiber.dispose();
+    assets.dispose();
   }
 });

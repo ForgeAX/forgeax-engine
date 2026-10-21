@@ -261,6 +261,16 @@ export function exposeRenderer(renderer: RendererHostImplementation): Renderer {
       const fault = dynamicGeometryFault(candidate.world as World);
       return fault === undefined ? renderer.retireDynamicGeometry(candidate) : err(fault);
     },
+    retireSupersededDynamicGeometry: (
+      candidate: DynamicGeometryCandidate,
+      successor: DynamicGeometryCandidate,
+    ) => {
+      assertPreparationIdle();
+      const fault = dynamicGeometryFault(candidate.world as World);
+      return fault === undefined
+        ? renderer.retireSupersededDynamicGeometry(candidate, successor)
+        : err(fault);
+    },
     createRenderTarget: (descriptor) => {
       assertPreparationIdle();
       return renderer.createRenderTarget(descriptor);

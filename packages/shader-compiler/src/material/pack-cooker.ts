@@ -32,6 +32,7 @@ import {
 import { cookedRecord, materialPrograms, rayMaterialProgram } from './publication.js';
 import { type CookedRayMaterial, cookRayMaterial } from './ray-material.js';
 import { buildMaterialSourceCatalog } from './source-catalog.js';
+import { terrainProgramSource } from './terrain-program.js';
 import { DEFAULT_MATERIAL_VARIANT_CONTEXT } from './variant-context.js';
 
 interface MaterialPackCookInput {
@@ -488,10 +489,12 @@ export function createMaterialPackCooker(
       // wrapper. A Ready publication must match the geometry the Renderer asks for.
       const context = {
         ...DEFAULT_MATERIAL_VARIANT_CONTEXT,
-        geometry: resolved.value.asset.passes?.some((pass) =>
-          ['forgeax_material::terrain_surface', 'forgeax_material::terrain_id_surface'].includes(
-            pass.program.moduleSlots?.surface ?? '',
-          ),
+        geometry: resolved.value.asset.passes?.some(
+          (pass) =>
+            terrainProgramSource(pass.program.module) !== undefined ||
+            ['forgeax_material::terrain_surface', 'forgeax_material::terrain_id_surface'].includes(
+              pass.program.moduleSlots?.surface ?? '',
+            ),
         )
           ? ('terrain' as const)
           : resolved.value.asset.passes?.some(
@@ -547,7 +550,9 @@ export function createMaterialPackCooker(
       if (resolvedAsset.parent !== undefined)
         throw new Error('material resolution retained a parent');
       const visiblePasses = resolvedAsset.passes?.filter((pass) =>
-        isStandardRootModule(pass.program.module),
+        isStandardRootModule(
+          terrainProgramSource(pass.program.module)?.module ?? pass.program.module,
+        ),
       );
       if (visiblePasses !== undefined && visiblePasses.length > 0) {
         const visible = await cookRaster({

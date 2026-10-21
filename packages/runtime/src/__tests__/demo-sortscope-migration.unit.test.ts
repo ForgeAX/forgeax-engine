@@ -46,7 +46,7 @@ interface DemoMigrationCase {
     readonly layerCategory: 'tilemap' | 'terrain' | 'object';
     // After migration: literal that must appear in main.ts.
     // 'per-cell' -> demo must call `encodeSortScope('per-cell')` (or
-    //               pass the closed-union literal through TileLayerData);
+    //               pass the closed-union literal through TilemapData);
     // 'layer'    -> demo may omit `sortScope` (default) or spell 'layer'
     //               explicitly. Both shapes are acceptable.
     readonly postMigrationSortScope: 'layer' | 'per-cell';
@@ -89,7 +89,7 @@ describe('demo sortScope migration (w15, round-2 production)', () => {
     expect(src).not.toMatch(/TilemapSort\.perCell/);
   });
 
-  it("asi-world demo encodes sortScope: 'per-cell' for the object TileLayer", () => {
+  it("asi-world demo encodes sortScope: 'per-cell' for the object Tilemap", () => {
     const asiCase = DEMO_CASES.find((c) => c.demo === 'hello-asi-world');
     if (asiCase === undefined) throw new Error('asi-world case missing');
     const src = readFileSync(asiCase.mainTsPath, 'utf8');

@@ -81,6 +81,7 @@ function topology(
       storageBuffer: true,
       multisample: false,
       maxColorAttachments: 8,
+      maxColorAttachmentBytesPerSample: 72,
     },
     featureTopologySignature: 'none',
     gpuDrivenTopologySignature: '',
@@ -213,10 +214,8 @@ async function build(
         },
         colorLut: {
           view: lutView.value,
-          sampler: lutSampler.value,
           strength: 1,
-          bindGroupLayout: lutBindGroupLayout,
-          bindGroup: lutBindGroup,
+          bind: () => ({ bindGroupLayout: lutBindGroupLayout, bindGroup: lutBindGroup }),
         },
       },
       encodeTransmissionMip: ({ pass }) => pass.draw(3, 1, 0, 0),
@@ -244,14 +243,7 @@ async function build(
             cloudShadowResolution,
             hasFeatureRasterWork: (identity: string) => identity === CLOUD_LAYER_FEATURE_IDENTITY,
           }),
-      contributeFeatures: (
-        _targets,
-        _semanticTargets,
-        namedTargets = {},
-        _standardSurfaceAccesses,
-        featureSelection,
-        passNames,
-      ) => {
+      contributeFeatures: ({ namedTargets = {}, include, passNames }) => {
         // Stand-in CloudLayer producers: the shadow before opaque receivers and
         // the composite into the lane's cloud scene target.
         const cloudOutput = passNames?.includes('cloud-layer-shadow')
@@ -272,10 +264,7 @@ async function build(
             encode: () => undefined,
           });
         }
-        if (
-          typeof featureSelection !== 'object' ||
-          featureSelection?.include?.includes(BARREL_DISTORTION_POST_PROCESS_ID) !== true
-        ) {
+        if (include?.includes(BARREL_DISTORTION_POST_PROCESS_ID) !== true) {
           return ok(undefined);
         }
         const input = namedTargets['barrel-input'];
@@ -341,7 +330,7 @@ describe('visible-surface graph admission', () => {
     multisample: false,
     maxColorAttachments: 7,
     primitiveIndex: true,
-    maxColorAttachmentBytesPerSample: 48,
+    maxColorAttachmentBytesPerSample: 52,
   } as const;
 
   it('owns the seventh attachment and shares one motion producer without TAA history', async () => {
@@ -380,10 +369,10 @@ describe('visible-surface graph admission', () => {
   });
 
   it.each([
-    [7, 48, false],
-    [8, 48, false],
+    [7, 52, false],
     [8, 52, false],
-    [8, 56, true],
+    [8, 56, false],
+    [8, 60, true],
   ] as const)('shares visible-surface temporal only within %i targets / %i bytes', async (targets, bytes, merged) => {
     const result = await buildTaa(profile, {
       camera: { antialias: 'taa', bloom: 'off' },
@@ -488,28 +477,28 @@ describe('subsurface receiver-channel attachment admission', () => {
     expect(SUBSURFACE_DEFERRED_COLOR_FORMATS).toEqual([
       'rgba32float',
       'r32uint',
-      'r32uint',
+      'rg32uint',
       'r32uint',
       'rg32uint',
       'rg32uint',
     ]);
     expect(SUBSURFACE_ATTACHMENT_BYTES).toEqual({
-      surface: 44,
-      temporal: 52,
-      visibleSurface: 60,
-      visibleSurfaceTemporal: 68,
+      surface: 48,
+      temporal: 56,
+      visibleSurface: 64,
+      visibleSurfaceTemporal: 72,
     });
   });
 
   it.each([
-    [false, 43, false, false],
-    [false, 44, true, false],
+    [false, 47, false, false],
     [false, 48, true, false],
-    [false, 52, true, true],
-    [true, 59, false, false],
-    [true, 60, true, false],
+    [false, 52, true, false],
+    [false, 56, true, true],
+    [true, 63, false, false],
     [true, 64, true, false],
-    [true, 68, true, true],
+    [true, 68, true, false],
+    [true, 72, true, true],
   ] as const)('keeps receiver channels and temporal fallback for visible=%s / %i bytes', async (visibleSurface, bytes, admitted, merged) => {
     const result = await buildTaa(
       { ...DEFAULT_STANDARD_PROFILE, renderPath: 'deferred', visibleSurface },
@@ -551,10 +540,10 @@ describe('subsurface receiver-channel attachment admission', () => {
 
 describe('forgeax::standard graph', () => {
   it.each([
-    [6, 32, false],
-    [7, 32, false],
+    [6, 36, false],
     [7, 36, false],
-    [7, 40, true],
+    [7, 40, false],
+    [7, 44, true],
     [8, 48, true],
   ] as const)('shares temporal-v1 with GBuffer only within %i targets / %i bytes', async (targets, bytes, merged) => {
     const result = await buildTaa(
@@ -709,27 +698,8 @@ describe('forgeax::standard graph', () => {
     expect(result.ok).toBe(false);
   });
 
-  it('uses one output plan for direct and clustered lanes', () => {
-    const request = {
-      temporal: true,
-      meter: true,
-      bloom: true,
-      exposure: true,
-      whiteBalance: true,
-      lut: true,
-      fxaa: true,
-      outputEncoding: 'explicit-oetf' as const,
-    };
-    const direct = createStandardOutputPlan({ ...request, lane: 'direct' });
-    const clustered = createStandardOutputPlan({ ...request, lane: 'clustered' });
-    expect(clustered.logicalStages).toEqual(direct.logicalStages);
-    expect(clustered.physicalStages).toEqual(direct.physicalStages);
-    expect(clustered.finalWriterCount).toBe(direct.finalWriterCount);
-  });
-
   it('accounts for admitted LUT bindings without adding work to the zero-strength path', () => {
     const baseline = createStandardOutputPlan({
-      lane: 'direct',
       temporal: false,
       meter: false,
       bloom: false,
@@ -737,10 +707,8 @@ describe('forgeax::standard graph', () => {
       whiteBalance: false,
       lut: false,
       fxaa: false,
-      outputEncoding: 'explicit-oetf',
     });
     const lut = createStandardOutputPlan({
-      lane: 'direct',
       temporal: false,
       meter: false,
       bloom: false,
@@ -748,7 +716,6 @@ describe('forgeax::standard graph', () => {
       whiteBalance: false,
       lut: true,
       fxaa: false,
-      outputEncoding: 'explicit-oetf',
     });
 
     expect(baseline.incrementalResources).toEqual([]);
@@ -1418,8 +1385,11 @@ describe('forgeax::standard graph', () => {
       expect(names.indexOf('transmission-backdrop-copy')).toBeLessThan(
         names.indexOf('transmission-forward'),
       );
-      expect(names.indexOf('transmission-forward')).toBeLessThan(names.indexOf('transparent'));
-      expect(names.indexOf('transparent')).toBeLessThan(names.indexOf('temporal'));
+      expect(names.indexOf('transparent-before-transmission')).toBeLessThan(
+        names.indexOf('transmission-backdrop-copy'),
+      );
+      expect(names.indexOf('transmission-forward')).toBeLessThan(names.indexOf('temporal'));
+      expect(names).not.toContain('transparent');
     }
   });
 
@@ -1446,7 +1416,7 @@ describe('forgeax::standard graph', () => {
       const receivers = [
         renderPath === 'forward' ? 'main' : 'forward',
         'transmission-forward',
-        'transparent',
+        'transparent-before-transmission',
       ];
       for (const name of receivers) {
         const pass = passes.find((candidate) => candidate.name === name);
@@ -1636,18 +1606,19 @@ describe('forgeax::standard graph', () => {
           storageBuffer: true,
           multisample: false,
           maxColorAttachments: 8,
+          maxColorAttachmentBytesPerSample: 36,
         },
         transmissionDemand: { activeCount: 1, needsRoughMips: false },
       },
     );
-    expect(result.ok).toBe(true);
+    expect(result.ok, result.ok ? undefined : JSON.stringify(result.error)).toBe(true);
     if (!result.ok) return;
     const names = result.value.inspect().passes.map((pass) => pass.name);
     expect(names).toEqual(
       expect.arrayContaining([
         'transmission-backdrop-copy',
         'transmission-forward',
-        'transparent',
+        'transparent-before-transmission',
         'temporal',
       ]),
     );

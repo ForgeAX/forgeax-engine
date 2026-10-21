@@ -19,7 +19,6 @@ function environment(sun = 1, mie = earthAtmosphere.mieScattering) {
     ],
     fogs: [],
     suns: [{ entityKey: 2, direction: [sun, 1, 0], color: [1, 1, 1], intensity: 100000 }],
-    lane: 'direct',
   }).unwrap();
 }
 

@@ -35,6 +35,8 @@ export interface TranscoderTextureFormatEnum {
   readonly cTFBC6H: BasisEnumValue;
   readonly cTFETC1_RGB: BasisEnumValue;
   readonly cTFETC2_RGBA: BasisEnumValue;
+  readonly cTFETC2_EAC_R11: BasisEnumValue;
+  readonly cTFETC2_EAC_RG11: BasisEnumValue;
   readonly cTFASTC_4x4_RGBA: BasisEnumValue;
   readonly cTFASTC_HDR_4x4_RGBA: BasisEnumValue;
   readonly cTFRGBA32: BasisEnumValue;

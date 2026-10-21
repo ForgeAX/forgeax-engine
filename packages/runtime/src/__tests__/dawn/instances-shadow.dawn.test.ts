@@ -1,4 +1,6 @@
+import { createPrimitiveMesh } from '@forgeax/engine-geometry';
 import { drawReadyFrame } from '../../../../../scripts/test/ready-render-frame.mjs';
+import { testAssets } from '../helpers/runtime-assets';
 import { shaderManifestUrl } from '../shader-manifest-url.fixture';
 // instances-shadow.dawn.test.ts -- feat-20260604-instances-per-instance-transform-shader-group3-bin
 // M2 / w10.
@@ -32,7 +34,7 @@ import { shaderManifestUrl } from '../shader-manifest-url.fixture';
 // gate passes while browser renders black) + comparison-demo-exposes-frozen-fxaa
 // (assert two states differ, don't match one self-made baseline).
 
-import { AssetRegistry, HANDLE_CUBE } from '@forgeax/engine-assets-runtime';
+import { AssetRegistry } from '@forgeax/engine-assets-runtime';
 import { World } from '@forgeax/engine-ecs';
 import {
   Camera,
@@ -189,53 +191,55 @@ describe('w10 -- shadow instanced dawn smoke (AC-05 behavioral)', () => {
 
     const world = new World();
 
-    const matHandle = world.allocSharedRef<'MaterialAsset', MaterialAsset>(
-      'MaterialAsset',
-      lane === 'canonical'
-        ? Materials.standard({ baseColor: [0.8, 0.6, 0.4, 1], metallic: 0.3, roughness: 0.5 })
-        : ({
-            kind: 'material',
-            passes: [
-              {
-                name: 'Forward',
-                program: { module: 'forgeax::default-standard-pbr' },
-                renderState: { tags: { LightMode: 'Forward' }, queue: 2000 },
+    const matHandle = testAssets(world)
+      .create(
+        lane === 'canonical'
+          ? Materials.standard({ baseColor: [0.8, 0.6, 0.4, 1], metallic: 0.3, roughness: 0.5 })
+          : ({
+              kind: 'material',
+              passes: [
+                {
+                  name: 'Forward',
+                  program: { module: 'forgeax::default-standard-pbr' },
+                  renderState: { tags: { LightMode: 'Forward' }, queue: 2000 },
+                },
+              ],
+              values: {
+                baseColor: [0.8, 0.6, 0.4, 1],
+                metallic: 0.3,
+                roughness: 0.5,
+                emissive: [0, 0, 0],
+                emissiveIntensity: 0,
+                occlusionStrength: 1,
               },
-            ],
-            values: {
-              baseColor: [0.8, 0.6, 0.4, 1],
-              metallic: 0.3,
-              roughness: 0.5,
-              emissive: [0, 0, 0],
-              emissiveIntensity: 0,
-              occlusionStrength: 1,
-            },
-          } as MaterialAsset),
-    );
+            } as MaterialAsset),
+      )
+      .unwrap();
 
-    const floorMatHandle = world.allocSharedRef<'MaterialAsset', MaterialAsset>(
-      'MaterialAsset',
-      lane === 'canonical'
-        ? Materials.standard({ baseColor: [0.9, 0.9, 0.9, 1], metallic: 0, roughness: 0.9 })
-        : ({
-            kind: 'material',
-            passes: [
-              {
-                name: 'Forward',
-                program: { module: 'forgeax::default-standard-pbr' },
-                renderState: { tags: { LightMode: 'Forward' }, queue: 2000 },
+    const floorMatHandle = testAssets(world)
+      .create(
+        lane === 'canonical'
+          ? Materials.standard({ baseColor: [0.9, 0.9, 0.9, 1], metallic: 0, roughness: 0.9 })
+          : ({
+              kind: 'material',
+              passes: [
+                {
+                  name: 'Forward',
+                  program: { module: 'forgeax::default-standard-pbr' },
+                  renderState: { tags: { LightMode: 'Forward' }, queue: 2000 },
+                },
+              ],
+              values: {
+                baseColor: [0.9, 0.9, 0.9, 1],
+                metallic: 0,
+                roughness: 0.9,
+                emissive: [0, 0, 0],
+                emissiveIntensity: 0,
+                occlusionStrength: 1,
               },
-            ],
-            values: {
-              baseColor: [0.9, 0.9, 0.9, 1],
-              metallic: 0,
-              roughness: 0.9,
-              emissive: [0, 0, 0],
-              emissiveIntensity: 0,
-              occlusionStrength: 1,
-            },
-          } as MaterialAsset),
-    );
+            } as MaterialAsset),
+      )
+      .unwrap();
 
     // Floor: large flattened cube at Y=-3
     world.spawn(
@@ -247,7 +251,12 @@ describe('w10 -- shadow instanced dawn smoke (AC-05 behavioral)', () => {
           scale: [12, 0.2, 12],
         },
       },
-      { component: MeshFilter, data: { assetHandle: HANDLE_CUBE } },
+      {
+        component: MeshFilter,
+        data: {
+          assetHandle: testAssets(world).create(createPrimitiveMesh('cube').unwrap()).unwrap(),
+        },
+      },
       { component: MeshRenderer, data: { materials: [floorMatHandle] } },
     );
 
@@ -308,7 +317,12 @@ describe('w10 -- shadow instanced dawn smoke (AC-05 behavioral)', () => {
           scale: [0.5, 0.5, 0.5],
         },
       },
-      { component: MeshFilter, data: { assetHandle: HANDLE_CUBE } },
+      {
+        component: MeshFilter,
+        data: {
+          assetHandle: testAssets(world).create(createPrimitiveMesh('cube').unwrap()).unwrap(),
+        },
+      },
       { component: MeshRenderer, data: { materials: [matHandle] } },
       { component: Instances, data: { transforms: instanceTransforms } },
     );

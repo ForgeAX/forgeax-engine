@@ -14,6 +14,10 @@
 import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { dirname, resolve } from 'node:path';
+import { AssetRegistry } from '@forgeax/engine-assets-runtime';
+
+import { createPrimitiveMesh } from '@forgeax/engine-geometry';
+
 
 // ── Config ──────────────────────────────────────────────────────────────
 
@@ -119,15 +123,15 @@ const { constructRuntimeRendererHost } = await import('@forgeax/engine-runtime/i
 const { Materials } = await import('@forgeax/engine-render');
 const { Camera, DirectionalLight, MeshFilter, MeshRenderer, ShadowParticipation } = await import('@forgeax/engine-render');
 const { Transform } = await import('@forgeax/engine-scene');
-const {
-  HANDLE_CUBE,
-} = await import('@forgeax/engine-assets-runtime');
+
 
 let renderer;
+let assets;
 try {
   const constructed = await constructRuntimeRendererHost(mockCanvas, {}, { shaderManifestUrl: MANIFEST_URL });
   if (!constructed.ok) throw constructed.error;
   renderer = constructed.value.renderer;
+  assets = constructed.value.assets;
 } catch (err) {
   console.error(`[smoke] FAIL - createRenderer threw: ${err instanceof Error ? err.message : String(err)}`);
   process.exit(1);
@@ -145,7 +149,12 @@ renderer.subscribe((event) => {
 
 const CUTOUT_SHADER_PATH = 'shadow_opt_out::cutout_shadow';
 
-const world = new World();
+const world = new World({ assets });
+const sceneAssets = world.assets;
+if (!(sceneAssets instanceof AssetRegistry)) throw new Error('Scene requires its runtime asset owner');
+
+const primitiveCube = sceneAssets.create(createPrimitiveMesh('cube').unwrap()).unwrap();
+
 const worldAttachment1 = renderer.attach(world);
 if (!worldAttachment1.ok) throw worldAttachment1.error;
 
@@ -185,35 +194,35 @@ world.spawn(
     component: Transform,
     data: { pos: [0, -0.01, 0], quat: [0, 0, 0, 1], scale: [10, 0.02, 10]},
   },
-  { component: MeshFilter, data: { assetHandle: HANDLE_CUBE } },
+  { component: MeshFilter, data: { assetHandle: primitiveCube } },
   { component: MeshRenderer, data: {} },
 );
 
 // Cube A: red, casts shadow (default)
-const matA = world.allocSharedRef('MaterialAsset', Materials.standard({ baseColor: [0.9, 0.1, 0.1, 1] }));
+const matA = world.assets.create(Materials.standard({ baseColor: [0.9, 0.1, 0.1, 1] })).unwrap();
 world.spawn(
   {
     component: Transform,
     data: { pos: [-3, 1.25, 0], quat: [0, 0, 0, 1], scale: [1.5, 1.5, 1.5]},
   },
-  { component: MeshFilter, data: { assetHandle: HANDLE_CUBE } },
+  { component: MeshFilter, data: { assetHandle: primitiveCube } },
   { component: MeshRenderer, data: { materials: [matA] } },
 );
 
 // Cube B: green, ShadowParticipation { cast: false }
-const matB = world.allocSharedRef('MaterialAsset', Materials.standard({ baseColor: [0.1, 0.8, 0.1, 1] }));
+const matB = world.assets.create(Materials.standard({ baseColor: [0.1, 0.8, 0.1, 1] })).unwrap();
 world.spawn(
   {
     component: Transform,
     data: { pos: [0, 1.25, 0], quat: [0, 0, 0, 1], scale: [1.5, 1.5, 1.5]},
   },
-  { component: MeshFilter, data: { assetHandle: HANDLE_CUBE } },
+  { component: MeshFilter, data: { assetHandle: primitiveCube } },
   { component: MeshRenderer, data: { materials: [matB] } },
     { component: ShadowParticipation, data: { cast: false, receive: true } },
 );
 
 // Cube C: blue, cutout shadow shader
-const matC = world.allocSharedRef('MaterialAsset', {
+const matC = world.assets.create({
   kind: 'material',
   passes: [
     { name: 'Forward', program: { module: 'forgeax::default-standard-pbr' }, renderState: { tags: { LightMode: 'Forward' } }, queue: 2000 },
@@ -224,13 +233,13 @@ const matC = world.allocSharedRef('MaterialAsset', {
     },
   ],
   values: { baseColor: [0.1, 0.1, 0.9, 1], metallic: 0, roughness: 0.5 },
-});
+}).unwrap();
 world.spawn(
   {
     component: Transform,
     data: { pos: [3, 1.25, 0], quat: [0, 0, 0, 1], scale: [1.5, 1.5, 1.5]},
   },
-  { component: MeshFilter, data: { assetHandle: HANDLE_CUBE } },
+  { component: MeshFilter, data: { assetHandle: primitiveCube } },
   { component: MeshRenderer, data: { materials: [matC] } },
 );
 

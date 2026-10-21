@@ -24,7 +24,7 @@ const officialThreeSource = {
 
 const GUID = '019f0000-0000-7000-8000-0000000003f1';
 
-function meta(subAssets = [{ guid: GUID, sourceIndex: 0, sourceKey: 'density', kind: 'volumetric-density' }]) {
+function meta(subAssets = [{ guid: GUID, sourceIndex: 0, sourceKey: 'density', kind: 'texture' }]) {
   return {
     importer: 'volumetric-density',
     source: 'density.volume.json',
@@ -58,7 +58,7 @@ describe('volumetric density authoring', () => {
     expect(result.value.pack.assets).toHaveLength(1);
     expect(result.value.pack.assets[0]).toMatchObject({
       guid: GUID,
-      kind: 'volumetric-density',
+      kind: 'texture',
       payload: {
         shape: { viewDimension: '3d', extent: { width: 64, height: 64, depth: 64 } },
         format: 'r8unorm',
@@ -93,7 +93,7 @@ describe('volumetric density authoring', () => {
 
     expect(result.ok).toBe(true);
     if (!result.ok || 'skipped' in result.value) return;
-    expect(result.value.pack.assets[0]).toMatchObject({ guid: GUID, kind: 'volumetric-density' });
+    expect(result.value.pack.assets[0]).toMatchObject({ guid: GUID, kind: 'texture' });
     expect(result.value.pack.assets[0]?.payload.data).toHaveLength(128 * 128 * 128);
   });
 

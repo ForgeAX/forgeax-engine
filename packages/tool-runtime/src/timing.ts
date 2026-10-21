@@ -30,14 +30,14 @@ export function createExclusiveTiming(
   const phases = Object.fromEntries(
     PHASES.map((phase) => [phase, { status: 'not-applicable' }]),
   ) as Record<ToolTimingPhase, ToolPhaseObservation>;
-  const closed = new Set<ToolTimingPhase>();
   let active: { phase: ToolTimingPhase; startedAtMs: number } | undefined;
   let startedAtMs: number | undefined;
   let endedAtMs: number | undefined;
   return {
     begin(phase) {
       if (active !== undefined) throw new TypeError(`phase '${active.phase}' is still open`);
-      if (closed.has(phase)) throw new TypeError(`phase '${phase}' was already closed`);
+      if (phases[phase].status === 'observed')
+        throw new TypeError(`phase '${phase}' was already closed`);
       const at = now();
       startedAtMs ??= at;
       active = { phase, startedAtMs: at };
@@ -46,18 +46,17 @@ export function createExclusiveTiming(
       if (active?.phase !== phase) throw new TypeError(`phase '${phase}' is not the active phase`);
       const at = now();
       phases[phase] = { status: 'observed', durationMs: Math.max(0, at - active.startedAtMs) };
-      closed.add(phase);
       active = undefined;
       endedAtMs = at;
     },
     record(phase, durationMs) {
       if (!Number.isFinite(durationMs) || durationMs < 0)
         throw new TypeError('phase duration must be finite and non-negative');
-      if (closed.has(phase)) throw new TypeError(`phase '${phase}' was already closed`);
+      if (phases[phase].status === 'observed')
+        throw new TypeError(`phase '${phase}' was already closed`);
       const at = now();
       startedAtMs ??= at - durationMs;
       phases[phase] = { status: 'observed', durationMs };
-      closed.add(phase);
       endedAtMs = at;
     },
     finish() {

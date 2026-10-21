@@ -6,7 +6,6 @@ export type {
   ParticleEffectProgramV3,
   ParticleEmitterDefinition,
 } from '@forgeax/engine-types';
-export { particleEffectContribution } from './assets/particle-effect-decoder';
 export type {
   VfxAuthoringCapabilityDescriptor,
   VfxAuthoringDependencyDescriptor,
@@ -93,10 +92,9 @@ export {
 } from './force-fields.js';
 export type { VfxGpuAssetError } from './gpu-loader.js';
 export {
-  isImmutableVfxGpuEffect,
   loadVfxGpuEffect,
-  vfxGpuEffectContribution,
-  vfxGpuEffectPackLoader,
+  particleEffectContribution,
+  prepareVfxGpuEffect,
 } from './gpu-loader.js';
 export type {
   VfxGpuEffectAsset,

@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+import { samplerContribution } from '@forgeax/engine-render';
 // apps/hello/2d-flashlight/scripts/smoke-dawn.mjs
 //
 // tweak-20260701-sprite-lit-flat-default-drop-ndotl-for-2d M2 / m2-1.
@@ -33,6 +34,10 @@
 import { fileURLToPath } from 'node:url';
 import { dirname } from 'node:path';
 import { emitSmokeReceipt } from '../../../shared/scripts/smoke-receipt.mjs';
+import { AssetRegistry } from '@forgeax/engine-assets-runtime';
+
+import { createPrimitiveMesh } from '@forgeax/engine-geometry';
+
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 void HERE;
@@ -49,7 +54,7 @@ const SPRITE_LIT_PARAMETERS = [
   { name: 'colorTint', type: 'vec4' },
   { name: 'region', type: 'vec4' },
   { name: 'pivotAndSize', type: 'vec4' },
-  { name: 'slicesAndMode', type: 'vec4' },
+  { name: 'slicesAndMode', type: 'vec4', default: [0, 0, 0, 0] },
   { name: 'baseColorTexture', type: 'texture' },
 ];
 
@@ -155,9 +160,7 @@ const { constructRuntimeRendererHost } = await import('@forgeax/engine-runtime/i
 const { Camera, MeshFilter, MeshRenderer, PointLight, SpotLight, TONEMAP_NONE } = await import('@forgeax/engine-render');
 const { SPRITE_PREMULTIPLIED_ALPHA_BLEND } = await import('@forgeax/engine-render/authoring');
 const { Transform } = await import('@forgeax/engine-scene');
-const {
-  HANDLE_QUAD,
-} = await import('@forgeax/engine-assets-runtime');
+
 
 const CAMERA_PROJECTION_ORTHOGRAPHIC = 1;
 const { buildEngineShaderManifest } = await import('@forgeax/engine-vite-plugin-shader');
@@ -195,10 +198,12 @@ function buildCheckerboardRgba(side) {
 }
 
 let renderer;
+let assets;
 try {
   const constructed = await constructRuntimeRendererHost(mockCanvas, {}, { shaderManifestUrl: ENGINE_MANIFEST_URL });
   if (!constructed.ok) throw constructed.error;
   renderer = constructed.value.renderer;
+  assets = constructed.value.assets;
 } catch (err) {
   console.error(
     `[smoke] FAIL - createRenderer threw: ${err instanceof Error ? err.message : String(err)}`,
@@ -228,13 +233,18 @@ function expectOk(r, label) {
 }
 
 function spawnSprite(world, matHandle, x, y, z, sx, sy) {
+const sceneAssets = world.assets;
+if (!(sceneAssets instanceof AssetRegistry)) throw new Error('Scene requires its runtime asset owner');
+
+const primitiveQuad = sceneAssets.create(createPrimitiveMesh('quad').unwrap()).unwrap();
+
   expectOk(
     world.spawn(
       {
         component: Transform,
         data: { pos: [x, y, z], quat: [0, 0, 0, 1], scale: [sx, sy, 1] },
       },
-      { component: MeshFilter, data: { assetHandle: HANDLE_QUAD } },
+      { component: MeshFilter, data: { assetHandle: primitiveQuad } },
       { component: MeshRenderer, data: { materials: [matHandle] } },
     ),
     `spawn sprite (${x}, ${y}, ${z})`,
@@ -242,7 +252,7 @@ function spawnSprite(world, matHandle, x, y, z, sx, sy) {
 }
 
 function allocMaterial(world, tint, texHandle, samplerHandle) {
-  return world.allocSharedRef('MaterialAsset', {
+  return world.assets.create({
     kind: 'material',
     passes: [
       {
@@ -260,7 +270,7 @@ function allocMaterial(world, tint, texHandle, samplerHandle) {
       region: [0, 0, 1, 1],
       pivotAndSize: [0.5, 0.5, 1, 1],
     },
-  });
+  }).unwrap();
 }
 
 function orthoCameraData({ left, right, bottom, top }) {
@@ -282,14 +292,14 @@ function orthoCameraData({ left, right, bottom, top }) {
 }
 
 async function buildTexture(world) {
-  const textureHandle = world.allocSharedRef('TextureAsset', synthPod);
-  const samplerHandle = world.allocSharedRef('SamplerAsset', {
+  const textureHandle = world.assets.create(synthPod).unwrap();
+  const samplerHandle = world.assets.create({
     kind: 'sampler',
     magFilter: 'nearest',
     minFilter: 'nearest',
     addressModeU: 'repeat',
     addressModeV: 'repeat',
-  });
+  }).unwrap();
   return { ok: true, textureHandle, samplerHandle };
 }
 
@@ -298,7 +308,8 @@ async function buildTexture(world) {
 // draw calls the browser would issue.
 
 async function buildSweepSpotWorld({ intensity }) {
-  const world = new World();
+  const world = new World({ assets: new AssetRegistry({ shaderRegistry: assets.shaderRegistry }) });
+  world.assets.installDecoder(samplerContribution.kind, samplerContribution.decoder);
   const texRes = await buildTexture(world);
   if (!texRes.ok) return { ok: false, error: texRes.error };
   const { textureHandle, samplerHandle } = texRes;
@@ -338,7 +349,8 @@ async function buildSweepSpotWorld({ intensity }) {
 }
 
 async function buildPointCircleWorld({ intensity = 2.0 } = {}) {
-  const world = new World();
+  const world = new World({ assets: new AssetRegistry({ shaderRegistry: assets.shaderRegistry }) });
+  world.assets.installDecoder(samplerContribution.kind, samplerContribution.decoder);
   const texRes = await buildTexture(world);
   if (!texRes.ok) return { ok: false, error: texRes.error };
   const { textureHandle, samplerHandle } = texRes;

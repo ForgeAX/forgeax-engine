@@ -5,7 +5,7 @@
   "type": "module",
   "license": "Apache-2.0",
   "sideEffects": false,
-  "description": "Rapier 3D WASM backend for forgeax-engine — compat WASM loader, three-phase tick pipeline (syncBackend / stepSimulation / writeback), transform sync, collision event translation, raycast, teleport, despawn cleanup.",
+  "description": "Rapier 3D WASM backend for forgeax-engine \u2014 compat WASM loader, three-phase tick pipeline (syncBackend / stepSimulation / writeback), transform sync, collision event translation, raycast, teleport, despawn cleanup.",
   "exports": {
     ".": {
       "types": "./dist/index.d.ts",
@@ -36,7 +36,8 @@
   "scripts": {
     "build": "node scripts/build-wasm.mjs --ensure && tsup",
     "test": "vitest run",
-    "build:wasm": "node scripts/build-wasm.mjs"
+    "build:wasm": "node scripts/build-wasm.mjs",
+    "test:native": "node scripts/build-wasm.mjs --test-native"
   },
   "dependencies": {
     "@forgeax/engine-assets-runtime": "workspace:*",
@@ -46,13 +47,13 @@
     "@forgeax/engine-physics": "workspace:*",
     "@forgeax/engine-scene": "workspace:*",
     "@forgeax/engine-types": "workspace:*",
-    "@noble/hashes": "^2.2.0"
+    "@noble/hashes": "^2.2.0",
+    "@forgeax/engine-terrain": "workspace:*"
   },
   "devDependencies": {
     "@forgeax/engine-pack": "workspace:*",
     "@forgeax/engine-runtime": "workspace:*",
     "@forgeax/engine-shader": "workspace:*",
-    "@forgeax/engine-terrain": "workspace:*",
     "esbuild": "0.28.2",
     "tsup": "8.5.1",
     "typescript": "6.0.3"
@@ -61,7 +62,7 @@
     "metrics": {
       "bundle-size": {
         "enabled": false,
-        "reason": "WASM binary loaded via dynamic import() — not counted in first-frame bundle; bundle-size reflects thin TS shell only"
+        "reason": "WASM binary loaded via dynamic import() \u2014 not counted in first-frame bundle; bundle-size reflects thin TS shell only"
       },
       "fps": {
         "enabled": false,

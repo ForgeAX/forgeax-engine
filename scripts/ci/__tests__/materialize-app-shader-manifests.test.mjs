@@ -277,8 +277,28 @@ test('merges compact app shader deltas with the shared engine manifest', async (
         payload: { engineShaderManifest: 'shared-app-inputs/shaders/manifest.json' },
       }),
     );
-    const engineEntry = { hash: 'engine', wgsl: 'engine', bindings: '{}', glsl: '' };
-    const appEntry = { hash: 'custom', wgsl: 'custom', bindings: '{}', glsl: '' };
+    const engineReads = [{ name: 'engine_main', stage: 'vertex', bindings: [] }];
+    const appReads = [
+      {
+        name: 'app_main',
+        stage: 'fragment',
+        bindings: [{ group: 1, binding: 0, fields: ['color'] }],
+      },
+    ];
+    const engineEntry = {
+      hash: 'engine',
+      wgsl: 'engine',
+      bindings: '{}',
+      glsl: '',
+      entryPoints: engineReads,
+    };
+    const appEntry = {
+      hash: 'custom',
+      wgsl: 'custom',
+      bindings: '{}',
+      glsl: '',
+      entryPoints: appReads,
+    };
     const engineMaterial = {
       identifier: 'forgeax::default-standard-pbr',
       sourcePath: 'engine/default-standard-pbr.wgsl',
@@ -286,14 +306,19 @@ test('merges compact app shader deltas with the shared engine manifest', async (
       paramSchema: '{}',
       variants: [],
       receipt: { layout: 'engine' },
+      entryPoints: engineReads,
     };
     const appMaterial = {
       identifier: 'demo::custom',
       sourcePath: 'apps/delta/custom.wgsl',
       composedWgsl: 'custom',
       paramSchema: '{}',
-      variants: [],
+      variants: [
+        { definesKey: 'unknown', composedWgsl: 'custom-unknown' },
+        { definesKey: 'empty', composedWgsl: 'custom-empty', entryPoints: [] },
+      ],
       receipt: { layout: 'custom' },
+      entryPoints: appReads,
     };
     const engine = publishShaderManifest([engineEntry], [engineMaterial]);
     const app = publishShaderManifest([engineEntry, appEntry], [appMaterial, engineMaterial]);
@@ -343,6 +368,7 @@ test('materializes current app publication into a loader-admitted runtime manife
       fragments: [source],
       sources: { [digest(source)]: [0] },
       receipts: [],
+      entryPoints: [],
       entries: [{ hash: 'engine', sourceDigest: digest(source) }],
       materialShaders: [],
     };

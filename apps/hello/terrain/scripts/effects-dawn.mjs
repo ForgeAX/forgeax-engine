@@ -218,18 +218,12 @@ try {
         // SSR's existing admission requires a complete Standard scene input set.
         // Keep the default unlit marker in baseline pictures; this variant uses
         // an ordinary Standard marker so the terrain GBuffer path is exercised.
-        const markerMaterial = h.app.world.sharedRefs.acquire(
-          'MaterialAsset', Materials.standard({ baseColor: [1, 0.3, 0.025, 1], roughness: 0.4 }),
-        );
+        const markerMaterial = h.app.world.assets.create(Materials.standard({ baseColor: [1, 0.3, 0.025, 1], roughness: 0.4 })).unwrap();
         h.app.world.set(h.subjects.walker, MeshRenderer, { materials: [markerMaterial] }).unwrap();
-        h.app.world.sharedRefs.release(markerMaterial).unwrap();
-        const root = h.app.world.sharedRefs
-          .resolve(h.app.world.get(h.subjects.terrain, Terrain).unwrap().asset)
+        h.app.world.assets.release(markerMaterial).unwrap();
+        const root = h.app.assets.read(h.app.world.get(h.subjects.terrain, Terrain).unwrap().asset)
           .unwrap();
-        const material = h.app.world.sharedRefs.acquire(
-          'MaterialAsset',
-          Materials.standard({ baseColor: [0.8, 0.02, 0.01, 1], roughness: 0.25 }),
-        );
+        const material = h.app.world.assets.create(Materials.standard({ baseColor: [0.8, 0.02, 0.01, 1], roughness: 0.25 })).unwrap();
         const decal = h.app.world
           .spawn(
             {
@@ -243,7 +237,7 @@ try {
             { component: ProjectedDecal, data: { material, opacity: 1, normalThreshold: 0 } },
           )
           .unwrap();
-        h.app.world.sharedRefs.release(material).unwrap();
+        h.app.world.assets.release(material).unwrap();
         h.app.world
           .addComponent(h.subjects.camera, {
             component: ScreenSpaceReflection,

@@ -1,9 +1,11 @@
+import { vec3 } from '@forgeax/engine-math';
 import { type RasterGraphPass, RenderGraphBuilder } from '@forgeax/engine-render-graph';
 import { RhiError, type TextureFormat } from '@forgeax/engine-rhi';
 import { createShaderModuleImmediate, rhi } from '@forgeax/engine-rhi-null';
 import { err, ok } from '@forgeax/engine-types';
 import { expect, it, vi } from 'vitest';
 import { DeviceScope } from '../device/device-scope';
+import { MaterialResource } from '../material-resource';
 import { addStandardDeferredLighting } from '../pipeline/standard-deferred-lighting';
 import { buildPerFrameBindGroups } from '../record/frame-lighting';
 import { prepareMaterialSkylight } from '../record/main-pass-material';
@@ -57,7 +59,7 @@ async function fixture() {
     },
     frameState: {},
     validatedOrdered: [] as {
-      source: { materials: { materialParamSchema: { name: string; type: string }[] }[] };
+      source: { materials: MaterialResource[] };
     }[],
     pipelineState: { viewBindGroupLayout: layout, defaultWhiteTextureView: view },
     bindGroupCounts: { createBindGroup: 0, keys: [] as string[] },
@@ -173,7 +175,15 @@ it('separates target formats, fragment entries, cluster/LUT contracts and curren
     f.frame.validatedOrdered = [
       {
         source: {
-          materials: [{ materialParamSchema: [{ name: 'directMultiscatteringLut', type: 'u32' }] }],
+          materials: [
+            new MaterialResource({
+              baseColor: vec3.create(1, 1, 1),
+              metallic: 0,
+              roughness: 1,
+              passes: [],
+              materialParamSchema: [{ name: 'directMultiscatteringLut', type: 'u32' }],
+            }),
+          ],
         },
       },
     ];

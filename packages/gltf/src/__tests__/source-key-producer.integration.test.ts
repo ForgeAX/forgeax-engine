@@ -1,14 +1,13 @@
 import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { validateProducerOutputs } from '@forgeax/engine-pack';
+import { serializeMetaJson, validateProducerOutputs } from '@forgeax/engine-pack';
 import { scan } from '@forgeax/engine-pack/scanner';
 import { describe, expect, it } from 'vitest';
 import { runCliGltf } from '../cli-gltf.js';
 import { createGltfImporter } from '../gltf-importer.js';
 import type { GltfDoc } from '../parse-gltf.js';
 import { toAssetPack } from '../parse-gltf.js';
-import { serializeMetaJson } from '../serialize-meta.js';
 
 function duplicateNamedMeshDoc(): GltfDoc {
   return {

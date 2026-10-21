@@ -12,6 +12,7 @@ import {
 import type { EncodedTape, RecorderAttachment } from '@forgeax/engine-rhi-debug';
 import { propagateTransforms, Transform } from '@forgeax/engine-scene';
 import { expect } from 'vitest';
+import { testAssets } from './helpers/runtime-assets';
 
 export const TRANSLUCENT_FOG_SIZE = 64;
 export const TRANSLUCENT_FOG_DENSITY = 0.05;
@@ -127,17 +128,18 @@ export function spawnFogBackdrop(world: World, fog = true): void {
       {
         component: MeshFilter,
         data: {
-          assetHandle: world.allocSharedRef('MeshAsset', createBoxGeometry(200, 200, 1).unwrap()),
+          assetHandle: testAssets(world)
+            .create(createBoxGeometry(200, 200, 1).unwrap())
+            .unwrap(),
         },
       },
       {
         component: MeshRenderer,
         data: {
           materials: [
-            world.allocSharedRef(
-              'MaterialAsset',
-              Materials.unlit([...TRANSLUCENT_FOG_WALL_COLOR, 1]),
-            ),
+            testAssets(world)
+              .create(Materials.unlit([...TRANSLUCENT_FOG_WALL_COLOR, 1]))
+              .unwrap(),
           ],
         },
       },
@@ -203,12 +205,14 @@ function spawnPane(world: World, paneMaterial: 'unlit' | 'standard'): void {
       {
         component: MeshFilter,
         data: {
-          assetHandle: world.allocSharedRef('MeshAsset', createBoxGeometry(1, 1, 0.01).unwrap()),
+          assetHandle: testAssets(world)
+            .create(createBoxGeometry(1, 1, 0.01).unwrap())
+            .unwrap(),
         },
       },
       {
         component: MeshRenderer,
-        data: { materials: [world.allocSharedRef('MaterialAsset', pane)] },
+        data: { materials: [testAssets(world).create(pane).unwrap()] },
       },
     )
     .unwrap();

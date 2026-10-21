@@ -1,3 +1,5 @@
+import { AssetRegistry } from '@forgeax/engine-assets-runtime';
+import { animationClipContribution } from '../dist/index.mjs';
 // Real World/property/pose CPU costs. GPU frame time is measured separately.
 import assert from 'node:assert/strict';
 import { mkdirSync, writeFileSync } from 'node:fs';
@@ -24,8 +26,10 @@ const percentile = (sorted, fraction) =>
   sorted[Math.min(sorted.length - 1, Math.floor(sorted.length * fraction))];
 
 async function measure(name, count, joints, setup) {
-  const world = new World();
-  await createWorldContext(world, [scenePlugin(), animationPlugin()]);
+  const assets = new AssetRegistry();
+  assets.installDecoder(animationClipContribution.kind, animationClipContribution.decoder);
+  const world = new World({ assets });
+  const context = await createWorldContext(world, [scenePlugin(), animationPlugin()]);
   const tick = await setup(world);
   for (let i = 0; i < warmup; i++) {
     tick(i);
@@ -54,6 +58,8 @@ async function measure(name, count, joints, setup) {
   assert(times.every((time) => Number.isFinite(time) && time >= 0));
   results.push(row);
   console.log(JSON.stringify({ ...row, samplesMs: undefined }));
+  await context.fiber.dispose();
+  assets.dispose();
 }
 
 function chain(world, count, length = 1) {
@@ -89,7 +95,7 @@ for (const count of [100, 1000])
         },
       ],
     };
-    const handle = world.allocSharedRef('AnimationClip', clip);
+    const handle = world.assets.create(clip).unwrap();
     const objects = [];
     for (let i = 0; i < count; i++) {
       const object = { value: 0 };

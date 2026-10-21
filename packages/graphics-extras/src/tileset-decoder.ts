@@ -6,59 +6,48 @@ import {
   type TilesetAsset,
 } from '@forgeax/engine-types';
 
-/** Tileset validation is owned here; no physics consumer exists yet. */
+/** Decode source atlas edges; AssetsRuntime owns complete admission validation. */
 export const tilesetContribution: AssetDecoderContribution<TilesetAsset, 'tileset'> = {
   kind: { kind: 'tileset' } as AssetKind<TilesetAsset, 'tileset'>,
-  consumer: 'tilemapChunkExtractSystem (physics consumer: missing evidence)',
+  consumer: 'Renderer native Tilemap source',
   decoder: {
-    async decode({ envelope }) {
-      const payload = envelope.payload as unknown;
-      if (payload !== null && typeof payload === 'object') {
-        const source = payload as Record<string, unknown>;
-        const rawAtlases = source.atlases;
-        const regions = source.regions;
-        const tiles = source.tiles;
-        const atlases = Array.isArray(rawAtlases)
-          ? rawAtlases.map((value) =>
-              typeof value === 'number' && Number.isSafeInteger(value)
-                ? envelope.refs[value]
-                : value,
-            )
-          : undefined;
-        if (
-          source.kind === 'tileset' &&
-          atlases !== undefined &&
-          atlases.length > 0 &&
-          atlases.every(
-            (atlas): atlas is string => typeof atlas === 'string' && atlas.length > 0,
-          ) &&
-          Array.isArray(regions) &&
-          regions.length > 0 &&
-          Array.isArray(tiles) &&
-          tiles.every(
-            (tile) =>
-              tile !== null &&
-              typeof tile === 'object' &&
-              typeof (tile as { regionIndex?: unknown }).regionIndex === 'number' &&
-              (tile as { regionIndex: number }).regionIndex >= 0 &&
-              (tile as { regionIndex: number }).regionIndex < regions.length,
-          )
-        ) {
-          return ok({
-            ...source,
-            kind: 'tileset',
-            atlases,
-            regions,
-            tiles,
-          } as unknown as TilesetAsset);
+    async decode({ envelope, artifacts }) {
+      const invalid = () =>
+        err({
+          code: 'asset-package-invalid' as const,
+          expected: 'a tileset descriptor whose atlas GUIDs exactly match envelope refs',
+          hint: 'recook the Tileset descriptor and its declared atlas closure',
+          detail: { guid: envelope.guid, reason: 'tileset owner validation failed' },
+        });
+      const descriptor = envelope.artifacts.body ?? Object.values(envelope.artifacts)[0];
+      let payload: unknown = envelope.payload;
+      if (descriptor !== undefined) {
+        const bytes = await artifacts.read(descriptor);
+        if (!bytes.ok) return bytes;
+        try {
+          payload = JSON.parse(new TextDecoder().decode(bytes.value));
+        } catch {
+          return invalid();
         }
       }
-      return err({
-        code: 'asset-package-invalid',
-        expected: 'a tileset with atlas GUIDs and in-range tile regions',
-        hint: 'repair the tileset regions; physics consumption is not installed by this owner',
-        detail: { guid: envelope.guid, reason: 'tileset owner validation failed' },
-      });
+      if (payload === null || typeof payload !== 'object' || Array.isArray(payload))
+        return invalid();
+      const source = payload as Record<string, unknown>;
+      const atlases = Array.isArray(source.atlases)
+        ? source.atlases.map((value) =>
+            typeof value === 'number' && Number.isSafeInteger(value) ? envelope.refs[value] : value,
+          )
+        : undefined;
+      if (
+        (source.kind !== 'tileset' && (descriptor !== undefined || source.kind !== undefined)) ||
+        atlases === undefined ||
+        atlases.length === 0 ||
+        atlases.length !== envelope.refs.length ||
+        atlases.some((atlas, index) => typeof atlas !== 'string' || atlas !== envelope.refs[index])
+      )
+        return invalid();
+      // Grid, regions, pivots and collision metadata share the runtime create/edit gate.
+      return ok({ ...source, kind: 'tileset', atlases } as unknown as TilesetAsset);
     },
   },
 };

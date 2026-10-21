@@ -35,7 +35,10 @@ export type GltfSourceKeyError =
 export type GltfSourceKeyErrorCode = GltfSourceKeyError['code'];
 
 export type GltfSourceKeyResult =
-  | { readonly ok: true; readonly keys: readonly string[]; readonly conflicts: readonly [] }
+  | {
+      readonly ok: true;
+      readonly items: readonly (GltfDocItemLike & { readonly sourceKey: string })[];
+    }
   | { readonly ok: false; readonly error: GltfSourceKeyError };
 
 /** Derive a semantic glTF key; sourceIndex and source path are never inputs. */
@@ -50,10 +53,13 @@ export function sourceKeyForGltfOutput(
 
 /** Require every output in a multi-output declaration to carry a unique key. */
 export function deriveGltfSourceKeys(items: readonly GltfDocItemLike[]): GltfSourceKeyResult {
-  const keys = items.map((item) => sourceKeyForGltfOutput(item));
-  const missing = items
-    .map((item, index) => (keys[index] === undefined ? item.sourceIndex : undefined))
-    .filter((index): index is number => index !== undefined);
+  const keyed: (GltfDocItemLike & { readonly sourceKey: string })[] = [];
+  const missing: number[] = [];
+  for (const item of items) {
+    const sourceKey = sourceKeyForGltfOutput(item);
+    if (sourceKey === undefined) missing.push(item.sourceIndex);
+    else keyed.push({ ...item, sourceKey });
+  }
   if (missing.length > 0) {
     return {
       ok: false,
@@ -67,11 +73,8 @@ export function deriveGltfSourceKeys(items: readonly GltfDocItemLike[]): GltfSou
   }
 
   const seen = new Map<string, GltfDocItemLike>();
-  for (let index = 0; index < keys.length; index++) {
-    const key = keys[index];
-    if (key === undefined) continue;
-    const current = items[index];
-    if (current === undefined) continue;
+  for (const current of keyed) {
+    const key = current.sourceKey;
     const prior = seen.get(key);
     if (prior !== undefined) {
       const entry = (item: GltfDocItemLike): GltfSourceKeyConflictEntry => {
@@ -102,5 +105,5 @@ export function deriveGltfSourceKeys(items: readonly GltfDocItemLike[]): GltfSou
     seen.set(key, current);
   }
 
-  return { ok: true, keys: keys as string[], conflicts: [] };
+  return { ok: true, items: keyed };
 }

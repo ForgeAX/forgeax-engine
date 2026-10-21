@@ -1,7 +1,7 @@
 import { createPrograms } from 'virtual:forgeax/plugin-programs/engine';
 import {
+  AssetRegistry,
   captureAssetPublication,
-  createAssetRegistry,
   createCatalogSource,
 } from '@forgeax/engine/assets-runtime';
 import { createWorldContext, World } from '@forgeax/engine/ecs';
@@ -104,7 +104,7 @@ export async function runStaticPlugins() {
       { component: Tag, data: { value: 7 } },
     )
     .unwrap();
-  const assets = createAssetRegistry({
+  const assets = new AssetRegistry({
     scopeId: 'static',
     catalog: createCatalogSource({ entries: rows }),
     fetcher: async () => new Response(JSON.stringify(pack)),

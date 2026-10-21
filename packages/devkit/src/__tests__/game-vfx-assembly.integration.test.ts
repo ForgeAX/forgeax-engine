@@ -323,7 +323,9 @@ it.each([
     expect(source.features[0]).not.toBe(renderer.features[0]);
     expect(source.features[0].identity).toBe(renderer.features[0].identity);
     const world = new World();
-    const assets = new AssetRegistry(new ShaderRegistry({ manifestUrl: undefined }));
+    const assets = new AssetRegistry({
+      shaderRegistry: new ShaderRegistry({ manifestUrl: undefined }),
+    });
     const plugin = source.plugins.find(
       (candidate: Plugin) => candidate.name === 'forgeax:game-vfx',
     );

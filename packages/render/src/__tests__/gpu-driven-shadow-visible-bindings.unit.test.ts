@@ -1,139 +1,38 @@
-import { frustum, mat4 } from '@forgeax/engine-math';
-import { type RhiNullDevice, rhi } from '@forgeax/engine-rhi-null';
-import { ok } from '@forgeax/engine-types';
-import { expect, it, vi } from 'vitest';
-import { GpuDrivenProduction } from '../gpu-driven/production-raster';
-import { MaterialAbiRasterAdapter } from '../gpu-driven/production-raster-material';
-import { shadowViewIdentityKey } from '../gpu-driven/shadow-views';
-import { GpuScene } from '../gpu-scene';
-import { makeZeroCameraFallbackSnapshot } from '../record/frame-snapshot';
-import type { ShadowCasterMembership } from '../render-system-extract';
-import { RenderScene } from '../scene/render-scene';
-import { createFilterPlanFixture } from './gpu-driven-filter-plan-fixture';
-import { mesh, standardPbrInputs, updateSnapshot } from './gpu-driven-production-fixture';
+import { expect, it } from 'vitest';
+import { shadowPublicationFixture } from './gpu-driven-shadow-publication-fixture';
 
-it('retains unchanged shadow windows when real split/rejoin plans have non-monotonic batch ids', async () => {
-  const f = createFilterPlanFixture();
-  const device = (
-    await (await rhi.requestAdapter()).unwrap().requestDevice()
-  ).unwrap() as RhiNullDevice;
-  const shader = (await rhi.createShaderModule(device, { code: 'synthetic' })).unwrap();
-  const viewLayout = device.createBindGroupLayout({ entries: [] }).unwrap();
-  const projection = new RenderScene();
-  const delta = projection.apply(f.slots.map((slot) => updateSnapshot(slot.snapshot)));
-  const available = GpuScene.create(device, 32).unwrap();
-  if (available.status !== 'available') throw Error('expected GPU Scene');
-  const scene = available.scene;
-  scene.sync(delta).unwrap();
-  const residentMesh = mesh(device, true, true);
-  const production = new GpuDrivenProduction(device, { createShaderModule: () => ok(shader) });
-  const originalMembership: readonly ShadowCasterMembership[] = f.slots.map((slot) => ({
-    worldEntity: slot.snapshot.entityKey,
-    renderableIndex: slot.slot,
-    drawItemIndex: 0,
-    materialHandle: slot.snapshot.material.materialHandle ?? -1,
-    passIndex: 0,
-    renderState: { cullMode: slot.slot === 1 ? 'front' : 'back' },
-  }));
-  const input = {
-    ...standardPbrInputs(device, shader, viewLayout),
-    scene: {
-      scene,
-      plan: f.source,
-      slots: projection.slotsSnapshot(),
-      slotAt: projection.slotAt,
-    },
-    camera: makeZeroCameraFallbackSnapshot(),
-    meshBySlot: new Map(f.slots.map((slot) => [slot.slot, residentMesh])),
-    viewBindGroupLayout: viewLayout,
-    meshResidencyEpoch: 1,
-  };
-  const identity = { kind: 'directional' as const, index: 0, layer: 'static' as const };
-  const matrix = mat4.identity(mat4.create());
-  const requests = [
-    { identity, matrix, planes: frustum.fromViewProjection(frustum.create(), matrix) },
-  ];
-  const lookup = vi.spyOn(
-    MaterialAbiRasterAdapter.prototype,
-    'shadowVisibleWindowBindGroupForBuffer',
-  );
-  const prepare = (shadowCasterMembership: readonly ShadowCasterMembership[]) => {
-    const frame = defined(production.prepare({ ...input, shadowCasterMembership }).unwrap());
-    lookup.mockClear();
-    frame.updateShadowViews?.(requests).unwrap();
-    const submission = defined(frame.shadowViewPool?.submission(identity));
-    const projections = defined(frame.shadowBatchProjections?.get(shadowViewIdentityKey(identity)));
-    frame._commitResourceReplacement();
-    return {
-      submission,
-      projections,
-      buffer: submission.view.visibleBuffer,
-      calls: lookup.mock.calls.length,
-    };
-  };
+it('keeps shadow bindings valid across object binding splits, rejoin and caster visibility changes', async () => {
+  const f = await shadowPublicationFixture();
   try {
-    const initial = prepare(originalMembership);
-    expect(initial.submission.plan.batches.map((batch) => batch.batchId)).toEqual([0, 1]);
-    expect(initial.calls).toBe(4);
-    const splitMembership = originalMembership.map((entry) =>
-      entry.renderableIndex === 2
-        ? { ...entry, renderState: { cullMode: 'none' as const } }
-        : entry,
-    );
-    const split = prepare(splitMembership);
-    // Source first-occurrence order is C, B, A; stable command addresses
-    // retain B and A while allocating the new C range after them.
-    expect(split.submission.plan.batches.map((batch) => batch.batchId)).toEqual([2, 1, 0]);
-    // First split genuinely grows the per-view buffer; every batch must bind
-    // that new physical allocation, including unchanged logical windows.
-    expect(split.buffer).not.toBe(initial.buffer);
-    const before = defined(initial.submission.plan.batches[1]);
-    const after = defined(split.submission.plan.batches[1]);
-    expect(after.candidates).toEqual(before.candidates);
-    expect([after.visibleBase, after.visibleCapacity, after.indirectOffset]).toEqual([
-      before.visibleBase,
-      before.visibleCapacity,
-      before.indirectOffset,
+    const before = f.prepare();
+    const split = new Map([
+      ['0:1', 'A'],
+      ['0:2', 'B'],
+      ['0:3', 'A'],
     ]);
-    expect({
-      key: after.key === before.key,
-      generation: after.generation === before.generation,
-      contentEpoch: after.contentEpoch === before.contentEpoch,
-      prepared: after.prepared === before.prepared,
-      lod: after.lod === before.lod,
-    }).toEqual({ key: true, generation: true, contentEpoch: true, prepared: true, lod: true });
-    expect(split.calls).toBe(6);
-    expect(split.projections.get(1)).not.toBe(initial.projections.get(1));
-    expect(split.projections.get(0)).not.toBe(initial.projections.get(0));
-    const steady = prepare(splitMembership);
-    expect(steady.calls).toBe(0);
-    for (const [id, projection] of steady.projections)
-      expect(projection).toBe(split.projections.get(id));
-
-    const rejoined = prepare(originalMembership);
-    expect(rejoined.submission.plan.batches.map((batch) => batch.batchId)).toEqual([0, 1]);
-    expect(rejoined.buffer).toBe(split.buffer);
-    expect.soft(rejoined.calls).toBe(2);
-    expect.soft(rejoined.projections.get(1)).toBe(split.projections.get(1));
-    expect(rejoined.projections.get(0)).not.toBe(split.projections.get(0));
-    expect(prepare(originalMembership).calls).toBe(0);
-
-    const splitAgain = prepare(splitMembership);
-    expect(splitAgain.submission.plan.batches.map((batch) => batch.batchId)).toEqual([2, 1, 0]);
-    expect(splitAgain.buffer).toBe(rejoined.buffer);
-    expect(splitAgain.calls).toBe(4);
-    expect(splitAgain.projections.get(1)).toBe(rejoined.projections.get(1));
-    expect(prepare(splitMembership).calls).toBe(0);
+    const changed = f.prepare(undefined, split);
+    expect(changed.views.reduce((sum, view) => sum + view.submission.plan.candidateCount, 0)).toBe(
+      48 * 3,
+    );
+    for (const view of changed.views) {
+      expect(view.bindings.size).toBe(view.submission.plan.batches.length);
+      for (const batch of view.submission.plan.batches)
+        expect(view.bindings.has(batch.batchId)).toBe(true);
+    }
+    expect(
+      f
+        .prepare([0], split)
+        .views.reduce((sum, view) => sum + view.submission.plan.candidateCount, 0),
+    ).toBe(16 * 3);
+    const restored = f.prepare();
+    expect(restored.views.map((view) => view.submission.plan.candidateCount)).toEqual(
+      before.views.map((view) => view.submission.plan.candidateCount),
+    );
+    const steady = f.prepare();
+    steady.views.forEach((view, index) => {
+      expect(view.bindings).toBe(restored.views[index]?.bindings);
+    });
   } finally {
-    lookup.mockRestore();
-    production.dispose();
-    scene.dispose();
-    residentMesh.vertexBuffer.destroy().unwrap();
-    residentMesh.indexBuffer?.destroy().unwrap();
+    f.dispose();
   }
 });
-
-function defined<T>(value: T | undefined): T {
-  if (value === undefined) throw Error('expected shadow projection fixture value');
-  return value;
-}

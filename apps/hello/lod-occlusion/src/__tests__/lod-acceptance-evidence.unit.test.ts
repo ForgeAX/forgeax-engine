@@ -4,11 +4,13 @@ import { resolve } from 'node:path';
 import { AssetRegistry } from '@forgeax/engine-assets-runtime';
 import { World } from '@forgeax/engine-ecs';
 import { ShaderRegistry } from '@forgeax/engine-shader';
+import { meshAssetContribution } from '@forgeax/engine-geometry';
 import type { MeshAsset } from '@forgeax/engine-types';
-import { describe, expect, it } from 'vitest';
+import { materialContribution } from '@forgeax/engine-render';
+import { describe, expect, it, vi } from 'vitest';
 import { loadLodProducerInputs } from '../../scripts/load-lod-producer-inputs.mjs';
 import {
-  catalogLodProducerAssets,
+  loadLodProducerAssets,
   createLodPhaseProgress,
   createSerialFrameQueue,
   observeCompletedReceipt,
@@ -130,6 +132,11 @@ function receiptObservation(
       }),
     },
   };
+}
+
+function nativeMesh(value: NonNullable<MeshAsset['lods']>[number]['mesh']) {
+  if (typeof value !== 'number') throw new Error('Source LOD was not adopted as a runtime handle');
+  return value;
 }
 
 describe('LOD receipt evidence', () => {
@@ -575,33 +582,35 @@ describe('selected E03 producer manifest', () => {
         ),
       ).rejects.toThrow('GUID does not match');
 
-      const assets = new AssetRegistry(new ShaderRegistry({ manifestUrl: undefined }));
-      const staged = await catalogLodProducerAssets(
+      const assets = new AssetRegistry({ shaderRegistry: new ShaderRegistry({ manifestUrl: undefined }) });
+      assets.installDecoder(meshAssetContribution.kind, meshAssetContribution.decoder);
+      assets.installDecoder(materialContribution.kind, materialContribution.decoder);
+      const staged = await loadLodProducerAssets(
         assets,
         verified.manifest,
         async (path) => new Uint8Array(await readFile(resolve(inputRoot, path))),
         expectedRoles,
       );
-      const root = assets.lookup<MeshAsset>(expectedRoles.root);
-      expect(root?.vertices).toBeInstanceOf(Float32Array);
-      expect(assets.lookup(expectedRoles.middle)?.kind).toBe('mesh');
-      expect(assets.lookup(expectedRoles.lowest)).toBeUndefined();
-      expect(
-        staged.manifest.assets.find((asset) => asset.guid === expectedRoles.root)?.refs,
-      ).toEqual(verified.manifest.assets.find((asset) => asset.guid === expectedRoles.root)?.refs);
-      if (!root) throw new Error('fixed producer root MeshAsset was not cataloged');
-
-      const world = new World();
+      const handle = staged.root;
+      const root = assets.read(handle).unwrap();
+      expect(root.vertices).toBeInstanceOf(Float32Array);
+      expect(root.lods).toHaveLength(1);
+      expect(assets.source(nativeMesh(root.lods![0]!.mesh)).unwrap()?.guid).toBe(expectedRoles.middle);
+      const held = assets.snapshot(handle).unwrap();
+      const world = new World({ assets });
       const identity = world.identity;
-      const handle = world.sharedRefs.acquire('MeshAsset', root);
-      expect(world.sharedRefs.refcount(handle)).toBe(1);
       await staged.admitLowest();
-      expect(assets.lookup<MeshAsset>(expectedRoles.lowest)?.vertices).toBeInstanceOf(Float32Array);
-      expect(assets.lookup(expectedRoles.root)).toBe(root);
+      const current = assets.snapshot(handle).unwrap();
+      const updated = assets.read(handle).unwrap();
+      expect(updated.lods).toHaveLength(2);
+      expect(assets.source(nativeMesh(updated.lods![1]!.mesh)).unwrap()?.guid).toBe(expectedRoles.lowest);
+      expect(assets.read(nativeMesh(updated.lods![1]!.mesh)).unwrap().vertices).toBeInstanceOf(Float32Array);
+      expect(current.version(handle).unwrap()).toBeGreaterThan(held.version(handle).unwrap());
       expect(world.identity).toBe(identity);
-      expect(world.sharedRefs.resolve(handle).unwrap()).toBe(root);
-      expect(world.sharedRefs.refcount(handle)).toBe(1);
-      world.sharedRefs.release(handle).unwrap();
+      expect(assets.validate(handle).ok).toBe(true);
+      current.dispose();
+      held.dispose();
+      assets.release(handle).unwrap();
     },
   );
   it.runIf(Boolean(process.env.FORGEAX_E03_INPUTS_DIR))(
@@ -661,9 +670,10 @@ describe('selected E03 producer manifest', () => {
       if (!root?.artifacts.body) throw new Error('producer root body is missing');
       for (const path of [root.path, root.artifacts.body.path]) {
         for (const corruption of ['missing', 'truncated', 'altered']) {
-          const assets = new AssetRegistry(new ShaderRegistry({ manifestUrl: undefined }));
+          const assets = new AssetRegistry({ shaderRegistry: new ShaderRegistry({ manifestUrl: undefined }) });
+          const load = vi.spyOn(assets, 'load');
           await expect(
-            catalogLodProducerAssets(
+            loadLodProducerAssets(
               assets,
               verified.manifest,
               async (requested) => {
@@ -678,8 +688,7 @@ describe('selected E03 producer manifest', () => {
               roles,
             ),
           ).rejects.toThrow(corruption === 'missing' ? 'ENOENT' : /length|SHA256/);
-          expect(assets.lookup(roles.root)).toBeUndefined();
-          expect(assets.lookup(roles.lowest)).toBeUndefined();
+          expect(load).not.toHaveBeenCalled();
         }
       }
     },

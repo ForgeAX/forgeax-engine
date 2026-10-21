@@ -1,6 +1,8 @@
+import { AssetRegistry } from '@forgeax/engine/assets-runtime';
+import { createPrimitiveMesh } from '@forgeax/engine/geometry';
 import { DEFAULT_STANDARD_PROFILE } from '@forgeax/engine/render';
 import { CheckList, defineFeature } from '../../lab/feature';
-import { MESH, spawnMesh, spawnStage, standard } from '../../lab/stage';
+import { spawnMesh, spawnStage, standard } from '../../lab/stage';
 
 const POST_STAGES = [
   'transparent-blend',
@@ -20,8 +22,14 @@ export default defineFeature({
   expect:
     "All checks pass: the active profile is 'forgeax::standard' with the canonical post-stage order, the committed output graph carries an output-transform owner, and the frame graph records passes.",
   async setup({ app, world, frames }) {
+    const primitiveAssets = world.assets;
+    if (!(primitiveAssets instanceof AssetRegistry))
+      throw new Error('Scene requires its runtime asset owner');
+
+    const stageSphere = primitiveAssets.create(createPrimitiveMesh('sphere').unwrap()).unwrap();
+
     spawnStage(world);
-    spawnMesh(world, MESH.sphere, standard(world, { baseColor: [0.9, 0.3, 0.2, 1] }), {
+    spawnMesh(world, stageSphere, standard(world, { baseColor: [0.9, 0.3, 0.2, 1] }), {
       pos: [0, 0.6, 0],
     });
     await frames(3);

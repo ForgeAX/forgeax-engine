@@ -102,13 +102,15 @@ function visitContactPairs(
       budget.add('pairs');
       // Native adjacency can retain a removed collider until the next step.
       if (!other) return;
-      const otherOwner = owner(other);
-      if (!other.isEnabled() || other.isSensor() || !otherOwner || otherOwner.entity === own.entity)
-        return;
+      if (!other.isEnabled() || other.isSensor()) return;
       if (filterMask !== undefined) {
         const groups = other.collisionGroups();
         if (((groups >>> 16) & filterMask) === 0 || ((filterMask >>> 16) & groups) === 0) return;
       }
+      // Reject unrelated collision layers before Native parent reads and ECS
+      // liveness checks. Rubble piles query actor and support layers separately.
+      const otherOwner = owner(other);
+      if (!otherOwner || otherOwner.entity === own.entity) return;
       visit(collider, other, own, otherOwner);
     });
   }

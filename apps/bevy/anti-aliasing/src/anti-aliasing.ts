@@ -1,6 +1,6 @@
-import { HANDLE_CUBE, HANDLE_QUAD, HANDLE_SPHERE, HANDLE_TRIANGLE } from '@forgeax/engine-assets-runtime';
+import type { AssetHandle } from '@forgeax/engine-types';
+
 import type { EntityHandle, World } from '@forgeax/engine-ecs';
-import type { Handle, MaterialAsset } from '@forgeax/engine-types';
 import {
   ANTIALIAS_FXAA,
   ANTIALIAS_MSAA,
@@ -13,6 +13,10 @@ import {
   perspective,
 } from '@forgeax/engine-render';
 import { Transform } from '@forgeax/engine-scene';
+import { AssetRegistry } from '@forgeax/engine-assets-runtime';
+
+import { createPrimitiveMesh } from '@forgeax/engine-geometry';
+
 
 export const ANTIALIAS_MODES = [ANTIALIAS_NONE, ANTIALIAS_MSAA, ANTIALIAS_FXAA] as const;
 export const ANTIALIAS_NAMES = ['none', 'msaa', 'fxaa'] as const;
@@ -22,17 +26,31 @@ export interface AntiAliasingScene {
   readonly shapeCount: number;
 }
 
-function material(world: World, options: Parameters<typeof Materials.standard>[0]): Handle<'MaterialAsset', 'shared'> {
-  return world.allocSharedRef<'MaterialAsset', MaterialAsset>('MaterialAsset', Materials.standard(options));
+function material(world: World, options: Parameters<typeof Materials.standard>[0]): AssetHandle<'material'> {
+const sceneAssets = world.assets;
+if (!(sceneAssets instanceof AssetRegistry)) throw new Error('Scene requires its runtime asset owner');
+
+  return sceneAssets.create(Materials.standard(options)).unwrap();
 }
 
 export function buildAntiAliasingWorld(world: World, aspect: number): AntiAliasingScene {
+const sceneAssets = world.assets;
+if (!(sceneAssets instanceof AssetRegistry)) throw new Error('Scene requires its runtime asset owner');
+
+const primitiveTriangle = sceneAssets.create(createPrimitiveMesh('triangle').unwrap()).unwrap();
+
+const primitiveCube = sceneAssets.create(createPrimitiveMesh('cube').unwrap()).unwrap();
+
+const primitiveQuad = sceneAssets.create(createPrimitiveMesh('quad').unwrap()).unwrap();
+
+const primitiveSphere = sceneAssets.create(createPrimitiveMesh('sphere').unwrap()).unwrap();
+
   const mat = material(world, { baseColor: [0.7, 0.7, 0.7, 1], metallic: 0, roughness: 0.4 });
   const layout = [
-    { assetHandle: HANDLE_TRIANGLE, pos: [-1.05, 0, 0] as const, scale: 0.55 },
-    { assetHandle: HANDLE_CUBE, pos: [-0.35, 0, 0] as const, scale: 0.5 },
-    { assetHandle: HANDLE_QUAD, pos: [0.35, 0, 0] as const, scale: 0.5 },
-    { assetHandle: HANDLE_SPHERE, pos: [1.05, 0, 0] as const, scale: 0.5 },
+    { assetHandle: primitiveTriangle, pos: [-1.05, 0, 0] as const, scale: 0.55 },
+    { assetHandle: primitiveCube, pos: [-0.35, 0, 0] as const, scale: 0.5 },
+    { assetHandle: primitiveQuad, pos: [0.35, 0, 0] as const, scale: 0.5 },
+    { assetHandle: primitiveSphere, pos: [1.05, 0, 0] as const, scale: 0.5 },
   ];
 
   for (const shape of layout) {

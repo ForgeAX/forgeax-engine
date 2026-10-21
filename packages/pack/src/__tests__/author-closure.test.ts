@@ -25,7 +25,7 @@ it('discovers instance outputs and computed module edges with their declaring so
     await writeFile(
       resolve(root, 'assets/character.pack.ts'),
       `import { definePack, definePackageId } from '@forgeax/engine-pack/source';
-export default definePack({ schemaVersion: '2.0.0', packageId: definePackageId('${parent}'),
+export default definePack({ schemaVersion: '2.0.0', plugins: true, packageId: definePackageId('${parent}'),
   parameters: [{ name: 'speed', type: 'f32', default: 2 }],
   build: ({ values }) => ({ ok: true, value: { ['plugin/' + 'player']: {
     kind: 'plugin', module: { specifier: './' + 'player.ts' }, config: { speed: values.speed }
@@ -158,6 +158,48 @@ it('follows authored shader module identities and their transitive imports', asy
       'assets/material.pack.json',
       'assets/shaders/noise.wgsl',
       'assets/shaders/surface.wgsl',
+    ]);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+it.each([
+  ['.js', '.ts'],
+  ['.mjs', '.mts'],
+  ['.cjs', '.cts'],
+  ['', '/index.mts'],
+])('transfers the same %s source selected by Pack execution', async (specifier, sourceSuffix) => {
+  const root = await mkdtemp(resolve(tmpdir(), 'forgeax-author-resolution-'));
+  try {
+    await mkdir(resolve(root, 'assets/logic'), { recursive: true });
+    await writeFile(resolve(root, 'package.json'), '{"name":"resolution-closure"}');
+    await writeFile(
+      resolve(root, 'assets/game.pack.json'),
+      JSON.stringify({
+        schemaVersion: '3.0.0',
+        packageId: '01900000-0000-7000-8000-000000000171',
+        assets: { plugin: { kind: 'plugin', payload: { module: { specifier: './entry.ts' } } } },
+      }),
+    );
+    await writeFile(
+      resolve(root, 'assets/entry.ts'),
+      `import './logic${specifier}'; export default { apply() {} };`,
+    );
+    if (specifier)
+      await writeFile(
+        resolve(root, `assets/logic${specifier}`),
+        'export const selected = "stale";',
+      );
+    await writeFile(
+      resolve(root, `assets/logic${sourceSuffix}`),
+      'export const selected = "source";',
+    );
+    const closure = await collectAuthorPackClosure(root, 'assets/game.pack.json', ['assets']);
+    expect(closure.files.map((file) => file.path)).toEqual([
+      'assets/entry.ts',
+      'assets/game.pack.json',
+      `assets/logic${sourceSuffix}`,
     ]);
   } finally {
     await rm(root, { recursive: true, force: true });

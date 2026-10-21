@@ -19,8 +19,10 @@ import { propagateTransforms, Transform } from '@forgeax/engine-scene';
 import { buildEngineShaderManifest } from '@forgeax/engine-vite-plugin-shader';
 import { assert, expect, it } from 'vitest';
 import { drawReadyFrame } from '../../../../scripts/test/ready-render-frame.mjs';
+import { loadMaterialFixture } from '../../../assets-runtime/src/__tests__/fixtures/runtime-material';
 import { rayPathCommands } from '../../../render/src/__tests__/raytracing/path-tracer.commands';
 import { constructRuntimeRendererHost } from '../renderer-host';
+import { testAssets } from './helpers/runtime-assets';
 import { shaderManifestUrl } from './shader-manifest-url.fixture';
 import { renderValue } from './standard-gbuffer-replay.fixture';
 
@@ -121,7 +123,7 @@ it('runs persistent placement through the ordinary Renderer without changing HDR
   const unsubscribe = renderer.subscribe((event) => {
     if (event.kind === 'error') rendererErrors.push(event.error);
   });
-  const world = new World();
+  const world = new World({ assets });
   const material = fixture.material;
   assert(material.name === 'matte');
   const record = validateCookedMaterialRecord(
@@ -129,7 +131,7 @@ it('runs persistent placement through the ordinary Renderer without changing HDR
   ).unwrap();
   const ready = await createMaterialLoader({
     loadPublication: async () => ({
-      guid: 'matte',
+      guid: record.guid,
       record,
       artifacts: Object.fromEntries(
         Object.entries(material.cookedPublication.artifacts).map(([path, bytes]) => [
@@ -138,15 +140,15 @@ it('runs persistent placement through the ordinary Renderer without changing HDR
         ]),
       ),
     }),
-  }).load({ guid: 'matte', specializationKey: record.specializationKey ?? '' });
+  }).load({ guid: record.guid, specializationKey: record.specializationKey ?? '' });
   assert(
     ready.status === 'Ready',
     ready.status === 'Error' ? JSON.stringify(ready.error) : undefined,
   );
-  assets.catalog('matte', material.asset).unwrap();
-  assets.recordMaterialReadiness('matte', ready);
-  const materialHandle = world.allocSharedRef('MaterialAsset', material.asset);
-  const mesh = world.allocSharedRef('MeshAsset', createBoxGeometry(2, 2, 0.1).unwrap());
+  const materialHandle = (await loadMaterialFixture(assets, ready.record)).unwrap().handle;
+  const mesh = testAssets(world)
+    .create(createBoxGeometry(2, 2, 0.1).unwrap())
+    .unwrap();
   const receiver = world
     .spawn(
       { component: Transform, data: { pos: [0, 0, -3] } },
@@ -276,10 +278,9 @@ it('runs persistent placement through the ordinary Renderer without changing HDR
       expect(roles.at(-1)?.accepted).toBe(previous.candidate);
     }
     expect(await hdr()).toEqual(baseline);
-    const nativeMaterial = world.allocSharedRef(
-      'MaterialAsset',
-      Materials.standard({ baseColor: [0.8, 0.4, 0.2, 1], roughness: 0.65, specular: 0 }),
-    );
+    const nativeMaterial = testAssets(world)
+      .create(Materials.standard({ baseColor: [0.8, 0.4, 0.2, 1], roughness: 0.65, specular: 0 }))
+      .unwrap();
     world.set(receiver, MeshRenderer, { materials: [nativeMaterial] }).unwrap();
     await draw();
     expect(await hdr()).toEqual(baseline);

@@ -1,5 +1,6 @@
 #!/usr/bin/env node
 import { encodePng } from '@forgeax/engine-image/png';
+import { constructRuntimeRendererHost } from '@forgeax/engine-runtime/internal/renderer-host';
 import { createSmokeRenderer, drawSmokeFrame, rendererBackend, subscribeSmokeErrors } from "../../scripts/renderer-smoke.mjs";
 // Dawn smoke for Bevy `sprite`: one image-backed Sprite must produce varied visible pixels.
 
@@ -49,7 +50,6 @@ const canvas = {
 
 const { World } = await import('@forgeax/engine-ecs');
 const { createRenderer } = await import('@forgeax/engine-runtime');
-const { unwrapHandle } = await import('@forgeax/engine-types');
 const { SPRITE_SIZE, buildSpriteWorld, makeSpritePixels } = await import('../src/sprite.ts');
 
 const manifestPath = resolve(here, '..', 'dist', 'shaders', 'manifest.json');
@@ -65,13 +65,15 @@ gpu.requestAdapter = async (options) => {
   };
   return adapter;
 };
-const renderer = await createSmokeRenderer(createRenderer, canvas, {}, { shaderManifestUrl: manifestUrl });
+const hostResult = await constructRuntimeRendererHost(canvas, {}, { shaderManifestUrl: manifestUrl });
+if (!hostResult.ok) throw hostResult.error;
+const { renderer, assets: smokeAssets } = hostResult.value;
 gpu.requestAdapter = originalRequestAdapter;
 const errors = [];
 subscribeSmokeErrors(renderer, (error) => errors.push(error));
 
 const pixels = makeSpritePixels();
-const world = new World();
+const world = new World({ assets: smokeAssets });
 const worldAttachment1 = renderer.attach(world);
 if (!worldAttachment1.ok) throw worldAttachment1.error;
 const texture = {
@@ -82,8 +84,8 @@ const texture = {
   colorSpace: 'srgb',
   mips: { kind: 'none' },
 };
-const handle = world.allocSharedRef('TextureAsset', texture);
-buildSpriteWorld(world, unwrapHandle(handle));
+const handle = world.assets.create(texture).unwrap();
+buildSpriteWorld(world, handle);
 
 for (let frame = 0; frame < FRAMES; frame++) {
   world.update().unwrap();
@@ -126,4 +128,6 @@ if (rendererBackend(renderer) !== 'webgpu' || visiblePixels < 500 || channelSpre
   process.exit(1);
 }
 console.log(`[smoke] PASS - backend=webgpu, frames=${FRAMES}, single image-backed sprite visible, errors=0`);
+await renderer.dispose();
+smokeAssets.dispose();
 device.destroy?.();

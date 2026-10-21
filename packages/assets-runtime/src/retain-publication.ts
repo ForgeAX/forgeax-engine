@@ -9,7 +9,7 @@ import type {
 import type { AssetRegistry } from './asset-registry.js';
 import { captureAssetPublication } from './capture-publication.js';
 import { type CatalogSource, createCatalogSource } from './catalog-source.js';
-import { makeLoadContext } from './registry/load-by-guid.js';
+import { runtimeAssetDecoders } from './internal/runtime-assets';
 import { preparePublicationPayloads } from './validate-publication.js';
 
 type RetainedData = Asset | (() => Promise<Asset>);
@@ -35,7 +35,7 @@ export async function retainAssetPublications(
   fetcher: PackageFetcher,
   options: Omit<NonNullable<Parameters<typeof captureAssetPublication>[4]>, 'registry'> = {},
 ): Promise<ReadonlyMap<string, RetainedAsset>> {
-  (await registry.ensurePackIndexCache()).unwrap();
+  (await registry.enumerateCatalog()).unwrap();
   const rows = new Map(entries.map((row) => [row.guid.toLowerCase(), row]));
   const pins = new Map<string, RetainedAsset>();
   const retain = async (guid: string, ancestors = new Set<string>()): Promise<RetainedAsset> => {
@@ -82,7 +82,7 @@ export async function retainAssetPublications(
     for (const output of publication.outputs) {
       const outputRow = rows.get(output.guid);
       if (!outputRow) throw new TypeError(`missing dependency sibling ${output.guid}`);
-      const current = registry.packIndexCache?.get(output.guid)?.publication;
+      const current = registry.catalogEntry(output.guid)?.publication;
       if (
         current?.generation !== publication.generation ||
         current.digest !== publication.digest ||
@@ -99,16 +99,7 @@ export async function retainAssetPublications(
               bound,
               { catalog: createCatalogSource({ entries }), fetcher: bound },
               { pack: fixed.pack, dependencies },
-              registry.loaders,
-              {
-                ...makeLoadContext(registry, bound),
-                resolveRef: async (ref) => {
-                  const pin = pins.get(ref) ?? dependencies.get(ref);
-                  if (!pin) throw new TypeError(`missing retained reference ${ref}`);
-                  if (typeof pin.asset === 'function') await pin.asset();
-                  return { ok: true, value: 0 } as const;
-                },
-              },
+              runtimeAssetDecoders(registry),
             );
             const asset = result.unwrap().get(output.guid);
             if (!asset) throw new TypeError(`missing retained payload ${output.guid}`);

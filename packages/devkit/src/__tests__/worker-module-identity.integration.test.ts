@@ -475,6 +475,7 @@ it('builds ordinary App module Workers without opting into skeletal Physics', as
       configFile: false,
       root,
       logLevel: 'silent',
+      worker: { format: 'es' },
       build: {
         target: 'esnext',
         write: false,

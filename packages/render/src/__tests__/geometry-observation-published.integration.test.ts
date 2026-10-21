@@ -36,8 +36,11 @@ it('keeps the published command source World distinct from its transport namespa
     { rhi, createShaderModule: rhi.createShaderModule },
   );
   expect((await renderer.initialization).ok).toBe(true);
-  const world = new World();
+  expect(
+    renderer.setProfile({ ...renderer.inspect().profile, renderPath: 'deferred', ssao: false }).ok,
+  ).toBe(true);
   const assets = renderer.assetRegistry;
+  const world = new World({ assets });
   const publisher = createRenderPublisher(world, assets, identity);
   registerPropagateTransforms(world);
   world
@@ -52,7 +55,7 @@ it('keeps the published command source World distinct from its transport namespa
       data: { castShadow: true, direction: [0, -1, -1], intensity: 1 },
     })
     .unwrap();
-  const handle = world.allocSharedRef('MeshAsset', createBoxGeometry(1, 1, 1).unwrap());
+  const handle = assets.create(createBoxGeometry(1, 1, 1).unwrap()).unwrap();
   const entity = world
     .spawn(
       { component: Transform, data: {} },
@@ -60,9 +63,7 @@ it('keeps the published command source World distinct from its transport namespa
       {
         component: MeshRenderer,
         data: {
-          materials: [
-            world.allocSharedRef('MaterialAsset', Materials.standard({ baseColor: [1, 1, 1, 1] })),
-          ],
+          materials: [assets.create(Materials.standard({ baseColor: [1, 1, 1, 1] })).unwrap()],
         },
       },
     )
@@ -108,6 +109,7 @@ it('keeps the published command source World distinct from its transport namespa
       return { receipt, revision: packet.revision };
     };
     await submit(false);
+    expect(commands).toHaveLength(0);
     const captured = await submit(true);
     const observed = await renderer.observeGeometry?.(captured.receipt);
     expect(observed?.status, JSON.stringify(observed)).toBe('complete');
@@ -123,6 +125,25 @@ it('keeps the published command source World distinct from its transport namespa
         meshHandle: Number(handle),
         sourceRevision: captured.revision,
       });
+    expect(sources.every((source) => typeof source.materialHandle === 'number')).toBe(true);
+    const gbuffer = commands.filter((command) => command.pass.endsWith(':fs_gbuffer'));
+    expect(gbuffer.length).toBeGreaterThan(0);
+    for (const command of gbuffer) {
+      expect(command.gbufferProgram).toMatchObject({
+        scope: 'selected-gpu-driven-gbuffer-artifact',
+        vertexEntry: 'vs_scene_index',
+        fragmentEntry: 'fs_gbuffer',
+        nativeShader: 'unobserved',
+      });
+      expect(command.gbufferProgram?.pipelineIdentity).toBeGreaterThan(0);
+      expect(command.gbufferProgram?.programIdentity).not.toBe('');
+      expect(command.gbufferProgram?.artifactSourceSha256).toMatch(/^sha256:[0-9a-f]{64}$/);
+    }
+    expect(
+      commands
+        .filter((command) => !command.pass.endsWith(':fs_gbuffer'))
+        .every((command) => command.gbufferProgram === undefined),
+    ).toBe(true);
     expect(world.identity).not.toBe(identity.source);
     const missing = await submit(true, false);
     expect(await renderer.observeGeometry?.(missing.receipt)).toMatchObject({

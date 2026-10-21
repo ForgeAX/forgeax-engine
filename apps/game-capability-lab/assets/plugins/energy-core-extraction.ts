@@ -1,3 +1,4 @@
+import type { AssetHandle } from '@forgeax/engine-types';
 import {
   FixedUpdate,
   defineComponent,
@@ -16,7 +17,6 @@ import {
 import { MeshFilter, MeshRenderer } from '@forgeax/engine-render';
 import { Name, Transform } from '@forgeax/engine-scene';
 import { inState } from '@forgeax/engine-state';
-import type { Handle } from '@forgeax/engine-types';
 import { GameState } from './gameplay-state';
 
 const CORE_SENSOR_RADIUS = 0.58;
@@ -93,8 +93,8 @@ type AuthoredRecipe = {
   readonly pos: readonly [number, number, number];
   readonly quat: readonly [number, number, number, number];
   readonly scale: readonly [number, number, number];
-  readonly mesh: Handle<'MeshAsset', 'shared'>;
-  readonly materials: readonly Handle<'MaterialAsset', 'shared'>[];
+  readonly mesh: AssetHandle<'mesh'>;
+  readonly materials: readonly AssetHandle<'material'>[];
 };
 
 export type EnergyCoreSnapshot = {
@@ -146,8 +146,8 @@ function recipeFrom(world: World, identity: AuthoredEnergyCoreIdentity): Authore
     pos: [transform.value.pos[0] ?? 0, transform.value.pos[1] ?? 0, transform.value.pos[2] ?? 0],
     quat: [transform.value.quat[0] ?? 0, transform.value.quat[1] ?? 0, transform.value.quat[2] ?? 0, transform.value.quat[3] ?? 1],
     scale: [transform.value.scale[0] ?? 1, transform.value.scale[1] ?? 1, transform.value.scale[2] ?? 1],
-    mesh: mesh.value.assetHandle as Handle<'MeshAsset', 'shared'>,
-    materials: [...renderer.value.materials] as Handle<'MaterialAsset', 'shared'>[],
+    mesh: mesh.value.assetHandle as AssetHandle<'mesh'>,
+    materials: [...renderer.value.materials] as AssetHandle<'material'>[],
   };
 }
 
@@ -157,15 +157,17 @@ export function createEnergyCoreExtraction(
   player: EntityHandle,
   authored: AuthoredExtractionIdentity,
 ): EnergyCoreExtractionHandle | undefined {
+  const assets = world.assets;
+  if (assets === undefined) return undefined;
   const ordered = [...authored.cores].sort((a, b) => a.localId - b.localId);
   const coreRecipes = ordered.map((identity) => recipeFrom(world, identity));
   const beaconRecipe = recipeFrom(world, authored.beacon);
   if (ordered.length !== 3 || coreRecipes.some((recipe) => recipe === undefined) || beaconRecipe === undefined) return undefined;
   const recipes = coreRecipes as AuthoredRecipe[];
-  const retained: Array<{ readonly mesh: Handle<'MeshAsset', 'shared'>; readonly materials: readonly Handle<'MaterialAsset', 'shared'>[] }> = [];
+  const retained: Array<{ readonly mesh: AssetHandle<'mesh'>; readonly materials: readonly AssetHandle<'material'>[] }> = [];
   for (const recipe of [...recipes, beaconRecipe]) {
-    if (!world.sharedRefs.retain(recipe.mesh).ok) continue;
-    const materials = recipe.materials.filter((material) => world.sharedRefs.retain(material).ok);
+    if (!assets.retain(recipe.mesh).ok) continue;
+    const materials = recipe.materials.filter((material) => assets.retain(material).ok);
     retained.push({ mesh: recipe.mesh, materials });
   }
 
@@ -395,8 +397,8 @@ export function createEnergyCoreExtraction(
       if (disposed) return;
       disposed = true;
       for (const item of retained) {
-        world.sharedRefs.release(item.mesh);
-        for (const material of item.materials) world.sharedRefs.release(material);
+        assets.release(item.mesh);
+        for (const material of item.materials) assets.release(material);
       }
     },
   };

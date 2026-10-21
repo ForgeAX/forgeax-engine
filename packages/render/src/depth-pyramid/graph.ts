@@ -144,8 +144,8 @@ export function estimateDepthPyramidMemory(extent: DepthPyramidExtent): number {
   }, 0);
 }
 
-function createDepthPyramid(
-  graph: RenderGraphBuilder<RenderGraphFrame>,
+function createDepthPyramid<FrameCtx extends RenderGraphFrame>(
+  graph: RenderGraphBuilder<FrameCtx>,
   extent: DepthPyramidExtent,
   name: string,
 ): Result<DepthPyramid, RenderGraphError> {
@@ -193,7 +193,7 @@ export function addDepthPyramidPasses<FrameCtx extends RenderGraphFrame>(
   const seedPass = `${names.graph}-seed`;
   const reducePass = `${names.graph}-reduce-chain`;
   const created = createDepthPyramid(
-    graph as RenderGraphBuilder<RenderGraphFrame>,
+    graph,
     { width: input.width, height: input.height },
     names.graph,
   );

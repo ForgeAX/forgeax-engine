@@ -25,7 +25,7 @@ interface ChangeEntry {
   readonly unboundedSlots: Int32Array;
   /** A resync or reset: no slot-level evidence survives. */
   readonly whole: boolean;
-  /** Slots created or changed, i.e. every slot whose shadow must be re-rendered. */
+  /** Slots created, changed or removed, including vacated cached shadows. */
   readonly changedSlots: Int32Array;
 }
 
@@ -59,7 +59,7 @@ export class GpuSceneChangeLog {
     rowBoxesOf?: GpuSceneSlotRowBoxes,
   ): void {
     this.cached = undefined;
-    const whole = boundsOf === undefined || delta.resynced > 0;
+    const whole = delta.resynced > 0;
     if (delta.resynced > 0) {
       this.boundsBySlot.clear();
       this.unboundedSlots.clear();
@@ -78,6 +78,7 @@ export class GpuSceneChangeLog {
       boxSlots.push(slot);
     };
     for (const record of delta.removedSlots) {
+      changedSlots.push(record.slot);
       pushOld(record.slot);
       this.boundsBySlot.delete(record.slot);
       this.unboundedSlots.delete(record.slot);
@@ -246,7 +247,7 @@ export class GpuSceneChangeLog {
   }
 
   /**
-   * Slots created or changed after `since`, or `undefined` when the retained
+   * Slots created, changed or removed after `since`, or `undefined` when the retained
    * history cannot prove the set.
    */
   changedSlotsSince(since: number, current: number): readonly number[] | undefined {

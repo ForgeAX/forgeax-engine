@@ -30,7 +30,7 @@ It saves before/after PNG evidence under `apps/hello/audio/.forgeax-audio/browse
 |:--|:--|
 | **One-shot takeoff** | `createApp(canvas, { plugins: [audioPlugin(), physicsPlugin('rapier-3d')] })` -- both capabilities are assembled through the app plugin seam. |
 | **Declarative ECS audio** | `AudioSource({ clip, playing })` drives `audioTickSystem` edge detection -- no imperative `backend.play()` bypass (AC-07). |
-| **Pack-index asset loading** | SFX GUID flows through `assets.loadByGuid<AudioClipAsset>`; the injected audio loader resolves the Vite catalog row and decodes it before the demo mints an `AudioSource.clip` shared ref. |
+| **Pack-index asset loading** | SFX GUID flows through `assets.load(guid, 'audio')`; the injected audio loader resolves and decodes the Vite catalog publication, returning the managed handle bound directly to `AudioSource.clip`. |
 | **Spatial panning** | `AudioSource.spatialBlend=1.0` creates a PannerNode; `syncListenerFromWorldMatrix(l, worldMatrix)` syncs the listener position/orientation each frame from the listener entity's `GlobalTransform.world` mat4. |
 | **Collision cleanup** | A dynamic ECS actor reads `CollidingEntities`, starts its own spatial `AudioSource` on contact, then `world.despawn()` removes the Collider and audio source; the browser gate verifies `activeSourceCount` returns to zero. |
 | **Playback controls** | Play/pause/resume/stop and 0.25x–3x speed use ECS controls; Host-owned lowpass/highpass chains and a reused FFT drive a canvas and 24 ordinary mesh bars. |
@@ -46,48 +46,17 @@ It saves before/after PNG evidence under `apps/hello/audio/.forgeax-audio/browse
 
 ## API surface
 
+The app configures its Catalog and installs Audio before loading clips. The audio handle binds directly to `AudioSource.clip`:
+
 ```ts
-import { audioPlugin } from '@forgeax/engine-audio';
-import { physicsPlugin } from '@forgeax/engine-physics';
-import { GlobalTransform, Transform } from '@forgeax/engine-scene';
-
-// 1. One-shot takeoff -- audioPlugin() auto-attaches the WebAudioBackend;
-//    input is in the canvas-form default plugin set.
-const app = await createApp(canvas, { plugins: [audioPlugin(), physicsPlugin('rapier-3d')] });
-
-// 2. Load an audio clip through the same GUID path used by generic bindings.
-const guidRes = AssetGuid.parse(SFX_GUID);
-if (!guidRes.ok) return;
-const clipRes = await assets.loadByGuid<AudioClipAsset>(guidRes.value);
-if (!clipRes.ok) return;
-const clipHandle = world.allocSharedRef('AudioClipAsset', clipRes.value);
-
-// 3. Declarative spawn -- AudioSource with clip handle.
-const emitter = world.spawn(
+const clip = (await assets.load(assets.parseGuid(SFX_GUID), 'audio')).unwrap();
+world.spawn(
   { component: Transform, data: { pos: [0, 0, 0] } },
-  { component: MeshFilter,  data: { assetHandle: HANDLE_CUBE } },
-  { component: MeshRenderer, data: {} },
-  { component: AudioSource,  data: { clip: clipHandle, playing: false, spatialBlend: 1.0, bus: 'sfx' } },
+  { component: AudioSource, data: { clip, playing: false, spatialBlend: 1, bus: 'sfx' } },
 ).unwrap();
-
-// 4. Camera + AudioListener marker as the spatial listener.
-const camera = world.spawn(
-  { component: Transform, data: { pos: [0, 1, 5] } },
-  { component: Camera, data: { fov: Math.PI/4, aspect: 16/9, near: 0.1, far: 100 } },
-  { component: AudioListener, data: {} },
-).unwrap();
-
-// 5. Per-frame: listener sync via engine.listener getter (D-2). createApp
-//    auto-wires propagateTransforms, so GlobalTransform.world is fresh each frame.
-app.registerUpdate(() => {
-  const worldMatrix = world.get(camera, GlobalTransform).unwrap().world;
-  const engine = world.getResource('AudioEngine');
-  if (engine instanceof WebAudioEngine) {
-    const l = engine.listener; // getter triggers lazy ensureContext()
-    if (l) syncListenerFromWorldMatrix(l, worldMatrix);
-  }
-});
 ```
+
+The host owns Web Audio playback and listener synchronization. See [src/main.ts](src/main.ts) for plugin assembly, the visual emitter and interactive controls.
 
 ## Caveats
 

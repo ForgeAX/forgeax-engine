@@ -1,7 +1,10 @@
-import { AssetRegistry } from '@forgeax/engine-assets-runtime';
-import type { Asset, ImportContext, ImportedAsset } from '@forgeax/engine-types';
+import type { ImportContext, ImportedAsset } from '@forgeax/engine-types';
 import { MeshoptDecoder, MeshoptEncoder } from 'meshoptimizer';
 import { describe, expect, it } from 'vitest';
+import {
+  importedMesh,
+  importedSource,
+} from '../../../import/src/__tests__/fixtures/runtime-import';
 import { createGltfImporter } from '../gltf-importer.js';
 import { parseGlb } from '../parse-gltf.js';
 import { unwrapMeshAsset as meshIrToMeshAsset } from './bridge-test-helpers.js';
@@ -184,10 +187,10 @@ describe('real EXT_meshopt_compression glTF matrix', () => {
     if (!result.ok) return;
     const mesh = result.value.assets.find((asset: { kind: string }) => asset.kind === 'mesh');
     expect(mesh?.guid).toBe('019f0000-0000-7000-8000-000000000201');
-    expect(mesh?.payload.indices).toEqual(new Uint16Array([0, 1, 2]));
+    expect(importedMesh(mesh).indices).toEqual(new Uint16Array([0, 1, 2]));
   });
 
-  it('loads the imported compressed artifact through Pack, Catalog, and loadByGuid', async () => {
+  it('loads the imported compressed artifact through Pack, Catalog, and source loading', async () => {
     await MeshoptEncoder.ready;
     await MeshoptDecoder.ready;
     const guid = '019f0000-0000-7000-8000-000000000202';
@@ -210,65 +213,12 @@ describe('real EXT_meshopt_compression glTF matrix', () => {
     const mesh = imported.value.assets.find((asset: ImportedAsset) => asset.guid === guid);
     expect(mesh?.kind).toBe('mesh');
     if (mesh?.kind !== 'mesh') return;
-    const meshPayload = mesh.payload as Extract<Asset, { kind: 'mesh' }>;
-    const body = mesh.artifacts.body;
-    expect(body?.bytes.byteLength).toBeGreaterThan(0);
-    if (body === undefined) return;
-
-    const packIndexUrl = '/meshopt-pack-index.json';
-    const packageUrl = '/ddc/meshopt-pack.pack.json';
-    const originalFetch = globalThis.fetch;
-    const registry = new AssetRegistry({} as never);
-    registry.configurePackIndex(packIndexUrl);
-    globalThis.fetch = ((input: string) => {
-      const url = typeof input === 'string' ? input : String(input);
-      if (url === packIndexUrl) {
-        return Promise.resolve({
-          ok: true,
-          json: async () => [{ guid, packageUrl, kind: 'mesh' }],
-        });
-      }
-      if (url === packageUrl) {
-        const pack = {
-          schemaVersion: '2.0.0',
-          kind: 'internal-text-package',
-          assets: [
-            {
-              guid,
-              kind: 'mesh',
-              payload: meshPayload,
-              refs: [],
-              artifacts: {
-                body: {
-                  path: 'mesh.bin',
-                  mediaType: body.mediaType,
-                  byteLength: body.bytes.byteLength,
-                  assetCodec: body.assetCodec,
-                },
-              },
-            },
-          ],
-        };
-        return Promise.resolve({
-          ok: true,
-          json: async () => JSON.parse(JSON.stringify(pack)),
-        });
-      }
-      return Promise.resolve({
-        ok: true,
-        arrayBuffer: async () =>
-          body.bytes.buffer.slice(
-            body.bytes.byteOffset,
-            body.bytes.byteOffset + body.bytes.byteLength,
-          ),
-      });
-    }) as unknown as typeof globalThis.fetch;
-
+    const { assets: registry } = importedSource({
+      assets: [{ ...mesh, refs: mesh.refs.map((ref: { guid: string }) => ref.guid) }],
+    });
     try {
-      const loaded = await registry.loadByGuid(registry.parseGuid(guid));
-      expect(loaded.ok).toBe(true);
-      if (!loaded.ok) return;
-      const payload = loaded.value as { vertices: Float32Array; indices?: Uint16Array };
+      const handle = (await registry.load(guid, 'mesh')).unwrap();
+      const payload = registry.read(handle).unwrap();
       expect([
         payload.vertices[0],
         payload.vertices[1],
@@ -282,7 +232,7 @@ describe('real EXT_meshopt_compression glTF matrix', () => {
       ]).toEqual([0, 0, 0, 1, 0, 0, 0, 1, 0]);
       expect(Array.from(payload.indices ?? [])).toEqual([0, 1, 2]);
     } finally {
-      globalThis.fetch = originalFetch;
+      registry.dispose();
     }
   });
 
@@ -308,63 +258,23 @@ describe('real EXT_meshopt_compression glTF matrix', () => {
     if (!imported.ok) return;
     const mesh = imported.value.assets.find((asset: ImportedAsset) => asset.guid === guid);
     if (mesh?.kind !== 'mesh' || mesh.artifacts.body === undefined) return;
-    const meshPayload = mesh.payload as Extract<Asset, { kind: 'mesh' }>;
+    const {
+      assets: registry,
+      bodies,
+      packageUrl,
+    } = importedSource({
+      assets: [{ ...mesh, refs: mesh.refs.map((ref: { guid: string }) => ref.guid) }],
+    });
     const damaged = new Uint8Array(mesh.artifacts.body.bytes);
-    const lastByte = damaged.length - 1;
-    damaged[lastByte] = (damaged[lastByte] ?? 0) ^ 0xff;
-    const registry = new AssetRegistry({} as never);
-    const packIndexUrl = '/meshopt-damaged-index.json';
-    const packageUrl = '/ddc/meshopt-damaged.pack.json';
-    registry.configurePackIndex(packIndexUrl);
-    const originalFetch = globalThis.fetch;
-    globalThis.fetch = ((input: string) => {
-      const url = typeof input === 'string' ? input : String(input);
-      if (url === packIndexUrl)
-        return Promise.resolve({
-          ok: true,
-          json: async () => [{ guid, packageUrl, kind: 'mesh' }],
-        });
-      if (url === packageUrl)
-        return Promise.resolve({
-          ok: true,
-          json: async () => ({
-            schemaVersion: '2.0.0',
-            kind: 'internal-text-package',
-            assets: [
-              {
-                guid,
-                kind: 'mesh',
-                payload: meshPayload,
-                refs: [],
-                artifacts: {
-                  body: {
-                    path: 'mesh.bin',
-                    mediaType: mesh.artifacts.body?.mediaType,
-                    byteLength: damaged.byteLength,
-                    assetCodec: mesh.artifacts.body?.assetCodec,
-                  },
-                },
-              },
-            ],
-          }),
-        });
-      return Promise.resolve({
-        ok: true,
-        arrayBuffer: async () =>
-          damaged.buffer.slice(damaged.byteOffset, damaged.byteOffset + damaged.byteLength),
-      });
-    }) as unknown as typeof globalThis.fetch;
+    damaged[damaged.length - 1] = (damaged[damaged.length - 1] ?? 0) ^ 0xff;
+    bodies.set(new URL(`${guid}/body`, packageUrl).href, damaged);
     try {
-      const loaded = await registry.loadByGuid(registry.parseGuid(guid));
-      expect(loaded.ok).toBe(false);
-      if (loaded.ok) return;
-      expect([
-        'asset-parse-failed',
-        'asset-artifact-integrity-mismatch',
-        'mesh-bin-contract-violation',
-      ]).toContain(loaded.error.code);
+      expect(await registry.load(guid, 'mesh')).toMatchObject({
+        ok: false,
+        error: { code: 'asset-integrity-failed' },
+      });
     } finally {
-      globalThis.fetch = originalFetch;
+      registry.dispose();
     }
   });
 });

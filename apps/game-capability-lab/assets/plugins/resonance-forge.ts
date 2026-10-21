@@ -4,7 +4,6 @@ import { quat } from '@forgeax/engine-math';
 import { AssetGuid, PackageId } from '@forgeax/engine-pack/guid';
 import { SceneInstance } from '@forgeax/engine-render';
 import { Transform, worldDespawnScene } from '@forgeax/engine-scene';
-import type { SceneAsset } from '@forgeax/engine-types';
 import {
   createResonanceFormation,
   RESONANCE_ROLE_COUNTS,
@@ -51,11 +50,6 @@ function parsedGuid(value: string) {
   return parsed.value;
 }
 
-async function loadOutput<T>(assets: AssetRegistry, value: string): Promise<T> {
-  const loaded = await assets.loadByGuid<T>(parsedGuid(value));
-  if (!loaded.ok) throw loaded.error;
-  return loaded.value;
-}
 
 /** Materialize one animated formation from the cooked outputs of resonance-forge.pack.ts. */
 export async function createResonanceForge(
@@ -83,9 +77,9 @@ export async function createResonanceForge(
   if (assets === undefined) return { snapshot, dispose() {} };
 
   try {
-    const scene = await loadOutput<SceneAsset>(assets, assetGuid('scene/formation'));
-    const sceneHandle = world.allocSharedRef('SceneAsset', scene);
+    const sceneHandle = (await assets.load(parsedGuid(assetGuid('scene/formation')), 'scene')).unwrap();
     const instantiated = assets.instantiate(sceneHandle, world);
+    assets.release(sceneHandle).unwrap();
     if (!instantiated.ok) throw instantiated.error;
     sceneRoot = instantiated.value;
     const instance = world.get(sceneRoot, SceneInstance);

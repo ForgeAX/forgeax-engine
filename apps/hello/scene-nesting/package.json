@@ -46,7 +46,8 @@
     "@forgeax/engine-pack": "workspace:*",
     "@forgeax/engine-types": "workspace:*",
     "@forgeax/engine-scene": "workspace:*",
-    "@forgeax/engine-render": "workspace:*"
+    "@forgeax/engine-render": "workspace:*",
+    "@forgeax/engine-assets-runtime": "workspace:*"
   },
   "devDependencies": {
     "@forgeax/apps-shared": "workspace:*",

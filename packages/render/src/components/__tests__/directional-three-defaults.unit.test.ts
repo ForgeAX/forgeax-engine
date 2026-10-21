@@ -7,7 +7,7 @@ import { extractFrame } from '../../render-system-extract-tail';
 import { Camera, orthographic, perspective } from '../camera';
 import { DirectionalLight, DirectionalShadowFilterValue } from '../directional-light';
 
-describe('Three.js camera and directional shadow defaults', () => {
+describe('Camera and directional shadow defaults', () => {
   it.each([
     perspective({ fov: 1, aspect: 1 }),
     orthographic({ left: -1, right: 1, bottom: -1, top: 1 }),
@@ -17,8 +17,10 @@ describe('Three.js camera and directional shadow defaults', () => {
   });
 
   it.each([
-    [2000, undefined, 2000],
-    [1100, undefined, 1100],
+    [2000, undefined, 200],
+    [1100, undefined, 200],
+    [50, undefined, 50],
+    [2000, 600, 600],
     [2000, 95, 95],
     [50, 95, 50],
   ])('fits cascades to camera far %s capped by shadow distance %s', (far, shadowDistance, expected) => {

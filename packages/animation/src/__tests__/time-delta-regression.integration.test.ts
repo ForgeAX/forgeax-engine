@@ -1,3 +1,5 @@
+import { AssetRegistry } from '@forgeax/engine-assets-runtime';
+import { runtimeAssetRegistry } from '@forgeax/engine-assets-runtime/internal';
 // Regression test for a bug fixed 2026-07-27 (feedback:
 // advance-animation-player-hardcoded-fixed-dt-ignores-time-delta): the
 // `AdvanceAnimationPlayer` / `EvaluateAnimationGraph` system tokens used to call
@@ -22,7 +24,7 @@ import { animationPlugin } from '../plugin';
 
 function registerClip(world: World, duration: number) {
   const clip: AnimationClip = { kind: 'animation-clip', duration, channels: [] };
-  return world.allocSharedRef('AnimationClip', clip);
+  return runtimeAssetRegistry(world.assets).create(clip).unwrap();
 }
 
 const FRAME_RATES_HZ = [30, 60, 120] as const;
@@ -32,7 +34,7 @@ describe('animation systems honor real Time.delta (regression: hardcoded 1/60)',
     FRAME_RATES_HZ,
   )('advanceAnimationPlayer advances times[0] by the real dt at %iHz, not a fixed 1/60', async (hz) => {
     const dt = 1 / hz;
-    const world = new World();
+    const world = new World({ assets: new AssetRegistry() });
     await createWorldContext(world, [animationPlugin()]);
 
     const clip = registerClip(world, 10);
@@ -53,17 +55,15 @@ describe('animation systems honor real Time.delta (regression: hardcoded 1/60)',
     FRAME_RATES_HZ,
   )('evaluateAnimationGraph advances nodeTimes[0] by the real dt at %iHz, not a fixed 1/60', async (hz) => {
     const dt = 1 / hz;
-    const world = new World();
+    const world = new World({ assets: new AssetRegistry() });
     const clipPayload: AnimationClip = { kind: 'animation-clip', duration: 10, channels: [] };
-    await createWorldContext(world, [
-      animationPlugin((guid) => (guid === 'test/animation-clip-delta' ? clipPayload : undefined)),
-    ]);
+    await createWorldContext(world, [animationPlugin()]);
 
-    registerClip(world, 10);
-    const built = defineAnimationGraph((b) => b.clip('test/animation-clip-delta'));
+    const clip = runtimeAssetRegistry(world.assets).create(clipPayload).unwrap();
+    const built = defineAnimationGraph((b) => b.clip(clip));
     expect(built.ok).toBe(true);
     if (!built.ok) return;
-    const graphH = world.allocSharedRef('AnimationGraph', built.value);
+    const graphH = runtimeAssetRegistry(world.assets).create(built.value).unwrap();
 
     // `nodeSpeeds` defaults to 0 per node when unset (unlike `nodeWeights`,
     // which defaults to 1) — must be explicit or the clip node never advances.

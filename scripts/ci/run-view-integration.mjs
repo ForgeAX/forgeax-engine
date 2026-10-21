@@ -57,6 +57,8 @@ const steps = [
   ['contracts', 'node', ['scripts/ci/verify-view-export-falsifier.mjs']],
   ['contracts', 'node', ['scripts/ci/verify-view-panels-falsifier.mjs']],
   ['diagnostics', 'node', ['tools/view-plugins/integration/verify-texture-preview.mjs']],
+  ['diagnostics', 'node', ['tools/view-plugins/integration/verify-pack-authoring.mjs']],
+  ['diagnostics', 'node', ['tools/view-plugins/integration/verify-pack-save-reopen.mjs']],
   [
     'diagnostics',
     'node',
@@ -185,7 +187,7 @@ for (const [owner, file, args, env = {}] of selected) {
     }),
   );
   if (result.status !== 0) {
-    if (viewProbe) {
+    if (viewProbe || args[0]?.startsWith('tools/view-plugins/integration/')) {
       try {
         const files = collectViewBackendDiagnostics({
           probePid: result.pid,

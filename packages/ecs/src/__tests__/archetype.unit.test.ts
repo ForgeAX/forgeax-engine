@@ -1659,7 +1659,7 @@ function appendEntity(table: Table, entity: number): number {
         // release-semantics dispatch (M4 wires the sub-branches).
         for (const [key, row] of Object.entries(TYPE_METADATA)) {
           const im = (row as unknown as Record<string, unknown>).isManaged as boolean;
-          const expected = key === 'string' || key === 'ref' || key === 'shared';
+          const expected = key === 'string' || key === 'ref' || key === 'shared' || key === 'asset';
           expect(im, `TYPE_METADATA['${key}'].isManaged`).toBe(expected);
         }
       });
@@ -1732,12 +1732,12 @@ function appendEntity(table: Table, entity: number): number {
         'buffer',
         'buffer<64>',
         'unique<MaterialAsset>',
-        'shared<MaterialAsset>',
+        'asset<material>',
         'array<f32>',
         'array<f32, 16>',
         'array<entity>',
         'array<entity, 4>',
-        'array<shared<MaterialAsset>>',
+        'array<asset<material>>',
         'unknown-field-type',
       ];
 

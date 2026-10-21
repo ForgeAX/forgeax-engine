@@ -1,12 +1,14 @@
+import type { AssetHandle } from '@forgeax/engine-types';
 import type { AssetRegistry } from '@forgeax/engine-assets-runtime';
 import type { EntityHandle, World } from '@forgeax/engine-ecs';
-import { AssetGuid } from '@forgeax/engine-pack/guid';
-import { HANDLE_QUAD } from '@forgeax/engine-assets-runtime';
+
 import { MeshFilter, MeshRenderer } from '@forgeax/engine-render';
 import { VideoPlayer, VIDEO_SOURCE_PROVIDER_KEY } from '@forgeax/engine-graphics-extras';
 import type { VideoSourceProvider } from '@forgeax/engine-graphics-extras';
-import type { Handle, MaterialAsset, VideoAsset } from '@forgeax/engine-types';
 import { Transform } from '@forgeax/engine-scene';
+import { createPrimitiveMesh } from '@forgeax/engine-geometry';
+const BUILTIN_QUAD = createPrimitiveMesh('quad').unwrap();
+
 
 /** Runtime-only asset descriptor for the licensed WebM in the assets submodule. */
 export const GAME_DEFAULT_VIDEO_GUID = '019f5d11-0e1f-7c21-a4d2-7e4f6e8f2001';
@@ -32,8 +34,8 @@ export type VideoTexturePanelSnapshot = {
 export type VideoTexturePanel = {
   readonly entity: EntityHandle;
   readonly target: EntityHandle;
-  readonly videoHandle: Handle<'VideoAsset', 'shared'>;
-  readonly materialHandle: Handle<'MaterialAsset', 'shared'>;
+  readonly videoHandle: AssetHandle<'video'>;
+  readonly materialHandle: AssetHandle<'material'>;
   active: 'original' | 'video';
   swaps: number;
   hitReactions: number;
@@ -130,7 +132,7 @@ function snapshotFrom(state: VideoTexturePanel | undefined, assets: AssetRegistr
     hitReactions: state.hitReactions,
     lastHitPlayhead: state.lastHitPlayhead,
     guid: GAME_DEFAULT_VIDEO_GUID,
-    name: assets?.resolveName(GAME_DEFAULT_VIDEO_GUID) ?? null,
+    name: assets?.catalogEntry(GAME_DEFAULT_VIDEO_GUID)?.name ?? GAME_DEFAULT_VIDEO_GUID,
     kind: 'video',
     url: GAME_DEFAULT_VIDEO_URL,
   };
@@ -147,41 +149,20 @@ export async function createVideoTexturePanel(
   target: EntityHandle | undefined,
 ): Promise<VideoTexturePanel | undefined> {
   if (assets === undefined || target === undefined) return undefined;
-  const videoGuid = AssetGuid.parse(GAME_DEFAULT_VIDEO_GUID);
-  const materialGuid = AssetGuid.parse(GAME_DEFAULT_VIDEO_MATERIAL_GUID);
-  if (!videoGuid.ok || !materialGuid.ok) return undefined;
-
-  assets.catalog<VideoAsset>(videoGuid.value, { kind: 'video', url: GAME_DEFAULT_VIDEO_URL });
-  const video = await assets.loadByGuid<VideoAsset>(videoGuid.value);
-  if (!video.ok) {
-    console.warn(`[game] WebM video unavailable (${video.error.code}): ${video.error.hint}`);
-    return undefined;
-  }
-  // The runtime material resolver intentionally accepts a GUID string in a
-  // texture slot (the same wire shape emitted by Pack). MaterialAsset's
-  // authoring type also models the post-cook AssetGuid object, so keep this
-  // runtime-only catalog entry at the boundary rather than minting a second
-  // texture handle or inventing a WebM importer.
-  assets.catalog<MaterialAsset>(materialGuid.value, {
+  const videoHandle = assets.create({ kind: 'video', url: GAME_DEFAULT_VIDEO_URL }).unwrap();
+  const materialHandle = assets.create({
     kind: 'material',
     passes: [{
       name: 'Forward',
       program: { module: 'forgeax::default-unlit' },
       renderState: { tags: { LightMode: 'Forward' }, queue: 2000 },
     }],
-    values: { baseColor: [1, 1, 1], baseColorTexture: GAME_DEFAULT_VIDEO_GUID },
-  } as unknown as MaterialAsset);
-  const material = await assets.loadByGuid<MaterialAsset>(materialGuid.value);
-  if (!material.ok) {
-    console.warn(`[game] WebM material unavailable (${material.error.code}): ${material.error.hint}`);
-    return undefined;
-  }
-
-  const videoHandle = world.allocSharedRef('VideoAsset', video.value);
-  const materialHandle = world.allocSharedRef('MaterialAsset', material.value);
+    values: { baseColor: [1, 1, 1], baseColorTexture: videoHandle },
+  }).unwrap();
+  const meshHandle = assets.create(BUILTIN_QUAD).unwrap();
   const panel = world.spawn(
     { component: Transform, data: { pos: [0, -100, 0], quat: [0, 0, 0, 1], scale: [0, 0, 0] } },
-    { component: MeshFilter, data: { assetHandle: HANDLE_QUAD } },
+    { component: MeshFilter, data: { assetHandle: meshHandle } },
     { component: MeshRenderer, data: { materials: [materialHandle] } },
     { component: VideoPlayer, data: { clip: videoHandle, playing: false, loop: true, currentTime: 0 } },
   ).unwrap();
@@ -251,8 +232,9 @@ export async function createVideoTexturePanel(
       if (previousProvider !== undefined) world.insertResource(VIDEO_SOURCE_PROVIDER_KEY, previousProvider);
       host.dispose();
       world.despawn(panel);
-      world.sharedRefs.release(videoHandle);
-      world.sharedRefs.release(materialHandle);
+      assets.release(meshHandle).unwrap();
+      assets.release(videoHandle).unwrap();
+      assets.release(materialHandle).unwrap();
     },
   };
   return state;

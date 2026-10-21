@@ -5,6 +5,7 @@ import { VIEW_WORKSPACE_TAB_ID } from '@forgeax/view-workspace-core/contract';
 import { reportWorkspaceCommandError } from '@forgeax/view-workspace-core/command-error';
 import { ViewWorkspaceInputController } from './workspace-shell.ts';
 import { createViewportInputApi } from './camera-client.ts';
+import { installNativePreviewHost } from '@forgeax/view-workspace-core/preview-surface';
 
 /** Bind tools in the document that owns the exact canvas, including isolated Scene realms. */
 export const viewportInputPlugin: Plugin.Object = {
@@ -14,6 +15,8 @@ export const viewportInputPlugin: Plugin.Object = {
     const api = ctx.viewOperationClient!;
     const presentation = ctx.engineWorkspacePresentation!;
     const { window, document } = ctx.frontendPlatform;
+    if (document.defaultView && document.defaultView.parent !== document.defaultView)
+      ctx.effect(() => installNativePreviewHost({ presentation, client: api, document, window, createContainer: () => document.createElement('div') }));
     let state: WorkspaceState;
     let controller: ViewWorkspaceInputController | undefined;
     let target: WorkspaceState['preview'];

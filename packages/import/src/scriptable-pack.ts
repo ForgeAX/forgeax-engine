@@ -10,6 +10,7 @@ import type {
   Asset,
   AssetGuid as AssetGuidType,
   AssetPublicationEnvelope,
+  AssetPublicationExternalEvidence,
   FontAsset,
   ImportError,
   MaterialAsset,
@@ -73,34 +74,27 @@ type AnimationGraphPackPayload = Omit<AnimationGraph, 'nodes'> & {
 };
 
 /** Serialized producer payloads; runtime Assets never carry ref indices. */
-export type AssetOutputPayloadByKind = {
-  readonly plugin: Extract<Asset, { readonly kind: 'plugin' }>;
-  readonly mesh: Omit<MeshAsset, 'distanceField'> & {
+type SerializedPayloads = {
+  readonly mesh: (Omit<MeshAsset, 'distanceField'> | { readonly kind: 'mesh' }) & {
     readonly distanceField?: MeshDistanceFieldDescriptor;
   };
   readonly material: MaterialPackPayload;
   readonly scene: ScenePackPayload;
-  readonly texture: Extract<Asset, { readonly kind: 'texture' }>;
-  readonly equirect: Extract<Asset, { readonly kind: 'equirect' }>;
-  readonly sampler: Extract<Asset, { readonly kind: 'sampler' }>;
   readonly font: FontPackPayload;
-  readonly 'render-pipeline': Extract<Asset, { readonly kind: 'render-pipeline' }>;
   readonly tileset: TilesetPackPayload;
-  readonly 'navigation-mesh': Extract<Asset, { readonly kind: 'navigation-mesh' }>;
-  readonly terrain: Extract<Asset, { readonly kind: 'terrain' }>;
-  readonly video: Extract<Asset, { readonly kind: 'video' }>;
-  readonly skeleton: Extract<Asset, { readonly kind: 'skeleton' }>;
-  readonly skin: Extract<Asset, { readonly kind: 'skin' }>;
-  readonly 'animation-clip': Extract<Asset, { readonly kind: 'animation-clip' }>;
   readonly 'animation-graph': AnimationGraphPackPayload;
   readonly audio: {
     readonly kind: 'audio';
     readonly sourceKey: string;
     readonly mediaType: `audio/${string}`;
   };
-  readonly 'particle-effect': Extract<Asset, { readonly kind: 'particle-effect' }>;
-  readonly 'ies-profile': Extract<Asset, { readonly kind: 'ies-profile' }>;
 };
+
+export type AssetOutputPayloadByKind = Omit<
+  { readonly [A in Asset as A['kind']]: A },
+  keyof SerializedPayloads
+> &
+  SerializedPayloads;
 
 export type AssetOutputPayload = AssetOutputPayloadByKind[ScriptablePackAssetKind];
 export interface AssetOutputProduct extends ImportAssetProduct<AssetOutputPayload> {
@@ -142,20 +136,11 @@ export class AssetOutputProducerRegistry {
   }
 }
 
-export type ScriptablePackExternalUsage = 'reference' | 'content' | 'both';
-
-export interface ScriptablePackExternalEvidence {
-  readonly guid: string;
-  readonly usage: ScriptablePackExternalUsage;
-  readonly generation?: number;
-  readonly digest?: string;
-}
-
 /** Shared terminal product envelope for every Pack source form. */
 export interface PackBuildProduct {
   readonly product: TerminalImportProduct<unknown>;
   readonly stagedOutputs: readonly ScriptablePackStagedOutput[];
-  readonly externalEvidence: readonly ScriptablePackExternalEvidence[];
+  readonly externalEvidence: readonly AssetPublicationExternalEvidence[];
   readonly inputFingerprint: string;
   readonly publication?: AssetPublicationEnvelope;
 }

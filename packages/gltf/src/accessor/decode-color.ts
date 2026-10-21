@@ -1,4 +1,12 @@
-import { err, type GltfError, gltfErr, ok, type Result } from '../errors.js';
+import {
+  err,
+  type GltfColorAccessorMalformedDetail,
+  type GltfColorAccessorUnsupportedDetail,
+  type GltfError,
+  gltfErr,
+  ok,
+  type Result,
+} from '../errors.js';
 import { type DecodeAccessorInput, decodeAccessor } from './decode-accessor.js';
 export type DecodeColorAccessorInput = Omit<DecodeAccessorInput, 'role'> & {
   readonly semantic: 'COLOR_0';
@@ -9,7 +17,7 @@ export function decodeColorAccessor(
   flags: { readonly morph?: boolean } = {},
 ): Result<Float32Array, GltfError> {
   const { accessor, accessorIndex, semantic } = input;
-  const unsupported = (reason: 'component' | 'type' | 'normalized' | 'morph') =>
+  const unsupported = (reason: GltfColorAccessorUnsupportedDetail['reason']) =>
     err(
       gltfErr('gltf-color-accessor-unsupported', {
         semantic,
@@ -20,7 +28,7 @@ export function decodeColorAccessor(
         ...(reason === 'normalized' ? { expectedNormalized: true } : {}),
       }),
     );
-  const malformed = (reason: 'count' | 'bounds' | 'finite' | 'range' | 'reference') =>
+  const malformed = (reason: GltfColorAccessorMalformedDetail['reason']) =>
     err(
       gltfErr('gltf-color-accessor-malformed', {
         semantic,

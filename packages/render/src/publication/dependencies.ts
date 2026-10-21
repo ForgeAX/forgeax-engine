@@ -1,32 +1,31 @@
-import type { Handle } from '@forgeax/engine-types';
 import type { ExtractedFrame, RenderableSnapshot } from '../render-system-extract';
 
 /** One asset closure for source publication and receiver admission. */
 export function publicationDependencies(
-  row: Pick<RenderableSnapshot, 'assetHandle' | 'materials' | 'terrain'>,
-): Handle<string, 'shared'>[] {
-  const handles = new Set<Handle<string, 'shared'>>([row.assetHandle as Handle<string, 'shared'>]);
-  if (row.terrain)
-    for (const handle of [
-      row.terrain.handle,
-      ...row.terrain.grids,
-      ...row.terrain.heightTextures,
-      ...row.terrain.weightTextures,
-    ])
-      handles.add(handle as Handle<string, 'shared'>);
+  row: Pick<
+    RenderableSnapshot,
+    'assetHandle' | 'materials' | 'materialOverrides' | 'terrain' | 'glyph' | 'tilemap'
+  >,
+): number[] {
+  if (row.glyph !== undefined) return [row.glyph.font];
+  if (row.tilemap !== undefined) return [row.tilemap.tileset];
+  if (row.terrain !== undefined) return [row.terrain.handle];
+  const handles = new Set<number>([row.assetHandle as number]);
+  for (const override of row.materialOverrides ?? [])
+    if (override?.snapshot.materialHandle) handles.add(override.snapshot.materialHandle);
   for (const material of row.materials) {
     for (const handle of [
-      material.materialHandle,
-      material.baseColorTexture,
-      material.metallicRoughnessTexture,
-      material.normalTexture,
-      material.emissiveTexture,
-      material.occlusionTexture,
+      material.snapshot.materialHandle,
+      material.snapshot.baseColorTexture,
+      material.snapshot.metallicRoughnessTexture,
+      material.snapshot.normalTexture,
+      material.snapshot.emissiveTexture,
+      material.snapshot.occlusionTexture,
     ]) {
-      if (handle) handles.add(handle as Handle<string, 'shared'>);
+      if (handle) handles.add(handle as number);
     }
-    for (const handle of material.textureHandles?.values() ?? []) handles.add(handle);
-    for (const handle of material.samplerHandles?.values() ?? []) handles.add(handle);
+    for (const handle of material.snapshot.textureHandles?.values() ?? []) handles.add(handle);
+    for (const handle of material.snapshot.samplerHandles?.values() ?? []) handles.add(handle);
   }
   return [...handles];
 }
@@ -43,10 +42,10 @@ export function publicationFrameDependencies(
     | 'volumetricFog'
     | 'projectedDecals'
   >,
-): Handle<string, 'shared'>[] {
-  const handles = new Set<Handle<string, 'shared'>>();
+): number[] {
+  const handles = new Set<number>();
   const add = (handle: number | undefined) => {
-    if (handle) handles.add(handle as Handle<string, 'shared'>);
+    if (handle) handles.add(handle as number);
   };
   for (const decal of frame.projectedDecals ?? []) {
     add(decal.material.materialHandle);
@@ -74,5 +73,18 @@ export function publicationFrameDependencies(
     add(fog.densityHandle);
     add(fog.projectorHandle);
   }
+  return [...handles];
+}
+
+/** Binding roots; transitive resource holds belong to the asset owner graph. */
+export function renderableAssetRoots(row: RenderableSnapshot): readonly number[] {
+  if (row.glyph !== undefined) return [row.glyph.font];
+  if (row.tilemap !== undefined) return [row.tilemap.tileset];
+  if (row.terrain !== undefined) return [row.terrain.handle];
+  const handles = new Set<number>(row.assetHandle === undefined ? [] : [row.assetHandle]);
+  for (const override of row.materialOverrides ?? [])
+    if (override?.snapshot.materialHandle) handles.add(override.snapshot.materialHandle);
+  for (const material of row.materials) handles.add(material.snapshot.materialHandle ?? 0);
+  handles.delete(0);
   return [...handles];
 }

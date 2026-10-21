@@ -7,10 +7,7 @@
 // the Sun disc out of every IBL payload and preventing a second direct-Sun
 // injection. The graph selects one entry point per producer kind.
 
-#import forgeax_pbr::ibl_shared::{PI, hammersley, importanceSampleGGX}
-
-// WebGL2 uniform bindings must span a 16-byte multiple.
-struct AtmosphereIblParams { prefilterRoughness: f32, _pad0: f32, _pad1: f32, _pad2: f32, };
+#import forgeax_pbr::ibl_shared::{PI}
 
 struct AtmosphereIblVsIn {
   // xy is clip-space; z is the one-based cube-face tag supplied by the
@@ -23,9 +20,8 @@ struct AtmosphereIblVsOut {
   @location(0) direction: vec3<f32>,
 };
 
-@group(0) @binding(0) var<uniform> atmosphere: AtmosphereIblParams;
-@group(1) @binding(0) var sky: texture_cube<f32>;
-@group(1) @binding(1) var skySampler: sampler;
+@group(0) @binding(0) var sky: texture_cube<f32>;
+@group(0) @binding(1) var skySampler: sampler;
 
 @vertex
 fn atmosphere_ibl_vs(input: AtmosphereIblVsIn) -> AtmosphereIblVsOut {
@@ -87,29 +83,4 @@ fn atmosphere_irradiance_fs(input: AtmosphereIblVsOut) -> @location(0) vec4<f32>
     phiIndex = phiIndex + 1u;
   }
   return vec4<f32>(PI * irradiance / max(sampleCount, 1.0), 1.0);
-}
-
-@fragment
-fn atmosphere_prefilter_fs(input: AtmosphereIblVsOut) -> @location(0) vec4<f32> {
-  let normal = normalize(input.direction);
-  let viewDirection = normal;
-  let roughness = clamp(atmosphere.prefilterRoughness, 0.04, 1.0);
-  var prefiltered = vec3<f32>(0.0);
-  var totalWeight: f32 = 0.0;
-  const sampleCount: u32 = 64u;
-  for (var index: u32 = 0u; index < sampleCount; index = index + 1u) {
-    let halfVector = importanceSampleGGX(hammersley(index, sampleCount), normal, roughness);
-    let lightDirection = normalize(2.0 * dot(viewDirection, halfVector) * halfVector - viewDirection);
-    let normalLight = max(dot(normal, lightDirection), 0.0);
-    if (normalLight > 0.0) {
-      let cubeLightDirection = vec3<f32>(
-        lightDirection.x,
-        -lightDirection.y,
-        lightDirection.z,
-      );
-      prefiltered += textureSampleLevel(sky, skySampler, cubeLightDirection, 0.0).rgb * normalLight;
-      totalWeight += normalLight;
-    }
-  }
-  return vec4<f32>(prefiltered / max(totalWeight, 0.001), 1.0);
 }

@@ -1,47 +1,20 @@
-import { Update } from '@forgeax/engine-ecs';
-// apps/hello/asi-world - ASI World scene + WASD-walking player demo
-// migrated onto the tilemap object-layer path (feat-20260608 M4 / m4-t2).
-//
-// The legacy per-object sprite-entity path (one MaterialAsset per
-// atlas tile + one MeshFilter/MeshRenderer/Layer/Transform entity per
-// object) is **deleted**. Object decoration is now a single TileLayer
-// with 153 asi_world object-atlas entries carrying widthCells /
-// heightCells / pivotX / pivotY / collider via the TilesetTileEntry
-// surface (requirements section MUST-1 / SHOULD-3 / NICE-4; AC-15
-// grep-zero-hit on the three retired helpers).
-//
-// Coordinate convention
-// ---------------------
-// asi_world is top-down, y increases DOWN the map. forgeax is y-up.
-// When we move data into TileLayer or object positions we flip
-// `worldY = (rows - 1) - asi_y`. The `passable` array, the player
-// position, the camera target, the input direction — everything in
-// this file lives in the FLIPPED (y-up) coordinate space.
-//
-// Shared tilemap entity (plan-strategy §M4 preferred path "reuse terrain
-// tilemap"): one Tilemap parent + N terrain TileLayer (one per height
-// bucket) + 1 object TileLayer with layerOrder above terrain so the
-// per-cell sprite quads paint over the floor. The combined TilesetAsset
-// carries both atlases via durable GUIDs in `atlases`.
-// and routes per-region through `regions[i].atlasIndex` (NICE-4).
-
+// Runtime assets are owned by this World; each Tilemap is one ordinary scene layer.
 import type { App, CanvasAppError } from '@forgeax/engine-app';
 import { createApp } from '@forgeax/engine-app/browser';
-import { World } from '@forgeax/engine-ecs';
+import { Update } from '@forgeax/engine-ecs';
 import { INPUT_SNAPSHOT_RESOURCE_KEY, type InputSnapshot } from '@forgeax/engine-input';
-import { HANDLE_QUAD } from '@forgeax/engine-assets-runtime';
+import { type AssetRegistry } from '@forgeax/engine-assets-runtime';
 import { encodeTileBits } from '@forgeax/engine-graphics-extras';
 import { ChildOf, Transform } from '@forgeax/engine-scene';
 
 import { CAMERA_PROJECTION_ORTHOGRAPHIC } from '@forgeax/engine-render';
 import { EngineEnvironmentError } from '@forgeax/engine-runtime';
-import { TransparentSort, TilemapSort, SpriteRegionOverride, SPRITE_PREMULTIPLIED_ALPHA_BLEND, Tilemap, TileLayer } from '@forgeax/engine-render/authoring';
+import { TransparentSort, TilemapSort, SpriteRegionOverride, SPRITE_PREMULTIPLIED_ALPHA_BLEND, Tilemap } from '@forgeax/engine-render/authoring';
 import { Layer } from '@forgeax/engine-render';
 import { Camera, MeshFilter, MeshRenderer } from '@forgeax/engine-render';
 
 import type {
-  Handle,
-  MaterialAsset,
+  AssetHandle,
   TextureAsset,
   TilesetAsset,
   TilesetRegion,
@@ -58,15 +31,16 @@ import type {
   TsjFile,
 } from './types';
 import { buildWorld, pickFloorSpawnCell, type BuiltWorld } from './world-build';
+import { createPrimitiveMesh } from '@forgeax/engine-geometry';
+const BUILTIN_QUAD = createPrimitiveMesh('quad').unwrap();
+
 
 const WORLD = '/world';
 const CHARACTER = '/character';
-const TERRAIN_ATLAS_GUID = 'asi-world/terrain-atlas';
-const OBJECT_ATLAS_GUID = 'asi-world/object-atlas';
 
 const PLAYER_SPEED = 6;
 
-// Object TileLayer uses sortScope: 'per-cell' so all derived entities
+// Object Tilemap uses sortScope: 'per-cell' so all derived entities
 // share Layer.value = OBJECT_LAYER_ORDER << 20 (no chunkIndex contamination).
 // This lets the player Y-interleave with every object tile: the player
 // and all trees/stumps/grass are in the same transparent-sort bucket and
@@ -81,8 +55,8 @@ const OBJECT_LAYER_ORDER = 1000;
 const SPRITE_LAYER_VALUE = OBJECT_LAYER_ORDER << 20;
 
 // Tile id encoding (engine reads `tileset.tiles[tileLayerCellValue - 1]`):
-//   terrain TileLayer cell N -> tiles[N - 1]   (terrain block of tiles[])
-//   object  TileLayer cell N -> tiles[N - 1]   (object  block of tiles[])
+//   terrain Tilemap cell N -> tiles[N - 1]   (terrain block of tiles[])
+//   object  Tilemap cell N -> tiles[N - 1]   (object  block of tiles[])
 // We pack terrain then objects into one tiles[]; OBJECT_TILE_OFFSET
 // shifts the object id range. See `composeTilesetAsset` for the layout.
 
@@ -167,32 +141,24 @@ async function bootstrap(target: HTMLCanvasElement): Promise<void> {
 
   const terrainPayload = makeTextureAsset(terrainPng);
   const objectPayload = makeTextureAsset(objectPng);
-  registerTexture(world, terrainPng);
-  registerTexture(world, objectPng);
-  const idleTex = registerTexture(world, idlePng);
-  const moveTex = registerTexture(world, movePng);
+  const terrainAtlas=assets.create(terrainPayload).unwrap();
+  const objectAtlas=assets.create(objectPayload).unwrap();
+  const idleTex = registerTexture(assets, idlePng);
+  const moveTex = registerTexture(assets, movePng);
 
   // Combined TilesetAsset: terrain entries first, then object entries.
-  // OBJECT_TILE_OFFSET = terrain length so TileLayer.tiles can encode
+  // OBJECT_TILE_OFFSET = terrain length so Tilemap.tiles can encode
   // object id N as (OBJECT_TILE_OFFSET + N + 1), which engine resolves
   // via `tileset.tiles[(value) - 1] = tileset.tiles[OBJECT_TILE_OFFSET + N]`.
   const combined = composeTilesetAsset({
-    terrain: { atlas: TERRAIN_ATLAS_GUID, atlasPng: terrainPng, tsj: terrainTsj },
-    object: { atlas: OBJECT_ATLAS_GUID, atlasPng: objectPng, tsj: objectTsj },
+    terrain: { atlas: terrainAtlas, atlasPng: terrainPng, tsj: terrainTsj },
+    object: { atlas: objectAtlas, atlasPng: objectPng, tsj: objectTsj },
   });
   const objectTileOffset = terrainTsj.tiles.length;
-  const catalogResults = [
-    assets.catalog(TERRAIN_ATLAS_GUID, terrainPayload),
-    assets.catalog(OBJECT_ATLAS_GUID, objectPayload),
-    assets.catalog('asi-world/tileset', combined),
-  ];
-  if (catalogResults.some((result) => !result.ok)) {
-    setHud('asset catalog failed');
-    return;
-  }
+  const tileset=assets.create(combined).unwrap();
 
-  const playerIdleMaterial = registerCharacterMaterial({ world, texture: idleTex });
-  const playerMoveMaterial = registerCharacterMaterial({ world, texture: moveTex });
+  const playerIdleMaterial = registerCharacterMaterial({ assets, texture: idleTex });
+  const playerMoveMaterial = registerCharacterMaterial({ assets, texture: moveTex });
 
   setHud('spawning scene...');
 
@@ -231,48 +197,31 @@ async function bootstrap(target: HTMLCanvasElement): Promise<void> {
   if (!cameraSpawn.ok) return logErr('camera spawn', cameraSpawn.error);
   const cameraEntity = cameraSpawn.value;
 
-  // Shared Tilemap parent for terrain + object layers (plan-strategy
-  // §M4 "reuse terrain tilemap": one chunk grid, one tileset handle).
-  const tilemapSpawn = world.spawn(
-    {
-      component: Transform,
-      data: { pos: [0, 0, 0], scale: [1, 1, 1]},
-    },
-    {
-      component: Tilemap,
-      data: {
-        cols: built.cols,
-        rows: built.rows,
-        tileSize: [1, 1],
-        tileset: 'asi-world/tileset',
-      },
-    },
-  );
-  if (!tilemapSpawn.ok) return logErr('tilemap spawn', tilemapSpawn.error);
-  const tilemapEntity = tilemapSpawn.value;
+  const tilemapEntity=world.spawn({component:Transform,data:{}}).unwrap();
+  const grid={cols:built.cols,rows:built.rows,tileSize:[1,1],tileset};
 
-  // Terrain TileLayers — one per height bucket. Tile id encoding picks
+  // Terrain Tilemap layers — one per height bucket. Tile id encoding picks
   // the terrain section of tiles[] (object offset = 0).
   for (const layer of built.layers) {
-    const flipped = buildTerrainTileLayer(built, layer.tiles);
+    const flipped = buildTerrainTilemap(built, layer.tiles);
     const r = world.spawn(
-      { component: TileLayer, data: { tiles: flipped, layerOrder: layer.layerOrder } },
+      { component: Tilemap, data: { ...grid, tiles: flipped, layerOrder: layer.layerOrder } },
       { component: ChildOf, data: { parent: tilemapEntity } },
       { component: Transform, data: { pos: [0, 0, 0], quat: [0, 0, 0, 1], scale: [1, 1, 1]} },
     );
-    if (!r.ok) return logErr(`terrain TileLayer (height=${layer.heightKey} sub=${layer.subIndex})`, r.error);
+    if (!r.ok) return logErr(`terrain Tilemap (height=${layer.heightKey} sub=${layer.subIndex})`, r.error);
   }
 
-  // Object TileLayer — single anchor-cell sheet. 779 objects in the
+  // Object Tilemap — single anchor-cell sheet. 779 objects in the
   // asi_world test2-b30f5a scene; each gets one non-zero cell here and
-  // the chunk-extract system spawns one per-cell entity carrying the
+  // the Renderer emits visible per-cell draws carrying the
   // tile entry's widthCells / heightCells / pivot.
-  const objectTiles = buildObjectTileLayer(built, objectTileOffset);
+  const objectTiles = buildObjectTilemap(built, objectTileOffset);
   const objectLayerSpawn = world.spawn(
     {
-      component: TileLayer,
+      component: Tilemap,
       data: {
-        tiles: objectTiles,
+        ...grid, tiles: objectTiles,
         layerOrder: OBJECT_LAYER_ORDER,
         sortScope: TilemapSort.perCell,
       },
@@ -280,7 +229,7 @@ async function bootstrap(target: HTMLCanvasElement): Promise<void> {
     { component: ChildOf, data: { parent: tilemapEntity } },
     { component: Transform, data: { pos: [0, 0, 0], quat: [0, 0, 0, 1], scale: [1, 1, 1]} },
   );
-  if (!objectLayerSpawn.ok) return logErr('object TileLayer', objectLayerSpawn.error);
+  if (!objectLayerSpawn.ok) return logErr('object Tilemap', objectLayerSpawn.error);
 
   // Player: per-entity sprite riding the same transparent dispatch queue
   // as the tilemap-spawned per-cell entities (charter P4 consistent
@@ -294,7 +243,7 @@ async function bootstrap(target: HTMLCanvasElement): Promise<void> {
         scale: [2.5, 4.0, 1],
       },
     },
-    { component: MeshFilter, data: { assetHandle: HANDLE_QUAD } },
+    { component: MeshFilter, data: { assetHandle: assets.create(BUILTIN_QUAD).unwrap() } },
     { component: MeshRenderer, data: { materials: [playerIdleMaterial] } },
     { component: Layer, data: { value: SPRITE_LAYER_VALUE } },
     {
@@ -391,6 +340,11 @@ async function bootstrap(target: HTMLCanvasElement): Promise<void> {
     },
   });
 
+  if(new URL(location.href).searchParams.has('smoke')) {
+    let completedFrames=0;
+    app.renderer.subscribe(event=>{if(event.kind==='frame-submitted'&&event.receipt.presentation==='ready')void event.receipt.completed.then(result=>{if(result.ok)completedFrames++;});});
+    Object.assign(globalThis,{__forgeax:{renderer:app.renderer,completedFrames:()=>completedFrames}});
+  }
   const startRes = app.start();
   if (!startRes.ok) {
     reportAppError(startRes.error);
@@ -431,10 +385,10 @@ function reportAppError(err: CanvasAppError): void {
 }
 
 function registerTexture(
-  world: World,
+  assets: AssetRegistry,
   png: { width: number; height: number; rgba: Uint8Array },
-): Handle<'TextureAsset', 'shared'> {
-  return world.allocSharedRef<'TextureAsset', TextureAsset>('TextureAsset', makeTextureAsset(png));
+): AssetHandle<'texture'> {
+  return assets.create(makeTextureAsset(png)).unwrap();
 }
 
 function makeTextureAsset(
@@ -455,12 +409,12 @@ function makeTextureAsset(
 
 interface ComposeTilesetArgs {
   readonly terrain: {
-    readonly atlas: string;
+    readonly atlas: AssetHandle<'texture'>;
     readonly atlasPng: { readonly width: number; readonly height: number };
     readonly tsj: TsjFile;
   };
   readonly object: {
-    readonly atlas: string;
+    readonly atlas: AssetHandle<'texture'>;
     readonly atlasPng: { readonly width: number; readonly height: number };
     readonly tsj: TsjFile;
   };
@@ -469,7 +423,7 @@ interface ComposeTilesetArgs {
 // Compose one TilesetAsset that carries both atlases via `atlases[]` +
 // per-region `atlasIndex` (NICE-4 multi-atlas path). Terrain entries
 // occupy the low half of tiles[]; object entries occupy the high half.
-// Engine resolves a TileLayer cell value N via `tiles[N - 1]`, then
+// Engine resolves a Tilemap cell value N via `tiles[N - 1]`, then
 // `regions[entry.regionIndex].atlasIndex ?? 0` picks the atlas.
 function composeTilesetAsset(args: ComposeTilesetArgs): TilesetAsset {
   const regions: TilesetRegion[] = [];
@@ -559,14 +513,14 @@ function toEngineCollider(c: TsjCollider): TilesetTileCollider {
 }
 
 interface RegisterCharacterMaterialArgs {
-  readonly world: World;
-  readonly texture: Handle<'TextureAsset', 'shared'>;
+  readonly assets: AssetRegistry;
+  readonly texture: AssetHandle<'texture'>;
 }
 
 function registerCharacterMaterial(
   args: RegisterCharacterMaterialArgs,
-): Handle<'MaterialAsset', 'shared'> {
-  return args.world.allocSharedRef<'MaterialAsset', MaterialAsset>('MaterialAsset', {
+): AssetHandle<'material'> {
+  return args.assets.create({
     kind: 'material',
     passes: [
       { name: 'Forward', program: { module: 'forgeax::sprite' }, renderState: { ...{ blend: SPRITE_PREMULTIPLIED_ALPHA_BLEND }, tags: { LightMode: 'Forward' }, queue: 3000 } },
@@ -577,22 +531,22 @@ function registerCharacterMaterial(
       // sign-negation per plan-strategy D-8); colorTint / baseColorTexture /
       // pivotAndSize replace the legacy baseColor / texture / pivot keys.
       colorTint: [1, 1, 1, 1],
-      baseColorTexture: args.texture,
+      baseColorTexture: {texture: args.texture},
       region: [0, 0, 1, 1],
       pivotAndSize: [0.5, 0.0, 1, 1],
       flipY: 1,
     },
-  });
+  }).unwrap();
 }
 
 function regionForFrame(row: number, frame: number): [number, number, number, number] {
   return [frame / SHEET_COLS, row / SHEET_ROWS, 1 / SHEET_COLS, 1 / SHEET_ROWS];
 }
 
-// Terrain TileLayer: 1 cell -> 1 atlas tile. asi_world stores
+// Terrain Tilemap: 1 cell -> 1 atlas tile. asi_world stores
 // graphic_index per cell (top-down y), we y-flip into engine space.
-// TileLayer cell value = graphic_index + 1 (engine reads tiles[N-1]).
-function buildTerrainTileLayer(built: BuiltWorld, layerTiles: Uint32Array): Uint32Array {
+// Tilemap cell value = graphic_index + 1 (engine reads tiles[N-1]).
+function buildTerrainTilemap(built: BuiltWorld, layerTiles: Uint32Array): Uint32Array {
   const flipped = new Uint32Array(built.cols * built.rows);
   for (let y = 0; y < built.rows; y++) {
     const srcRow = y * built.cols;
@@ -607,12 +561,12 @@ function buildTerrainTileLayer(built: BuiltWorld, layerTiles: Uint32Array): Uint
   return flipped;
 }
 
-// Object TileLayer: anchor cell only. asi_world places each object at
+// Object Tilemap: anchor cell only. asi_world places each object at
 // its (cellX, cellY) foot anchor; the tilemap chunk-extract system
 // derives the multi-cell footprint from TilesetTileEntry.{widthCells,
 // heightCells, pivotX, pivotY}. Tile id encoding shifts by the
 // object-tile offset so engine resolves tiles[offset + asi_id].
-function buildObjectTileLayer(built: BuiltWorld, objectTileOffset: number): Uint32Array {
+function buildObjectTilemap(built: BuiltWorld, objectTileOffset: number): Uint32Array {
   const tiles = new Uint32Array(built.cols * built.rows);
   for (const obj of built.objects) {
     const cellX = obj.cellX;

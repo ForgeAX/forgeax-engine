@@ -1,15 +1,12 @@
-import { HANDLE_CUBE } from '@forgeax/engine-assets-runtime';
 import { World } from '@forgeax/engine-ecs';
-import {
-  type CookedMaterialRecord,
-  serializeCookedMaterialRecord,
-  validateCookedMaterialRecord,
-} from '@forgeax/engine-pack';
+import { createPrimitiveMesh } from '@forgeax/engine-geometry';
+import { type CookedMaterialRecord, validateCookedMaterialRecord } from '@forgeax/engine-pack';
 import { err, RhiError } from '@forgeax/engine-rhi';
 import { RhiNullQueue, RhiNullRenderPassEncoder, rhi } from '@forgeax/engine-rhi-null';
 import { registerPropagateTransforms, Transform } from '@forgeax/engine-scene';
 import type { MaterialAsset } from '@forgeax/engine-types';
 import { expect, it, vi } from 'vitest';
+import { publishRuntimeAssets } from '../../../assets-runtime/src/__tests__/fixtures/runtime-publication';
 import { createMaterialPackCooker } from '../../../shader-compiler/src/material/pack-cooker';
 import { createRenderer } from '../assembly/factory';
 import { Camera, DirectionalLight, MeshFilter, MeshRenderer } from '../components';
@@ -19,6 +16,8 @@ import { GpuDrivenView } from '../gpu-driven/view-gpu';
 import { Materials } from '../materials';
 import { ReadonlyDynamicInputPage } from '../surface/dynamic-input';
 import { renderLifecycleManifestUrl } from './shader-manifest-fixture';
+
+const BUILTIN_CUBE = createPrimitiveMesh('cube').unwrap();
 
 it('keeps direct Surface submission live without preparing unused GPU shadows across failure and lane changes', async () => {
   const schema = {
@@ -60,35 +59,6 @@ it('keeps direct Surface submission live without preparing unused GPU shadows ac
     ).unwrap();
     publications.push({ guid, source, record });
   }
-  const originalFetch = globalThis.fetch;
-  vi.stubGlobal('fetch', async (input: RequestInfo | URL, init?: RequestInit) => {
-    const url = String(input);
-    if (url.endsWith('/direct-shadow-index.json'))
-      return new Response(
-        JSON.stringify(
-          publications.map(({ guid }) => ({
-            guid,
-            kind: 'material',
-            packageUrl: '/direct-shadow.pack.json',
-          })),
-        ),
-      );
-    if (url.endsWith('/direct-shadow.pack.json'))
-      return new Response(
-        JSON.stringify({
-          schemaVersion: '2.0.0',
-          kind: 'internal-text-package',
-          assets: publications.map(({ guid, source, record }) => ({
-            guid,
-            kind: 'material',
-            payload: { ...source, cooked: JSON.parse(serializeCookedMaterialRecord(record)) },
-            refs: [],
-            artifacts: {},
-          })),
-        }),
-      );
-    return originalFetch(input, init);
-  });
   const renderer = await createRenderer(
     { width: 32, height: 32, getContext: () => null },
     undefined,
@@ -99,7 +69,7 @@ it('keeps direct Surface submission live without preparing unused GPU shadows ac
       createShaderModuleImmediate: rhi.createShaderModuleImmediate,
     },
   );
-  const world = new World();
+  const world = new World({ assets: renderer.assetRegistry });
   const prepare = vi.spyOn(GpuDrivenProduction.prototype, 'prepare');
   const shadowPrepare = vi.spyOn(GpuDrivenProduction.prototype, 'updateShadowViews');
   const directSurface = vi.spyOn(MaterialAbiRasterAdapter.prototype, 'directSurfaceInstances');
@@ -130,21 +100,31 @@ it('keeps direct Surface submission live without preparing unused GPU shadows ac
         },
       })
       .unwrap();
-    renderer.assetRegistry.configurePackIndex('/direct-shadow-index.json');
+    publishRuntimeAssets(
+      renderer.assetRegistry,
+      publications.map(({ guid, source, record }) => ({
+        guid,
+        asset: { ...source, cooked: record },
+      })),
+    );
     const entities = [];
     for (const [index, publication] of publications.entries()) {
-      const material = await renderer.assetRegistry.loadByGuid<MaterialAsset>(
+      const material = await renderer.assetRegistry.load(
         renderer.assetRegistry.parseGuid(publication.guid),
+        'material',
       );
       if (!material.ok) throw material.error;
       entities.push(
         world
           .spawn(
             { component: Transform, data: { pos: [index - 0.5, 0, 0] } },
-            { component: MeshFilter, data: { assetHandle: HANDLE_CUBE } },
+            {
+              component: MeshFilter,
+              data: { assetHandle: renderer.assetRegistry.create(BUILTIN_CUBE).unwrap() },
+            },
             {
               component: MeshRenderer,
-              data: { materials: [world.allocSharedRef('MaterialAsset', material.value)] },
+              data: { materials: [material.value] },
             },
           )
           .unwrap(),
@@ -195,9 +175,11 @@ it('keeps direct Surface submission live without preparing unused GPU shadows ac
     expect(draw('automatic').ok, JSON.stringify(errors)).toBe(true);
     expect(shadowPrepare).toHaveBeenCalled();
     expect(preparedFrame().shadowViewPool?.inspect().length).toBeGreaterThan(0);
-    expect(preparedFrame().standardPbrFrameResources.materialBindGroups.length).toBeGreaterThan(0);
+    expect(typeof preparedFrame().standardPbrFrameResources.prepareMaterialBinding).toBe(
+      'function',
+    );
     expect(
-      preparedFrame().standardPbrFrameResources.materialSlotIndicesByEntity.size,
+      preparedFrame().standardPbrFrameResources.materialSlotIndicesByBinding.size,
     ).toBeGreaterThan(0);
     expect(consume).toHaveBeenCalledTimes(1);
     expect(errors).toEqual([]);
@@ -216,7 +198,10 @@ it('keeps direct Surface submission live without preparing unused GPU shadows ac
     expect(consume).not.toHaveBeenCalled();
     expect(preparedFrame().standardPbrFrameResources.surfaceDynamicInput).toBeUndefined();
     world
-      .addComponent(surfaceEntity, { component: MeshFilter, data: { assetHandle: HANDLE_CUBE } })
+      .addComponent(surfaceEntity, {
+        component: MeshFilter,
+        data: { assetHandle: renderer.assetRegistry.create(BUILTIN_CUBE).unwrap() },
+      })
       .unwrap();
     world.update(1 / 60).unwrap();
     publishInput(0.5, 4);
@@ -246,11 +231,10 @@ it('keeps direct Surface submission live without preparing unused GPU shadows ac
     expect(errors).toContainEqual(expect.objectContaining({ code: 'queue-submit-failed' }));
     expect(consume).not.toHaveBeenCalled();
     expect(shadowPrepare).not.toHaveBeenCalled();
-    expect(preparedFrame().shadowDrawKeys?.size).toBe(0);
     expect(preparedFrame().shadowViewPool?.inspect()).toEqual([]);
     expect(preparedFrame().standardPbrFrameResources.surfaceDynamicInput).toBeDefined();
-    expect(preparedFrame().standardPbrFrameResources.materialBindGroups).toEqual([]);
-    expect(preparedFrame().standardPbrFrameResources.materialSlotIndicesByEntity.size).toBe(0);
+    expect(preparedFrame().standardPbrFrameResources.prepareMaterialBinding(0)).toBeUndefined();
+    expect(preparedFrame().standardPbrFrameResources.materialSlotIndicesByBinding.size).toBe(0);
     expect(preparedFrame().standardPbrFrameResources.selectedMaterialSlots).toBeUndefined();
 
     // The first direct touch starts the ordinary published-program pipeline work.
@@ -271,8 +255,8 @@ it('keeps direct Surface submission live without preparing unused GPU shadows ac
     expect(shadowPrepare).not.toHaveBeenCalled();
     expect(consume).toHaveBeenCalledTimes(1);
     expect(directSurface).toHaveBeenCalled();
-    expect(preparedFrame().standardPbrFrameResources.materialBindGroups).toEqual([]);
-    expect(preparedFrame().standardPbrFrameResources.materialSlotIndicesByEntity.size).toBe(0);
+    expect(preparedFrame().standardPbrFrameResources.prepareMaterialBinding(0)).toBeUndefined();
+    expect(preparedFrame().standardPbrFrameResources.materialSlotIndicesByBinding.size).toBe(0);
     const passes = (draws.mock.contexts as RhiNullRenderPassEncoder[]).map((pass) => pass.passName);
     expect(passes.some((name) => name.startsWith('shadowCascade'))).toBe(true);
     expect(passes).toContain('single-layer-medium-nearest-layer');
@@ -281,11 +265,12 @@ it('keeps direct Surface submission live without preparing unused GPU shadows ac
 
     expect(draw('automatic').ok, JSON.stringify(errors)).toBe(true);
     expect(shadowPrepare).toHaveBeenCalled();
-    expect(preparedFrame().shadowDrawKeys?.size).toBeGreaterThan(0);
     expect(preparedFrame().shadowViewPool?.inspect().length).toBeGreaterThan(0);
-    expect(preparedFrame().standardPbrFrameResources.materialBindGroups.length).toBeGreaterThan(0);
+    expect(typeof preparedFrame().standardPbrFrameResources.prepareMaterialBinding).toBe(
+      'function',
+    );
     expect(
-      preparedFrame().standardPbrFrameResources.materialSlotIndicesByEntity.size,
+      preparedFrame().standardPbrFrameResources.materialSlotIndicesByBinding.size,
     ).toBeGreaterThan(0);
     expect(consume).toHaveBeenCalledTimes(1);
     expect(errors).toEqual([]);

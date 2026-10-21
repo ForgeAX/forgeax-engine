@@ -24,6 +24,7 @@ import process from 'node:process';
 
 // --- 1. Import engine ECS + animation primitives ---
 
+const { AssetRegistry } = await import('@forgeax/engine-assets-runtime');
 const { createWorldContext, World } = await import('@forgeax/engine-ecs');
 const { animationPlugin, defineAnimationGraph, AnimationPlayer } = await import('@forgeax/engine-animation');
 
@@ -59,17 +60,14 @@ function assertWeights(label, weights, expected, tolerance = EPS) {
 // --- 3. World factory with animationPlugin ---
 
 async function makeWorld() {
-  const clips = new Map();
-  const world = new World();
-  await createWorldContext(world, [animationPlugin((guid) => clips.get(guid))]);
-  return { world, clips };
+  const assets = new AssetRegistry();
+  const world = new World({ assets });
+  await createWorldContext(world, [animationPlugin()]);
+  return { world, assets };
 }
 
-function registerClip(clips, duration) {
-  const guid = `test/animation-clip-${clips.size}`;
-  const clip = { kind: 'animation-clip', duration, channels: [] };
-  clips.set(guid, clip);
-  return guid;
+function createClip(assets, duration) {
+  return assets.create({ kind: 'animation-clip', duration, channels: [] }).unwrap();
 }
 
 function readWeights(world, ent) {
@@ -81,23 +79,23 @@ function readWeights(world, ent) {
 // --- 4. Case AC-04: Blend(Walk@1, Run@1) -> [0.5, 0.5] ---
 
 {
-  const { world, clips } = await makeWorld();
-  const walk = registerClip(clips, 10);
-  const run = registerClip(clips, 10);
+  const { world, assets } = await makeWorld();
+  const walk = createClip(assets, 10);
+  const run = createClip(assets, 10);
   const gr = defineAnimationGraph((b) => b.blend([b.clip(walk), b.clip(run)]));
   if (!gr.ok) { process.stderr.write(`[smoke] FAIL - AC-04 graph build: ${gr.error.code}\n`); process.exit(1); }
-  const graphH = world.allocSharedRef('AnimationGraph', gr.value);
+  const graphH = assets.create(gr.value).unwrap();
   const ent = world.spawn({ component: AnimationPlayer, data: { graph: graphH } }).unwrap();
-  world.update();
+  world.update().unwrap();
   assertWeights('AC-04:Blend-equal', readWeights(world, ent), [0.5, 0.5], 1e-5);
 }
 
 // --- 5. Case AC-05: Add(base sum=1, additive@0.3) -> total sum = 1.3 ---
 
 {
-  const { world, clips } = await makeWorld();
-  const survey = registerClip(clips, 8);
-  const overlay = registerClip(clips, 8);
+  const { world, assets } = await makeWorld();
+  const survey = createClip(assets, 8);
+  const overlay = createClip(assets, 8);
   // base = single clip (effective weight 1); additive = clip with static weight 0.3.
   const gr = defineAnimationGraph((b) => {
     const baseLeaf = b.clip(survey);
@@ -105,9 +103,9 @@ function readWeights(world, ent) {
     return b.add(baseLeaf, [additiveLeaf]);
   });
   if (!gr.ok) { process.stderr.write(`[smoke] FAIL - AC-05 graph build: ${gr.error.code}\n`); process.exit(1); }
-  const graphH = world.allocSharedRef('AnimationGraph', gr.value);
+  const graphH = assets.create(gr.value).unwrap();
   const ent = world.spawn({ component: AnimationPlayer, data: { graph: graphH } }).unwrap();
-  world.update();
+  world.update().unwrap();
   const w = readWeights(world, ent);
   // slot 0 = baseLeaf (effective 1), slot 1 = additiveLeaf (effective 0.3)
   assertClose('AC-05:base-weight', w[0] ?? 0, 1.0, 1e-5);
@@ -120,12 +118,12 @@ function readWeights(world, ent) {
 // --- 6. Case AC-07: orthogonal product 0.5 * 0.4 = 0.2 ---
 
 {
-  const { world, clips } = await makeWorld();
-  const clip = registerClip(clips, 5);
+  const { world, assets } = await makeWorld();
+  const clip = createClip(assets, 5);
   // Static weight 0.4 in graph; runtime nodeWeights[0]=0.5.
   const gr = defineAnimationGraph((b) => b.clip(clip, 0.4));
   if (!gr.ok) { process.stderr.write(`[smoke] FAIL - AC-07 graph build: ${gr.error.code}\n`); process.exit(1); }
-  const graphH = world.allocSharedRef('AnimationGraph', gr.value);
+  const graphH = assets.create(gr.value).unwrap();
   // nodeWeights[0] = 0.5 (runtime weight for the single clip node)
   const ent = world
     .spawn({
@@ -133,7 +131,7 @@ function readWeights(world, ent) {
       data: { graph: graphH, nodeWeights: new Float32Array([0.5]) },
     })
     .unwrap();
-  world.update();
+  world.update().unwrap();
   const w = readWeights(world, ent);
   // effective = incoming(1) * runtimeWeight(0.5) * staticWeight(0.4) = 0.2
   assertClose('AC-07:orthogonal-product', w[0] ?? 0, 0.2, 1e-5);
@@ -172,10 +170,10 @@ function readWeights(world, ent) {
 //   total sum = 0.5 + 0.25 + 0.25 + 0.3 = 1.3
 
 {
-  const { world, clips } = await makeWorld();
-  const survey = registerClip(clips, 8);
-  const walk = registerClip(clips, 12);
-  const run = registerClip(clips, 7);
+  const { world, assets } = await makeWorld();
+  const survey = createClip(assets, 8);
+  const walk = createClip(assets, 12);
+  const run = createClip(assets, 7);
   const gr = defineAnimationGraph((b) => {
     const surveyBase = b.clip(survey);
     const walkLeaf = b.clip(walk);
@@ -186,7 +184,7 @@ function readWeights(world, ent) {
     return b.add(baseBlend, [overlayLeaf]);
   });
   if (!gr.ok) { process.stderr.write(`[smoke] FAIL - AC-08 graph build: ${gr.error.code}\n`); process.exit(1); }
-  const graphH = world.allocSharedRef('AnimationGraph', gr.value);
+  const graphH = assets.create(gr.value).unwrap();
   // locomotion=0.5 -> nodeWeights[0]=0.5(survey), nodeWeights[3]=0.5(walkRunBlend)
   // walkRunRatio=0.5 -> nodeWeights[1]=0.5(walk), nodeWeights[2]=0.5(run)
   // overlayOn -> nodeWeights[5]=1
@@ -208,7 +206,7 @@ function readWeights(world, ent) {
       },
     })
     .unwrap();
-  world.update();
+  world.update().unwrap();
   const w = readWeights(world, ent);
   // 4 clip leaves -> 4 slots
   if (w.length !== 4) {

@@ -39,7 +39,7 @@ export function authoredColorToLinear(
  * `color` is an authored color and therefore defaults to sRGB. Numeric
  * vectors remain linear unless their schema explicitly marks them as colors.
  */
-export function materialParameterColorSpace(
+function materialParameterColorSpace(
   parameter: MaterialColorParameterSchema,
   assetColorSpace?: MaterialColorSpace,
 ): MaterialColorSpace | undefined {

@@ -1,16 +1,17 @@
+import { AssetRegistry } from '@forgeax/engine/assets-runtime';
 import type { EntityHandle } from '@forgeax/engine/ecs';
 import {
   createCapsuleGeometry,
   createConeGeometry,
+  createPrimitiveMesh,
   createRevolutionGeometry,
   createSweepGeometry,
   createTeapotGeometry,
   createTorusGeometry,
 } from '@forgeax/engine/geometry';
 import { MeshFilter } from '@forgeax/engine/render';
-import type { MeshAsset } from '@forgeax/engine/types';
 import { defineFeature } from '../../lab/feature';
-import { MESH, spawnMesh, spawnStage, standard } from '../../lab/stage';
+import { spawnMesh, spawnStage, standard } from '../../lab/stage';
 
 export default defineFeature({
   title: '3D procedural geometry',
@@ -21,6 +22,16 @@ export default defineFeature({
   expect:
     'ON: a row of six distinct shapes - torus, cone, capsule, teapot, swept tube and revolved vase. OFF: every shape is replaced by the same unit cube.',
   setup({ world }) {
+    const primitiveAssets = world.assets;
+    if (!(primitiveAssets instanceof AssetRegistry))
+      throw new Error('Scene requires its runtime asset owner');
+
+    const stageCube = primitiveAssets.create(createPrimitiveMesh('cube').unwrap()).unwrap();
+
+    const sceneAssets = world.assets;
+    if (!(sceneAssets instanceof AssetRegistry))
+      throw new Error('Scene requires its runtime asset owner');
+
     spawnStage(world, { eye: [0, 2.2, 7], target: [0, 0.7, 0] });
     const built: [string, ReturnType<typeof createTorusGeometry>][] = [
       ['torus', createTorusGeometry(0.4, 0.15, 24, 12)],
@@ -61,13 +72,16 @@ export default defineFeature({
       [0.5, 0.3, 1, 1],
       [1, 0.3, 0.9, 1],
     ];
-    const entities: { entity: EntityHandle; mesh: ReturnType<typeof world.allocSharedRef> }[] = [];
+    const entities: {
+      entity: EntityHandle;
+      mesh: import('@forgeax/engine/types').AssetHandle<'mesh'>;
+    }[] = [];
     built.forEach(([name, result], index) => {
       if (!result.ok) {
         console.warn(`[feature-lab] ${name} geometry failed: ${result.error.code}`);
         return;
       }
-      const mesh = world.allocSharedRef<'MeshAsset', MeshAsset>('MeshAsset', result.value);
+      const mesh = sceneAssets.create(result.value).unwrap();
       const x = (index - 2.5) * 1.15;
       const lift = name === 'torus' ? 0.6 : name === 'capsule' ? 0.6 : 0;
       const entity = spawnMesh(
@@ -83,7 +97,7 @@ export default defineFeature({
     return {
       toggle(on) {
         for (const { entity, mesh } of entities) {
-          world.set(entity, MeshFilter, { assetHandle: on ? mesh : MESH.cube } as never);
+          world.set(entity, MeshFilter, { assetHandle: on ? mesh : stageCube } as never);
         }
       },
     };

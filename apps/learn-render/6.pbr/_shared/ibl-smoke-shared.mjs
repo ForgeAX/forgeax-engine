@@ -299,14 +299,14 @@ export async function runIblSmoke(opts) {
     fail(`AssetGuid.parse failed for NEWPORT_LOFT_GUID: ${guidRes.error.code}`);
 
   // loadByGuid returns the EquirectAsset PAYLOAD (D-17), not a handle.
-  const hdrPodRes = await assets.loadByGuid(guidRes.value);
+  const hdrPodRes = await assets.load(guidRes.value, 'equirect');
   if (!hdrPodRes.ok)
-    fail(`loadByGuid(newport_loft.hdr) failed: ${hdrPodRes.error.code} - ${hdrPodRes.error.hint}`);
+    fail(`load(newport_loft.hdr) failed: ${hdrPodRes.error.code} - ${hdrPodRes.error.hint}`);
 
-  const equirectPod = hdrPodRes.value;
+  const equirectPod = assets.read(hdrPodRes.value).unwrap();
 
   // --- 5. Build scene (3x3 sphere matrix) ---
-  const world = new World();
+  const world = new World({ assets: assets });
   const worldAttachment1 = renderer.attach(world);
   if (!worldAttachment1.ok) throw worldAttachment1.error;
   const frameRequest = {
@@ -318,7 +318,7 @@ export async function runIblSmoke(opts) {
   // Mint a user-tier handle for the equirect pod. The equirect->cubemap + IBL
   // projection is now INTERNAL to the engine (lazy, in the render record arm) --
   // the Skylight holds the equirect handle directly, no manual upload call.
-  const equirect = world.allocSharedRef('EquirectAsset', equirectPod);
+  const equirect = hdrPodRes.value;
 
   console.log(`[${demoId}] loadByGuid<EquirectAsset> OK (format=${equirectPod.format} ${equirectPod.width}x${equirectPod.height})`);
 
@@ -329,7 +329,7 @@ export async function runIblSmoke(opts) {
 
   const sphereRes = createSphereGeometry(1.0, 32, 16);
   if (!sphereRes.ok) fail(`createSphereGeometry failed: ${sphereRes.error.code}`);
-  const sphereAssetHandle = world.allocSharedRef('MeshAsset', sphereRes.value);
+  const sphereAssetHandle = world.assets.create(sphereRes.value).unwrap();
 
   const baseColor = demoKind === 'specular' ? [0.5, 0.5, 0.5, 1.0] : [0.8, 0.8, 0.8, 1.0];
   const GRID = 3;
@@ -341,7 +341,7 @@ export async function runIblSmoke(opts) {
       const metallic = col * 0.5;
       // feat-20260527 M3 / w12: pass-based MaterialAsset minted as a
       // user-tier shared ref (M8 unified path).
-      const matHandle = world.allocSharedRef('MaterialAsset', {
+      const matHandle = world.assets.create({
         kind: 'material',
         passes: [
           {
@@ -355,7 +355,7 @@ export async function runIblSmoke(opts) {
           metallic,
           roughness,
         },
-      });
+      }).unwrap();
       const cx = (col - (GRID - 1) / 2) * SPACING;
       const cy = ((GRID - 1) / 2 - row) * SPACING;
       world.spawn(

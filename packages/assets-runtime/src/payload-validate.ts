@@ -1,4 +1,3 @@
-import { isStripTopology } from '@forgeax/engine-types';
 // @forgeax/engine-assets-runtime -- register-time payload validation
 // (feat-20260705-runtime-tier2-decomposition M1 / w4, D-4 F1 straight-cut).
 // Pure move from asset-registry.ts; zero identifier changes.
@@ -110,7 +109,6 @@ export function validateMeshPayload(asset: Asset): AssetError | null {
     }
   }
 
-  const hasIndices = (asset.indices?.length ?? 0) > 0;
   const indexBufferLength = asset.indices?.length ?? 0;
   for (let i = 0; i < submeshes.length; i++) {
     const sm = submeshes[i];
@@ -130,18 +128,6 @@ export function validateMeshPayload(asset: Asset): AssetError | null {
           submeshIndex: i,
           materialSlot: sm.materialSlot,
           materialSlotCount: materialSlots.length,
-        },
-      });
-    }
-    if (isStripTopology(topology) && !hasIndices) {
-      return new AssetError({
-        code: 'asset-invalid-value',
-        expected: `submesh[${i}] strip topology carries an index buffer`,
-        hint: 'line-strip / triangle-strip meshes must provide indices; add MeshAsset.indices or use line-list / triangle-list',
-        detail: {
-          field: `submeshes[${i}].topology`,
-          value: topology,
-          reason: 'strip-topology-without-indices',
         },
       });
     }
@@ -241,7 +227,7 @@ export function validateMeshPayload(asset: Asset): AssetError | null {
   return null;
 }
 
-// === Tileset / Tilemap / TileLayer validators (feat-20260608 M0 baseline rebuild) ===
+// === Tileset / Tilemap / Tilemap validators (feat-20260608 M0 baseline rebuild) ===
 //
 // R-6 first-error path (plan-strategy §R-6 ordering, M1 extended):
 //   (1) `atlases.length >= 1`                -> 'tileset-tile-entry-malformed'
@@ -254,7 +240,7 @@ export function validateMeshPayload(asset: Asset): AssetError | null {
 //        / pivotX / pivotY / collider           .field=<field> .scope='tile-entry'
 //                                                .tileEntryIndex=i (M1)
 //
-// Tilemap / TileLayer register-time invariants use `AssetError
+// Tilemap / Tilemap register-time invariants use `AssetError
 // 'asset-invalid-value'` with `.detail = { field, value, reason }` so the
 // closed AssetErrorDetail discriminated union narrows uniformly (charter
 // P4 consistent abstraction with `validateMeshPayload`).
@@ -322,6 +308,14 @@ function validateColliderShape(
   tilesetGuid: string,
   tileEntryIndex: number,
 ): AssetError | null {
+  if (collider === null || typeof collider !== 'object')
+    return tileEntryMalformed({
+      tilesetGuid,
+      field: 'collider',
+      scope: 'tile-entry',
+      tileEntryIndex,
+      expected: 'a none, rect or polygon collider object',
+    });
   if (collider.type === 'none') return null;
   if (collider.type === 'rect') {
     const rect = collider.rect;
@@ -375,6 +369,8 @@ function validateColliderShape(
         p.length !== 2 ||
         typeof p[0] !== 'number' ||
         typeof p[1] !== 'number' ||
+        !Number.isFinite(p[0]) ||
+        !Number.isFinite(p[1]) ||
         p[0] < 0 ||
         p[0] > 1 ||
         p[1] < 0 ||
@@ -428,6 +424,31 @@ export function validateTilesetPayload(
   opts: TilesetValidateOptions = {},
 ): AssetError | null {
   const assetGuid = '<no-guid>';
+  if (
+    !Array.isArray(asset.atlases) ||
+    !Array.isArray(asset.regions) ||
+    !Array.isArray(asset.tiles) ||
+    ![asset.tileWidth, asset.tileHeight, asset.columns, asset.rows].every(
+      (n) => Number.isSafeInteger(n) && n > 0,
+    ) ||
+    asset.regions.some((region) => region === null || typeof region !== 'object') ||
+    asset.tiles.some((tile) => tile === null || typeof tile !== 'object') ||
+    (asset.atlasSizes !== undefined &&
+      (!Array.isArray(asset.atlasSizes) ||
+        asset.atlasSizes.length !== asset.atlases.length ||
+        asset.atlasSizes.some(
+          (size) =>
+            size === null ||
+            typeof size !== 'object' ||
+            ![size.pixelWidth, size.pixelHeight].every((n) => Number.isSafeInteger(n) && n > 0),
+        )))
+  )
+    return new AssetError({
+      code: 'asset-invalid-value',
+      expected:
+        'Tileset arrays, positive integer grid dimensions and one valid atlasSize per atlas',
+      hint: 'repair the Tileset dimensions, regions and tile entries before admission',
+    });
   // (1) atlases empty fail-fast (M1 R-6 top-level invariant).
   if (asset.atlases.length < 1) {
     return tileEntryMalformed({
@@ -443,12 +464,18 @@ export function validateTilesetPayload(
   // (2) region rectangle bounds-check. Negative coords / non-positive size are
   // rejected regardless of whether an atlas extent is supplied; the optional
   // atlasWidth / atlasHeight tightens the upper bound when present.
-  const atlasWidth = opts.atlasWidth;
-  const atlasHeight = opts.atlasHeight;
   for (let i = 0; i < regionCount; i++) {
     const region = asset.regions[i];
     if (region === undefined) continue;
-    const negativeOrZero = region.x < 0 || region.y < 0 || region.width <= 0 || region.height <= 0;
+    const size = asset.atlasSizes?.[region.atlasIndex ?? 0];
+    const atlasWidth = size?.pixelWidth ?? opts.atlasWidth;
+    const atlasHeight = size?.pixelHeight ?? opts.atlasHeight;
+    const negativeOrZero =
+      ![region.x, region.y, region.width, region.height].every(Number.isFinite) ||
+      region.x < 0 ||
+      region.y < 0 ||
+      region.width <= 0 ||
+      region.height <= 0;
     const exceedsAtlas =
       typeof atlasWidth === 'number' &&
       typeof atlasHeight === 'number' &&

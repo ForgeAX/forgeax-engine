@@ -7,15 +7,19 @@ import {
   type EntityHandle,
   type World,
 } from '@forgeax/engine-ecs';
-import { HANDLE_CUBE } from '@forgeax/engine-assets-runtime';
+
 import { Transform } from '@forgeax/engine-scene';
 import { Camera, MeshFilter, MeshRenderer } from '@forgeax/engine-render';
 import { perspective } from '@forgeax/engine-render';
 import { Materials } from '@forgeax/engine-render';
 import { PointLight } from '@forgeax/engine-render';
-import type { MaterialAsset } from '@forgeax/engine-runtime';
+
 import type { InputSnapshot } from '@forgeax/engine-input';
 import { quat, vec3 } from '@forgeax/engine-math';
+import { AssetRegistry } from '@forgeax/engine-assets-runtime';
+
+import { createPrimitiveMesh } from '@forgeax/engine-geometry';
+
 
 // Matches Bevy's initial Transform::from_xyz(5, 5, 5).
 export const ORBIT_DISTANCE = Math.sqrt(75);
@@ -59,23 +63,22 @@ function firstCamera(world: World): EntityHandle | null {
 
 /** Build a cube-on-plane scene viewed by a fixed-radius orbit camera. */
 export function buildCameraOrbitWorld(world: World): void {
-  const planeMaterial = world.allocSharedRef<'MaterialAsset', MaterialAsset>(
-    'MaterialAsset',
-    Materials.standard({ baseColor: [0.3, 0.5, 0.3, 1] }),
-  );
+const sceneAssets = world.assets;
+if (!(sceneAssets instanceof AssetRegistry)) throw new Error('Scene requires its runtime asset owner');
+
+const primitiveCube = sceneAssets.create(createPrimitiveMesh('cube').unwrap()).unwrap();
+
+  const planeMaterial = sceneAssets.create(Materials.standard({ baseColor: [0.3, 0.5, 0.3, 1] })).unwrap();
   world.spawn(
     { component: Transform, data: { pos: [0, -0.5, 0], quat: [0, 0, 0, 1], scale: [5, 0.04, 5] } },
-    { component: MeshFilter, data: { assetHandle: HANDLE_CUBE } },
+    { component: MeshFilter, data: { assetHandle: primitiveCube } },
     { component: MeshRenderer, data: { materials: [planeMaterial] } },
   );
 
-  const cubeMaterial = world.allocSharedRef<'MaterialAsset', MaterialAsset>(
-    'MaterialAsset',
-    Materials.standard({ baseColor: [0.8, 0.7, 0.6, 1] }),
-  );
+  const cubeMaterial = sceneAssets.create(Materials.standard({ baseColor: [0.8, 0.7, 0.6, 1] })).unwrap();
   world.spawn(
     { component: Transform, data: { pos: [1.5, 0.5, 1.5], quat: [0, 0, 0, 1], scale: [1, 1, 1] } },
-    { component: MeshFilter, data: { assetHandle: HANDLE_CUBE } },
+    { component: MeshFilter, data: { assetHandle: primitiveCube } },
     { component: MeshRenderer, data: { materials: [cubeMaterial] } },
   );
 

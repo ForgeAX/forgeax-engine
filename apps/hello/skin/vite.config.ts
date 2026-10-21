@@ -64,8 +64,6 @@ export default defineConfig(async () => {
         pack,
       }),
     ],
-    // App creates native module Workers; preserve their ESM imports in the build.
-    worker: { format: 'es' },
     server: {
       fs: {
         allow: [monorepoRoot],

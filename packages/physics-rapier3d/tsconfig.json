@@ -25,10 +25,23 @@
     {
       "path": "../types"
     },
-    {"path": "../geometry"},
-    {"path": "../assets-runtime"},
-    {"path": "../terrain"},
-    {"path": "../pack"},
-    {"path": "../shader"}
+    {
+      "path": "../geometry"
+    },
+    {
+      "path": "../assets-runtime"
+    },
+    {
+      "path": "../terrain"
+    },
+    {
+      "path": "../pack"
+    },
+    {
+      "path": "../shader"
+    }
+  ],
+  "exclude": [
+    "src/**/__tests__/**/*.ts"
   ]
 }

@@ -44,8 +44,8 @@ import { packMeshBin } from '@forgeax/engine-import/mesh-bin';
 import { AssetGuid as AssetGuidCodec } from '@forgeax/engine-pack/guid';
 import type {
   AssetGuid,
+  AssetHandle,
   AssetRef,
-  Handle,
   ImportContext,
   ImportedAsset,
   Importer,
@@ -60,7 +60,6 @@ import {
   ImportError,
   readConservativeAnimatedBounds,
   reconcileMeshMaterialSlotTopology,
-  toShared,
 } from '@forgeax/engine-types';
 import { deriveGltfAnimatedBounds } from './animated-bounds';
 import {
@@ -175,6 +174,14 @@ function previousMaterialSlotTopology(
   return slots;
 }
 
+function sourceMaterialGuid(
+  reference: NonNullable<MeshAsset['materialSlots'][number]['defaultMaterial']>,
+): string {
+  if (typeof reference === 'number')
+    throw new Error('imported material defaults require source GUIDs');
+  return AssetGuidCodec.format(reference);
+}
+
 function stabilizeMeshMaterialSlots(
   mesh: MeshAsset,
   ctx: ImportContext,
@@ -267,11 +274,14 @@ async function parseDoc(
   return { ok: true, value: res.value };
 }
 
+/** Import-only refs[] indices; runtime loading resolves them before World admission. */
+const refIndex = <K extends string>(index: number): AssetHandle<K> => index as AssetHandle<K>;
+
 interface HandleMaps {
-  readonly meshHandles: Map<number, Handle<'MeshAsset', 'shared'>>;
-  readonly materialHandles: Map<number, Handle<'MaterialAsset', 'shared'>>;
-  readonly textureHandles: Map<number, Handle<'TextureAsset', 'shared'>>;
-  readonly samplerHandles: Map<number, Handle<'SamplerAsset', 'shared'>>;
+  readonly meshHandles: Map<number, AssetHandle<'mesh'>>;
+  readonly materialHandles: Map<number, AssetHandle<'material'>>;
+  readonly textureHandles: Map<number, AssetHandle<'texture'>>;
+  readonly samplerHandles: Map<number, AssetHandle<'sampler'>>;
   readonly meshGuidByIndex: Map<number, string>;
   readonly materialGuidByIndex: Map<number, string>;
   readonly textureGuidByIndex: Map<number, string>;
@@ -293,10 +303,10 @@ interface HandleMaps {
  * index when stamping material handles.
  */
 function buildHandleMaps(subAssets: readonly ImportSubAsset[], doc: GltfDoc): HandleMaps {
-  const meshHandles = new Map<number, Handle<'MeshAsset', 'shared'>>();
-  const materialHandles = new Map<number, Handle<'MaterialAsset', 'shared'>>();
-  const textureHandles = new Map<number, Handle<'TextureAsset', 'shared'>>();
-  const samplerHandles = new Map<number, Handle<'SamplerAsset', 'shared'>>();
+  const meshHandles = new Map<number, AssetHandle<'mesh'>>();
+  const materialHandles = new Map<number, AssetHandle<'material'>>();
+  const textureHandles = new Map<number, AssetHandle<'texture'>>();
+  const samplerHandles = new Map<number, AssetHandle<'sampler'>>();
   const meshGuidByIndex = new Map<number, string>();
   const materialGuidByIndex = new Map<number, string>();
   const textureGuidByIndex = new Map<number, string>();
@@ -317,14 +327,14 @@ function buildHandleMaps(subAssets: readonly ImportSubAsset[], doc: GltfDoc): Ha
   let materialCursor = 0;
   for (const sub of subAssets) {
     if (sub.kind === 'mesh') {
-      meshHandles.set(sub.sourceIndex, toShared<'MeshAsset'>(meshCursor));
+      meshHandles.set(sub.sourceIndex, refIndex<'mesh'>(meshCursor));
       meshGuidByIndex.set(sub.sourceIndex, sub.guid);
       meshCursor += 1;
     } else if (sub.kind === 'material') {
       // material handles come AFTER all mesh refs in the concat.
       // The actual offset (= meshCount + materialCursor) is back-patched
       // below once we know meshCount.
-      materialHandles.set(sub.sourceIndex, toShared<'MaterialAsset'>(materialCursor));
+      materialHandles.set(sub.sourceIndex, refIndex<'material'>(materialCursor));
       materialGuidByIndex.set(sub.sourceIndex, sub.guid);
       materialCursor += 1;
     } else if (sub.kind === 'texture') {
@@ -337,7 +347,7 @@ function buildHandleMaps(subAssets: readonly ImportSubAsset[], doc: GltfDoc): Ha
   if (meshCount > 0) {
     for (const [k, v] of materialHandles) {
       const local = v as unknown as number;
-      materialHandles.set(k, toShared<'MaterialAsset'>(local + meshCount));
+      materialHandles.set(k, refIndex<'material'>(local + meshCount));
     }
   }
   // For material binding (toMaterialAsset / values.<X>Texture) the handle
@@ -352,11 +362,11 @@ function buildHandleMaps(subAssets: readonly ImportSubAsset[], doc: GltfDoc): Ha
     const tex = textures[texIndex];
     if (tex === undefined) continue;
     if (textureGuidByIndex.has(tex.source)) {
-      textureHandles.set(texIndex, toShared<'TextureAsset'>(tex.source));
+      textureHandles.set(texIndex, refIndex<'texture'>(tex.source));
     }
   }
   for (const [samplerIndex] of samplerGuidByIndex) {
-    samplerHandles.set(samplerIndex, toShared<'SamplerAsset'>(samplerIndex));
+    samplerHandles.set(samplerIndex, refIndex<'sampler'>(samplerIndex));
   }
   return {
     meshHandles,
@@ -379,7 +389,7 @@ export function materialRefsForPack(
 ): readonly AssetRef[] {
   const refs: AssetRef[] = [];
   const textures = doc.textures ?? [];
-  for (const slot of GLTF_MATERIAL_TEXTURE_SLOTS) {
+  for (const { slot } of GLTF_MATERIAL_TEXTURE_SLOTS) {
     const binding = materialTextureBinding(mat[slot]);
     if (binding === undefined) continue;
     const tex = textures[binding.texture];
@@ -421,7 +431,7 @@ function rewriteMaterialAssetRefs(
   const values = { ...(matAsset.values ?? {}) } as Record<string, MaterialValue | null>;
   const textures = doc.textures ?? [];
   let cursor = 0;
-  for (const slot of GLTF_MATERIAL_TEXTURE_SLOTS) {
+  for (const { slot } of GLTF_MATERIAL_TEXTURE_SLOTS) {
     const binding = materialTextureBinding(mat[slot]);
     if (binding === undefined) continue;
     const texture = textures[binding.texture];
@@ -433,7 +443,9 @@ function rewriteMaterialAssetRefs(
       continue;
     }
     const textureValue = value as MaterialTextureValue;
-    const textureRef = cursor as unknown as MaterialTextureValue['texture'];
+    if (textureValue.source !== undefined)
+      throw new TypeError('glTF source materials require texture GUID references');
+    const textureRef = cursor as unknown as NonNullable<MaterialTextureValue['texture']>;
     cursor++;
     const rewritten =
       binding.sampler !== undefined && maps.samplerGuidByIndex.has(binding.sampler)
@@ -482,7 +494,7 @@ async function importGltf(
   }
   const extraction =
     declaredImageIndices.size > 0
-      ? await extractImageBytes(read.value, ctx.source, ctx)
+      ? extractImageBytes(doc.images ?? [])
       : {
           extracted: new Map(),
           failures: [] as readonly {
@@ -505,7 +517,7 @@ async function importGltf(
   // share `sourceIndex` (toAssetPack emits 1:1 per SkeletonPod) but live
   // as distinct `kind` sub-assets, so the SkinAsset GUIDs differ from the
   // SkeletonAsset GUIDs. The scene branch below appends these GUIDs to both
-  // its refs[] (the runtime recursion source: loadByGuid<SceneAsset> walks
+  // its refs[] (the runtime recursion source: source Scene loading walks
   // envelope.refs to recursively pull every SkinAsset before instantiate) and
   // its payload.skinGuids (the reverse-decode hint) -- without the refs[] edge,
   // browser-async-pack-fetch never loads SkinAssets and Skin.joints stays
@@ -677,7 +689,7 @@ async function importGltf(
       for (let slotIndex = 0; slotIndex < meshPayload.materialSlots.length; slotIndex++) {
         const defaultMaterial = meshPayload.materialSlots[slotIndex]?.defaultMaterial;
         const guid =
-          defaultMaterial === undefined ? undefined : AssetGuidCodec.format(defaultMaterial);
+          defaultMaterial === undefined ? undefined : sourceMaterialGuid(defaultMaterial);
         if (guid !== undefined && !seenMaterialGuids.has(guid.toLowerCase())) {
           seenMaterialGuids.add(guid.toLowerCase());
           materialRefs.push({
@@ -700,7 +712,7 @@ async function importGltf(
         kind: 'mesh',
         ...(meshName !== undefined ? { name: meshName } : {}),
         payload: {
-          ...meshPayload,
+          kind: 'mesh',
           ...(distanceField.value === undefined
             ? {}
             : { distanceField: distanceField.value.payload }),

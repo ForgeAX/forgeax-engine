@@ -145,15 +145,10 @@ const mockCanvas = {
 // --- 3. Engine imports + renderer bootstrap ---------------------------------
 
 const { World } = await import('@forgeax/engine-ecs');
-const { constructRuntimeRendererHost } = await import('@forgeax/engine-runtime/internal/renderer-host');
+const { constructRuntimeRendererHost, createPublicationAssets } = await import('@forgeax/engine-runtime/internal/renderer-host');
 const { ANTIALIAS_MSAA, ANTIALIAS_NONE, Camera, DirectionalLight, MeshFilter, MeshRenderer, perspective } = await import('@forgeax/engine-render');
 const { Transform } = await import('@forgeax/engine-scene');
-const {
-  HANDLE_CUBE,
-  HANDLE_QUAD,
-  HANDLE_SPHERE,
-  HANDLE_TRIANGLE,
-} = await import('@forgeax/engine-assets-runtime');
+const { createPrimitiveMesh } = await import('@forgeax/engine-geometry');
 
 const MANIFEST_PATH = resolve(here, '..', 'dist', 'shaders', 'manifest.json');
 const MANIFEST_URL = `data:application/json,${encodeURIComponent(readFileSync(MANIFEST_PATH, 'utf8'))}`;
@@ -182,10 +177,8 @@ if (!assets) {
 }
 
 
-// Standard PBR material POD (same as demo main.ts). feat-20260614 M8
-// (D-15/D-17): the material is minted per-World via allocSharedRef inside
-// spawnScene -- a shared ref handle is a slot in that World's sharedRefs, so
-// the dual-World dual-pass design mints one handle per World from this POD.
+// Both World asset registries create their own managed material from this
+// standard PBR descriptor inside spawnScene, matching the demo.
 const MATERIAL_POD = {
   kind: 'material',
   passes: [
@@ -211,15 +204,15 @@ if (!device) {
 // --- 4. Scene spawn helper ---------------------------------------------------
 
 const GEOMETRY_LAYOUT = [
-  { handle: HANDLE_TRIANGLE, pos: [-1.05, 0, 0]},
-  { handle: HANDLE_CUBE, pos: [-0.35, 0, 0]},
-  { handle: HANDLE_QUAD, pos: [0.35, 0, 0]},
-  { handle: HANDLE_SPHERE, pos: [1.05, 0, 0]},
+  { primitive: 'triangle', pos: [-1.05, 0, 0]},
+  { primitive: 'cube', pos: [-0.35, 0, 0]},
+  { primitive: 'quad', pos: [0.35, 0, 0]},
+  { primitive: 'sphere', pos: [1.05, 0, 0]},
 ];
 
 function spawnScene(world, antialias) {
-  // Mint the material in this World (allocSharedRef slot is per-World).
-  const materialHandle = world.allocSharedRef('MaterialAsset', MATERIAL_POD);
+  // Each World owns its material and primitive identities.
+  const materialHandle = world.assets.create(MATERIAL_POD).unwrap();
   // 4 static geometries with shared material.
   for (const slot of GEOMETRY_LAYOUT) {
     world.spawn(
@@ -231,7 +224,7 @@ function spawnScene(world, antialias) {
           scale: [0.5, 0.5, 0.5],
         },
       },
-      { component: MeshFilter, data: { assetHandle: slot.handle } },
+      { component: MeshFilter, data: { assetHandle: world.assets.create(createPrimitiveMesh(slot.primitive).unwrap()).unwrap() } },
       { component: MeshRenderer, data: { materials: [materialHandle] } },
     );
   }
@@ -334,7 +327,7 @@ async function renderPass(world, lease) {
 }
 
 // Pass 1: ANTIALIAS_NONE baseline.
-const worldNone = new World();
+const worldNone = new World({ assets: assets });
 const worldAttachment1 = renderer.attach(worldNone);
 if (!worldAttachment1.ok) throw worldAttachment1.error;
 const leaseNone = worldAttachment1.value;
@@ -344,7 +337,7 @@ await renderPass(worldNone, leaseNone);
 const pixelsNone = await doReadPixels();
 
 // Pass 2: ANTIALIAS_MSAA (or ANTIALIAS_NONE under FALSIFY).
-const worldMsaa = new World();
+const worldMsaa = new World({ assets: await createPublicationAssets({ shaderManifestUrl: MANIFEST_URL }) });
 const worldAttachment2 = renderer.attach(worldMsaa);
 if (!worldAttachment2.ok) throw worldAttachment2.error;
 const leaseMsaa = worldAttachment2.value;

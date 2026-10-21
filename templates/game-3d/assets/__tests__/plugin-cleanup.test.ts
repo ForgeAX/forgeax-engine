@@ -31,7 +31,7 @@ const clipGuid = '00000000-0000-4000-8000-000000000006';
 
 for (const outcome of ['dispose', 'failed', 'timeout'] as const) {
   it(`joins player cleanup before scene and physics on ${outcome}`, async () => {
-    const { ctx, world, asset } = await sceneWorldFixture();
+    const { ctx, world, asset, assets } = await sceneWorldFixture();
     const events: string[] = [];
     let playerEntity: EntityHandle | undefined;
     let releaseCleanup!: () => void;
@@ -103,7 +103,8 @@ for (const outcome of ['dispose', 'failed', 'timeout'] as const) {
     ctx.provide('assets', {
       parseGuid: (guid: string) => AssetGuid.parse(guid),
       readPluginDefinition: async (guid: string) => ok(definitions.get(guid)!),
-      loadByGuid: async () => ok(asset),
+      load: async () => assets.create(asset),
+      release: (handle: number) => assets.release(handle),
       instantiate: (handle: Parameters<typeof worldInstantiateSceneAsset>[1]) =>
         worldInstantiateSceneAsset(
           world,
@@ -111,14 +112,13 @@ for (const outcome of ['dispose', 'failed', 'timeout'] as const) {
           asset,
           undefined,
           new Set(),
-          [],
           undefined,
           'scene/showcase',
         ),
     } as never);
     const clip: AnimationClip = { kind: 'animation-clip', duration: 1, channels: [] };
     ctx.provide('gameHost', {
-      assets: { loadByGuid: async () => ok(clip) },
+      assets: { load: async () => assets.create(clip), release: (handle: number) => assets.release(handle) },
       gameProjection: {
         registerRead: () => {
           playerEntity = resolveGameEntity(world, ctx.gameScene, 'player');

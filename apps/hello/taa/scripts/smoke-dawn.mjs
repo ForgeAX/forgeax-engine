@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+import { createPrimitiveMesh } from '@forgeax/engine-geometry';
 
 // The TAA carrier owns a real Dawn smoke instead of a provider-shaped placeholder.
 // Keep the loop deliberately synchronous: the regression this catches only appears
@@ -385,21 +386,19 @@ async function runDawnFeatureWorkload(kind) {
 
   try {
     assetRegistry.configurePackIndex('http://forgeax.local/pack-index.json');
-    const loadedLut = await assetRegistry.loadByGuid(parsedLutGuid.value);
+    const loadedLut = await assetRegistry.load(parsedLutGuid.value, 'texture');
     if (!loadedLut.ok) throw loadedLut.error;
     lutAsset = loadedLut.value;
     assetGuid = assetRegistry.guidOf(lutAsset);
-    const catalogEntry = assetRegistry.listCatalog().find((entry) => entry.guid === assetGuid);
+    const catalogEntry = assetRegistry.catalogEntry(assetGuid);
     lutSourceKey = catalogEntry?.sourceKey;
     if (assetGuid === undefined || lutSourceKey !== lutSubAsset.sourceKey) {
       throw new Error('hello-taa: loaded LUT is missing its authoritative Catalog sourceKey');
     }
-    const world = new World();
+    const world = new World({ assets: assetRegistry });
+    const primitiveCube = assetRegistry.create(createPrimitiveMesh('cube').unwrap()).unwrap();
     for (const { offset, color } of AUTO_EXPOSURE_TAA_FIXTURE.asset.barLayout) {
-      const material = world.allocSharedRef(
-        'MaterialAsset',
-        render.Materials.unlit(color),
-      );
+      const material = world.assets.create(render.Materials.unlit(color)).unwrap();
       world
         .spawn(
           {
@@ -410,13 +409,13 @@ async function runDawnFeatureWorkload(kind) {
               scale: AUTO_EXPOSURE_TAA_FIXTURE.asset.transform.scale,
             },
           },
-          { component: render.MeshFilter, data: { assetHandle: assets.HANDLE_CUBE } },
+          { component: render.MeshFilter, data: { assetHandle: primitiveCube } },
           { component: render.MeshRenderer, data: { materials: [material] } },
         )
         .unwrap();
     }
     if (kind === 'positive-lut') {
-      lutHandle = world.allocSharedRef('TextureAsset', lutAsset);
+      lutHandle = lutAsset;
     }
     world
       .spawn({
@@ -801,7 +800,13 @@ if (workloadKind !== 'none') {
   process.exit(0);
 }
 
-const world = new World();
+const { renderer, assets: sceneAssets, errors } = await bootRenderer({
+  createRenderer: constructRuntimeRendererHost,
+  mockCanvas: shim.mockCanvas,
+  shaderManifestUrl,
+});
+const world = new World({ assets: sceneAssets });
+const primitiveCube = sceneAssets.create(createPrimitiveMesh('cube').unwrap()).unwrap();
 // Keep the Dawn camera-pan carrier visually falsifiable. A single solid cube
 // can move by a valid sub-pixel amount while every fixed probe remains in its
 // unchanged interior. Alternating static bars put high-contrast boundaries
@@ -821,17 +826,14 @@ const cameraPanBarLayout = [
 const carrierObjects = (visualCase === 'camera-pan' ? cameraPanBarLayout : [
   { offset: 0, color: [0.9, 0.3, 0.25, 1], scaleX: 1 },
 ]).map(({ offset, color, scaleX }) => {
-  const material = world.allocSharedRef(
-    'MaterialAsset',
-    render.Materials.unlit([color[0], color[1], color[2], visualCase === 'reactive' ? 0.6 : color[3]]),
-  );
+  const material = world.assets.create(render.Materials.unlit([color[0], color[1], color[2], visualCase === 'reactive' ? 0.6 : color[3]])).unwrap();
   return world
     .spawn(
       {
         component: scene.Transform,
         data: { pos: [offset, 0, 0], quat: [0, 0, 0, 1], scale: [scaleX, 0.8, 1] },
       },
-      { component: render.MeshFilter, data: { assetHandle: assets.HANDLE_CUBE } },
+      { component: render.MeshFilter, data: { assetHandle: primitiveCube } },
       { component: render.MeshRenderer, data: { materials: [material] } },
     )
     .unwrap();
@@ -873,11 +875,7 @@ const camera = world
   )
   .unwrap();
 
-const { renderer, errors } = await bootRenderer({
-  createRenderer: constructRuntimeRendererHost,
-  mockCanvas: shim.mockCanvas,
-  shaderManifestUrl,
-});
+
 const resourceEvents = [];
 const firstFrameResourceEvents = [];
 const stableFrameResourceEvents = [];

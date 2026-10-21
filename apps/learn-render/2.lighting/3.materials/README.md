@@ -3,7 +3,7 @@
 > [!NOTE]
 > **LO original chapter**: [LearnOpenGL 2.lighting 3.1 Materials](https://learnopengl.com/Lighting/Materials)
 >
-> **Engine surface**: `createApp` + ECS components (`Transform`, `Camera`, `MeshFilter`, `MeshRenderer`, `PointLight`) + `MaterialAsset` (`shadingModel: 'standard'` / `'unlit'`) + `world.addSystem(Update, system)` for frame-level light animation + builtin `HANDLE_CUBE` mesh.
+> **Engine surface**: `createApp` + ECS components (`Transform`, `Camera`, `MeshFilter`, `MeshRenderer`, `PointLight`) + `Materials.standard(...)` / `Materials.unlit(...)` + `world.addSystem(Update, system)` for frame-level light animation + `assets.create(createPrimitiveMesh('cube').unwrap())` geometry.
 
 ## What this example shows
 
@@ -72,7 +72,7 @@ gate.
 | Lamp cube | Separate `lightCubeShader` outputting light color as-is | `UnlitMaterialAsset` (`shadingModel: 'unlit'`) |
 | Camera | `Camera(glm::vec3(0.0f, 0.0f, 3.0f))` with Zoom=45 deg + WASD movement | Static `Transform` at `(0, 0, 3)` + `Camera` with `fov = π/4` |
 | Window + render loop | `glfwCreateWindow` + `while(!glfwWindowShouldClose)` | `createApp(canvas, opts)` from `@forgeax/engine-app` |
-| Vertex data | Manual `float vertices[]` with position + normal | Built-in `HANDLE_CUBE` procedural geometry |
+| Vertex data | Manual `float vertices[]` with position + normal | Geometry's `createPrimitiveMesh('cube')`, admitted with `assets.create` |
 | Per-frame light update | `lightingShader.setVec3("light.diffuse", ...)` in C++ loop | `world.addSystem(Update, { name: 'animated-light-color', fn, queries: [] })` |
 
 ## Differences from the LearnOpenGL original

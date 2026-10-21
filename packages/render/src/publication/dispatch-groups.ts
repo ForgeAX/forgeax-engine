@@ -1,16 +1,16 @@
-import type { DispatchEntry, ExtractedFrame } from '../render-system-extract';
+import type { DispatchList, ExtractedFrame } from '../render-system-extract';
 
 interface PublicationDispatchGroups {
-  readonly groups: readonly (readonly DispatchEntry[])[];
+  readonly groups: readonly DispatchList[];
 }
 
-const publications = new WeakMap<readonly DispatchEntry[], PublicationDispatchGroups>();
+const publications = new WeakMap<DispatchList, PublicationDispatchGroups>();
 const arrayIterator = Array.prototype[Symbol.iterator];
 
 /** Finish only the receiver's newly detached readonly dispatch projection. */
 export function retainPublicationDispatchGroups(
-  dispatch: readonly DispatchEntry[],
-  groups: readonly (readonly DispatchEntry[])[],
+  dispatch: DispatchList,
+  groups: readonly DispatchList[],
 ): void {
   for (const entry of dispatch) Object.freeze(entry);
   Object.freeze(dispatch);
@@ -20,7 +20,7 @@ export function retainPublicationDispatchGroups(
 /** Borrowed arrays or changed membership keep the original observation path. */
 export function publicationDispatchGroups(
   frame: Pick<ExtractedFrame, 'dispatch'>,
-): readonly (readonly DispatchEntry[])[] | undefined {
+): readonly DispatchList[] | undefined {
   const dispatch = frame.dispatch;
   const published = publications.get(dispatch);
   if (

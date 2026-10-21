@@ -1,3 +1,6 @@
+import { AssetRegistry } from '@forgeax/engine-assets-runtime';
+import { runtimeAssets } from '@forgeax/engine-assets-runtime/internal';
+import { createBoxGeometry } from '@forgeax/engine-geometry';
 import { describe, expect, it } from 'vitest';
 import {
   adoptFieldEdit,
@@ -33,6 +36,8 @@ function scene(entities: readonly { key: number; x: number; mesh?: object; mater
         generation: 1,
         firstInstance: i,
         scope: 's',
+        assetHandle: e.mesh === undefined ? 1 : 2,
+        assetRevision: 1,
         mesh: e.mesh ?? mesh,
         field,
         materials: [e.material ?? lambert],
@@ -44,6 +49,35 @@ function scene(entities: readonly { key: number; x: number; mesh?: object; mater
   return { sources, instances };
 }
 const none = { moved: [], removed: [], added: [], rematerialized: [] };
+
+it('replaces managed Mesh field rows when an in-place publication preserves payload identity', () => {
+  const assets = new AssetRegistry();
+  try {
+    const handle = assets.create(createBoxGeometry(1, 1, 1).unwrap()).unwrap();
+    const records = runtimeAssets(assets);
+    const mesh = records.borrow(handle).unwrap();
+    const base = scene([{ key: 1, x: 0 }]);
+    const capture = () =>
+      ({
+        ...base.sources[0],
+        assetHandle: handle,
+        assetRevision: records.version(handle).unwrap(),
+        mesh,
+      }) as SceneFieldSource;
+    const state = fieldEditState([capture()], base.instances);
+    // Non-geometric Mesh facts may change without replacing the owned object.
+    assets.update(handle, { lodHysteresis: 0.25 }).unwrap();
+    expect(records.borrow(handle).unwrap()).toBe(mesh);
+    const current = capture();
+    const edit = diffFieldEdit(state, [current], base.instances);
+    expect(edit.removed.map((row) => row.index)).toEqual([0]);
+    expect(edit.added.map((row) => row.id)).toEqual(['0:1:1:1:0']);
+    adoptFieldEdit(state, edit, [0]);
+    expect(diffFieldEdit(state, [current], base.instances)).toEqual(none);
+  } finally {
+    assets.dispose();
+  }
+});
 
 it('derives empty SDF exterior from adopted trace bounds and revokes it on edits', () => {
   const grid = {
@@ -248,4 +282,28 @@ describe('fieldInputsUnchanged', () => {
     const recreated = (slot: number) => (slot === 0 ? { generation: 2 } : live.get(slot));
     expect(fieldInputsUnchanged(sources, [], recreated, none)).toBe(false);
   });
+});
+
+it('retains material binding identity across accepted shared-root value updates', () => {
+  const resource = {};
+  const material = { resource, materialSlot: 0, handle: 1, facts: { baseColor: [1, 0, 0, 1] } };
+  const base = scene([{ key: 1, x: 0, material }]);
+  const state = fieldEditState(base.sources, base.instances);
+  const updated = scene([
+    {
+      key: 1,
+      x: 3,
+      material: {
+        ...material,
+        facts: { baseColor: [0, 1, 0, 1] },
+        payload: {},
+        projection: {},
+      },
+    },
+  ]);
+  const edit = diffFieldEdit(state, updated.sources, updated.instances);
+  expect(edit.moved).toHaveLength(1);
+  expect(edit.rematerialized).toEqual([]);
+  const rebound = scene([{ key: 1, x: 0, material: { ...material, resource: {} } }]);
+  expect(diffFieldEdit(state, rebound.sources, rebound.instances).rematerialized).toHaveLength(1);
 });

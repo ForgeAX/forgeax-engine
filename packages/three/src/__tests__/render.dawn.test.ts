@@ -1,4 +1,4 @@
-import { WebGLRenderer } from '@forgeax/engine/three';
+import { WebGPURenderer } from '@forgeax/engine/three';
 import { buildEngineShaderManifest } from '@forgeax/engine-vite-plugin-shader';
 import { it } from 'vitest';
 import { offscreenCanvas } from '../../../runtime/src/__tests__/hdr-evidence.fixture';
@@ -11,7 +11,7 @@ it('submits 60 compatibility frames and replays them on a fresh Dawn device', {
 }, async () => {
   const url = shaderManifestUrl(await buildEngineShaderManifest());
   const target = offscreenCanvas(SIZE);
-  const renderer = new WebGLRenderer({
+  const renderer = new WebGPURenderer({
     canvas: target.canvas as unknown as OffscreenCanvas,
     forgeax: { bundler: { shaderManifestUrl: url } },
   });

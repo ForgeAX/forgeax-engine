@@ -1,13 +1,4 @@
-// Tile-strip debug view: walks the full ECS pipeline (fetch PNG → alloc
-// TextureAsset / SamplerAsset / TilesetAsset via world.allocSharedRef →
-// spawn Tilemap + TileLayers) but instead of building the world map it
-// lays every tile from both atlases out in a STRIP_COLS-wide grid so the
-// renderer can be verified in isolation.
-//
-// Terrain tiles occupy the top band; object tiles occupy the bottom band
-// (separated by one empty row so multi-cell object sprites don't bleed into
-// terrain rows).
-
+// Two native Tilemap layers display the complete terrain/object atlas contents.
 import type { App, CanvasAppError } from '@forgeax/engine-app';
 import { createApp } from '@forgeax/engine-app/browser';
 import { encodeTileBits } from '@forgeax/engine-graphics-extras';
@@ -15,12 +6,10 @@ import { ChildOf, Transform } from '@forgeax/engine-scene';
 
 import { CAMERA_PROJECTION_ORTHOGRAPHIC } from '@forgeax/engine-render';
 import { EngineEnvironmentError } from '@forgeax/engine-runtime';
-import { TransparentSort, Tilemap, TileLayer } from '@forgeax/engine-render/authoring';
+import { TransparentSort, Tilemap } from '@forgeax/engine-render/authoring';
 import { Camera } from '@forgeax/engine-render';
 
 import type {
-  Handle,
-  SamplerAsset,
   TextureAsset,
   TilesetAsset,
   TilesetRegion,
@@ -76,16 +65,7 @@ async function bootstrap(target: HTMLCanvasElement): Promise<void> {
 
   const terrainPayload = makeTextureAsset(terrainPng);
   const objectPayload = makeTextureAsset(objectPng);
-  registerTexture(world, terrainPng);
-  registerTexture(world, objectPng);
-
-  world.allocSharedRef<'SamplerAsset', SamplerAsset>('SamplerAsset', {
-    kind: 'sampler',
-    magFilter: 'nearest',
-    minFilter: 'nearest',
-    addressModeU: 'clamp-to-edge',
-    addressModeV: 'clamp-to-edge',
-  });
+  const terrainAtlas=assets.create(terrainPayload).unwrap(),objectAtlas=assets.create(objectPayload).unwrap();
 
   // Combined TilesetAsset — terrain entries first, then object entries.
   // Matches main.ts composeTilesetAsset exactly so we exercise the same
@@ -112,7 +92,7 @@ async function bootstrap(target: HTMLCanvasElement): Promise<void> {
 
   const tileset: TilesetAsset = {
     kind: 'tileset',
-    atlases: ['asi-world/terrain-atlas', 'asi-world/object-atlas'],
+    atlases: [terrainAtlas, objectAtlas],
     tileWidth: 16,
     tileHeight: 16,
     columns: Math.ceil(Math.max(terrainTsj.imagewidth, objectTsj.imagewidth) / 16),
@@ -124,15 +104,7 @@ async function bootstrap(target: HTMLCanvasElement): Promise<void> {
     regions,
     tiles,
   };
-  const catalogResults = [
-    assets.catalog('asi-world/terrain-atlas', terrainPayload),
-    assets.catalog('asi-world/object-atlas', objectPayload),
-    assets.catalog('asi-world/tile-strip', tileset),
-  ];
-  if (catalogResults.some((result) => !result.ok)) {
-    setStatus('asset catalog failed');
-    return;
-  }
+  const handle=assets.create(tileset).unwrap();
 
   // Grid layout (y-up coordinates):
   //   high y  → terrain band (terrainRows rows)
@@ -143,23 +115,10 @@ async function bootstrap(target: HTMLCanvasElement): Promise<void> {
   const totalRows = objectRows + 1 + terrainRows; // bottom=objects, mid=gap, top=terrain
   const totalCols = STRIP_COLS;
 
-  const tilemapRes = world.spawn(
-    {
-      component: Transform,
-      data: { pos: [0, 0, 0], scale: [1, 1, 1]},
-    },
-    {
-      component: Tilemap,
-      data: { cols: totalCols, rows: totalRows, tileSize: [1, 1], tileset: 'asi-world/tile-strip' },
-    },
-  );
-  if (!tilemapRes.ok) {
-    setStatus(`tilemap: ${tilemapRes.error.code}`);
-    return;
-  }
-  const tilemapEntity = tilemapRes.value;
+  const tilemapEntity=world.spawn({component:Transform,data:{}}).unwrap();
+  const grid={cols:totalCols,rows:totalRows,tileSize:[1,1],tileset:handle};
 
-  // Terrain TileLayer — cells in the top band (high y).
+  // Terrain Tilemap — cells in the top band (high y).
   // tile value i+1 → tiles[i] (terrain section of the combined tiles[])
   const terrainCells = new Uint32Array(totalCols * totalRows);
   for (let i = 0; i < numTerrain; i++) {
@@ -171,7 +130,7 @@ async function bootstrap(target: HTMLCanvasElement): Promise<void> {
   }
 
   const terrainLayerRes = world.spawn(
-    { component: TileLayer, data: { tiles: terrainCells, layerOrder: 0 } },
+    { component: Tilemap, data: { ...grid, tiles: terrainCells, layerOrder: 0 } },
     { component: ChildOf, data: { parent: tilemapEntity } },
     {
       component: Transform,
@@ -184,7 +143,7 @@ async function bootstrap(target: HTMLCanvasElement): Promise<void> {
     return;
   }
 
-  // Object TileLayer — cells in the bottom band (low y).
+  // Object Tilemap — cells in the bottom band (low y).
   // tile value numTerrain+i+1 → tiles[numTerrain+i] (object section)
   const objectCells = new Uint32Array(totalCols * totalRows);
   for (let i = 0; i < numObject; i++) {
@@ -195,7 +154,7 @@ async function bootstrap(target: HTMLCanvasElement): Promise<void> {
   }
 
   const objectLayerRes = world.spawn(
-    { component: TileLayer, data: { tiles: objectCells, layerOrder: 1000 } },
+    { component: Tilemap, data: { ...grid, tiles: objectCells, layerOrder: 1000 } },
     { component: ChildOf, data: { parent: tilemapEntity } },
     {
       component: Transform,
@@ -261,13 +220,6 @@ async function fetchJson<T>(url: string): Promise<T> {
   const r = await fetch(url);
   if (!r.ok) throw new Error(`${url} → HTTP ${r.status}`);
   return (await r.json()) as T;
-}
-
-function registerTexture(
-  world: App['world'],
-  png: { width: number; height: number; rgba: Uint8Array },
-): Handle<'TextureAsset', 'shared'> {
-  return world.allocSharedRef<'TextureAsset', TextureAsset>('TextureAsset', makeTextureAsset(png));
 }
 
 function makeTextureAsset(

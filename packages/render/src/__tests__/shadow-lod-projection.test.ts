@@ -140,7 +140,12 @@ function batch(primitives: readonly number[], crossfade = true, scale = 1): GpuD
 }
 
 function plan(batches: readonly GpuDrivenBatch[]): SubmissionPlan {
-  return { batches } as SubmissionPlan;
+  return {
+    revision: 1,
+    batches,
+    candidateCount: batches.reduce((count, row) => count + row.candidates.length, 0),
+    visibleCapacity: 0,
+  };
 }
 
 function cameraAt(z: number): CameraSnapshot {

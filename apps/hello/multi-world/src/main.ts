@@ -29,16 +29,20 @@
 // geometry + light compositing; gizmo picking/placement is a separate loop.
 
 import { World } from '@forgeax/engine-ecs';
-import { HANDLE_CUBE } from '@forgeax/engine-assets-runtime';
+
 import { Transform } from '@forgeax/engine-scene';
 
 import { perspective } from '@forgeax/engine-render';
 import { constructRuntimeRendererHost } from '@forgeax/engine-runtime/internal/renderer-host';
-import { EngineEnvironmentError, type MaterialAsset } from '@forgeax/engine-runtime';
+import { EngineEnvironmentError } from '@forgeax/engine-runtime';
 import { Materials } from '@forgeax/engine-render';
 import { Camera, DirectionalLight, MeshFilter, MeshRenderer } from '@forgeax/engine-render';
 
 import { forgeaxBundlerAdapter } from 'virtual:forgeax/bundler';
+import { AssetRegistry } from '@forgeax/engine-assets-runtime';
+
+import { createPrimitiveMesh } from '@forgeax/engine-geometry';
+
 
 // ── Scene SSOT lock values (paired with scripts/smoke-dawn.mjs) ──────────────
 // Camera sits on +Z looking down -Z; boxes live on the z=0 plane. The left box
@@ -59,25 +63,27 @@ function litBox(
   x: number,
   y: number,
 ): void {
-  const matHandle = world.allocSharedRef<'MaterialAsset', MaterialAsset>(
-    'MaterialAsset',
-    Materials.standard({ baseColor: color, metallic: 0, roughness: 0.5 }),
-  );
+const sceneAssets = world.assets;
+if (!(sceneAssets instanceof AssetRegistry)) throw new Error('Scene requires its runtime asset owner');
+
+const primitiveCube = sceneAssets.create(createPrimitiveMesh('cube').unwrap()).unwrap();
+
+  const matHandle = sceneAssets.create(Materials.standard({ baseColor: color, metallic: 0, roughness: 0.5 })).unwrap();
   world
     .spawn(
       {
         component: Transform,
         data: { pos: [x, y, 0], scale: [BOX_SCALE, BOX_SCALE, BOX_SCALE] },
       },
-      { component: MeshFilter, data: { assetHandle: HANDLE_CUBE } },
+      { component: MeshFilter, data: { assetHandle: primitiveCube } },
       { component: MeshRenderer, data: { materials: [matHandle] } },
     )
     .unwrap();
 }
 
 // world A (owner): camera + directional light + one lit box on the left.
-function buildWorldA(): World {
-  const world = new World();
+function buildWorldA(assets: AssetRegistry): World {
+  const world = new World({ assets });
   litBox(world, A_GREEN, -BOX_X, 0);
   world
     .spawn(
@@ -99,8 +105,8 @@ function buildWorldA(): World {
 }
 
 // world B (non-owner): two lit boxes on the right, no camera, no light.
-function buildWorldB(): World {
-  const world = new World();
+function buildWorldB(assets: AssetRegistry): World {
+  const world = new World({ assets });
   litBox(world, B_RED, BOX_X, 0);
   litBox(world, B_BLUE, BOX_X, BOX_X);
   return world;
@@ -121,8 +127,10 @@ async function bootstrap(target: HTMLCanvasElement): Promise<void> {
 
   console.warn('[multi-world] Standard pipeline active');
 
-  const worldA = buildWorldA();
-  const worldB = buildWorldB();
+  const worldA = buildWorldA(constructed.value.assets);
+  const worldB = buildWorldB(new AssetRegistry({
+    shaderRegistry: constructed.value.assets.shaderRegistry,
+  }));
   const attachmentA = renderer.attach(worldA);
   if (!attachmentA.ok) throw attachmentA.error;
   const attachmentB = renderer.attach(worldB);

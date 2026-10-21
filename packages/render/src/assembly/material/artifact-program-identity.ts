@@ -1,30 +1,16 @@
 import type { MaterialShaderArtifact } from '@forgeax/engine-shader';
 
+/** Program bytes and their selected registry specialization both participate in cache identity. */
 export function materialArtifactProgramIdentity(artifact: MaterialShaderArtifact): string {
-  return artifact.specializationKey === undefined
-    ? artifact.program.identity
-    : `specialization:${artifact.specializationKey}`;
+  return JSON.stringify([artifact.program.identity, artifact.specializationKey ?? null]);
 }
 
-/** Compare the existing program identity without constructing its specialization prefix. */
 export function sameMaterialArtifactProgram(
   left: MaterialShaderArtifact,
   right: MaterialShaderArtifact,
 ): boolean {
-  const leftSpecialized = left.specializationKey !== undefined;
-  const leftIdentity = leftSpecialized ? String(left.specializationKey) : left.program.identity;
-  const rightSpecialized = right.specializationKey !== undefined;
-  const rightIdentity = rightSpecialized ? String(right.specializationKey) : right.program.identity;
-  if (leftSpecialized === rightSpecialized) return leftIdentity === rightIdentity;
-  const program = leftSpecialized ? rightIdentity : leftIdentity;
-  const specialization = leftSpecialized ? leftIdentity : rightIdentity;
-  // Preserve the original string identity equality for raw/custom artifacts too.
-  const prefix = 'specialization:';
-  const key = String(specialization);
   return (
-    program !== undefined &&
-    program.length === prefix.length + key.length &&
-    program.startsWith(prefix) &&
-    program.endsWith(key)
+    left.program.identity === right.program.identity &&
+    left.specializationKey === right.specializationKey
   );
 }

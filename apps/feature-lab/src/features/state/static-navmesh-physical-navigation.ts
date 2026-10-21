@@ -1,3 +1,4 @@
+import { AssetRegistry } from '@forgeax/engine/assets-runtime';
 import { createWorldContext, World } from '@forgeax/engine/ecs';
 import {
   createNavigationMesh,
@@ -5,6 +6,7 @@ import {
   NavigationAgentStatus,
   NavigationCharacter,
   navigationCharacterPlugin,
+  navigationMeshContribution,
   setNavigationPath,
   setNavigationTarget,
 } from '@forgeax/engine/navigation';
@@ -45,11 +47,15 @@ export default defineFeature({
     };
     const mesh = createNavigationMesh(JSON.parse(JSON.stringify(asset))).unwrap();
     checks.ok('explicit projection limit', !mesh.project([10, 0, 0], 0.1).ok);
-    const world = new World(),
+    const assets = new AssetRegistry();
+    assets.installDecoder(navigationMeshContribution.kind, navigationMeshContribution.decoder);
+    const surface = assets.create(asset).unwrap();
+    const world = new World({ assets }),
       ctx = await createWorldContext(world, [
         physicsPlugin('rapier-3d'),
-        navigationCharacterPlugin(mesh),
+        navigationCharacterPlugin(surface),
       ]);
+    assets.release(surface).unwrap();
     try {
       world
         .spawn(
@@ -116,6 +122,7 @@ export default defineFeature({
       );
     } finally {
       await ctx.fiber.dispose();
+      assets.dispose();
     }
     checks.ok(
       'disposed motor',

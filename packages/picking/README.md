@@ -51,9 +51,9 @@ never the reverse.
   walks the whole scene (AABB coarse cull, then per-entity vertex collect).
 - **`pickTile(world, tilemapEntity, worldX, worldY)`** — cell-level Tilemap query:
   converts world coordinates through the full inverse of the propagated
-  `GlobalTransform.world` affine matrix, walks child `TileLayer`s in descending
-  `layerOrder`, and returns `Result.ok(PickTileHit { layerEntity, cellX, cellY,
-  tileId })` for the topmost non-zero cell, `Result.ok(null)` for empty /
+  `GlobalTransform.world` affine matrix, reads the selected Tilemap layer,
+  and returns `Result.ok(PickTileHit { tilemapEntity, cellX, cellY, tileId })`
+  for a non-zero cell, `Result.ok(null)` for empty /
   out-of-bounds, or `Result.err(PickTileError)` for a structural break.
 - **`PickError` / `PickErrorCode`** — closed single-member error union
   (`'camera-component-missing'`); the SSOT for the picking error surface. A
@@ -179,7 +179,7 @@ use `pickTriangle` to distinguish an unavailable pose from a miss. Explicit
 
 | Function | Signature | Return |
 |:--|:--|:--|
-| `pickTriangle` | `(world, cameraEntity, screenX, screenY, vpW, vpH, options?)` | `TrianglePickResult` |
+| `pickTriangle` | `(world, cameraEntity, screenX, screenY, vpW, vpH)` | `TrianglePickResult` |
 
 `TrianglePickResult` is a closed three-state result: `hit` contains the
 nearest `TriangleHit`; `miss` means every candidate was tested and no triangle
@@ -187,9 +187,11 @@ intersects the ray; `unavailable` names intersecting entities whose CPU
 geometry, current Morph/Skin pose, or explicit instance transforms cannot be
 tested. For an entity carrying `Instances`, the picker reads World-owned
 `Instances.transforms`; a hit includes the zero-based `instanceIndex`.
-No Renderer or collection resolver is needed. Pass
-`AssetRegistry.guidOf` as `assetGuidOf` when provenance is needed. The query
-does not mutate the World or own an asset registry.
+No Renderer or collection resolver is needed. A hit includes the runtime
+`assetHandle`; `assets.source(hit.assetHandle)` supplies adopted provenance when
+available. Queries borrow current content through the World's asset owner and
+never expose writable payloads to user callbacks. Mesh edits affect the next
+query, including its broad bounds and exact vertices, without rebinding entities.
 
 Morph uses the live `MorphWeights.weights` in target order, applying relative
 position deltas before Skin: $P'=P+\sum_k w_k\Delta P_k$. Entity weights override
@@ -238,7 +240,7 @@ posed bounds, and keeps transform propagation outside query timing.
 |:--|:--|:--|
 | `pickTile` | `(world, tilemapEntity, worldX, worldY)` | `Result<PickTileHit \| null, PickTileError>` |
 
-`PickTileHit = { layerEntity, cellX, cellY, tileId }`. Callers propagate the
+`PickTileHit = { tilemapEntity, cellX, cellY, tileId }`. Callers propagate the
 World before picking so `GlobalTransform.world` is current; an entity without a
 Transform retains the origin-default path. `Result.ok(null)` = empty cell or
 out-of-bounds. A dead handle returns `tilemap-not-found`; a live entity without
@@ -264,7 +266,7 @@ two-member union returned (not thrown) through `Result`.
 ## Package boundary
 
 Depends on `@forgeax/engine-runtime` (components: `Camera` / `Transform` /
-`MeshFilter` / `MeshRenderer` / `ChildOf` / `TileLayer` / `Tilemap`;
+`MeshFilter` / `MeshRenderer` / `ChildOf` / `Tilemap`;
 `propagateTransforms`), `@forgeax/engine-assets-runtime` (`resolveAssetHandle`
 for `MeshAsset.aabb`), `@forgeax/engine-ecs`, `@forgeax/engine-math`, and
 `@forgeax/engine-types`. `@forgeax/engine-runtime` does **not** import this
@@ -282,3 +284,14 @@ miss returns `undefined`).
 - `src/pick-triangle.ts` — exact triangle/occlusion query + unavailable state
 - `src/pick-errors.ts` — `PickError` / `PickErrorCode` (error SSOT)
 - `src/pick-core.ts` — shared camera->ray skeleton (internal)
+
+Tilemap exact triangle and vertex queries use the same tile geometry kernel as
+Renderer drawing, including current shared Tileset dimensions, pivots and flips.
+The query reads the World asset owner directly; it keeps no tile asset catalogue.
+
+### Native GlyphText geometry
+
+Ray, triangle and vertex queries evaluate the current managed Font through the same
+layout kernel used by Render, including camera-facing billboard transforms. Glyph
+hits have no `assetHandle`: their geometry belongs to the label draw, not a Mesh asset.
+Font edits affect the next query without derived ECS components.

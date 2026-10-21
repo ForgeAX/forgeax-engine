@@ -1,40 +1,48 @@
+import type { TextureFormat } from '@forgeax/engine-rhi';
 import type { MaterialShaderArtifact } from '@forgeax/engine-shader';
-import { gpuDrivenMaterialArtifactKey } from '../extract/gpu-driven';
+import { isTriangleTopology } from '@forgeax/engine-types';
+import { GpuDrivenPreparationError } from '../errors/gpu-driven';
+import { transformRenderState } from '../material-render-state';
+import type { MaterialResource } from '../material-resource';
+import { SKIN_UNCOVERED_GBUFFER_ENTRY } from '../pbr-pipeline';
 import { captureDispatchOverlays, type DispatchOverlays } from '../record/dispatch-overlays';
-import type { RenderSystemInternals } from '../record/render-context';
-import type { DispatchEntry, MaterialSnapshot, RenderableSnapshot } from '../render-system-extract';
+import type { ValidatedRenderable } from '../record/frame-snapshot';
 import {
-  capturedPreparedMaterialArtifactKey,
-  hasGpuDrivenVertexColor,
-  hasRequiredVertexInputs,
-  type PreparedGpuDrivenDraw,
-} from './prepared-draw';
+  geometryRenderStateForPass,
+  variantSetForCoveragePass,
+} from '../record/main-pass-geometry';
+import { isMediumMaterial } from '../record/material-pass-selection';
+import type { RenderSystemInternals } from '../record/render-context';
+import { STANDARD_OPAQUE_FRAGMENT_ENTRY } from '../record/standard-opaque-entry';
+import type { FramePresentationPendingReason } from '../render-contract';
+import type { RenderPipelineGpuDrivenFilter } from '../render-pipeline';
+import type { DispatchList, MaterialSnapshot } from '../render-system-extract';
+import type { AcceptedMaterial, MaterialDispatchPass } from '../scene/material-dispatch';
+import { MaterialFrame } from '../scene/material-dispatch';
+import { capturedPreparedMaterialArtifactKey, type PreparedGpuDrivenDraw } from './prepared-draw';
+import { requestMaterialAbiRasterPipeline } from './production-raster-material';
 
-type ArtifactRow = { readonly source: RenderableSnapshot; readonly renderableIndex: number };
 type MaterialPrograms = {
   readonly materialHandle: number;
-  forward?: DispatchEntry;
-  shadow?: DispatchEntry;
-};
-type MaterialProgramRow = {
-  first?: MaterialPrograms;
-  overflow?: Map<number, MaterialPrograms>;
-};
-type SelectedArtifact = {
-  readonly selection: readonly unknown[];
-  readonly artifact: MaterialShaderArtifact | undefined;
-  variants?: Map<string, SelectedArtifact>;
+  readonly forward: readonly MaterialDispatchPass[];
+  readonly shadow: readonly MaterialDispatchPass[];
 };
 
-function materialProgramsFor(row: MaterialProgramRow, handle: number) {
-  const first = row.first;
-  // Preserve Map's numeric key equality, including NaN and signed zero.
-  if (
-    first !== undefined &&
-    (first.materialHandle === handle || Object.is(first.materialHandle, handle))
-  )
-    return first;
-  return row.overflow?.get(handle);
+import {
+  type BatchArtifactResolver,
+  type BatchExecution,
+  type BatchPass,
+  prepareBatchExecution,
+} from './batch-execution';
+import {
+  eligibleGpuDrivenDraws,
+  type GpuDrivenBatch,
+  type GpuDrivenBatchBinding,
+} from './batch-topology';
+
+export interface BatchExecutions {
+  readonly forward: BatchExecution;
+  readonly shadow: BatchExecution;
 }
 
 interface MaterialProgramSelection {
@@ -83,60 +91,55 @@ export function gpuDrivenMaterialProgramSelection(
 }
 
 export interface GpuDrivenMaterialProgramIndex {
-  readonly dispatch: readonly DispatchEntry[];
-  readonly rows: readonly (MaterialProgramRow | undefined)[];
+  readonly dispatch: DispatchList;
+  readonly materials: MaterialFrame;
+  get(
+    material: MaterialResource,
+  ): (MaterialPrograms & { readonly snapshot: MaterialSnapshot }) | undefined;
   readonly overlays: DispatchOverlays;
 }
 
-function indexMaterialPrograms(
-  dispatch: readonly DispatchEntry[],
-  shadowViews: boolean,
-): readonly (MaterialProgramRow | undefined)[] {
-  const programEntries: (MaterialProgramRow | undefined)[] = [];
-  for (const entry of dispatch) {
-    const mode = entry.tags.LightMode;
-    if (
-      entry.materialShaderId === undefined ||
-      (mode !== 'Forward' && (mode !== 'ShadowCaster' || !shadowViews))
-    )
-      continue;
-    let materials = programEntries[entry.renderableIndex];
-    if (materials === undefined) {
-      materials = {};
-      programEntries[entry.renderableIndex] = materials;
-    }
-    let programs = materialProgramsFor(materials, entry.materialHandle);
-    if (programs === undefined) {
-      // Keep the separate insertion read: borrowed getters can fail or return
-      // another key after lookup. A receiver usually needs only this first slot.
-      programs = { materialHandle: entry.materialHandle };
-      const first = materials.first;
-      if (
-        first === undefined ||
-        first.materialHandle === programs.materialHandle ||
-        Object.is(first.materialHandle, programs.materialHandle)
-      )
-        materials.first = programs;
-      else {
-        materials.overflow ??= new Map();
-        materials.overflow.set(programs.materialHandle, programs);
-      }
-    }
-    if (mode === 'Forward') programs.forward ??= entry;
-    else programs.shadow = entry;
-  }
-  return programEntries;
-}
+const sharedProgramSelections = new WeakMap<
+  AcceptedMaterial,
+  MaterialPrograms & { readonly snapshot: MaterialSnapshot }
+>();
 
-/** Retain the program index only at the immutable persistent dispatch owner. */
+/** The program index reads fixed shared material roots, without expanding dispatch members. */
 export class GpuDrivenMaterialProgramProjection {
   private current: GpuDrivenMaterialProgramIndex | undefined;
-  project(dispatch: readonly DispatchEntry[]): GpuDrivenMaterialProgramIndex {
-    if (this.current?.dispatch === dispatch) return this.current;
+  project(dispatch: DispatchList, materials: MaterialFrame): GpuDrivenMaterialProgramIndex {
+    if (this.current?.dispatch === dispatch && this.current.materials === materials)
+      return this.current;
     let overlays: DispatchOverlays | undefined;
     this.current = {
       dispatch,
-      rows: indexMaterialPrograms(dispatch, true),
+      materials,
+      get(material) {
+        const accepted = materials.get(material);
+        if (accepted === undefined) return undefined;
+        let programs = sharedProgramSelections.get(accepted);
+        if (programs !== undefined) return programs;
+        const forward: MaterialDispatchPass[] = [];
+        const shadow: MaterialDispatchPass[] = [];
+        programs = {
+          snapshot: accepted.snapshot,
+          materialHandle: accepted.snapshot.materialHandle ?? -1,
+          forward,
+          shadow,
+        };
+        for (const pass of accepted.passes) {
+          if (pass.materialShaderId === undefined) continue;
+          if (pass.tags.LightMode === 'ShadowCaster') shadow.push(pass);
+          // Medium work owns its nearest/color passes independently of the
+          // ordinary Forward selector, including an authored untagged color Pass.
+          else if (pass.tags.LightMode === 'Forward' || isMediumMaterial(accepted.snapshot))
+            forward.push(pass);
+        }
+        Object.freeze(forward);
+        Object.freeze(shadow);
+        sharedProgramSelections.set(accepted, programs);
+        return programs;
+      },
       get overlays() {
         overlays ??= captureDispatchOverlays(dispatch);
         return overlays;
@@ -149,264 +152,262 @@ export class GpuDrivenMaterialProgramProjection {
   }
 }
 
-/** Resolve programs from one retained, pre-cull row/dispatch index domain. */
+/** Resolve shared geometry/material/Pass executions without inspecting batch members. */
 export function collectGpuDrivenMaterialArtifacts({
-  rows,
-  dispatch,
+  batches,
   resolve,
   clustered,
   reflectionFallback,
+  probeBlend,
   shadowViews,
   programs,
 }: {
-  readonly rows: readonly ArtifactRow[];
-  readonly dispatch: readonly DispatchEntry[];
+  readonly batches: Iterable<Pick<GpuDrivenBatch, 'binding'>>;
   readonly resolve: RenderSystemInternals['getMaterialShaderArtifact'];
   readonly clustered: boolean;
   readonly reflectionFallback: boolean;
+  readonly probeBlend: boolean;
   readonly shadowViews: boolean;
-  readonly programs?: GpuDrivenMaterialProgramIndex | undefined;
+  readonly programs: GpuDrivenMaterialProgramIndex | undefined;
 }) {
-  // The material key is shared by receivers with and without a local probe.
-  // Select one probe-capable program for the frame; sentinel rows yield Sky.
-  const probeBlend = rows.some((row) => row.source.probeBlendRecord !== undefined);
-  // A receiver roster may repeat one publication thousands of times and may
-  // serve both main and shadow views. Resolve each selected request once
-  // within this collection. The next frame/recovery observes the producer anew.
   const materialArtifacts = new Map<string, MaterialShaderArtifact>();
   const shadowMaterialArtifacts = new Map<string, MaterialShaderArtifact>();
-  // These indices address the retained pre-cull row domain. Validation may
-  // leave holes, but neither pass needs to hash that domain again.
-  const programEntries =
-    programs?.dispatch === dispatch ? programs.rows : indexMaterialPrograms(dispatch, shadowViews);
-  const collectArtifacts = (
-    rows: readonly ArtifactRow[],
-    pass: 'forward' | 'shadow',
-    target: Map<string, MaterialShaderArtifact>,
-  ): void => {
-    if (resolve === undefined) return;
-    const selectedArtifacts = new Map<string, SelectedArtifact>();
-    const programSelection: MaterialProgramSelection = {
-      logicalMaterialShaderId: '',
-      sceneIndexProgramKey: undefined,
-      materialShaderId: '',
-    };
-    let previousSelection: readonly unknown[] | undefined;
-    let selectedIdentityArtifact: MaterialShaderArtifact | undefined;
-    let previousPrepared: PreparedGpuDrivenDraw | undefined;
-    let previousTargetArtifact: MaterialShaderArtifact | undefined;
-    for (const row of rows) {
-      const rowPrograms = programEntries[row.renderableIndex];
-      for (const draw of row.source.gpuDrivenDraws ?? []) {
-        const prepared = draw.prepared;
-        if (prepared === undefined) continue;
-        const material = row.source.materials[draw.materialSlot] ?? row.source.material;
-        // Keep program identity and entry points on the same selected dispatch.
-        // Looking this up per draw must not scan the scene's dispatch roster.
-        const programs =
-          rowPrograms === undefined
-            ? undefined
-            : materialProgramsFor(rowPrograms, material.materialHandle ?? -1);
-        // Explicit hidden requests have no display/shadow dispatch membership.
-        // Their preparation roster still owns the identical authored program.
-        const preparationPasses =
-          row.source.authorVisible === false ? row.source.pipelinePreparation : undefined;
-        const shadowProgramEntry =
-          programs?.shadow ??
-          preparationPasses?.find(
-            (entry) =>
-              entry.materialHandle === (material.materialHandle ?? -1) &&
-              entry.tags.LightMode === 'ShadowCaster',
-          );
-        // A modern publication may expose a scene-index pair for its
-        // forward Pass but omit ShadowCaster. Keep that material on its
-        // explicit CPU shadow lane; do not reinterpret its direct WGSL
-        // as a scene-index source and fail later at pipeline creation.
-        const selectedProgram = gpuDrivenMaterialProgramSelection(
-          material,
-          prepared,
-          pass,
-          shadowProgramEntry,
-          programSelection,
-        );
-        if (selectedProgram === undefined) continue;
-        const { logicalMaterialShaderId, sceneIndexProgramKey, materialShaderId } = selectedProgram;
-        const sceneIndex = sceneIndexProgramKey !== undefined;
-        const programEntry =
-          pass === 'shadow'
-            ? shadowProgramEntry
-            : (programs?.forward ??
-              preparationPasses?.find(
-                (entry) =>
-                  entry.materialHandle === (material.materialHandle ?? -1) &&
-                  entry.tags.LightMode === 'Forward',
-              ));
-        const deformation = prepared.identity.deformation;
-        const vertexEntry = programEntry?.vertexEntry;
-        const fragmentEntry = programEntry?.fragmentEntry;
-        // The accepted target already derived color from this immutable input
-        // table. Still read the current program and entries before reusing it.
-        if (
-          previousTargetArtifact !== undefined &&
-          previousTargetArtifact === selectedIdentityArtifact &&
-          previousPrepared?.vertexInputs === prepared.vertexInputs &&
-          previousSelection !== undefined &&
-          previousSelection[4] === materialShaderId &&
-          previousSelection[0] === deformation &&
-          previousSelection[2] === vertexEntry &&
-          previousSelection[3] === fragmentEntry &&
-          previousSelection[5] === logicalMaterialShaderId &&
-          previousSelection[6] === sceneIndex &&
-          previousPrepared?.identity.material === prepared.identity.material &&
-          previousPrepared.identity.deformation === deformation &&
-          previousPrepared.receiptIdentity === prepared.receiptIdentity &&
-          previousPrepared.receiptGeneration === prepared.receiptGeneration
-        ) {
-          continue;
-        }
-        const vertexColorAvailable = hasGpuDrivenVertexColor(prepared.vertexInputs);
-        // Repeated receivers retain the full request; alternating programs
-        // still use the exact-key lookup. Admission checks each distinct input table.
-        if (
-          previousSelection === undefined ||
-          previousSelection[0] !== deformation ||
-          previousSelection[1] !== vertexColorAvailable ||
-          previousSelection[2] !== vertexEntry ||
-          previousSelection[3] !== fragmentEntry ||
-          previousSelection[4] !== materialShaderId ||
-          previousSelection[5] !== logicalMaterialShaderId ||
-          previousSelection[6] !== sceneIndex ||
-          previousSelection[7] !== pass
-        ) {
-          const first = selectedArtifacts.get(materialShaderId);
-          let selected = first;
-          if (
-            first === undefined ||
-            first.selection[0] !== deformation ||
-            first.selection[1] !== vertexColorAvailable ||
-            first.selection[2] !== vertexEntry ||
-            first.selection[3] !== fragmentEntry ||
-            first.selection[5] !== logicalMaterialShaderId ||
-            first.selection[6] !== sceneIndex
-          ) {
-            const selection = [
-              deformation,
-              vertexColorAvailable,
-              vertexEntry,
-              fragmentEntry,
-              materialShaderId,
-              logicalMaterialShaderId,
-              // A scene-index key is already materialShaderId; only its presence
-              // distinguishes the logical-identity overlay from a direct fallback.
-              sceneIndex,
-              pass,
-            ];
-            // One shader normally has one request per pass. Keep that request
-            // directly; only distinct entry/ABI variants need composite keys.
-            const selectionKey = first === undefined ? undefined : JSON.stringify(selection);
-            selected = selectionKey === undefined ? undefined : first?.variants?.get(selectionKey);
-            if (selected === undefined) {
-              const artifact = resolve(materialShaderId, {
-                vertexColorAvailable,
-                deformation: prepared.identity.deformation,
-                pass,
-                address: 'scene-index',
-                ...(pass === 'forward'
-                  ? {
-                      clustered: clustered,
-                      probeBlend,
-                      reflectionFallback: reflectionFallback,
-                    }
-                  : {}),
-              });
-              const selectedArtifact =
-                artifact === undefined
-                  ? undefined
-                  : programEntry === undefined
-                    ? artifact
-                    : {
-                        ...artifact,
-                        ...(programEntry.vertexEntry === undefined
-                          ? {}
-                          : { vertexEntry: programEntry.vertexEntry }),
-                        ...(programEntry.fragmentEntry === undefined
-                          ? {}
-                          : { fragmentEntry: programEntry.fragmentEntry }),
-                      };
-              // A scene-index program has a distinct registry key but the
-              // prepared draw keeps the logical material identity for batching
-              // and admission. Carry both facts: `material` remains the logical
-              // identity, while `specializationKey` tells the raster owner which
-              // published WGSL key must be used for pipeline construction.
-              const selectedIdentityArtifact =
-                selectedArtifact === undefined || sceneIndexProgramKey === undefined
-                  ? selectedArtifact
-                  : {
-                      ...selectedArtifact,
-                      material: logicalMaterialShaderId,
-                      specializationKey: sceneIndexProgramKey,
-                    };
-              selected = { selection, artifact: selectedIdentityArtifact };
-              if (first === undefined) selectedArtifacts.set(materialShaderId, selected);
-              else if (selectionKey !== undefined) {
-                first.variants ??= new Map();
-                first.variants.set(selectionKey, selected);
-              }
-            }
-          }
-          selectedIdentityArtifact = selected?.artifact;
-          previousSelection = selected?.selection;
-        }
-        const sameTarget =
-          previousTargetArtifact === selectedIdentityArtifact &&
-          previousPrepared?.identity.material === prepared.identity.material &&
-          previousPrepared.identity.deformation === prepared.identity.deformation &&
-          previousPrepared.receiptIdentity === prepared.receiptIdentity &&
-          previousPrepared.receiptGeneration === prepared.receiptGeneration;
-        // The last accepted target already checked this immutable input table.
-        // Changed tables and program/receipt identities still enter admission.
-        if (sameTarget && previousPrepared?.vertexInputs === prepared.vertexInputs) {
-          continue;
-        }
-        const receipt = selectedIdentityArtifact?.receipt;
-        const shadowVertexInputsMatch =
-          pass !== 'shadow' ||
-          (receipt !== undefined &&
-            hasRequiredVertexInputs(receipt.vertexInputs, prepared.vertexInputs));
-        if (
-          selectedIdentityArtifact === undefined ||
-          receipt === undefined ||
-          !shadowVertexInputsMatch ||
-          (pass !== 'shadow' &&
-            (receipt.receiptIdentity !== prepared.receiptIdentity ||
-              receipt.generation !== prepared.receiptGeneration))
-        ) {
-          continue;
-        }
-        // Only accepted receivers can replace the last published key/value.
-        if (sameTarget) continue;
-        target.set(
-          capturedPreparedMaterialArtifactKey(prepared) ??
-            gpuDrivenMaterialArtifactKey({
-              material: prepared.identity.material,
-              deformation: prepared.identity.deformation,
-              receiptIdentity: prepared.receiptIdentity,
-              receiptGeneration: prepared.receiptGeneration,
-            }),
-          selectedIdentityArtifact,
-        );
-        previousPrepared = prepared;
-        previousTargetArtifact = selectedIdentityArtifact;
+  const batchExecutions = new Map<GpuDrivenBatchBinding, BatchExecutions>();
+  const selectedArtifacts = new Map<string, Map<string, MaterialShaderArtifact | undefined>>();
+  const selectArtifact: BatchArtifactResolver = (shader, request) => {
+    let variants = selectedArtifacts.get(shader);
+    if (variants === undefined) {
+      variants = new Map();
+      selectedArtifacts.set(shader, variants);
+    }
+    // This resolver's address is always scene-index; the other request fields vary.
+    const key = `${request.pass}/${request.deformation}/${request.vertexColorAvailable}`;
+    if (!variants.has(key))
+      variants.set(
+        key,
+        resolve?.(shader, {
+          ...request,
+          ...(request.pass === 'forward' ? { clustered, probeBlend, reflectionFallback } : {}),
+        }),
+      );
+    return variants.get(key);
+  };
+  const select = (
+    material: MaterialSnapshot,
+    entry: MaterialDispatchPass | undefined,
+    kind: 'forward' | 'shadow',
+  ): BatchPass | undefined => {
+    if (entry?.materialShaderId === undefined) return undefined;
+    const shaderId = entry.materialShaderId;
+    let sceneIndexProgramKey: string | undefined;
+    for (const name in material.materialSceneIndexProgramKeys) {
+      const program = material.materialSceneIndexProgramKeys[name];
+      if (program?.pass === kind && material.materialProgramKeys?.[name] === shaderId) {
+        sceneIndexProgramKey = program.specializationKey;
+        break;
       }
     }
+    return {
+      kind,
+      shaderId,
+      ...(sceneIndexProgramKey === undefined ? {} : { sceneIndexProgramKey }),
+      ...(entry.renderState === undefined ? {} : { renderState: entry.renderState }),
+      ...(entry.vertexEntry === undefined ? {} : { vertexEntry: entry.vertexEntry }),
+      ...(entry.fragmentEntry === undefined ? {} : { fragmentEntry: entry.fragmentEntry }),
+    };
   };
-  collectArtifacts(rows, 'forward', materialArtifacts);
-  if (shadowViews) collectArtifacts(rows, 'shadow', shadowMaterialArtifacts);
-  const firstArtifact = materialArtifacts.values().next().value as
-    | MaterialShaderArtifact
-    | undefined;
-  const firstSkinArtifact = [...materialArtifacts.values()].find(
-    (artifact) => artifact.receipt?.skinPaletteAddress !== undefined,
-  );
-  return { materialArtifacts, shadowMaterialArtifacts, firstArtifact, firstSkinArtifact };
+  for (const batch of batches) {
+    const binding = batch.binding;
+    if (binding === undefined)
+      throw new GpuDrivenPreparationError('missing-material-receipt', {
+        reason: 'material-receipt-missing',
+        owner: 'material',
+        expected: 'a geometry and material binding from the scene owner',
+      });
+    const accepted = programs?.get(binding.material);
+    if (accepted === undefined)
+      throw new GpuDrivenPreparationError('missing-material-receipt', {
+        reason: 'material-receipt-missing',
+        owner: 'material',
+        expected: 'a fixed material version from the scene owner',
+      });
+    const prepare = (kind: 'forward' | 'shadow'): BatchExecution => {
+      if (kind === 'shadow' && !isTriangleTopology(binding.geometry.draw.topology))
+        return { route: 'none' };
+      const passes = accepted[kind];
+      const pass = select(accepted.snapshot, passes[0], kind);
+      if (passes.length > 1 && pass !== undefined)
+        return { route: 'direct', material: accepted.snapshot, pass };
+      if (
+        pass !== undefined &&
+        accepted.snapshot.materialSceneIndexProgramKeys !== undefined &&
+        pass.sceneIndexProgramKey === undefined
+      )
+        return { route: 'direct', material: accepted.snapshot, pass };
+      const execution = prepareBatchExecution(
+        binding.geometry,
+        accepted.snapshot,
+        pass,
+        selectArtifact,
+      );
+      if (!execution.ok) {
+        if (execution.error.detail.recovery !== 'route-cpu-lane' || pass === undefined)
+          throw execution.error;
+        return { route: 'direct', material: accepted.snapshot, pass, reason: execution.error };
+      }
+      return execution.value;
+    };
+    const forward = prepare('forward');
+    const shadow: BatchExecution = shadowViews ? prepare('shadow') : { route: 'none' };
+    batchExecutions.set(binding, { forward, shadow });
+    const forwardKey =
+      forward.route === 'gpu' ? capturedPreparedMaterialArtifactKey(forward.prepared) : undefined;
+    if (forward.route === 'gpu' && forwardKey !== undefined)
+      materialArtifacts.set(forwardKey, forward.artifact);
+    if (shadow.route === 'gpu') {
+      const key = capturedPreparedMaterialArtifactKey(shadow.prepared);
+      if (key !== undefined) shadowMaterialArtifacts.set(key, shadow.artifact);
+    }
+  }
+  const firstArtifact = materialArtifacts.values().next().value;
+  let firstSkinArtifact: MaterialShaderArtifact | undefined;
+  for (const artifact of materialArtifacts.values()) {
+    if (artifact.receipt?.skinPaletteAddress !== undefined) {
+      firstSkinArtifact = artifact;
+      break;
+    }
+  }
+  return {
+    materialArtifacts,
+    shadowMaterialArtifacts,
+    firstArtifact,
+    firstSkinArtifact,
+    batchExecutions,
+  };
+}
+
+/** Explicit candidate rows use the same geometry/material join as retained scene batches. */
+export function* prepareHiddenMaterialExecutions(
+  entry: ValidatedRenderable,
+  materials: MaterialFrame | undefined,
+  pass: 'forward' | 'shadow',
+  resolve: RenderSystemInternals['getMaterialShaderArtifact'],
+) {
+  const draws = eligibleGpuDrivenDraws(entry.source);
+  if (draws.length === 0) return;
+  let fixed = materials;
+  if (fixed === undefined) {
+    fixed = new MaterialFrame(undefined);
+    for (const draw of draws) fixed = fixed.with(draw.binding.material);
+  }
+  const programs = new GpuDrivenMaterialProgramProjection().project([], fixed);
+  const collected = collectGpuDrivenMaterialArtifacts({
+    batches: draws,
+    resolve,
+    programs,
+    clustered: false,
+    reflectionFallback: false,
+    probeBlend: false,
+    shadowViews: pass === 'shadow',
+  });
+  for (const draw of draws) {
+    const execution = collected.batchExecutions.get(draw.binding)?.[pass];
+    if (execution !== undefined) yield { draw, execution };
+  }
+}
+/** Only explicitly requested hidden rows; admission and PSO specification are shared with real raster. */
+export function prepareHiddenGpuDrivenPipelines(input: {
+  readonly entries: readonly ValidatedRenderable[];
+  readonly materials?: MaterialFrame | undefined;
+  readonly resolve?: RenderSystemInternals['getMaterialShaderArtifact'];
+  readonly artifacts: ReadonlyMap<string, MaterialShaderArtifact> | undefined;
+  readonly factory: NonNullable<RenderSystemInternals['getMaterialShaderPipelineEntry']>;
+  readonly formats: readonly TextureFormat[];
+  readonly sampleCount: 1 | 4;
+  readonly shaderUvSetCount: number;
+  readonly filter: RenderPipelineGpuDrivenFilter | undefined;
+  readonly fragmentEntry: string | undefined;
+  readonly coverageOnly: boolean;
+  readonly visibleSurface: boolean;
+  /** The same admitted source draw belongs to this pass's indirect lane. */
+  readonly onSelected?: (entry: ValidatedRenderable, sourceDrawIndex: number) => void;
+  readonly onPending?: (reason: FramePresentationPendingReason) => void;
+}): boolean {
+  let ready = true;
+  for (const entry of input.entries) {
+    if (entry.source.authorVisible !== false) continue;
+    for (const { draw, execution } of prepareHiddenMaterialExecutions(
+      entry,
+      input.materials,
+      'forward',
+      input.resolve,
+    )) {
+      if (execution.route !== 'gpu') continue;
+      const { prepared, material, artifact } = execution;
+      const medium = artifact.receipt?.surface?.model === 'single-layer-medium',
+        filter = input.filter;
+      if (
+        (filter === 'single-layer-medium' && !medium) ||
+        ((filter === 'opaque' ||
+          filter === 'deferred-opaque' ||
+          filter === 'forward-only-opaque') &&
+          medium) ||
+        (filter === 'deferred-opaque' && material.deferredPass !== true) ||
+        (filter === 'forward-only-opaque' && material.deferredPass === true)
+      )
+        continue;
+      input.onSelected?.(entry, draw.sourceDrawIndex);
+      const fragment =
+        input.fragmentEntry === 'fs_gbuffer' &&
+        prepared.identity.deformation === 'skin' &&
+        input.visibleSurface
+          ? SKIN_UNCOVERED_GBUFFER_ENTRY
+          : input.fragmentEntry;
+      const selectedArtifact =
+        fragment === undefined
+          ? artifact
+          : {
+              ...artifact,
+              fragmentEntry: fragment,
+              ...(fragment === 'fs_temporal' ? { vertexEntry: 'vs_temporal' } : {}),
+              ...(input.coverageOnly
+                ? { variantSet: variantSetForCoveragePass(artifact.variantSet, true) ?? '' }
+                : {}),
+            };
+      const request = requestMaterialAbiRasterPipeline(input.factory, {
+        artifact: selectedArtifact,
+        deformation: prepared.identity.deformation,
+        format: input.formats[0] ?? 'rgba16float',
+        sampleCount: input.sampleCount,
+        layoutProjection: entry.mesh.layoutProjection,
+        shaderUvSetCount: input.shaderUvSetCount,
+        topology: draw.key.topology,
+        stripIndexFormat:
+          draw.key.drawKind === 'indexed' &&
+          (draw.key.topology === 'triangle-strip' || draw.key.topology === 'line-strip')
+            ? entry.mesh.indexFormat
+            : undefined,
+        renderState: transformRenderState(
+          fragment === 'fs_temporal'
+            ? geometryRenderStateForPass(material.renderState, 'temporal', input.coverageOnly)
+            : material.renderState,
+          entry.source.transform.world,
+        ),
+        additionalColorFormats: input.formats.slice(1),
+        standardTextureMask: material.standardTextureMask,
+        forwardColorPass: fragment === undefined || fragment === STANDARD_OPAQUE_FRAGMENT_ENTRY,
+      });
+      if (request === null) {
+        ready = false;
+        input.onPending?.({
+          code: 'scene-pipeline-preparation',
+          worldId: entry.source.worldId,
+          entity: entry.source.entityKey,
+          pass: (fragment ?? input.filter ?? 'forward').slice(0, 256),
+          shader: selectedArtifact.material.slice(0, 256),
+        });
+      }
+    }
+  }
+  return ready;
 }

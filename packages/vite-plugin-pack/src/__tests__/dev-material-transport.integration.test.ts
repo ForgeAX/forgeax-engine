@@ -11,7 +11,7 @@ import { AssetGuid, PackageId } from '@forgeax/engine-pack/guid';
 import type { RuntimeAssetBinding } from '@forgeax/engine-types';
 import { expect, it } from 'vitest';
 import { materialRecordFixture } from '../../../assets-runtime/src/__tests__/fixtures/material-publication.js';
-import { createAssetRegistry, createCatalogSource } from '../../../assets-runtime/src/index.js';
+import { AssetRegistry, createCatalogSource } from '../../../assets-runtime/src/index.js';
 import { materialContribution } from '../../../render/src/assets/asset-decoders.js';
 import type { DispatcherHandler } from '../dev/dispatcher.js';
 import { createPluginPackInternal } from '../plugin-pack.js';
@@ -93,8 +93,8 @@ export default definePack({ schemaVersion: '2.0.0', packageId: definePackageId('
     };
     next();
   });
-  let registry: ReturnType<typeof createAssetRegistry> | undefined;
-  let decoder: ReturnType<ReturnType<typeof createAssetRegistry>['installDecoder']> | undefined;
+  let registry: AssetRegistry | undefined;
+  let decoder: ReturnType<AssetRegistry['installDecoder']> | undefined;
   try {
     plugin.configResolved({ root, command: 'serve', base: '/' });
     plugin.configureServer({
@@ -149,7 +149,7 @@ export default definePack({ schemaVersion: '2.0.0', packageId: definePackageId('
       publicationBefore,
     );
 
-    registry = createAssetRegistry({
+    registry = new AssetRegistry({
       scopeId: accepted.scopeId,
       catalog: createCatalogSource({ entries: catalog }),
       fetcher: (input, init) => fetch(new URL(String(input), base), init),
@@ -158,7 +158,8 @@ export default definePack({ schemaVersion: '2.0.0', packageId: definePackageId('
     const loaded = await registry.load(record.guid, 'material');
     expect(loaded, JSON.stringify(loaded)).toMatchObject({ ok: true });
     if (!loaded.ok) throw loaded.error;
-    expect(validateCookedMaterialRecord(Reflect.get(loaded.value as object, 'cooked'))).toEqual({
+    const payload = registry.read(loaded.value).unwrap();
+    expect(validateCookedMaterialRecord(Reflect.get(payload, 'cooked'))).toEqual({
       ok: true,
       value: record,
     });

@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+import { useBuiltAssetSource } from '../../../shared/scripts/source-publication.mjs';
 // hello-volumetric-fog Dawn smoke: exercise the Engine App/Renderer front door.
 // The density texture is authored as a real 3D TextureAsset and consumed by
 // the VolumetricFog component; no parallel raw compute path is used.
@@ -9,6 +10,10 @@ import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { emitSmokeReceipt } from '../../../shared/scripts/smoke-receipt.mjs';
 import { combineSmokeErrors, createSmokeCleanup } from './smoke-resource-cleanup.mjs';
+import { AssetRegistry } from '@forgeax/engine-assets-runtime';
+
+import { createPrimitiveMesh } from '@forgeax/engine-geometry';
+
 
 const WIDTH = 200;
 const HEIGHT = 150;
@@ -178,7 +183,7 @@ try {
     VolumetricFogSamplingValue,
     perspective,
   } = await import('@forgeax/engine-render');
-  const { HANDLE_CUBE } = await import('@forgeax/engine-assets-runtime');
+
   const { ChildOf, scenePlugin, Transform } = await import('@forgeax/engine-scene');
   const { Skin, skinningPlugin } = await import('@forgeax/engine-skinning');
   const { animationPlugin } = await import('@forgeax/engine-animation');
@@ -186,15 +191,6 @@ try {
     '@forgeax/engine-gltf'
   );
   const { buildEngineShaderManifest } = await import('@forgeax/engine-vite-plugin-shader');
-
-  const world = new World();
-  const worldContext = await createWorldContext(world, [
-    renderComponentsPlugin(),
-    scenePlugin(),
-    skinningPlugin(),
-    animationPlugin(),
-  ]);
-  smokeCleanup.own(() => worldContext.fiber.dispose());
 
   const manifestUrl = URL.createObjectURL(
     new Blob([JSON.stringify(await buildEngineShaderManifest())], { type: 'application/json' }),
@@ -209,6 +205,20 @@ try {
   if (!constructed.ok)
     throw new Error(`volumetric-fog renderer bootstrap failed: ${constructed.error.code}`);
   const { assets, renderer } = constructed.value;
+  const world = new World({ assets });
+const sceneAssets = world.assets;
+if (!(sceneAssets instanceof AssetRegistry)) throw new Error('Scene requires its runtime asset owner');
+
+const primitiveCube = sceneAssets.create(createPrimitiveMesh('cube').unwrap()).unwrap();
+
+  const worldContext = await createWorldContext(world, [
+    renderComponentsPlugin(),
+    scenePlugin(),
+    skinningPlugin(),
+    animationPlugin(),
+  ]);
+  smokeCleanup.own(() => worldContext.fiber.dispose());
+
   smokeCleanup.own(async () => {
     const disposed = await renderer.dispose();
     if (!disposed.ok) {
@@ -226,35 +236,32 @@ try {
     colorSpace: 'linear',
     mips: { kind: 'none' },
   });
-  const baselineDensity = world.allocSharedRef('TextureAsset', densityAsset(0));
-  const secondDensity = world.allocSharedRef('TextureAsset', densityAsset(96));
-  const updatedDensity = world.allocSharedRef('TextureAsset', densityAsset(255));
-  const material = world.allocSharedRef('MaterialAsset', Materials.unlit([0.25, 0.42, 0.8, 1]));
+  const baselineDensity = world.assets.create(densityAsset(0)).unwrap();
+  const secondDensity = world.assets.create(densityAsset(96)).unwrap();
+  const updatedDensity = world.assets.create(densityAsset(255)).unwrap();
+  const material = world.assets.create(Materials.unlit([0.25, 0.42, 0.8, 1])).unwrap();
   world.spawn(
     { component: Transform, data: { pos: [0, 0, 0], quat: [0, 0, 0, 1], scale: [1, 1, 1] } },
-    { component: MeshFilter, data: { assetHandle: HANDLE_CUBE } },
+    { component: MeshFilter, data: { assetHandle: primitiveCube } },
     { component: MeshRenderer, data: { materials: [material] } },
   );
   const straightAlphaBlend = {
     color: { srcFactor: 'src-alpha', dstFactor: 'one-minus-src-alpha', operation: 'add' },
     alpha: { srcFactor: 'one', dstFactor: 'one-minus-src-alpha', operation: 'add' },
   };
-  const transparentMaterial = world.allocSharedRef(
-    'MaterialAsset',
-    Materials.standard({
+  const transparentMaterial = world.assets.create(Materials.standard({
       baseColor: [0.9, 0.3, 0.12, 0.35],
       metallic: 0,
       roughness: 0.6,
       renderState: { blend: straightAlphaBlend, depthWriteEnabled: false },
-    }),
-  );
+    })).unwrap();
   const transparentSubject = world
     .spawn(
       {
         component: Transform,
         data: { pos: [0.6, 0, 0.2], quat: [0, 0, 0, 1], scale: [0.7, 0.7, 0.7] },
       },
-      { component: MeshFilter, data: { assetHandle: HANDLE_CUBE } },
+      { component: MeshFilter, data: { assetHandle: primitiveCube } },
       { component: MeshRenderer, data: { materials: [transparentMaterial] } },
     )
     .unwrap();
@@ -317,47 +324,10 @@ try {
   const foxSceneGuid = foxSubAsset('scene', 0);
   const foxSkeletonGuid = foxSubAsset('skeleton', 0);
   const foxSkinGuid = foxSubAsset('skin', 0);
-  const foxBytes = readFileSync(FOX_GLB_PATH);
-  const foxBuffer = foxBytes.buffer.slice(
-    foxBytes.byteOffset,
-    foxBytes.byteOffset + foxBytes.byteLength,
-  );
-  const foxDocResult = await parseGlb(foxBuffer, FOX_GLB_PATH);
-  if (!foxDocResult.ok) throw foxDocResult.error;
-  const foxDoc = foxDocResult.value;
-  const foxSkeleton = foxDoc.skeletons[0];
-  if (!foxSkeleton) throw new Error('Fox.glb has no skeleton record');
-  assets.catalog(foxSkeletonGuid.guid, {
-    kind: 'skeleton',
-    inverseBindMatrices: foxSkeleton.inverseBindMatrices,
-    jointCount: foxSkeleton.jointCount,
-  });
-  assets.catalog(foxSkinGuid.guid, {
-    kind: 'skin',
-    skeletonGuid: foxSkeletonGuid.guidText,
-    jointPaths: foxSkeleton.jointPaths,
-  });
-  const foxMaterial = foxDoc.materials[0];
-  if (!foxMaterial) throw new Error('Fox.glb has no material record');
-  const foxMaterialAsset = toMaterialAsset(foxMaterial, { skinned: true });
-  assets.catalog(foxMaterialGuid.guid, foxMaterialAsset);
-  const foxMaterialHandle = world.allocSharedRef('MaterialAsset', foxMaterialAsset);
-  const foxMeshIrs = foxDoc.meshes.filter((mesh) => mesh.meshIndex === 0);
-  const foxMeshResult = meshIrToMeshAsset(foxMeshIrs, {
-    guidByIndex: new Map([[0, foxMaterialGuid.guidText]]),
-  });
-  if (!foxMeshResult.ok) throw foxMeshResult.error;
-  assets.catalog(foxMeshGuid.guid, foxMeshResult.value);
-  const foxMeshHandle = world.allocSharedRef('MeshAsset', foxMeshResult.value);
-  const foxScene = gltfDocToSceneAsset(foxDoc, {
-    meshHandles: new Map([[0, foxMeshHandle]]),
-    materialHandles: new Map([[0, foxMaterialHandle]]),
-    skeletonGuidBySkinIndex: new Map([[0, foxSkeletonGuid.guidText]]),
-  });
-  assets.catalog(foxSceneGuid.guid, foxScene);
-  const foxSceneResult = await assets.loadByGuid(foxSceneGuid.guid);
+  useBuiltAssetSource(assets, new URL('../dist', import.meta.url).pathname);
+  const foxSceneResult = await assets.load(foxSceneGuid.guid, 'scene');
   if (!foxSceneResult.ok) throw foxSceneResult.error;
-  const foxSceneHandle = world.allocSharedRef('SceneAsset', foxSceneResult.value);
+  const foxSceneHandle = foxSceneResult.value;
   const foxInstance = assets.instantiate(foxSceneHandle, world);
   if (!foxInstance.ok) throw foxInstance.error;
   const foxRig = world
@@ -375,7 +345,7 @@ try {
     skinEntityCount: foxSkinEntities,
     sameWorld: true,
     sameRenderer: true,
-    path: 'gltfDocToSceneAsset + Assets.catalog/loadByGuid/instantiate + Skin',
+    path: 'built glTF publication + assets.load/instantiate + Skin',
   };
   artifact.fixture.transparentSubject = {
     entity: Number(transparentSubject),
@@ -383,8 +353,8 @@ try {
     sameWorld: true,
     sameRenderer: true,
   };
-  const baselineAsset = world.sharedRefs.resolve(baselineDensity);
-  const updatedAsset = world.sharedRefs.resolve(updatedDensity);
+  const baselineAsset = assets.read(baselineDensity);
+  const updatedAsset = assets.read(updatedDensity);
   if (!baselineAsset.ok || !updatedAsset.ok)
     throw new Error('volumetric-fog density asset handle is not live');
   artifact.fixture.densityUpdate = {

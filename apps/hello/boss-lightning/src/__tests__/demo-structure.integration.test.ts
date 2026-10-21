@@ -111,8 +111,8 @@ describe('Boss Lightning source and Pack declaration', () => {
     const materials = JSON.parse(readFileSync(materialsPath, 'utf8')) as {
       assets: Array<{ guid: string }>;
     };
-    expect(scene).toContain('HANDLE_SPHERE');
-    expect(scene).toContain('HANDLE_CYLINDER');
+    expect(scene).toContain("createPrimitiveMesh('sphere')");
+    expect(scene).toContain("createPrimitiveMesh('cylinder')");
     expect(scene).toContain('PointLight');
     expect(scene).toContain('groundWarning');
     expect(scene).toContain('materials.body');

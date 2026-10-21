@@ -16,10 +16,7 @@ describe('preview formal loader and mount chain', () => {
     const loader = createUiLoader();
     const session = createUiPreviewSession({
       guid: payload.guid,
-      assets: {
-        invalidate: vi.fn(),
-        loadByGuid: async () => loader.load(payload),
-      },
+      readAsset: async () => loader.load(payload),
       root,
       rect: { width: 320, height: 180 },
     });

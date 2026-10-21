@@ -6,7 +6,9 @@ export type VfxDataInterfaceToken = `vfx:${VfxDataInterfaceKind}`;
 
 export type VfxDataInterfaceBindingType = VfxDataInterfaceBindingTypeByKind[VfxDataInterfaceKind];
 
-export type VfxDataInterfaceResourceKind = 'buffer' | 'texture-view' | 'sampler';
+export type VfxDataInterfaceResourceKind = NonNullable<
+  VfxDataInterfaceResource['resource']
+>['kind'];
 
 type VfxDataInterfaceBindingTypeByKind = {
   readonly camera: 'uniform';
@@ -79,7 +81,6 @@ export type VfxDataInterfaceProvider<K extends VfxDataInterfaceKind = VfxDataInt
 
 export interface VfxDataInterfaceResolution {
   readonly generation: number;
-  readonly readiness: 'ready';
   readonly resources: readonly VfxDataInterfaceResource[];
 }
 
@@ -246,5 +247,5 @@ export function resolveVfxDataInterfaces(
     }
     resources.push(resource);
   }
-  return ok({ generation, readiness: 'ready', resources: Object.freeze(resources) });
+  return ok({ generation, resources: Object.freeze(resources) });
 }

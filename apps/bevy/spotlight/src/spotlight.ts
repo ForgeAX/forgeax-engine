@@ -15,14 +15,18 @@
 //   - camera: Transform at (-4,5,10) looking at origin via quat.fromLookAt
 
 import { World } from '@forgeax/engine-ecs';
-import { HANDLE_CUBE } from '@forgeax/engine-assets-runtime';
+
 import { Transform } from '@forgeax/engine-scene';
 import { Camera, MeshFilter, MeshRenderer } from '@forgeax/engine-render';
 import { perspective } from '@forgeax/engine-render';
 import { Materials } from '@forgeax/engine-render';
 import { SpotLight } from '@forgeax/engine-render';
-import type { MaterialAsset } from '@forgeax/engine-runtime';
+
 import { quat } from '@forgeax/engine-math';
+import { AssetRegistry } from '@forgeax/engine-assets-runtime';
+
+import { createPrimitiveMesh } from '@forgeax/engine-geometry';
+
 
 const INNER_CONE_DEG = 38.3; // PI/4 * 0.85
 const OUTER_CONE_DEG = 45; // PI/4
@@ -36,30 +40,29 @@ function seededRandom(seed: number): () => number {
 }
 
 export function buildSpotlightWorld(world: World): void {
+const sceneAssets = world.assets;
+if (!(sceneAssets instanceof AssetRegistry)) throw new Error('Scene requires its runtime asset owner');
+
+const primitiveCube = sceneAssets.create(createPrimitiveMesh('cube').unwrap()).unwrap();
+
   // ── Ground plane (flat cube), white PBR ────────────────────────────────
-  const groundMat = world.allocSharedRef<'MaterialAsset', MaterialAsset>(
-    'MaterialAsset',
-    Materials.standard({ baseColor: [1, 1, 1, 1] }),
-  );
+  const groundMat = sceneAssets.create(Materials.standard({ baseColor: [1, 1, 1, 1] })).unwrap();
   world.spawn(
     { component: Transform, data: { pos: [0, 0, 0], quat: [0, 0, 0, 1], scale: [100, 0.02, 100] } },
-    { component: MeshFilter, data: { assetHandle: HANDLE_CUBE } },
+    { component: MeshFilter, data: { assetHandle: primitiveCube } },
     { component: MeshRenderer, data: { materials: [groundMat] } },
   );
 
   // ── 40 random cubes (deterministic LCG matching Bevy's ChaCha8Rng) ─────
   const rand = seededRandom(19878367467713);
-  const blueMat = world.allocSharedRef<'MaterialAsset', MaterialAsset>(
-    'MaterialAsset',
-    Materials.standard({ baseColor: [124 / 255, 144 / 255, 1, 1] }),
-  );
+  const blueMat = sceneAssets.create(Materials.standard({ baseColor: [124 / 255, 144 / 255, 1, 1] })).unwrap();
   for (let i = 0; i < 40; i++) {
     const x = rand() * 10 - 5;
     const y = rand() * 3;
     const z = rand() * 10 - 5;
     world.spawn(
       { component: Transform, data: { pos: [x, y, z], quat: [0, 0, 0, 1], scale: [0.5, 0.5, 0.5] } },
-      { component: MeshFilter, data: { assetHandle: HANDLE_CUBE } },
+      { component: MeshFilter, data: { assetHandle: primitiveCube } },
       { component: MeshRenderer, data: { materials: [blueMat] } },
     );
   }

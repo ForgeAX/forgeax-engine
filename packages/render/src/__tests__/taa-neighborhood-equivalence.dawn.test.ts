@@ -762,7 +762,7 @@ describe('TAA neighborhood equivalence on Dawn', () => {
         'utf8',
       );
       const start = source.indexOf('  // Rejected history contributes neither');
-      const end = source.indexOf('  let history = textureSampleLevel', start);
+      const end = source.indexOf('  let history = sampleTaaHistory', start);
       if (start < 0 || end < 0) throw new Error('missing rejected-history fast path');
       const fullWork = source.slice(0, start) + source.slice(end);
       const testCase = makeCases()[0];
@@ -804,9 +804,15 @@ describe('TAA neighborhood equivalence on Dawn', () => {
       }
     },
   );
-  it.skipIf(!dawnReady).each([H.zero, H.motion])(
-    'uses local stationary age to rebuild reduced radiance after a late stop (prior motion=%s)',
-    async (priorMotion) => {
+  it
+    .skipIf(!dawnReady)
+    .each(
+      [4, WIDTH].flatMap((internalSize) =>
+        [H.zero, H.motion].map((priorMotion) => ({ internalSize, priorMotion })),
+      ),
+    )(
+    'uses local stationary age after a late stop (size=$internalSize, prior motion=$priorMotion)',
+    async ({ internalSize, priorMotion }) => {
       const source = readFileSync(
         resolve(import.meta.dirname, '../../../shader/src/taa-resolve.wgsl'),
         'utf8',
@@ -814,19 +820,20 @@ describe('TAA neighborhood equivalence on Dawn', () => {
       const device = (await (await rhi.requestAdapter()).unwrap().requestDevice()).unwrap();
       const testCase = makeCases()[0];
       if (!testCase) throw new Error('missing stationary case');
-      const prefixStart = source.indexOf(
-        '  if (params.hasOutputTemporal != 0u && length(temporal.xy)',
-      );
+      const prefixStart = source.indexOf('  if (length(temporal.xy) < 1e-5 && temporal.w == 0.0');
       const prefixEnd = source.indexOf('  // Depth is a disocclusion gate', prefixStart);
       if (prefixStart < 0 || prefixEnd < 0) throw new Error('missing local-age recovery');
       const legacy = source.slice(0, prefixStart) + source.slice(prefixEnd);
       const pair = await runPair(device, legacy, source, {
         ...testCase,
-        internalSize: 4,
-        currentColor: Uint16Array.from({ length: 4 * 4 * 4 }, (_, i) =>
+        internalSize,
+        currentColor: Uint16Array.from({ length: internalSize * internalSize * 4 }, (_, i) =>
           i % 4 === 3 || Math.floor(i / 4) % 4 === 1 ? H.one : H.zero,
         ),
-        currentCoverage: constantTemporal([H.zero, H.zero, H.one, H.zero]),
+        ...(internalSize < WIDTH
+          ? { currentCoverage: constantTemporal([H.zero, H.zero, H.one, H.zero]) }
+          : {}),
+        currentTemporal: constantTemporal([H.zero, H.zero, H.one, H.zero]),
         historyColor: constantColor([H.half, H.half, H.half, H.one]),
         historyTemporal: constantTemporal([priorMotion, H.zero, H.one, H.zero]),
         historyStability: byteGrid(0),
@@ -1002,6 +1009,16 @@ describe('TAA neighborhood equivalence on Dawn', () => {
         'let historyWeight = progressiveWeight * reactiveFactor * velocityFactor;',
         'let historyWeight = min(progressiveWeight, velocityFactor) * reactiveFactor;',
         'shared motion-history composition',
+      );
+
+      pairedBaseline = replaceRequired(
+        pairedBaseline,
+        'let progressiveWeight = taaAccumulationWeight(params.temporalFrameIndex, steadyWeight);',
+        `var progressiveWeight = taaAccumulationWeight(params.temporalFrameIndex, steadyWeight);
+  if (length(temporal.xy) < 1e-5 && temporal.w == 0.0 && stableAge < TAA_STABILITY_FRAMES) {
+    progressiveWeight = min(progressiveWeight, taaAccumulationWeight(u32(max(stableAge, 1.0)), steadyWeight));
+  }`,
+        'shared local stop accumulation policy',
       );
 
       expect(createHash('sha256').update(baselineBody).digest('hex')).toBe(PINNED_BASELINE_SHA256);

@@ -1,4 +1,4 @@
-import { DynamicTextureStore } from '@forgeax/engine-assets-runtime';
+import { AssetRegistry, DynamicTextureStore } from '@forgeax/engine-assets-runtime';
 import { World } from '@forgeax/engine-ecs';
 import { VIDEO_SOURCE_PROVIDER_KEY } from '@forgeax/engine-graphics-extras';
 import {
@@ -19,19 +19,20 @@ import {
   type ParamSchemaEntry,
   type SamplerAsset,
   type TextureAsset,
-  toShared,
 } from '@forgeax/engine-types';
 import { expect, it, vi } from 'vitest';
 import { transmissionBackdropAvailable } from '../assembly/device-feature-admission';
+import { samplerContribution } from '../assets/asset-decoders';
 import { GpuResidencyCache } from '../device/gpu-residency';
 import type { GpuDrivenShadowBatchProjection } from '../gpu-driven/production-raster';
 import { createSkylightFallback } from '../ibl/skylight-bind-group';
 import { buildPbrPipelineLayouts } from '../pbr-pipeline';
+import { worldRenderResources } from '../publication/resource-scope';
 import * as materialBuilder from '../record/main-pass-material';
 import { MaterialBgAssemblyCache } from '../record/material-bg-assembly-cache';
 import { encodeStaticShadowPass } from '../record/shadow-pass';
 import { defaultMaterialSnapshot, type MaterialSnapshot } from '../render-system-extract';
-import { CanvasTexture } from '../textures/canvas-texture';
+import { CanvasTexture, canvasTextureState } from '../textures/canvas-texture';
 import { replayShadowBundles } from './shadow-bundle.fixture';
 import { preparedShadowFixture } from './shadow-indirect.fixture';
 
@@ -56,7 +57,7 @@ async function fixture(textured = false, reuseAdjacentShadow = true) {
   const entries: BindGroupLayoutEntry[] = [
     { binding: 1, visibility: 4, texture: { viewDimension: 'cube', sampleType: 'float' } },
     { binding: 2, visibility: 4, sampler: { type: 'filtering' } },
-    { binding: 3, visibility: 4, texture: { viewDimension: 'cube', sampleType: 'float' } },
+    { binding: 3, visibility: 4, texture: { viewDimension: '2d', sampleType: 'float' } },
     { binding: 4, visibility: 4, sampler: { type: 'filtering' } },
     { binding: 5, visibility: 4, texture: { viewDimension: '2d', sampleType: 'float' } },
     { binding: 6, visibility: 4, buffer: { type: 'uniform' } },
@@ -70,7 +71,7 @@ async function fixture(textured = false, reuseAdjacentShadow = true) {
   entries.push(
     { binding: 0, visibility: 4, buffer: { type: 'uniform', minBindingSize: 256 } },
     { binding: 46, visibility: 4, buffer: { type: 'read-only-storage' } },
-    { binding: 47, visibility: 4, texture: { viewDimension: 'cube', sampleType: 'float' } },
+    { binding: 47, visibility: 4, texture: { viewDimension: '2d', sampleType: 'float' } },
   );
   if (textured)
     entries.push(
@@ -124,15 +125,10 @@ async function fixture(textured = false, reuseAdjacentShadow = true) {
   });
   f.seedMaterial(group);
   const store = new GpuResidencyCache();
-  store.configureGpuDevice(
-    device,
-    undefined,
-    () => {
-      throw new Error('unused cubemap');
-    },
-    device.caps,
-  );
-  const world = new World();
+  store.configureGpuDevice(device, undefined, device.caps);
+  const assets = new AssetRegistry({ shaderRegistry: {} as never });
+  assets.installDecoder(samplerContribution.kind, samplerContribution.decoder);
+  const world = new World({ assets });
   const dynamic = new DynamicTextureStore();
   dynamic.configureGpuDevice(device);
   Object.assign(f.context.runtime, {
@@ -140,7 +136,7 @@ async function fixture(textured = false, reuseAdjacentShadow = true) {
     errorRegistry: { fire: vi.fn() },
   });
   Object.assign(f.context, {
-    world,
+    world: worldRenderResources(world),
     store,
     materialBgAssemblyCache: new MaterialBgAssemblyCache(),
     gpuDrivenStandardPbrFrameResources: { sceneMaterialBuffer: buffer },
@@ -152,7 +148,7 @@ async function fixture(textured = false, reuseAdjacentShadow = true) {
       ...projection,
       material,
       shadowArtifact: artifact,
-      materialEntityKey: id,
+      worldId: 0,
     });
   let bound: BindGroup | undefined;
   let mesh: BindGroup | undefined;
@@ -188,6 +184,7 @@ async function fixture(textured = false, reuseAdjacentShadow = true) {
     buffer,
     store,
     world,
+    assets,
     dynamic,
     fallback,
     projections,
@@ -210,7 +207,7 @@ async function fixture(textured = false, reuseAdjacentShadow = true) {
       for (const [id, projection] of projections) projections.set(id, { ...projection, material });
     },
     beforeBatch(index: number, action: () => void) {
-      const id = defined(f.batches[index]).batchId;
+      const id = defined(f.batches.at(index)).batchId;
       const get = projections.get.bind(projections);
       vi.spyOn(projections, 'get').mockImplementation((key) => {
         if (key === id) action();
@@ -250,7 +247,7 @@ it('resolves shared shadow material bindings once per invocation while recording
       f.queries.artifact.mock.calls.length,
       f.queries.schema.mock.calls.length,
       f.queries.layout.mock.calls.length,
-    ]).toEqual([60, 60, 60, 60]);
+    ]).toEqual([60, 60, 61, 60]);
   } finally {
     f.dispose();
   }
@@ -326,8 +323,11 @@ it('binds A/B/A textures from each selected material instead of retaining the ad
     f.batches.length = 3;
     const textures = [texture(), texture()];
     const residents = textures.map((source) => {
-      const handle = f.world.allocSharedRef('TextureAsset', source);
-      return { handle, view: f.store.ensureResident(handle, source, f.world).unwrap().view };
+      const handle = f.assets.create(source).unwrap();
+      return {
+        handle,
+        view: f.store.ensureResident(handle, source, worldRenderResources(f.world)).unwrap().view,
+      };
     });
     const materials = residents.map(({ handle }) => ({
       ...f.material,
@@ -362,8 +362,11 @@ it('keeps current material, mesh bindings and offsets while reusing the pipeline
     );
     const textures = Array.from({ length: 4 }, () => {
       const source = texture();
-      const handle = f.world.allocSharedRef('TextureAsset', source);
-      return { handle, view: f.store.ensureResident(handle, source, f.world).unwrap().view };
+      const handle = f.assets.create(source).unwrap();
+      return {
+        handle,
+        view: f.store.ensureResident(handle, source, worldRenderResources(f.world)).unwrap().view,
+      };
     });
     const materials = textures.map(({ handle }, index) => ({
       ...f.material,
@@ -385,7 +388,7 @@ it('keeps current material, mesh bindings and offsets while reusing the pipeline
     expect(f.draws.map((draw) => f.binding(draw.group, 2))).toEqual(
       textures.slice(0, 3).map(({ view }) => ({ kind: 'textureView', value: view })),
     );
-    const middle = defined(f.batches[1]);
+    const middle = defined(f.batches.at(1));
     f.projections.set(middle.batchId, {
       ...defined(f.projections.get(middle.batchId)),
       material: defined(materials[3]),
@@ -411,7 +414,7 @@ it.each([
   const f = await fixture();
   try {
     f.batches.length = 3;
-    const middle = defined(f.batches[1]);
+    const middle = defined(f.batches.at(1));
     if (change === 'artifact') {
       const projection = defined(f.projections.get(middle.batchId));
       f.projections.set(middle.batchId, { ...projection, shadowArtifact: { ...f.artifact } });
@@ -428,15 +431,15 @@ it('observes a physical texture replacement within an invocation through the res
   const f = await fixture(true);
   try {
     const source = texture();
-    const handle = f.world.allocSharedRef('TextureAsset', source);
-    const first = f.store.ensureResident(handle, source, f.world).unwrap();
+    const handle = f.assets.create(source).unwrap();
+    const first = f.store.ensureResident(handle, source, worldRenderResources(f.world)).unwrap();
     f.setMaterial({ ...f.material, textureHandles: new Map([['surfaceMap', handle]]) });
     f.beforeBatch(32, () => {
-      f.store.invalidateTexture(handle, f.world);
-      f.store.ensureResident(handle, source, f.world).unwrap();
+      f.store.invalidateTexture(handle, worldRenderResources(f.world));
+      f.store.ensureResident(handle, source, worldRenderResources(f.world)).unwrap();
     });
     f.run();
-    const next = f.store.getTextureGpuView(handle, f.world);
+    const next = f.store.getTextureGpuView(handle, worldRenderResources(f.world));
     expect(next).not.toBe(first.view);
     expect(f.queries.layout).toHaveBeenCalledTimes(2);
     for (const [index, draw] of f.draws.entries())
@@ -462,12 +465,12 @@ it.each([
     });
     if (kind === 'texture') {
       const source = texture();
-      const handle = f.world.allocSharedRef('TextureAsset', source);
+      const handle = f.assets.create(source).unwrap();
       f.setMaterial({ ...f.material, textureHandles: new Map([['surfaceMap', handle]]) });
       vi.spyOn(f.device, 'createTexture').mockReturnValueOnce(err(failure));
     } else {
       const source: SamplerAsset = { kind: 'sampler', minFilter: 'nearest', magFilter: 'nearest' };
-      const handle = f.world.allocSharedRef('SamplerAsset', source);
+      const handle = f.assets.create(source).unwrap();
       f.setMaterial({ ...f.material, samplerHandles: new Map([['surfaceMap', handle]]) });
       vi.spyOn(f.device, 'createSampler').mockReturnValueOnce(err(failure));
     }
@@ -537,7 +540,7 @@ it.each([
   const f = await fixture(true);
   const canvas = { width: 4, height: 4 } as OffscreenCanvas;
   const canvasTexture = new CanvasTexture(canvas);
-  const clip = toShared<'VideoAsset'>(23);
+  const clip = f.assets.create({ kind: 'video', url: 'test.webm' }).unwrap();
   const video = { videoWidth: 4, videoHeight: 4, readyState: 2 };
   const provider = { getSource: vi.fn(() => video as HTMLVideoElement) };
   try {
@@ -549,6 +552,12 @@ it.each([
         : { videoTextureFields: new Map([['surfaceMap', clip]]) }),
     });
     const uploads = vi.spyOn(f.dynamic, 'uploadFrame');
+    if (kind === 'video') {
+      expect(f.run).toThrow('entity-local video binding');
+      expect(uploads).not.toHaveBeenCalled();
+      expect(f.draws).toHaveLength(0);
+      return;
+    }
     f.beforeBatch(32, () => {
       canvas.width = 8;
       canvasTexture.update();
@@ -559,7 +568,7 @@ it.each([
     expect(uploads).toHaveBeenCalledTimes(64);
     expect(f.draws).toHaveLength(64);
     expect(f.draws[32]?.group).not.toBe(f.draws[0]?.group);
-    const view = f.dynamic.getView(kind === 'canvas' ? canvasTexture.source : clip);
+    const view = f.dynamic.getView(defined(canvasTextureState(canvasTexture.source)));
     expect(f.binding(f.draws[32]?.group, 2)).toEqual({ kind: 'textureView', value: view });
   } finally {
     canvasTexture.dispose();
@@ -593,7 +602,7 @@ it('retains every raw material-owner query for adjacent batches', async () => {
       f.queries.artifact.mock.calls.length,
       f.queries.schema.mock.calls.length,
       f.queries.layout.mock.calls.length,
-    ]).toEqual([64, 64, 64, 64]);
+    ]).toEqual([64, 64, 65, 64]);
   } finally {
     f.dispose();
   }

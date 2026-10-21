@@ -22,7 +22,7 @@ it('samples the production reflection pyramid at roughness squared LOD with conf
     'utf8',
   );
   const start = source.indexOf('fn ssrReflectionLod(');
-  const end = source.indexOf('fn ssrPackedReceiverWeight(', start);
+  const end = source.indexOf('@fragment', start);
   expect(start).toBeGreaterThan(0);
   expect(end).toBeGreaterThan(start);
   const temporalSource = readFileSync(

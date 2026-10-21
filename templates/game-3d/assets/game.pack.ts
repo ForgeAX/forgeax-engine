@@ -18,7 +18,7 @@ export const game: Plugin.Object<{ readonly children: readonly string[] }> = {
 };
 
 export default definePack({
-  schemaVersion: '2.0.0',
+  schemaVersion: '2.0.0', plugins: true,
   packageId: definePackageId('019fb7ce-3800-7000-8000-000000000000'),
   build: () => ok({
     'plugin/engine': {

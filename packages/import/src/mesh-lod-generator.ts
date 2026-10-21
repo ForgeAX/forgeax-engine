@@ -18,7 +18,10 @@ import { validateMeshLodContract } from './mesh-lod.js';
 
 export interface MeshLodGenerationOptions {
   /** Stable producer-owned GUIDs and coverage, ordered from fine to coarse. */
-  readonly levels: readonly (MeshLodLevel & { readonly triangleRatio: number })[];
+  readonly levels: readonly (MeshLodLevel & {
+    readonly mesh: import('@forgeax/engine-types').AssetGuid;
+    readonly triangleRatio: number;
+  })[];
   /** Relative to the source position extent; includes weighted attribute error. */
   readonly maxError: number;
   /** Keep open edges fixed, useful for adjoining terrain tiles. Defaults to true. */
@@ -88,10 +91,7 @@ export async function generateMeshLods(
         return invalid('triangleRatio must strictly decrease inside (0, 1)');
       previous = level.triangleRatio;
     }
-    const refs = mesh.materialSlots.flatMap((slot) =>
-      slot.defaultMaterial === undefined ? [] : [AssetGuid.format(slot.defaultMaterial)],
-    );
-    const prepared = prepareMeshData(mesh, 'lod-source', refs);
+    const prepared = prepareMeshData(mesh, 'lod-source');
     if (!prepared.ok) return invalid(prepared.error.actual);
     const count = prepared.value.vertexCount;
     if (!count || mesh.attributes.position === undefined)

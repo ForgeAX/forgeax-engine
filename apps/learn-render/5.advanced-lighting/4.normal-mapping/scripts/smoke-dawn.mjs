@@ -13,6 +13,10 @@
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { existsSync, readFileSync } from 'node:fs';
+import { AssetRegistry } from '@forgeax/engine-assets-runtime';
+
+import { createPrimitiveMesh } from '@forgeax/engine-geometry';
+
 
 const SMOKE_MIN_FRAMES = Number.parseInt(process.env.SMOKE_MIN_FRAMES ?? '60', 10);
 const WIDTH = 512;
@@ -140,9 +144,7 @@ const { decodeImageFromFile } = await import('@forgeax/engine-image/decode-image
 const { constructRuntimeRendererHost } = await import('@forgeax/engine-runtime/internal/renderer-host');
 const { Camera, Materials, MeshFilter, MeshRenderer, PointLight } = await import('@forgeax/engine-render');
 const { Transform } = await import('@forgeax/engine-scene');
-const {
-  HANDLE_QUAD,
-} = await import('@forgeax/engine-assets-runtime');
+
 const { unwrapHandle } = await import('@forgeax/engine-types');
 const { AssetGuid } = await import('@forgeax/engine-pack/guid');
 
@@ -243,36 +245,38 @@ const heightTexAsset = {
   colorSpace: brickwallHeightDecoded.colorSpace,
   mips: brickwallHeightDecoded.mipmap ? { kind: 'generate' } : { kind: 'none' },
 };
-const world = new World();
+const world = new World({ assets: assets });
+const sceneAssets = world.assets;
+if (!(sceneAssets instanceof AssetRegistry)) throw new Error('Scene requires its runtime asset owner');
+
+const primitiveQuad = sceneAssets.create(createPrimitiveMesh('quad').unwrap()).unwrap();
+
 const worldAttachment1 = renderer.attach(world);
 if (!worldAttachment1.ok) throw worldAttachment1.error;
 const lease = worldAttachment1.value;
 
 // Catalogue the textures under their GUIDs, then mint shared-ref column handles.
-assets.catalog(brickwallGuidRes.value, baseColorTexAsset);
-assets.catalog(brickwallNormalGuidRes.value, normalTexAsset);
-assets.catalog(brickwallHeightGuidRes.value, heightTexAsset);
-const baseColorHandle = world.allocSharedRef('TextureAsset', baseColorTexAsset);
-const normalHandle = world.allocSharedRef('TextureAsset', normalTexAsset);
-const heightHandle = world.allocSharedRef('TextureAsset', heightTexAsset);
+const baseColorHandle = world.assets.create(baseColorTexAsset).unwrap();
+const normalHandle = world.assets.create(normalTexAsset).unwrap();
+const heightHandle = world.assets.create(heightTexAsset).unwrap();
 console.log(`[learn-render-4-normal-mapping] registered brickwall handle id=${baseColorHandle}`);
 
-const normalMatHandle = world.allocSharedRef('MaterialAsset', Materials.standard({
+const normalMatHandle = world.assets.create(Materials.standard({
     baseColor: [1.0, 1.0, 1.0, 1.0],
     metallic: 0.0,
     roughness: 0.8,
     baseColorTexture: unwrapHandle(baseColorHandle),
     normalTexture: unwrapHandle(normalHandle),
     normalScale: [2, 0.35],
-}));
-const bumpMatHandle = world.allocSharedRef('MaterialAsset', Materials.standard({
+})).unwrap();
+const bumpMatHandle = world.assets.create(Materials.standard({
     baseColor: [1.0, 1.0, 1.0, 1.0],
     metallic: 0.0,
     roughness: 0.8,
     baseColorTexture: unwrapHandle(baseColorHandle),
     bumpTexture: unwrapHandle(heightHandle),
     bumpScale: -6,
-}));
+})).unwrap();
 
 // Two panels exercise the same material inputs as the browser example.
 world
@@ -282,7 +286,7 @@ world
       data: {
         pos: [-0.68, 0, 0], quat: [0, 0, 0, 1], scale: [1.2, 1.2, 1],},
     },
-    { component: MeshFilter, data: { assetHandle: HANDLE_QUAD } },
+    { component: MeshFilter, data: { assetHandle: primitiveQuad } },
     { component: MeshRenderer, data: { materials: [normalMatHandle] } },
   )
   .unwrap();
@@ -293,7 +297,7 @@ world
       data: {
         pos: [0.68, 0, 0], quat: [0, 0, 0, 1], scale: [1.2, 1.2, 1],},
     },
-    { component: MeshFilter, data: { assetHandle: HANDLE_QUAD } },
+    { component: MeshFilter, data: { assetHandle: primitiveQuad } },
     { component: MeshRenderer, data: { materials: [bumpMatHandle] } },
   )
   .unwrap();

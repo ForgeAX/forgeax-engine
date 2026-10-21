@@ -277,7 +277,7 @@ export async function startTerrainWorkerProbe(
     const events: unknown[] = [],
       failures: unknown[] = [];
     const stateCode =
-      "const subjects=world.getResource('TerrainSubjects');const c=world.get(subjects.terrain,world.components.resolve('Terrain')).unwrap();const root=world.sharedRefs.resolve(c.asset).unwrap();const walker=world.getResource('TerrainWalker');return {asset:Number(c.asset),height:root.heights[62*root.columns+62],gate:{...world.getResource('TerrainGameplayGate')},walker:{...walker},position:Array.from(world.get(subjects.walker,world.components.resolve('Transform')).unwrap().pos),physics:world.getResource('PhysicsWorld').getDerivedPublication(subjects.terrain),failures:world.getResource('TerrainWriterFailures')};";
+      "const subjects=world.getResource('TerrainSubjects');const sample=world.getResource('TerrainReloadPolicy').sample(62,62);const walker=world.getResource('TerrainWalker');return {...sample,gate:{...world.getResource('TerrainGameplayGate')},walker:{...walker},position:Array.from(world.get(subjects.walker,world.components.resolve('Transform')).unwrap().pos),physics:world.getResource('PhysicsWorld').getTerrainAssetVersion(subjects.terrain),failures:world.getResource('TerrainWriterFailures')};";
     const state = async () => {
       const value = (await inspect(stateCode)) as { asset: number; failures: unknown[] };
       return {
@@ -308,7 +308,7 @@ export async function startTerrainWorkerProbe(
       failures,
       submitted: () =>
         inspect(
-          "const s=world.getResource('TerrainSubjects');const c=world.get(s.terrain,world.components.resolve('Terrain')).unwrap();return await world.getResource('TerrainQuery')({worldId:0,entity:s.terrain,x:62,z:62,expectedAsset:Number(c.asset)});",
+          "const s=world.getResource('TerrainSubjects');const sample=world.getResource('TerrainReloadPolicy').sample(62,62);return await world.getResource('TerrainQuery')({worldId:0,entity:s.terrain,x:62,z:62,expectedAsset:sample.asset,expectedVersion:sample.version});",
         ),
       move: () => inspect("world.getResource('TerrainWalker').speed=1;return true;"),
       retry: () => inspect("world.getResource('TerrainReloadPolicy').retry();return true;"),

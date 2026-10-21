@@ -76,7 +76,7 @@ interface HdrpResourceBase {
   readonly unifiedBindGroupLayout: BindGroupLayout;
 }
 
-export interface HdrpStorageBuffers extends HdrpResourceBase {
+interface HdrpStorageBuffers extends HdrpResourceBase {
   readonly kind: 'storage';
   /** The full 256 × 96 B DirectLightSlot budget. */
   readonly lightDataBuffer: Buffer;
@@ -92,7 +92,7 @@ export interface HdrpStorageBuffers extends HdrpResourceBase {
   readonly lightBoundsBytes: number;
 }
 
-export interface HdrpTextureBuffers extends HdrpResourceBase {
+interface HdrpTextureBuffers extends HdrpResourceBase {
   readonly kind: 'texture';
   readonly texture: Texture;
   readonly view: TextureView;
@@ -402,7 +402,7 @@ export function packClusterUniform(
 
 /**
  * Consumers pass the same mesh storage buffer + stride that URP uses, so the
- * dynamic offset (`i * MESH_PER_ENTITY_STRIDE`) at `setBindGroup(2, ...)`
+ * physical draw offset at `setBindGroup(2, ...)`
  * stays valid across both pipelines.
  */
 /**
@@ -412,11 +412,11 @@ export function packClusterUniform(
  *
  * feat-20260609-hdrp-cluster-fragment-ggx M4 / w19. Called per-frame from the
  * recordFrame HDRP block after binner+writeBuffer; the resulting BindGroup
- * lands on `passCtx.hdrpClusterBindGroup` and recordMainPass binds it at
+ * lands on `passCtx.hdrpClusterBindGroup` and encodeMainPass binds it at
  * group(2) when the prepared Standard topology selects clustered lighting.
  *
  * Returns `null` on `device.createBindGroup` failure (a structured RhiError
- * is fired on `runtime.errorRegistry`); recordMainPass gracefully falls back
+ * is fired on `runtime.errorRegistry`); encodeMainPass gracefully falls back
  * to the URP mesh bindGroup when null.
  *
  * Plan D-1 / D-4: the mesh SSBO buffer + stride mirror the URP path, so the

@@ -1,3 +1,4 @@
+import type { AssetHandle } from '@forgeax/engine-types';
 // apps/learn-render/5.advanced-lighting/8.deferred-shading/src/main.ts
 // LearnOpenGL section 5.8 — Deferred Shading.
 //
@@ -25,7 +26,7 @@
 import { type App } from '@forgeax/engine-app';
 import { createApp } from '@forgeax/engine-app/browser';
 import type { CanvasAppError } from '@forgeax/engine-app';
-import { HANDLE_CUBE } from '@forgeax/engine-assets-runtime';
+
 import { Transform } from '@forgeax/engine-scene';
 
 import {
@@ -38,13 +39,15 @@ import { EngineEnvironmentError } from '@forgeax/engine-runtime';
 import { Materials } from '@forgeax/engine-render';
 import { DEFAULT_STANDARD_PROFILE, PointLight } from '@forgeax/engine-render';
 
-import type { Handle, MaterialAsset } from '@forgeax/engine-types';
+
 import { forgeaxBundlerAdapter } from 'virtual:forgeax/bundler';
 import { captureCanvasPixels } from '@forgeax/apps-shared/canvas-capture';
 import {
   exposeLearnRenderTestApp,
   trackLearnRenderTestBootstrap,
 } from '../../../../shared/src/learn-render-test-lifecycle';
+import { createPrimitiveMesh } from '@forgeax/engine-geometry';
+
 
 // 2. scene constants
 
@@ -160,8 +163,12 @@ async function bootstrap(target: HTMLCanvasElement): Promise<void> {
     return;
   }
   const app = appRes.value;
+if (app.assets === undefined) throw new Error('This scene requires the App asset owner');
+
   exposeLearnRenderTestApp(app, target);
   const world = app.world;
+const primitiveCube = app.assets.create(createPrimitiveMesh('cube').unwrap()).unwrap();
+
   const inspection = app.renderer.inspect();
   console.warn(`[learn-render 5.8 deferred] backend=${inspection.capabilities.backendKind}`);
 
@@ -182,7 +189,7 @@ async function bootstrap(target: HTMLCanvasElement): Promise<void> {
   ];
 
   // Spawn 9 cubes in 3x3 grid at y=-0.5, spacing 3.0.
-  const cubeHandles: Handle<'MaterialAsset', 'shared'>[] = [];
+  const cubeHandles: AssetHandle<'material'>[] = [];
   let idx = 0;
   for (let row = 0; row < 3; row++) {
     for (let col = 0; col < 3; col++) {
@@ -192,7 +199,7 @@ async function bootstrap(target: HTMLCanvasElement): Promise<void> {
 
       // Register material for this cube (distinct baseColor for visual differentiation).
       const mat = Materials.standard({ baseColor: [r, g, b, 1] });
-      const matHandle = world.allocSharedRef<'MaterialAsset', MaterialAsset>('MaterialAsset', mat);
+      const matHandle = app.assets.create(mat).unwrap();
       cubeHandles.push(matHandle);
 
       world.spawn(
@@ -201,7 +208,7 @@ async function bootstrap(target: HTMLCanvasElement): Promise<void> {
           data: {
             pos: [cx, CUBE_Y, cz], quat: [0, 0, 0, 1], scale: [CUBE_SCALE, CUBE_SCALE, CUBE_SCALE],},
         },
-        { component: MeshFilter, data: { assetHandle: HANDLE_CUBE } },
+        { component: MeshFilter, data: { assetHandle: primitiveCube } },
         { component: MeshRenderer, data: { materials: [matHandle] } },
       ).unwrap();
       idx++;
@@ -238,7 +245,7 @@ async function bootstrap(target: HTMLCanvasElement): Promise<void> {
           scale: [0.125, 0.125, 0.125],
         },
       },
-      { component: MeshFilter, data: { assetHandle: HANDLE_CUBE } },
+      { component: MeshFilter, data: { assetHandle: primitiveCube } },
       { component: MeshRenderer, data: { materials: [cubeHandles[0]!] } },
     );
   }

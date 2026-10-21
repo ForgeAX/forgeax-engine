@@ -19,44 +19,47 @@
 //   ≈ [1.0, 0.847, 0.569] linear sRGB
 
 import { World } from '@forgeax/engine-ecs';
-import { HANDLE_SPHERE } from '@forgeax/engine-assets-runtime';
+
 import { Transform } from '@forgeax/engine-scene';
 
 import { Camera, DirectionalLight, MeshFilter, MeshRenderer } from '@forgeax/engine-render';
 import { orthographic } from '@forgeax/engine-render';
 import { Materials, Skylight } from '@forgeax/engine-render';
 
-import type { MaterialAsset } from '@forgeax/engine-runtime';
+
 import { quat } from '@forgeax/engine-math';
+import { AssetRegistry } from '@forgeax/engine-assets-runtime';
+
+import { createPrimitiveMesh } from '@forgeax/engine-geometry';
+
 
 const GOLD: [number, number, number, number] = [1.0, 0.847, 0.569, 1.0];
 
 export function buildPbrWorld(world: World): void {
+const sceneAssets = world.assets;
+if (!(sceneAssets instanceof AssetRegistry)) throw new Error('Scene requires its runtime asset owner');
+
+const primitiveSphere = sceneAssets.create(createPrimitiveMesh('sphere').unwrap()).unwrap();
+
   // ── 11×5 PBR sphere grid (x: -5..5, y: -2..2) ───────────────────────
   for (let y = -2; y <= 2; y++) {
     for (let x = -5; x <= 5; x++) {
       const x01 = (x + 5) / 10; // roughness: 0→1 left-to-right
       const y01 = (y + 2) / 4;  // metallic: 0→1 bottom-to-top
-      const mat = world.allocSharedRef<'MaterialAsset', MaterialAsset>(
-        'MaterialAsset',
-        Materials.standard({ baseColor: GOLD, metallic: y01, roughness: x01 }),
-      );
+      const mat = sceneAssets.create(Materials.standard({ baseColor: GOLD, metallic: y01, roughness: x01 })).unwrap();
       world.spawn(
         { component: Transform, data: { pos: [x, y + 0.5, 0], quat: [0, 0, 0, 1], scale: [1, 1, 1] } },
-        { component: MeshFilter, data: { assetHandle: HANDLE_SPHERE } },
+        { component: MeshFilter, data: { assetHandle: primitiveSphere } },
         { component: MeshRenderer, data: { materials: [mat] } },
       );
     }
   }
 
   // ── Unlit sphere below the grid at (-5, -2.5, 0) ────────────────────
-  const unlitMat = world.allocSharedRef<'MaterialAsset', MaterialAsset>(
-    'MaterialAsset',
-    Materials.unlit(GOLD),
-  );
+  const unlitMat = sceneAssets.create(Materials.unlit(GOLD)).unwrap();
   world.spawn(
     { component: Transform, data: { pos: [-5, -2.5, 0], quat: [0, 0, 0, 1], scale: [1, 1, 1] } },
-    { component: MeshFilter, data: { assetHandle: HANDLE_SPHERE } },
+    { component: MeshFilter, data: { assetHandle: primitiveSphere } },
     { component: MeshRenderer, data: { materials: [unlitMat] } },
   );
 

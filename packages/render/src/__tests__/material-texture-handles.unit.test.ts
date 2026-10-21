@@ -1,4 +1,4 @@
-import type { Handle } from '@forgeax/engine-types';
+import type { AssetHandle } from '@forgeax/engine-types';
 import { describe, expect, it } from 'vitest';
 import type { MaterialSnapshot } from '../render-system-extract';
 import {
@@ -7,7 +7,7 @@ import {
   materialTextureHandlesForResidency,
 } from '../render-system-residency';
 
-type TextureHandle = Handle<'TextureAsset', 'shared'>;
+type TextureHandle = AssetHandle<'texture'>;
 
 describe('material texture residency handles', () => {
   it('preserves ordering, duplicate replacement and high fanout without sharing result storage', () => {
@@ -43,7 +43,7 @@ describe('material texture residency handles', () => {
 
   it('observes empty-to-populated and same-size material handle changes on every call', () => {
     const textures = new Map<string, TextureHandle>();
-    const samplers = new Map<string, Handle<'SamplerAsset', 'shared'>>();
+    const samplers = new Map<string, AssetHandle<'sampler'>>();
     const material = {
       textureHandles: textures,
       samplerHandles: samplers,
@@ -53,11 +53,11 @@ describe('material texture residency handles', () => {
     expect(empty).toEqual([]);
     expect(materialSamplerHandles(material)).toEqual([]);
     textures.set('map', 7 as TextureHandle);
-    samplers.set('map', 0 as Handle<'SamplerAsset', 'shared'>);
+    samplers.set('map', 0 as AssetHandle<'sampler'>);
     expect(materialTextureHandles(material)).toEqual([7]);
     expect(materialSamplerHandles(material)).toEqual([0]);
     textures.set('map', 11 as TextureHandle);
-    samplers.set('map', 13 as Handle<'SamplerAsset', 'shared'>);
+    samplers.set('map', 13 as AssetHandle<'sampler'>);
     expect(materialTextureHandles(material)).toEqual([11]);
     expect(materialSamplerHandles(material)).toEqual([13]);
     Object.assign(material, { baseColorTexture: 17 as TextureHandle });

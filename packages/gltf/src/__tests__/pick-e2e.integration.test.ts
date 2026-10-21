@@ -1,33 +1,5 @@
-// pick-e2e.integration.test.ts — glTF end-to-end pick probe over pack JSON roundtrip
-// (bug-20260706-import-path-meshasset-aabb-undefined-blocks-pick M5 / m5-1).
-//
-// Verifies the full chain: GltfMeshIr → meshIrToMeshAsset (producer) →
-// packMeshBin (JSON tail encode) → explicit JSON.stringify → JSON.parse
-// roundtrip (simulating dev-server pack transport) → aabb reconstruction
-// (Float32Array from plain array, the loader dual-contract path) →
-// World.allocSharedRef + spawn (MeshFilter / MeshRenderer / Transform) →
-// pick() hit assertion + negative-control miss.
-//
-// Falsification drill (plan-strategy section 5.4) EXECUTED:
-//   (1) Commented out `aabb: box3.fromPositions(box3.create(), positionsCat)`
-//       in packages/gltf/src/bridge.ts:329.
-//   (2) Ran this test → FAIL: pick() returned undefined (mesh entity had
-//       aabb === undefined, broad-phase `continue` skipped it).
-//       Confirmed the probe is sensitive to the aabb variable — not
-//       unconditionally green.
-//   (3) Restored the aabb emit line.
-//   (4) Re-ran → PASS.
-//   Drill result: probe correctly detects aabb absence. (Recorded inline
-//   in this file header as required by plan subsection 5.4.)
-//
-// AC-03 hard constraint: dawn-node smoke does NOT count — this vitest
-// integration test explicitly exercises the pack JSON roundtrip path that
-// dawn smoke skips. Reviewer can grep for `JSON.stringify` /
-// `JSON.parse` in this file to confirm.
-//
-// References: plan-strategy D-3 / R-6; pick-tile.test.ts (no-GPU pick
-// test paradigm); cli-gltf.integration.test.ts (gltf integration test
-// fixture pattern).
+import { AssetRegistry } from '@forgeax/engine-assets-runtime';
+// glTF producer bounds survive pack JSON transport and managed admission before picking.
 
 import { World } from '@forgeax/engine-ecs';
 import { packMeshBin } from '@forgeax/engine-import';
@@ -35,17 +7,10 @@ import { decodeMeshBinHeader } from '@forgeax/engine-pack';
 import { pick } from '@forgeax/engine-picking';
 import { Camera, Materials, MeshFilter, MeshRenderer, perspective } from '@forgeax/engine-render';
 import { Transform } from '@forgeax/engine-scene';
-import type { Handle, MaterialAsset, MeshAsset } from '@forgeax/engine-types';
-import { describe, expect, it } from 'vitest';
+import type { MeshAsset } from '@forgeax/engine-types';
+import { assert, describe, expect, it } from 'vitest';
 import type { GltfMeshIr } from '../parse-gltf.js';
 import { unwrapMeshAsset as meshIrToMeshAsset } from './bridge-test-helpers.js';
-
-// ---- helpers ----
-
-/** Convert a branded handle to the raw u32 used by allocSharedRef return. */
-function asHandle<T extends string>(n: number): Handle<T, 'shared'> {
-  return n as unknown as Handle<T, 'shared'>;
-}
 
 // ---- test ----
 
@@ -122,12 +87,13 @@ describe('gltf e2e pick probe over pack JSON roundtrip (m5-1)', () => {
     expect(roundtrippedAabb[5]).toBe(-3);
 
     // --- 6. World setup ---
-    const world = new World();
+    const assets = new AssetRegistry();
+    const world = new World({ assets });
 
     // Material for MeshRenderer (any visible material; pick only needs
     // the MeshFilter + MeshRenderer presence on the archetype).
-    const unlitMat = Materials.unlit([1, 1, 1, 1]) as unknown as MaterialAsset;
-    const unlitHandle = asHandle<'MaterialAsset'>(world.allocSharedRef('MaterialAsset', unlitMat));
+    const unlitMat = Materials.unlit([1, 1, 1, 1]);
+    const unlitHandle = assets.create(unlitMat).unwrap();
 
     // Reconstruct the MeshAsset payload with the roundtripped aabb and
     // original typed arrays. Use a cast since exactOptionalPropertyTypes
@@ -137,11 +103,12 @@ describe('gltf e2e pick probe over pack JSON roundtrip (m5-1)', () => {
       vertices: meshAsset.vertices,
       ...(meshAsset.indices !== undefined ? { indices: meshAsset.indices } : {}),
       submeshes: meshAsset.submeshes,
+      materialSlots: meshAsset.materialSlots,
       aabb: roundtrippedAabb,
       attributes: meshAsset.attributes,
     } as MeshAsset;
 
-    const meshHandle = asHandle<'MeshAsset'>(world.allocSharedRef('MeshAsset', meshPayload));
+    const meshHandle = assets.create(meshPayload).unwrap();
 
     // Mesh entity at origin. Identity Transform → identity world mat4.
     const meshEntity = world
@@ -181,15 +148,12 @@ describe('gltf e2e pick probe over pack JSON roundtrip (m5-1)', () => {
     expect(miss).toBeUndefined();
   });
 
-  it('mesh without aabb: pick() returns undefined (falsification witness)', () => {
-    // Create a MeshAsset payload that explicitly omits aabb, verifying
-    // that pick() skips it at the broad-phase check (pick.ts:184).
-    // This is a secondary in-code falsification — it repeats the
-    // comment-out-drill semantics without modifying M4 production code.
-    const world = new World();
+  it('derives missing author bounds before picking and rejects incomplete attributes', () => {
+    const assets = new AssetRegistry();
+    const world = new World({ assets });
 
-    const unlitMat = Materials.unlit([1, 1, 1, 1]) as unknown as MaterialAsset;
-    const unlitHandle = asHandle<'MaterialAsset'>(world.allocSharedRef('MaterialAsset', unlitMat));
+    const unlitMat = Materials.unlit([1, 1, 1, 1]);
+    const unlitHandle = assets.create(unlitMat).unwrap();
 
     const noAabbMesh = {
       kind: 'mesh' as const,
@@ -205,10 +169,14 @@ describe('gltf e2e pick probe over pack JSON roundtrip (m5-1)', () => {
         },
       ],
       materialSlots: [{ slotName: 'Default' }],
-      attributes: {},
+      attributes: { position: new Float32Array([-1, -1, -3, 1, -1, -3, 0, 1, -3]) },
     } satisfies MeshAsset;
 
-    const noAabbHandle = asHandle<'MeshAsset'>(world.allocSharedRef('MeshAsset', noAabbMesh));
+    expect(assets.create({ ...noAabbMesh, attributes: {} }).ok).toBe(false);
+    const noAabbHandle = assets.create(noAabbMesh).unwrap();
+    const bounds = assets.read(noAabbHandle).unwrap().aabb;
+    assert(bounds);
+    expect(Array.from(bounds)).toEqual([-1, -1, -3, 1, 1, -3]);
 
     world
       .spawn(
@@ -231,8 +199,7 @@ describe('gltf e2e pick probe over pack JSON roundtrip (m5-1)', () => {
       )
       .unwrap();
 
-    // Same center ray that would hit if aabb were present.
-    const miss = pick(world, cameraEntity, 50, 50, 100, 100);
-    expect(miss).toBeUndefined();
+    expect(pick(world, cameraEntity, 50, 50, 100, 100)).toBeDefined();
+    expect(pick(world, cameraEntity, 100, 100, 100, 100)).toBeUndefined();
   });
 });

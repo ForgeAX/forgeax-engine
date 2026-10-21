@@ -3,6 +3,7 @@ import { err, ok, type Result } from '@forgeax/engine-types';
 import { worldEntityKey } from '../record/frame-snapshot';
 import type { RenderPipelineTopology } from '../render-pipeline';
 import type { RenderableSnapshot } from '../render-system-extract';
+import type { FrameList } from '../scene/frame-list';
 
 export interface TerrainShadowReceiver {
   readonly worldId: number;
@@ -11,7 +12,7 @@ export interface TerrainShadowReceiver {
 
 /** The full pre-cull roster, including receivers whose own cast flag is off. */
 export function terrainShadowReceivers(
-  sources: readonly RenderableSnapshot[],
+  sources: FrameList<RenderableSnapshot>,
 ): readonly TerrainShadowReceiver[] {
   const roots = new Map<number, TerrainShadowReceiver>();
   for (const source of sources) {

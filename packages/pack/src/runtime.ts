@@ -1,14 +1,18 @@
 export { validateArtifactPath } from './artifact-path.js';
 export { decodePackBlob, type PackBlob, validatePackBlob } from './blob.js';
 export { projectPackageCatalog } from './catalog-projection.js';
+export { decodeCatalogWire, encodeCatalogWire } from './catalog-wire.js';
 export {
   copyPackData,
   decodePackData,
   encodePackData,
   type PackBinary,
+  packArrayKind,
   packArrayStorage,
+  packBufferLength,
 } from './data.js';
 export { validateFixedPackPublication } from './fixed-publication.js';
+export { decodeMaterialProgramWire, encodeMaterialProgramWire } from './material-program-wire.js';
 export { createPackageResponse } from './package-response.js';
 export { validatePluginAsset } from './plugin-asset.js';
 export {

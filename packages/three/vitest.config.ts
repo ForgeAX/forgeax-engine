@@ -6,14 +6,14 @@ const require = createRequire(import.meta.url);
 export default defineProject({
   resolve: {
     alias: [
+      ...['materials', 'physical'].map((name) => ({
+        // CI restores packaged publications, not ignored producer intermediates.
+        find: `./generated/${name}.mjs`,
+        replacement: fileURLToPath(new URL(`./dist/${name}.mjs`, import.meta.url)),
+      })),
       {
         find: /^three$/,
         replacement: require.resolve('three/src/Three.Core.js'),
-      },
-      {
-        // Source tests consume the same publication that CI restores and consumers install.
-        find: './generated/materials.mjs',
-        replacement: fileURLToPath(new URL('./dist/materials.mjs', import.meta.url)),
       },
     ],
   },

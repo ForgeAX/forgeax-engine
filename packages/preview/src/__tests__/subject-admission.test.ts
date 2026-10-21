@@ -24,16 +24,14 @@ describe('native preview object admission', () => {
     });
   });
 
-  it('rejects a material array loaded through the native host', async () => {
+  it('rejects a material array supplied by the native host', async () => {
     const result = await executeMaterialPreview(
       { guid: 'asset' },
       {
         runId: 'run',
-        assets: {
-          loadByGuid: async <TAsset>() => ({
-            ok: true as const,
-            value: Object.assign([], { kind: 'material' }) as TAsset,
-          }),
+        subject: {
+          guid: 'asset',
+          asset: Object.assign([], { kind: 'material' }) as unknown as Record<string, unknown>,
         },
       },
     );

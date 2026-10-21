@@ -12,6 +12,7 @@ import { scenePlugin, Transform } from '@forgeax/engine-scene';
 import { expect, it } from 'vitest';
 import { createWave1RenderingRecipe } from '../../../../scripts/dev-verify/wave1-rendering/recipe';
 import { createRenderer } from '../createRenderer';
+import { testAssets } from './helpers/runtime-assets';
 import {
   attachRenderer,
   type CameraProjectionConfig,
@@ -92,7 +93,10 @@ it('projects authored VolumetricFog density from World time across pause and red
   const renderer = rendererResult.value;
   const world = new World();
   const scene = await createWorldContext(world, [scenePlugin()]);
-  const recipe = createWave1RenderingRecipe(world, { aspect: 1, includeAtmosphere: false });
+  const recipe = createWave1RenderingRecipe(world, testAssets(world), {
+    aspect: 1,
+    includeAtmosphere: false,
+  });
   recipe.destroy(recipe.entities.screen);
   recipe.destroy(recipe.entities.localLight);
   recipe.destroy(recipe.entities.skylight);
@@ -116,7 +120,7 @@ it('projects authored VolumetricFog density from World time across pause and red
     near: authoredCamera.near,
     far: authoredCamera.far,
   };
-  const density = world.allocSharedRef('TextureAsset', createDensity());
+  const density = testAssets(world).create(createDensity()).unwrap();
   const fogData = {
     light: recipe.entities.sun,
     density,
@@ -485,7 +489,7 @@ it('projects authored VolumetricFog density from World time across pause and red
   } finally {
     await renderer.dispose();
     world.despawn(fog).unwrap();
-    world.sharedRefs.release(density).unwrap();
+    testAssets(world).release(density).unwrap();
     recipe.dispose();
     await scene.fiber.dispose();
     canvas.remove();

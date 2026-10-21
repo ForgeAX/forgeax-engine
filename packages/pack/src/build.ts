@@ -50,7 +50,6 @@ export {
   type CookedPackageProjection,
   catalogProjectionFor,
   currentProjectionFor,
-  findReservedAssetKindConflict,
   type PackageCatalogInput,
   projectCookedPackageEntry,
   projectExternalCatalogEntries,
@@ -58,6 +57,12 @@ export {
   projectRuntimeCatalogRow,
   type RuntimeCatalogRowInput,
 } from './catalog-projection.js';
+export {
+  type AssetCliContext,
+  type AssetCliError,
+  emitAssetCliError,
+  serializeMetaJson,
+} from './cli-output.js';
 export {
   type CookedMaterialRecord,
   collectMaterialCookRefs,
@@ -107,12 +112,17 @@ export {
   writeMeshBinHeader,
 } from './mesh-bin-contract.js';
 export * from './pack-authoring.js';
+export * from './pack-authoring-document.js';
+export * from './pack-authoring-draft.js';
+export * from './pack-authoring-drafts-node.js';
+export * from './pack-authoring-literals.js';
 export {
   createFileSystemPackAuthoringGateway,
   createFileSystemPackAuthoringPort,
   type FileSystemPackAuthoringOptions,
   type PackAuthoringMaterializedAsset,
 } from './pack-authoring-node.js';
+export * from './pack-generation-projection.js';
 export { listPackSources, type PackSourceIndexRow } from './pack-source-index.js';
 export {
   type FinalizedPackageProduct,

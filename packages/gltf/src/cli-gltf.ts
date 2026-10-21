@@ -1,3 +1,9 @@
+import {
+  type AssetCliContext,
+  emitAssetCliError,
+  serializeMetaJson,
+} from '@forgeax/engine-pack/build';
+import { SCANNER_BLACKLIST } from '@forgeax/engine-pack/scanner';
 import { dracoDecoder, meshoptDecoder } from './node-importer-entry.js';
 // @forgeax/engine-gltf/src/cli-gltf — internal producer used by DevKit's
 // unified `forgeax asset import` command. It is deliberately not a package bin.
@@ -25,30 +31,6 @@ import { dirname, join, resolve } from 'node:path';
 import { parseArgs } from 'node:util';
 import { GLTF_ERROR_HINTS } from './errors.js';
 import { parseGlb, parseGltf, toAssetPack } from './parse-gltf.js';
-import { serializeMetaJson } from './serialize-meta.js';
-
-interface AssetCtx {
-  readonly stdoutWrite: (line: string) => void;
-  readonly stderrWrite: (line: string) => void;
-}
-
-interface ErrShape {
-  code: string;
-  expected: string;
-  hint: string;
-  detail?: unknown;
-}
-
-function emitError(ctx: AssetCtx, err: ErrShape): number {
-  const payload: Record<string, unknown> = {
-    code: err.code,
-    expected: err.expected,
-    hint: err.hint,
-  };
-  if (err.detail !== undefined) payload.detail = err.detail;
-  ctx.stderrWrite(JSON.stringify(payload));
-  return 1;
-}
 
 function helpBody(): string {
   return [
@@ -64,14 +46,14 @@ function helpBody(): string {
   ].join('\n');
 }
 
-export async function runCliGltf(rest: string[], ctx: AssetCtx): Promise<number> {
+export async function runCliGltf(rest: string[], ctx: AssetCliContext): Promise<number> {
   const [sub, ...subRest] = rest;
   if (sub === undefined || sub === '--help' || sub === '-h') {
     ctx.stdoutWrite(helpBody());
     return 0;
   }
   if (sub !== 'import') {
-    return emitError(ctx, {
+    return emitAssetCliError(ctx, {
       code: 'unknown-subcommand',
       expected: "subcommand 'import'",
       hint: "run 'forgeax help asset import' for usage",
@@ -81,7 +63,7 @@ export async function runCliGltf(rest: string[], ctx: AssetCtx): Promise<number>
   return runImport(subRest, ctx);
 }
 
-async function runImport(rest: string[], ctx: AssetCtx): Promise<number> {
+async function runImport(rest: string[], ctx: AssetCliContext): Promise<number> {
   let positionals: string[];
   let check = false;
   try {
@@ -95,7 +77,7 @@ async function runImport(rest: string[], ctx: AssetCtx): Promise<number> {
     check = parsed.values.check === true;
   } catch (e) {
     const message = e instanceof Error ? e.message : String(e);
-    return emitError(ctx, {
+    return emitAssetCliError(ctx, {
       code: 'cli-parse-error',
       expected: 'forgeax asset import [--dry-run] <path> --root <project>',
       hint: "run 'forgeax help asset import' for usage",
@@ -104,7 +86,7 @@ async function runImport(rest: string[], ctx: AssetCtx): Promise<number> {
   }
   const target = positionals[0];
   if (target === undefined) {
-    return emitError(ctx, {
+    return emitAssetCliError(ctx, {
       code: 'cli-parse-error',
       expected: check
         ? 'forgeax asset import <dir> --dry-run --root <project>'
@@ -118,32 +100,7 @@ async function runImport(rest: string[], ctx: AssetCtx): Promise<number> {
   return runWrite(target, ctx);
 }
 
-const SCANNER_BLACKLIST_FALLBACK: ReadonlySet<string> = new Set([
-  'node_modules',
-  '.forgeax-harness',
-  '.git',
-  'dist',
-  '.forgeax-asset-cache',
-  'forgeax-engine-assets',
-  'coverage',
-]);
-
-async function loadScannerBlacklist(): Promise<ReadonlySet<string>> {
-  try {
-    const mod = (await import('@forgeax/engine-pack/scanner')) as {
-      SCANNER_BLACKLIST?: ReadonlySet<string>;
-    };
-    return mod.SCANNER_BLACKLIST ?? SCANNER_BLACKLIST_FALLBACK;
-  } catch {
-    return SCANNER_BLACKLIST_FALLBACK;
-  }
-}
-
-async function findGltfSources(
-  dir: string,
-  blacklist: ReadonlySet<string>,
-  out: string[],
-): Promise<void> {
+async function findGltfSources(dir: string, out: string[]): Promise<void> {
   let entries: import('node:fs').Dirent[];
   try {
     entries = (await readdir(dir, { withFileTypes: true })) as import('node:fs').Dirent[];
@@ -153,8 +110,8 @@ async function findGltfSources(
   for (const entry of entries) {
     const full = join(dir, entry.name);
     if (entry.isDirectory()) {
-      if (blacklist.has(entry.name)) continue;
-      await findGltfSources(full, blacklist, out);
+      if (SCANNER_BLACKLIST.has(entry.name)) continue;
+      await findGltfSources(full, out);
     } else if (entry.isFile()) {
       const lower = entry.name.toLowerCase();
       if (lower.endsWith('.gltf') || lower.endsWith('.glb')) {
@@ -180,24 +137,23 @@ async function fileExists(path: string): Promise<boolean> {
   }
 }
 
-async function runCheck(target: string, ctx: AssetCtx): Promise<number> {
+async function runCheck(target: string, ctx: AssetCliContext): Promise<number> {
   const root = resolve(target);
   let st: import('node:fs').Stats;
   try {
     st = await stat(root);
   } catch (e) {
     const message = e instanceof Error ? e.message : String(e);
-    return emitError(ctx, {
+    return emitAssetCliError(ctx, {
       code: 'cli-parse-error',
       expected: 'forgeax asset import <dir> --dry-run --root <project>',
       hint: 'pass a directory that exists and is readable',
       detail: { path: target, message },
     });
   }
-  const blacklist = await loadScannerBlacklist();
   const found: string[] = [];
   if (st.isDirectory()) {
-    await findGltfSources(root, blacklist, found);
+    await findGltfSources(root, found);
   } else if (st.isFile()) {
     const lower = root.toLowerCase();
     if (lower.endsWith('.gltf') || lower.endsWith('.glb')) {
@@ -208,7 +164,7 @@ async function runCheck(target: string, ctx: AssetCtx): Promise<number> {
   for (const sourcePath of found) {
     const metaPath = expectedMetaPathFor(sourcePath);
     if (!(await fileExists(metaPath))) {
-      return emitError(ctx, {
+      return emitAssetCliError(ctx, {
         code: 'gltf-meta-missing',
         expected: "sidecar <source>.meta.json (importer: 'gltf') present in same directory",
         hint: GLTF_ERROR_HINTS['gltf-meta-missing'],
@@ -219,13 +175,13 @@ async function runCheck(target: string, ctx: AssetCtx): Promise<number> {
   return 0;
 }
 
-async function runWrite(target: string, ctx: AssetCtx): Promise<number> {
+async function runWrite(target: string, ctx: AssetCliContext): Promise<number> {
   const sourcePath = resolve(target);
   const lower = sourcePath.toLowerCase();
   const isGlb = lower.endsWith('.glb');
   const isGltf = lower.endsWith('.gltf');
   if (!isGlb && !isGltf) {
-    return emitError(ctx, {
+    return emitAssetCliError(ctx, {
       code: 'cli-parse-error',
       expected: '<path>.gltf or <path>.glb',
       hint: 'pass a .gltf / .glb source file; for batch dry-run use --check <dir>',
@@ -244,7 +200,7 @@ async function runWrite(target: string, ctx: AssetCtx): Promise<number> {
       buf = await readFile(sourcePath);
     } catch (e) {
       const message = e instanceof Error ? e.message : String(e);
-      return emitError(ctx, {
+      return emitAssetCliError(ctx, {
         code: 'cli-parse-error',
         expected: 'readable .glb at <path>',
         hint: 'check the file exists and the process has read access',
@@ -259,7 +215,7 @@ async function runWrite(target: string, ctx: AssetCtx): Promise<number> {
       text = await readFile(sourcePath, 'utf-8');
     } catch (e) {
       const message = e instanceof Error ? e.message : String(e);
-      return emitError(ctx, {
+      return emitAssetCliError(ctx, {
         code: 'cli-parse-error',
         expected: 'readable .gltf at <path>',
         hint: 'check the file exists and the process has read access',
@@ -271,7 +227,7 @@ async function runWrite(target: string, ctx: AssetCtx): Promise<number> {
       json = JSON.parse(text);
     } catch (e) {
       const message = e instanceof Error ? e.message : String(e);
-      return emitError(ctx, {
+      return emitAssetCliError(ctx, {
         code: 'gltf-malformed-header',
         expected: 'valid JSON document at the .gltf root',
         hint: GLTF_ERROR_HINTS['gltf-malformed-header'],
@@ -290,7 +246,7 @@ async function runWrite(target: string, ctx: AssetCtx): Promise<number> {
     });
   }
   if (!docResult.ok) {
-    return emitError(ctx, {
+    return emitAssetCliError(ctx, {
       code: docResult.error.code,
       expected: docResult.error.expected,
       hint: docResult.error.hint,
@@ -314,7 +270,7 @@ async function runWrite(target: string, ctx: AssetCtx): Promise<number> {
     sourceRelative,
   );
   if (!pack.ok) {
-    return emitError(ctx, pack.error);
+    return emitAssetCliError(ctx, pack.error);
   }
   await writeFile(metaPath, serializeMetaJson(pack.value.meta), 'utf-8');
   return 0;

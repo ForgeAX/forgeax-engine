@@ -1,10 +1,11 @@
+import type { AssetHandle } from '@forgeax/engine-types';
 // Shared scene for Bevy's `spatial_audio_3d` example.
 
-import { HANDLE_CUBE, HANDLE_SPHERE } from '@forgeax/engine-assets-runtime';
+
 import type { EntityHandle, World } from '@forgeax/engine-ecs';
 import { quat } from '@forgeax/engine-math';
 import { AudioListener, AudioSource } from '@forgeax/engine-audio';
-import type { Handle, MaterialAsset } from '@forgeax/engine-types';
+
 import {
   Camera,
   DirectionalLight,
@@ -14,8 +15,12 @@ import {
   perspective,
 } from '@forgeax/engine-render';
 import { Transform } from '@forgeax/engine-scene';
+import { AssetRegistry } from '@forgeax/engine-assets-runtime';
 
-export const HANDLE_NONE = 0 as unknown as Handle<'AudioClipAsset', 'shared'>;
+import { createPrimitiveMesh } from '@forgeax/engine-geometry';
+
+
+export const HANDLE_NONE = 0 as unknown as AssetHandle<'audio'>;
 
 export interface SpatialAudioScene {
   readonly camera: EntityHandle;
@@ -28,14 +33,17 @@ export interface SpatialAudioScene {
 function material(
   world: World,
   options: Parameters<typeof Materials.standard>[0],
-): Handle<'MaterialAsset', 'shared'> {
-  return world.allocSharedRef<'MaterialAsset', MaterialAsset>('MaterialAsset', Materials.standard(options));
+): AssetHandle<'material'> {
+const sceneAssets = world.assets;
+if (!(sceneAssets instanceof AssetRegistry)) throw new Error('Scene requires its runtime asset owner');
+
+  return sceneAssets.create(Materials.standard(options)).unwrap();
 }
 
 function marker(
   world: World,
-  assetHandle: Handle<'MeshAsset', 'shared'>,
-  materialHandle: Handle<'MaterialAsset', 'shared'>,
+  assetHandle: AssetHandle<'mesh'>,
+  materialHandle: AssetHandle<'material'>,
   pos: readonly [number, number, number],
   scale: readonly [number, number, number],
 ): EntityHandle {
@@ -49,6 +57,13 @@ function marker(
 }
 
 export function buildSpatialAudioWorld(world: World, aspect: number): SpatialAudioScene {
+const sceneAssets = world.assets;
+if (!(sceneAssets instanceof AssetRegistry)) throw new Error('Scene requires its runtime asset owner');
+
+const primitiveSphere = sceneAssets.create(createPrimitiveMesh('sphere').unwrap()).unwrap();
+
+const primitiveCube = sceneAssets.create(createPrimitiveMesh('cube').unwrap()).unwrap();
+
   const emitterMaterial = material(world, {
     baseColor: [0.05, 0.35, 1, 1],
     emissive: [0.02, 0.12, 0.8],
@@ -77,7 +92,7 @@ export function buildSpatialAudioWorld(world: World, aspect: number): SpatialAud
   const emitter = world
     .spawn(
       { component: Transform, data: { pos: [0, 0.9, 0], scale: [0.7, 0.7, 0.7] } },
-      { component: MeshFilter, data: { assetHandle: HANDLE_SPHERE } },
+      { component: MeshFilter, data: { assetHandle: primitiveSphere } },
       { component: MeshRenderer, data: { materials: [emitterMaterial] } },
       {
         component: AudioSource,
@@ -93,12 +108,12 @@ export function buildSpatialAudioWorld(world: World, aspect: number): SpatialAud
     )
     .unwrap();
 
-  const leftEar = marker(world, HANDLE_CUBE, leftEarMaterial, [-0.35, 1.4, 3.5], [0.08, 0.08, 0.08]);
-  const rightEar = marker(world, HANDLE_CUBE, rightEarMaterial, [0.35, 1.4, 3.5], [0.08, 0.08, 0.08]);
+  const leftEar = marker(world, primitiveCube, leftEarMaterial, [-0.35, 1.4, 3.5], [0.08, 0.08, 0.08]);
+  const rightEar = marker(world, primitiveCube, rightEarMaterial, [0.35, 1.4, 3.5], [0.08, 0.08, 0.08]);
 
   world.spawn(
     { component: Transform, data: { pos: [0, -0.65, 0], scale: [7, 0.15, 7] } },
-    { component: MeshFilter, data: { assetHandle: HANDLE_CUBE } },
+    { component: MeshFilter, data: { assetHandle: primitiveCube } },
     { component: MeshRenderer, data: { materials: [floorMaterial] } },
   );
   world.spawn({

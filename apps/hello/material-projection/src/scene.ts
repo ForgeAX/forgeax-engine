@@ -14,7 +14,9 @@ import {
   orthographic,
 } from '@forgeax/engine-render';
 import { Transform } from '@forgeax/engine-scene';
-import type { MaterialAsset, MeshAsset, TextureAsset } from '@forgeax/engine-types';
+import type { AssetHandle, MaterialAsset, MeshAsset, TextureAsset } from '@forgeax/engine-types';
+import { AssetRegistry } from '@forgeax/engine-assets-runtime';
+
 
 /**
  * `projection` is the reference scene. Every other mode swaps one feature
@@ -150,21 +152,24 @@ function unwrap<T>(result: { ok: true; value: T } | { ok: false; error: { code: 
 export type SetGridLane = (lane: ProjectionGridLane) => void;
 
 export function buildProjectionWorld(world: World, options: ProjectionOptions = {}): SetGridLane | undefined {
+const sceneAssets = world.assets;
+if (!(sceneAssets instanceof AssetRegistry)) throw new Error('Scene requires its runtime asset owner');
+
   const mode = options.mode ?? 'projection';
   const material = (asset: MaterialAsset) =>
-    world.allocSharedRef<'MaterialAsset', MaterialAsset>('MaterialAsset', asset);
-  const texture = (asset: TextureAsset) => world.allocSharedRef('TextureAsset', asset);
-  const sampler = world.allocSharedRef('SamplerAsset', {
+    sceneAssets.create(asset).unwrap();
+  const texture = (asset: TextureAsset) => sceneAssets.create(asset).unwrap();
+  const sampler = sceneAssets.create({
     kind: 'sampler',
     magFilter: 'linear',
     minFilter: 'linear',
     addressModeU: 'repeat',
     addressModeV: 'repeat',
-  });
-  const bound = (handle: number) => ({ texture: handle, sampler });
+  }).unwrap();
+  const bound = (handle: AssetHandle<'texture'>) => ({ texture: handle, sampler });
   const checkerTexture = bound(texture(checker()));
   const dimpleTexture = bound(texture(dimpleNormals()));
-  const sphereMesh = world.allocSharedRef('MeshAsset', unwrap(createSphereGeometry(1, 48, 32)));
+  const sphereMesh = sceneAssets.create(unwrap(createSphereGeometry(1, 48, 32))).unwrap();
   const spawn = (
     pos: readonly [number, number, number],
     mesh: number,
@@ -258,12 +263,12 @@ export function buildProjectionWorld(world: World, options: ProjectionOptions = 
   return setGridLane;
 }
 
-type TextureValue = { texture: number; sampler: number };
+type TextureValue = { texture: AssetHandle<'texture'>; sampler: AssetHandle<'sampler'> };
 
 interface SceneKit {
   readonly material: (asset: MaterialAsset) => number;
-  readonly texture: (asset: TextureAsset) => number;
-  readonly bound: (handle: number) => TextureValue;
+  readonly texture: (asset: TextureAsset) => AssetHandle<'texture'>;
+  readonly bound: (handle: AssetHandle<'texture'>) => TextureValue;
   readonly spawn: (
     pos: readonly [number, number, number],
     mesh: number,
@@ -277,11 +282,11 @@ interface SceneKit {
 }
 
 function buildReferenceScene(world: World, mode: ProjectionMode, kit: SceneKit): void {
+const sceneAssets = world.assets;
+if (!(sceneAssets instanceof AssetRegistry)) throw new Error('Scene requires its runtime asset owner');
+
   const { material, texture, bound, spawn, checkerTexture, dimpleTexture, sphereMesh } = kit;
-  const boxMesh = world.allocSharedRef(
-    'MeshAsset',
-    withoutUvs(unwrap(createBoxGeometry(BOX_SIZE, BOX_SIZE, BOX_SIZE))),
-  );
+  const boxMesh = sceneAssets.create(withoutUvs(unwrap(createBoxGeometry(BOX_SIZE, BOX_SIZE, BOX_SIZE)))).unwrap();
   const boxSurface = {
     baseColor: [1, 1, 1, 1] as const,
     metallic: 0,

@@ -3,13 +3,17 @@ import {
   type EntityHandle,
   type World,
 } from '@forgeax/engine-ecs';
-import { HANDLE_CUBE } from '@forgeax/engine-assets-runtime';
+
 import { quat, vec3 } from '@forgeax/engine-math';
 import type { InputSnapshot } from '@forgeax/engine-input';
 import { Camera, MeshFilter, MeshRenderer, orthographic } from '@forgeax/engine-render';
 import { Materials } from '@forgeax/engine-render';
-import type { MaterialAsset } from '@forgeax/engine-runtime';
+
 import { Transform } from '@forgeax/engine-scene';
+import { AssetRegistry } from '@forgeax/engine-assets-runtime';
+
+import { createPrimitiveMesh } from '@forgeax/engine-geometry';
+
 
 const BOUNDS: readonly [number, number] = [1200, 640];
 const PLAYER_SPEED = 500;
@@ -47,10 +51,15 @@ function faceDirection(value: [number, number, number]): Float32Array {
 }
 
 function spawnActor(world: World, pos: readonly [number, number, number], color: readonly [number, number, number, number], scale: readonly [number, number, number], marker: typeof Player | typeof SnapToPlayer | typeof RotateToPlayer): void {
-  const material = world.allocSharedRef<'MaterialAsset', MaterialAsset>('MaterialAsset', Materials.unlit(color));
+const sceneAssets = world.assets;
+if (!(sceneAssets instanceof AssetRegistry)) throw new Error('Scene requires its runtime asset owner');
+
+const primitiveCube = sceneAssets.create(createPrimitiveMesh('cube').unwrap()).unwrap();
+
+  const material = sceneAssets.create(Materials.unlit(color)).unwrap();
   world.spawn(
     { component: Transform, data: { pos, quat: [0, 0, 0, 1], scale } },
-    { component: MeshFilter, data: { assetHandle: HANDLE_CUBE } },
+    { component: MeshFilter, data: { assetHandle: primitiveCube } },
     { component: MeshRenderer, data: { materials: [material] } },
     { component: marker, data: {} },
   );

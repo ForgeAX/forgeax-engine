@@ -1,6 +1,8 @@
+import { AssetRegistry } from '@forgeax/engine/assets-runtime';
+import { createPrimitiveMesh } from '@forgeax/engine/geometry';
 import { Fog } from '@forgeax/engine/render';
 import { defineFeature, type FeatureCheck } from '../../lab/feature';
-import { MESH, spawnMesh, spawnStage, standard } from '../../lab/stage';
+import { spawnMesh, spawnStage, standard } from '../../lab/stage';
 
 export default defineFeature({
   title: 'Fog inspection/LKG',
@@ -11,8 +13,14 @@ export default defineFeature({
   expect:
     'Checks: valid fog publishes a fogSignature, the invalid update keeps that exact signature and records a failure code, and a new valid density publishes a new signature.',
   async setup({ world, app, frames }) {
+    const primitiveAssets = world.assets;
+    if (!(primitiveAssets instanceof AssetRegistry))
+      throw new Error('Scene requires its runtime asset owner');
+
+    const stageCube = primitiveAssets.create(createPrimitiveMesh('cube').unwrap()).unwrap();
+
     spawnStage(world, { eye: [0, 1.2, 4], target: [0, 0.6, -4] });
-    spawnMesh(world, MESH.cube, standard(world, { baseColor: [0.1, 0.8, 0.3, 1] }), {
+    spawnMesh(world, stageCube, standard(world, { baseColor: [0.1, 0.8, 0.3, 1] }), {
       pos: [0, 0.5, -3],
       scale: [1, 1, 1],
     });

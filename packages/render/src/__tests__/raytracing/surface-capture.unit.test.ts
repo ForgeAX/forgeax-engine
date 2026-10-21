@@ -1,6 +1,7 @@
 import { buildMeshCardLayout } from '@forgeax/engine-geometry';
 import { createShaderModule } from '@forgeax/engine-rhi-null';
 import { rayMaterialContract } from '@forgeax/engine-shader';
+import { type AssetHandle, ok } from '@forgeax/engine-types';
 import { assert, expect, it, vi } from 'vitest';
 import { Materials } from '../../materials';
 import {
@@ -199,8 +200,11 @@ it('adds, rematerializes and removes Card instances in place within the reserved
   const reads = capture.bufferReads.length;
   const revision = capture.revision;
   expect(capture.rematerialize(0, white).unwrap()).toEqual({ first: 0, count: cards });
-  // Replaced draws retire their buffers instead of accumulating them.
-  expect(capture.bufferReads.length).toBe(reads);
+  // Two bindings that shared one root now use distinct materials: one new
+  // uniform is needed. Replacing that same material again retains the count.
+  expect(capture.bufferReads.length).toBe(reads + 1);
+  capture.rematerialize(0, white).unwrap();
+  expect(capture.bufferReads.length).toBe(reads + 1);
   expect(capture.revision).toBeGreaterThan(revision);
   expect(capture.entries.map((e) => e.instanceId)).toEqual([0, 1]);
   expect(capture.rematerialize(0, { ...white, layout: { ...source.layout, cards: [] } }).ok).toBe(
@@ -289,4 +293,166 @@ it('installs the priority prefix past the Card ceilings in residency mode instea
   expect(narrow.entries.length).toBeGreaterThan(0);
   capture.dispose();
   narrow.dispose();
+});
+
+it('adopts shared numeric values without draw visits or uploads and pulls them in the selected tile', async () => {
+  const { device, source } = await acceptedCaptureFixture();
+  const shared = source.sections[0]?.material;
+  assert(shared);
+  const capture = (
+    await prepareSurfaceCapture(
+      device,
+      createShaderModule,
+      Array.from({ length: 64 }, (_, instanceId) => ({
+        ...source,
+        instance: { ...source.instance, instanceId },
+      })),
+    )
+  ).unwrap();
+  const write = vi.spyOn(device.queue, 'writeBuffer');
+  const snapshot = { ...shared.snapshot, paramSnapshot: { baseColor: [0, 1, 0, 1] } };
+  const work = capture.adoptMaterial(shared.snapshot, snapshot).unwrap();
+  assert(work);
+  expect(work.tiles).toBe(64 * source.layout.cards.length);
+  expect(capture.materialWork).toEqual({
+    roots: 1,
+    drawVisits: 0,
+    uniformUploads: 0,
+    assetRoots: 0,
+    bindingRefreshes: 0,
+  });
+  expect(write).not.toHaveBeenCalled();
+  const encoder = device.createCommandEncoder({}).unwrap();
+  const pass = encoder.beginRenderPass({ colorAttachments: [] });
+  capture.recordPass(pass, { first: 0, count: 1 }).unwrap();
+  expect(capture.materialWork).toEqual({
+    roots: 1,
+    drawVisits: 1,
+    uniformUploads: 1,
+    assetRoots: 0,
+    bindingRefreshes: 0,
+  });
+  expect(write).toHaveBeenCalledTimes(1);
+  const row = write.mock.calls[0]?.[2];
+  assert(row && ArrayBuffer.isView(row));
+  expect(Array.from(new Float32Array(row.buffer, row.byteOffset, 4))).toEqual([0, 1, 0, 1]);
+  capture.recordPass(pass, { first: 1, count: 1 }).unwrap();
+  expect(capture.materialWork).toEqual({
+    roots: 1,
+    drawVisits: 2,
+    uniformUploads: 1,
+    assetRoots: 0,
+    bindingRefreshes: 0,
+  });
+  expect(write).toHaveBeenCalledTimes(1);
+  pass.end();
+  encoder.finish().unwrap();
+  capture.dispose();
+  expect(capture.adoptMaterial(shared.snapshot, snapshot).ok).toBe(false);
+});
+
+it('rejects changed sampler bindings instead of accepting a numeric-row update', async () => {
+  const { device, source } = await acceptedCaptureFixture();
+  const material = source.sections[0]?.material;
+  assert(material);
+  const capture = (await prepareSurfaceCapture(device, createShaderModule, [source])).unwrap();
+  for (const snapshot of [
+    {
+      ...material.snapshot,
+      samplerHandles: new Map([['baseColorTexture', 9 as AssetHandle<'sampler'>]]),
+    },
+    { ...material.snapshot, authoredSamplerFields: new Set(['baseColorTexture']) },
+  ]) {
+    const adopted = capture.adoptMaterial(material.snapshot, snapshot);
+    expect(adopted.ok).toBe(false);
+    expect(capture.materialWork).toEqual({
+      roots: 0,
+      drawVisits: 0,
+      uniformUploads: 0,
+      assetRoots: 0,
+      bindingRefreshes: 0,
+    });
+  }
+  capture.dispose();
+});
+
+it('queues texture and sampler roots without visiting material consumers and refreshes only scheduled bindings', async () => {
+  const { device, source } = await acceptedCaptureFixture();
+  const section = source.sections[0];
+  assert(section);
+  const original = section.material;
+  const scope = {};
+  const handle = 11 as AssetHandle<'texture'>;
+  const samplerHandle = 12 as AssetHandle<'sampler'>;
+  const texture = device
+    .createTexture({ size: { width: 2, height: 2 }, format: 'rgba8unorm', usage: 4 })
+    .unwrap();
+  const firstView = device.createTextureView(texture, {}).unwrap();
+  const nextView = device.createTextureView(texture, {}).unwrap();
+  const sampler = device.createSampler({}).unwrap();
+  let selected = firstView;
+  const refresh = vi.fn(() => {
+    selected = nextView;
+  });
+  const material = {
+    ...original,
+    scope,
+    program: {
+      ...original.program,
+      paramSchema: [
+        ...original.program.paramSchema,
+        { name: 'baseColorTexture', type: 'texture2d' as const },
+      ],
+    },
+    snapshot: {
+      ...original.snapshot,
+      textureHandles: new Map([['baseColorTexture', handle]]),
+      samplerHandles: new Map([['baseColorTexture', samplerHandle]]),
+    },
+    resolveTexture: () => ok({ view: selected, sampler }),
+    refreshTextures: refresh,
+  };
+  const sources = Array.from({ length: 32 }, (_, instanceId) => ({
+    ...source,
+    instance: {
+      ...source.instance,
+      instanceId,
+      uvSets: [new Float32Array((sdfCubePositions.length / 3) * 2)],
+    },
+    sections: [{ ...section, material }],
+  }));
+  const capture = (await prepareSurfaceCapture(device, createShaderModule, sources)).unwrap();
+  const groups = vi.spyOn(device, 'createBindGroup');
+  const buffers = vi.spyOn(device, 'createBuffer');
+  const work = capture.adoptAsset(scope, handle, 1);
+  assert(work);
+  expect(work.tiles).toBe(32 * source.layout.cards.length);
+  expect(capture.materialWork).toMatchObject({ assetRoots: 1, drawVisits: 0, bindingRefreshes: 0 });
+  expect(groups).not.toHaveBeenCalled();
+  expect(refresh).not.toHaveBeenCalled();
+  capture.prepareTiles({ first: 0, count: 1 });
+  expect(groups).toHaveBeenCalledTimes(1);
+  expect(buffers).not.toHaveBeenCalled();
+  expect(refresh).toHaveBeenCalledTimes(1);
+  expect(capture.textureReads).toEqual([nextView]);
+  capture.prepareTiles({ first: 1, count: 1 });
+  expect(groups).toHaveBeenCalledTimes(1);
+  expect(capture.adoptAsset({}, handle, 2)).toBeUndefined();
+  expect(capture.adoptAsset(scope, samplerHandle, 2)).toBeDefined();
+  expect(groups).toHaveBeenCalledTimes(1);
+  capture.prepareTiles({ first: 6, count: 1 });
+  expect(groups).toHaveBeenCalledTimes(2);
+  expect(capture.materialWork.bindingRefreshes).toBe(2);
+  const changed = {
+    ...material.snapshot,
+    samplerHandles: new Map([['baseColorTexture', 13 as AssetHandle<'sampler'>]]),
+  };
+  capture.adoptMaterial(material.snapshot, changed).unwrap();
+  expect(capture.adoptAsset(scope, samplerHandle, 3)).toBeUndefined();
+  expect(capture.adoptAsset(scope, 13, 3)).toBeDefined();
+  expect(groups).toHaveBeenCalledTimes(2);
+  capture.prepareTiles({ first: 12, count: 1 });
+  expect(groups).toHaveBeenCalledTimes(3);
+  capture.dispose();
+  device.destroyTexture(texture);
 });

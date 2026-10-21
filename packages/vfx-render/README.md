@@ -24,18 +24,15 @@ const renderer = created.value;
 ```
 
 Create the host before the Renderer and pass `host.feature` at Renderer
-construction. `attachWorld` installs the versioned Pack loader (including the
-Program v3 path) and one FixedUpdate producer. `detachWorld` removes both the
-system and runtime resource. Material and mesh GUIDs resolve through the
-attached World's `AssetRegistry`.
+construction. `attachWorld` installs the VFX asset decoder and one FixedUpdate producer;
+`detachWorld` releases both. The asset owner resolves Material/Mesh dependencies at effect
+admission. The Host borrows those accepted handles and owns no GUID loader or asset cache.
 
-The stock host captures each material GUID once per synchronous World extraction,
-sharing that frame's authored values and cooked projection across particle Players.
-The next candidate always reads current values, including an in-place edit or a
-same-GUID replacement. Custom projection methods and accessors keep their per-use
-observation and error behavior. Direct feature providers can opt into this frame
-snapshot contract with `material.captureFrame`; no author data is frozen or retained
-as immutable across frames.
+The stock host captures each material reference once per synchronous World extraction,
+sharing that frame's values and admitted program projection across particle Players.
+The next candidate reads current accepted values after a managed edit or replacement.
+Custom projection methods and accessors keep their per-use observation and error behavior.
+Direct feature providers can opt into this frame capture with `material.captureFrame`.
 
 Particle context selection remembers validation for frozen primitive contexts and
 deeply frozen plain-data subtrees. Weak membership does not retain materials;
@@ -43,15 +40,12 @@ a frozen parent with mutable children or a cycle still uses per-publication
 inspection. Mutable program metadata, render state and runtime values remain
 current, including enumerable accessors and non-cloneable values.
 
-An explicitly authored mesh source `{ source: 'player' }` instead reads the
-Player entity's `MeshFilter` through `resolveAssetHandle`. This preserves World
-shared-reference generations and the existing managed runtime-content projection.
-Extraction captures each Player's current mesh into the same source publication
-used across Render Workers; it never invents a GUID or mutates the cooked program.
-When the captured mesh is the exact current World asset projection, the feature
-publishes its handle and resolves it from the accepted resources during planning.
-Both GUID meshes and Player-only `MeshFilter` meshes share that asset transport;
-stable frames carry no duplicate mesh payload. Distinct custom provider meshes
+An explicitly authored mesh source `{ source: 'player' }` reads the Player entity's
+`MeshFilter` through the asset owner. Extraction captures each Player's current Mesh in the
+same publication used across Render Workers. The published dependency is a runtime handle;
+planning resolves it from the accepted resource scope. Shared effect Mesh references and
+Player-local Mesh references use that same transport, without duplicate mesh payload on
+stable frames. Distinct custom provider meshes
 remain inline, preserving their captured values and unmanaged edits on later frames.
 The normal feature geometry cache and Renderer submission fences own GPU upload,
 replacement and retirement. A source upload/preparation is not a draw receipt.
@@ -70,27 +64,19 @@ lit meshes and authored particle programs retain their original paths.
 | Record | Produce requested simulation scene inputs, execute each fixed tick and trail-history write once, then copy the completed state through native buffer-copy passes into each updating view before sorting, projection, and indirect draws |
 | Recover | Drop generation-owned GPU state and reconstruct retained active players from committed FixedUpdate inputs |
 
-Published frame data names each emitter by its exact runtime-owned effect handle
-and emitter ID. WGSL and reflection travel once through ordinary asset publication;
-stable frames carry current parameters and tick state. The plan resolves definitions
-from the accepted resource owner during its existing traversal. Same-GUID replacements,
-old queued ticks, discard/retry, two outstanding frames and receiver recovery preserve
-exact program identity without a second program cache or receiver World.
+Published frame data names each emitter by the source asset identity, its fixed revision,
+and emitter ID. WGSL and reflection travel once in the publication's fixed-version rows;
+ordinary current-asset updates cannot redirect queued ticks. Planning resolves the held
+version during its normal work traversal. Same-reference replacement, discarded candidates,
+two outstanding frames, delayed ACK and receiver recovery preserve the exact program without
+a receiver World or a consumer-created asset identity.
 
-For immutable emitters without data interfaces or force fields, the producer retains
-its detached logical compute-binding declarations through the existing owned-program
-data boundary. Current buffer uploads and execution state remain per-frame. Raw
-mutable definitions retain their original reads; an empty or replaced roster drops
-unused templates. Device recovery still prepares the current native resources.
-The [complete FX owner comparison](reports/vfx-immutable-binding-layouts-20261017.json)
-measures this scope without making a whole-game FPS claim.
-
-Players using the same exact immutable emitter share one stateless compute-program
-declaration. Their particle, event, history and binding resources remain independent.
-An actual preparation request by any live user keeps the shared program completion
-qualified; mutable definitions keep separate declarations. The
-[shared-program owner comparison](reports/vfx-shared-compute-programs-20261017.json)
-records the complete FX-chain cost and its measurement limits.
+Loaded and code-created effects use the same immutable definition capture. Emitters without
+data interfaces or force fields share prepared logical compute bindings and stateless programs;
+particle storage, event buffers, history, uploads and execution state remain per Player.
+Each actual preparation request participates in shared program readiness. A definition edit
+starts a new play cycle at FixedUpdate while already queued ticks retain the previous version.
+Unchanged material Cook records stay resident when a values-only asset patch is published.
 
 The explicit simulation camera provider receives `read(world, views)`, where
 `views` is the existing extracted display roster. Hosts may select a submitted
@@ -473,11 +459,31 @@ Null/backend unit tests prove graph and resource structure; they do not replace 
 
 ## Managed field residency
 
-The maintained VFX Host resolves vector-field textures through the same ordinary asset lookup and catalog epoch invalidation as material/mesh dependencies. Source extraction validates and caches immutable saved payloads, packs matrices/settings/voxels once, and publishes prepared POD across the Host split. The receiving feature plans one read-only field buffer at binding 17 per emitter. Render's existing persistent resource generation, fence and retirement owner creates/uploads it; accepted unchanged content performs zero steady uploads. Abort retries do not mark content resident. Content replacement changes the planned identity; device generation replacement reuploads accepted content and replays the existing bounded recovery intents.
+Asset admission binds vector-field textures to runtime references and the effect
+holds those dependencies. Each actual FixedUpdate captures their exact owner
+versions; already queued ticks and retained recovery inputs keep their own leases.
+The source publishes each `(asset, revision)` once through the existing asset
+version table. Tick messages carry only those references, including across Workers;
+unchanged frames do not transfer sample arrays again.
 
-During an ordinary same-GUID asynchronous Texture reload, the Host keeps the last
-admitted field until the asset owner supplies the replacement payload. Rejected
-loads and accepted removal revoke that cached payload. An initially missing field
-still reports its structured missing-asset error; no zero field is substituted.
+The receiving feature validates and packs from those fixed versions. Multiple
+queued versions share the particle state but bind distinct read-only field buffers
+at binding 17 in dispatch order. The cache retains each used version tuple, so
+abort/retry and same-submit old/new inputs do not evict each other. Render's normal
+resource generation and submission lifetime own uploads and retirement. Accepted
+unchanged input performs zero GPU uploads; recovery uploads the retained input.
+
+Capture checks at most eight declared field references per actual emitter work.
+A new tuple packs at most 16 MiB of metadata and samples. A proven range edit
+reuses the previous GPU field buffer and uploads only changed sample ranges;
+initial upload and recovery copy metadata and sample slices in one ordered
+copy pass. Shared destinations have one graph access declaration. Asset snapshot budgets bound retained
+source versions, and last tick acknowledgement, Player removal, restart and Host
+detach release their leases. There is no texture-to-Player reverse fanout.
+
+During an explicit asynchronous Texture reload, the Host keeps the admitted field
+until the asset owner commits the replacement. Failed reload and source removal
+preserve adopted runtime content. An initially unavailable or released runtime
+reference reports its structured missing-asset error; no zero field is substituted.
 
 Field sampling runs in shared frame simulation, independently of private view cadence. Stopped/removed players, World detach and renderer disposal reuse the existing lifecycle authority. The field owner has no independent queue submit, device handle registry, runtime compiler or per-particle CPU mirror. SDF collision remains a separate capability and binding.

@@ -1,6 +1,8 @@
+import { AssetRegistry } from '@forgeax/engine/assets-runtime';
 import { World } from '@forgeax/engine/ecs';
+import { createPrimitiveMesh } from '@forgeax/engine/geometry';
 import { CheckList, defineFeature } from '../../lab/feature';
-import { MESH, spawnCamera, spawnMesh, spawnStage, spawnSun, standard } from '../../lab/stage';
+import { spawnCamera, spawnMesh, spawnStage, spawnSun, standard } from '../../lab/stage';
 
 export default defineFeature({
   title: 'createRenderer assembly',
@@ -33,9 +35,15 @@ export default defineFeature({
           renderer.inspect().capabilities.backendKind,
         );
         const own = new World();
+        const primitiveAssetsOwn = own.assets;
+        if (!(primitiveAssetsOwn instanceof AssetRegistry))
+          throw new Error('Scene requires its runtime asset owner');
+
+        const stageCube = primitiveAssetsOwn.create(createPrimitiveMesh('cube').unwrap()).unwrap();
+
         spawnCamera(own);
         spawnSun(own);
-        spawnMesh(own, MESH.cube, standard(own, { baseColor: [0.1, 0.9, 0.4, 1] }), {
+        spawnMesh(own, stageCube, standard(own, { baseColor: [0.1, 0.9, 0.4, 1] }), {
           pos: [0, 0.5, 0],
         });
         const lease = renderer.attach(own);

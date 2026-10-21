@@ -13,14 +13,14 @@ const sceneOwner = {
   async apply(ctx, config) {
     if (!ctx.assets) throw new Error('scene owner requires assets');
     const assets = ctx.assets;
-    const loaded = await assets.loadByGuid<SceneAsset>(assets.parseGuid(config.scene));
+    const loaded = await assets.load(assets.parseGuid(config.scene), 'scene');
     if (!loaded.ok) throw loaded.error;
     await ctx.effect(async function* () {
-      const handle = ctx.world.allocSharedRef('SceneAsset', loaded.value);
-      yield () => { ctx.world.sharedRefs.release(handle).unwrap(); };
-      const root = assets.instantiate<SceneAsset>(handle, ctx.world).unwrap();
+      const handle = loaded.value;
+      yield () => { assets.release(handle).unwrap(); };
+      const root = assets.instantiate(handle, ctx.world).unwrap();
       yield () => worldDespawnScene(ctx.world, root).unwrap();
-      ctx.provide('capabilityScene', { root, asset: loaded.value });
+      ctx.provide('capabilityScene', { root, asset: assets.read(handle).unwrap() });
       yield joinPluginFiber(ctx.plugin(gameplay));
     });
   },

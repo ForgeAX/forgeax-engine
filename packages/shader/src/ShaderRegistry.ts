@@ -1,4 +1,16 @@
-import { createMaterialShaderProgram, type MaterialShaderProgram } from './material/program.js';
+import {
+  isMaterialProgramAbi,
+  isShaderEntryPointReads,
+  type MaterialProgramAbi,
+  type ShaderEntryPointReads,
+} from '@forgeax/engine-types';
+import { sha256 } from '@noble/hashes/sha2.js';
+import { bytesToHex } from '@noble/hashes/utils.js';
+import {
+  createMaterialShaderProgram,
+  type MaterialShaderProgram,
+  withMaterialShaderEntryPoints,
+} from './material/program.js';
 // @forgeax/engine-shader/ShaderRegistry — runtime shader registry, instance-per-engine shape.
 //
 // Shape rules (plan-strategy §S-10 / D-R10 / OQ-5 close + AC-03):
@@ -36,19 +48,31 @@ import {
   type Result as ShaderResult,
   shaderNotFound,
 } from './errors.js';
-import { readShaderManifestPublication } from './manifest-publication.js';
-import {
-  isMaterialShaderArtifactReceipt,
-  type MaterialShaderArtifactReceipt,
-} from './material/artifact-types.js';
+import { digestShaderBytes, readShaderManifestPublication } from './manifest-publication.js';
 import type { MaterialShaderManifestEntry } from './types.js';
 
 interface AdmittedManifest {
-  readonly text: string;
+  readonly textDigest: string;
   readonly manifest: unknown;
 }
 
-function ownMaterialReceipt(receipt: MaterialShaderArtifactReceipt): MaterialShaderArtifactReceipt {
+// The cache needs complete content identity, not a second retained wire copy.
+// Native SHA hashes fixed 256 KiB UTF-16 chunks, preserving unpaired surrogates
+// without copying the complete wire text. The root binds their ordered digests.
+async function manifestTextDigest(text: string): Promise<string> {
+  const digest = sha256.create();
+  const characters = new Uint16Array(Math.min(131_072, text.length));
+  const bytes = new Uint8Array(characters.buffer);
+  for (let offset = 0; offset < text.length; offset += characters.length) {
+    const length = Math.min(characters.length, text.length - offset);
+    for (let index = 0; index < length; index++)
+      characters[index] = text.charCodeAt(offset + index);
+    digest.update(await digestShaderBytes(bytes.subarray(0, length * 2)));
+  }
+  return bytesToHex(digest.digest());
+}
+
+function ownMaterialReceipt(receipt: MaterialProgramAbi): MaterialProgramAbi {
   const owned = structuredClone(receipt);
   const freeze = (value: unknown): void => {
     if (value === null || typeof value !== 'object' || Object.isFrozen(value)) return;
@@ -138,10 +162,11 @@ export type SsrShaderModule = (typeof SSR_SHADER_MODULES)[keyof typeof SSR_SHADE
  * shader after asset import.
  */
 export interface MaterialShaderEntry {
+  readonly entryPoints?: readonly ShaderEntryPointReads[];
   readonly source: string;
   readonly paramSchema: readonly ParamSchemaEntry[];
   /** Producer-published ABI facts for this exact artifact variant. */
-  readonly receipt?: MaterialShaderArtifactReceipt | undefined;
+  readonly receipt?: MaterialProgramAbi | undefined;
 }
 
 /** Registry-owned runtime shape published after immutable schema admission. */
@@ -335,8 +360,20 @@ export class ShaderRegistry {
     }
 
     const url = this.#manifestUrl;
+    let textDigest: string;
+    try {
+      textDigest = await manifestTextDigest(raw);
+    } catch (e) {
+      return err(
+        manifestMalformed({
+          message: 'ShaderRegistry: manifest content digest failed',
+          hint: 'verify the host crypto service is available',
+          reason: e instanceof Error ? e.message : String(e),
+        }),
+      );
+    }
     let admitted = admittedManifests.get(url)?.deref();
-    if (admitted?.text !== raw) {
+    if (admitted?.textDigest !== textDigest) {
       let parsed: unknown;
       try {
         parsed = JSON.parse(raw);
@@ -368,7 +405,7 @@ export class ShaderRegistry {
           }),
         );
       }
-      admitted = { text: raw, manifest: parsed };
+      admitted = { textDigest, manifest: parsed };
       admittedManifests.set(url, new WeakRef(admitted));
     }
     const parsed = admitted.manifest;
@@ -552,12 +589,16 @@ export class ShaderRegistry {
   //     identifier feeds the per-pipeline `(materialShaderId, stateHash)` key.
 
   /** Publish source-derived facts once per composed program, independent of GPU lifetime. */
-  materialProgram(source: string): MaterialShaderProgram {
-    let program = this.#materialPrograms.get(source);
-    if (program === undefined) {
-      program = createMaterialShaderProgram(source);
-      this.#materialPrograms.set(source, program);
-    }
+  materialProgram(
+    source: string,
+    entryPoints?: readonly ShaderEntryPointReads[],
+  ): MaterialShaderProgram {
+    const cached = this.#materialPrograms.get(source);
+    const program =
+      cached === undefined
+        ? createMaterialShaderProgram(source, entryPoints)
+        : withMaterialShaderEntryPoints(cached, entryPoints);
+    if (program !== cached) this.#materialPrograms.set(source, program);
     return program;
   }
 
@@ -591,6 +632,8 @@ export class ShaderRegistry {
     entry: MaterialShaderEntry,
     programSource?: ShaderRegistry,
   ): void {
+    if (entry.entryPoints !== undefined && !isShaderEntryPointReads(entry.entryPoints))
+      throw new Error('ShaderRegistry: invalid shader entry read contract');
     if (this.#materialShaders.has(identifier)) {
       throw new Error(
         `ShaderRegistry: material shader identifier '${identifier}' already registered; same-name re-register is forbidden (AGENTS.md "explicit registration" + Inspector "fail-fast no overwrite" pattern). Use findMaterialArtifact to read back the existing entry.`,
@@ -598,7 +641,7 @@ export class ShaderRegistry {
     }
     const { source, paramSchema, receipt: inputReceipt } = entry;
     const receipt = inputReceipt === undefined ? undefined : ownMaterialReceipt(inputReceipt);
-    if (receipt !== undefined && !isMaterialShaderArtifactReceipt(receipt)) {
+    if (receipt !== undefined && !isMaterialProgramAbi(receipt)) {
       throw new Error(
         `ShaderRegistry: material shader '${identifier}' carries an invalid ABI receipt; re-publish the producer reflection facts before registration`,
       );
@@ -619,10 +662,16 @@ export class ShaderRegistry {
     });
     // Exact source facts can come from this registry or the receiving registry.
     // Each new schema is still admitted and checked before publishing the entry.
-    const program =
+    const cached =
       this.#materialPrograms.get(source) ??
-      (programSource === undefined ? undefined : programSource.#materialPrograms.get(source)) ??
-      createMaterialShaderProgram(source);
+      (programSource === undefined ? undefined : programSource.#materialPrograms.get(source));
+    const reads = entry.entryPoints ?? receipt?.entryPoints;
+    const program =
+      cached === undefined
+        ? createMaterialShaderProgram(source, reads)
+        : withMaterialShaderEntryPoints(cached, reads);
+    if (entry.entryPoints !== undefined && receipt?.entryPoints !== undefined)
+      withMaterialShaderEntryPoints(program, receipt.entryPoints);
     if (!identifier.startsWith(FORGEAX_RESERVED_PATH_PREFIX)) {
       const declared = paramSchemaProjection.derivedInterface.textureFieldNames;
       const undeclared = program.sampledUserTextureFields.filter((field) => !declared.has(field));
@@ -659,6 +708,9 @@ export class ShaderRegistry {
           `ShaderRegistry: material shader identifier '${identifier}' already registered`,
         );
       const previous = this.#paramSchemaProjectionOwner.get(identifier, 1);
+      const cached = this.#materialPrograms.get(entry.source);
+      if (cached?.entryPoints !== undefined)
+        withMaterialShaderEntryPoints(cached, entry.program.entryPoints);
       if (
         previous !== undefined &&
         JSON.stringify(previous.schema) !== JSON.stringify(entry.paramSchema)
@@ -675,7 +727,11 @@ export class ShaderRegistry {
         revision: 1,
         schema: entry.paramSchema,
       });
-      const program = this.#materialPrograms.get(entry.source) ?? entry.program;
+      const cachedProgram = this.#materialPrograms.get(entry.source);
+      const program =
+        cachedProgram?.entryPoints === undefined && entry.program.entryPoints !== undefined
+          ? entry.program
+          : (cachedProgram ?? entry.program);
       this.#materialPrograms.set(entry.source, program);
       this.#materialShaders.set(
         identifier,
@@ -786,6 +842,7 @@ function isValidManifestEntry(value: unknown): value is ManifestEntry {
   // 'glsl: null').
   if (v.glsl !== undefined && v.glsl !== null && typeof v.glsl !== 'string') return false;
   if (typeof v.bindings !== 'string') return false;
+  if (v.entryPoints !== undefined && !isShaderEntryPointReads(v.entryPoints)) return false;
   return true;
 }
 
@@ -795,11 +852,12 @@ function isValidMaterialShaderManifestEntry(value: unknown): value is MaterialSh
   if (typeof v.identifier !== 'string') return false;
   if (typeof v.sourcePath !== 'string') return false;
   if (!hasStringSource(v, 'composedWgsl')) return false;
+  if (v.entryPoints !== undefined && !isShaderEntryPointReads(v.entryPoints)) return false;
   if (typeof v.paramSchema !== 'string') return false;
   if (!Array.isArray(v.variants)) return false;
   if (!v.variants.every(isValidMaterialShaderManifestVariant)) return false;
   return (
-    (v.receipt === undefined || isMaterialShaderArtifactReceipt(v.receipt)) &&
+    (v.receipt === undefined || isMaterialProgramAbi(v.receipt)) &&
     (v.uvSetCount === undefined || typeof v.uvSetCount === 'number')
   );
 }
@@ -809,12 +867,13 @@ function isValidMaterialShaderManifestVariant(value: unknown): boolean {
   const v = value as Record<string, unknown>;
   if (typeof v.definesKey !== 'string') return false;
   if (!hasStringSource(v, 'composedWgsl')) return false;
+  if (v.entryPoints !== undefined && !isShaderEntryPointReads(v.entryPoints)) return false;
   if (typeof v.defines !== 'object' || v.defines === null || Array.isArray(v.defines)) {
     return false;
   }
   return (
     Object.values(v.defines).every((define) => typeof define === 'boolean') &&
-    (v.receipt === undefined || isMaterialShaderArtifactReceipt(v.receipt))
+    (v.receipt === undefined || isMaterialProgramAbi(v.receipt))
   );
 }
 

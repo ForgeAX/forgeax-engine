@@ -1,18 +1,25 @@
+import type { AssetHandle } from '@forgeax/engine-types';
 import type { App } from '@forgeax/engine-app';
 import { AudioSource } from '@forgeax/engine-audio';
 import type { WebAudioEngine } from '@forgeax/engine-audio-webaudio';
 import { Update } from '@forgeax/engine-ecs';
-import type { Handle } from '@forgeax/engine-types';
-import { HANDLE_CUBE } from '@forgeax/engine-assets-runtime';
+
+
 import { MeshFilter, MeshRenderer } from '@forgeax/engine-render';
 import { Transform } from '@forgeax/engine-scene';
+import { createPrimitiveMesh } from '@forgeax/engine-geometry';
+
 
 export function installAudioControls(
   app: App,
   engine: WebAudioEngine,
-  clip: Handle<'AudioClipAsset', 'shared'>,
+  clip: AssetHandle<'audio'>,
 ): void {
+if (app.assets === undefined) throw new Error('This scene requires the App asset owner');
+
   const world = app.world;
+const primitiveCube = app.assets.create(createPrimitiveMesh('cube').unwrap()).unwrap();
+
   const entity = world
     .spawn({ component: AudioSource, data: { clip, loop: true, volume: 0.2, bus: 'music' } })
     .unwrap();
@@ -33,7 +40,7 @@ export function installAudioControls(
           component: Transform,
           data: { pos: [-2.3 + i * 0.2, 0.8, -0.5], scale: [0.12, 0.02, 0.12] },
         },
-        { component: MeshFilter, data: { assetHandle: HANDLE_CUBE } },
+        { component: MeshFilter, data: { assetHandle: primitiveCube } },
         { component: MeshRenderer, data: {} },
       )
       .unwrap(),

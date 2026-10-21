@@ -1,13 +1,5 @@
-import { resolveAssetHandle } from '@forgeax/engine-assets-runtime';
 import type { RenderReadLease } from '@forgeax/engine-ecs/projection';
 import type { Buffer } from '@forgeax/engine-rhi';
-import {
-  type MaterialAsset,
-  type MeshAsset,
-  type SamplerAsset,
-  type TextureAsset,
-  toShared,
-} from '@forgeax/engine-types';
 import { ResidencyLifetime } from '../device/residency-lifetime';
 import type { StandardProbeGlobal } from '../pipeline/standard-profile';
 import type { RenderResourceScope } from '../publication/resource-scope';
@@ -33,11 +25,7 @@ import {
 } from './probe-origin-support';
 import { createProbeRayRecorder, PROBE_RAYS_WGSL } from './probe-rays';
 import { type ProbeCardCapture, prepareProbeCards } from './renderer-probe-cards';
-import {
-  projectSceneFields,
-  type SceneFieldSource,
-  sceneFieldSourcesCurrent,
-} from './scene-field-projection';
+import { projectSceneFields, type SceneFieldSource } from './scene-field-projection';
 import { SDF_INSTANCE_STRIDE, type SdfMeshInstance } from './sdf-query';
 
 export interface ProbeGlobalSource {
@@ -47,7 +35,6 @@ export interface ProbeGlobalSource {
 }
 export interface ProbeGlobalRegion {
   readonly retained: NonNullable<PersistentGpuDrivenState['retained']>;
-  readonly catalogEpoch: number;
   readonly sources: readonly SceneFieldSource[];
   /** The projected instance rows behind `input`, indexed by Global instance id. */
   readonly instances: readonly SdfMeshInstance[];
@@ -81,7 +68,7 @@ export interface ProbeGlobalRegion {
  * Spare Global SDF rows and field words behind an editable region. Freed rows are
  * reused; field words only grow. Exhausting either means the caller rebuilds.
  */
-export interface ProbeGlobalHeadroom {
+interface ProbeGlobalHeadroom {
   readonly rows: IndexAllocator;
   /** Field word high-water mark and its fixed capacity. */
   fieldWords: number;
@@ -92,7 +79,7 @@ export interface ProbeGlobalHeadroom {
   /** Live instance count written to settings.w (the composition loop bound). */
   instanceCount: number;
 }
-export interface ProbeGlobalBuffers {
+interface ProbeGlobalBuffers {
   readonly rays: Buffer;
   readonly hits: Buffer;
   readonly emission: Buffer;
@@ -100,7 +87,7 @@ export interface ProbeGlobalBuffers {
   readonly raySettings: Buffer;
   readonly querySettings: Buffer;
 }
-export interface PreparedProbeCards {
+interface PreparedProbeCards {
   readonly region: ProbeCardCapture;
   /** This frame's Card capture slice; absent once every tile is captured. */
   readonly captureSlice: CardCaptureSlice | undefined;
@@ -126,63 +113,12 @@ export interface PreparedProbeGlobal extends ProbeGlobalBuffers {
   readonly support: ProbeGlobalRegion['support'];
 }
 
-/** Cheap producer identity key, including unavailable material projections so
- * repaired admission can retry without any new mutation clock or geometry scan. */
-export function probeGlobalSourceReferences(
-  source: ProbeGlobalSource,
-  runtime: RenderSystemInternals,
-): readonly unknown[] {
+/** The retained scene already folds consumed asset changes into its fixed revision. */
+export function probeGlobalSourceReferences(source: ProbeGlobalSource): readonly unknown[] {
   const retained = source.scene.retained;
   if (retained === undefined)
     throw new Error('Global probe queries require retained source identity');
-  const refs: unknown[] = [
-    retained.identity,
-    retained.revision,
-    runtime.assets.catalogEpoch,
-    ...retained.worlds,
-  ];
-  for (const slot of retained.slots) {
-    if (slot.snapshot.authorVisible === false) continue;
-    const scope = source.worlds[slot.worldId];
-    if (scope === undefined) {
-      refs.push(undefined);
-      continue;
-    }
-    const mesh = resolveAssetHandle<MeshAsset>(scope, toShared(slot.snapshot.assetHandle));
-    refs.push(mesh.ok ? mesh.value : undefined, mesh.ok ? mesh.value.distanceField : undefined);
-    for (const material of slot.snapshot.materials) {
-      if (material === undefined) continue;
-      refs.push(material.materialHandle);
-      if (runtime.standardProfile?.probePlacement?.global?.cards !== undefined) {
-        const card = material.materialSurfacePrograms?.['card-capture'];
-        const artifact =
-          card === undefined
-            ? undefined
-            : runtime.shaderRegistry?.findMaterialArtifact(card.programKey);
-        refs.push(card?.programKey, artifact?.ok ? artifact.value : undefined);
-        for (const handles of [material.textureHandles, material.samplerHandles]) {
-          for (const handle of handles?.values() ?? []) {
-            const payload = resolveAssetHandle<TextureAsset | SamplerAsset>(scope, handle);
-            refs.push(handle, payload.ok ? payload.value : undefined);
-          }
-        }
-      }
-      if (material.materialHandle === undefined) continue;
-      const handle = toShared<'MaterialAsset'>(material.materialHandle);
-      const raw =
-        'resolveAsset' in scope
-          ? resolveAssetHandle<MaterialAsset>(scope, handle)
-          : scope.sharedRefs.resolve<'MaterialAsset', MaterialAsset>(handle);
-      const payload = raw.ok ? raw : resolveAssetHandle<MaterialAsset>(scope, handle);
-      const effective = resolveAssetHandle<MaterialAsset>(scope, handle);
-      refs.push(
-        payload.ok ? payload.value : undefined,
-        effective.ok ? effective.value : undefined,
-        payload.ok ? runtime.assets.getMaterialProjectionForPayload(payload.value) : undefined,
-      );
-    }
-  }
-  return refs;
+  return [retained.identity, retained.revision];
 }
 
 /** Relevant immutable source comparison. Time/camera packet revisions do not
@@ -190,7 +126,6 @@ export function probeGlobalSourceReferences(
 export function probeGlobalRegionCurrent(
   region: ProbeGlobalRegion,
   source: ProbeGlobalSource,
-  runtime: RenderSystemInternals,
 ): boolean {
   const retained = source.scene.retained;
   return (
@@ -198,10 +133,8 @@ export function probeGlobalRegionCurrent(
     retained.identity === region.retained.identity &&
     retained.revision === region.retained.revision &&
     retained.isCurrent() &&
-    runtime.assets.catalogEpoch === region.catalogEpoch &&
     source.worlds.length === retained.worlds.length &&
     source.worlds.every((world, i) => world === retained.worlds[i]) &&
-    sceneFieldSourcesCurrent(region.sources, runtime.assets) &&
     (region.cards === undefined || region.cards.current())
   );
 }
@@ -210,8 +143,8 @@ export function probeGlobalRegionCurrent(
  * the reusable region key and therefore cannot starve async preparation. */
 export function probeGlobalAttemptCurrent(source: ProbeGlobalSource): () => boolean {
   const versions = source.worlds.map((world, index) => {
-    if ('resolveAsset' in world) {
-      if (!Number.isSafeInteger(world.revision) || world.revision < 1)
+    if (world.world === undefined) {
+      if (!Number.isSafeInteger(world.revision) || (world.revision ?? 0) < 1)
         throw new Error('probe Global source has no accepted receiver revision');
       const revision = world.revision;
       return () => world.revision === revision;
@@ -255,7 +188,7 @@ export async function prepareProbeGlobalRegion(
   const retained = source.scene.retained;
   if (
     retained === undefined ||
-    !retained.isCurrent() ||
+    !retained.isSourceCurrent() ||
     source.worlds.length !== retained.worlds.length ||
     source.worlds.some((world, i) => world !== retained.worlds[i])
   )
@@ -265,7 +198,10 @@ export async function prepareProbeGlobalRegion(
     source.worlds,
     profile,
     runtime.assets,
+    retained,
   ).unwrap();
+  if (!retained.isSourceCurrent())
+    throw new Error('probe Global source changed during synchronous resource admission');
   const packed = packGlobalSdfComposition(projected.instances, profile.grid).unwrap();
   // Validate query-specific spacing/dimensions before allocating the region.
   packGlobalSdfQuerySettings(packed.grid, profile).unwrap();
@@ -273,7 +209,6 @@ export async function prepareProbeGlobalRegion(
   if (compile === undefined)
     throw new Error('probe Global preparation requires the Renderer shader module adapter');
   const device = runtime.device;
-  const catalogEpoch = runtime.assets.catalogEpoch;
   const owned: Buffer[] = [];
   let cards: ProbeCardCapture | undefined;
   const lifetime = new ResidencyLifetime(() => {
@@ -359,7 +294,6 @@ export async function prepareProbeGlobalRegion(
     ]);
     return {
       retained,
-      catalogEpoch,
       ...(cards === undefined ? {} : { cards }),
       sources: projected.sources,
       instances: projected.instances,

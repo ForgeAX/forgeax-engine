@@ -1,23 +1,17 @@
-export const ASSET_REFERENCE_QUERY = 'view.asset-references.get';
-export const ASSET_REFERENCE_SOURCE = 'view-asset-references';
+import type { EngineWorkspaceAssetReference } from '@forgeax/engine/app';
 export const PRIMARY_ASSET_REFERENCE_FIELDS = Object.freeze(['MeshFilter.assetHandle', 'SceneInstance.source', 'AudioSource.clip', 'ParticleEffectPlayer.effect', 'Terrain.asset']);
 
 export type AssetReferenceScope = {
   projectId: string; targetId: string; targetGeneration?: number; worldId: string; browserGeneration: number;
 };
-export type AssetReference = {
-  key: string; component: string; field: string; index?: number; slotName?: string;
-  origin: 'component' | 'mesh-default' | 'engine-default';
-  status: 'resolved' | 'unbound' | 'builtin' | 'unregistered' | 'stale' | 'missing';
-  guid?: string; kind?: string; handle?: number; primary?: boolean;
-};
+export type AssetReference = EngineWorkspaceAssetReference & { primary?: boolean };
 export type EntityAssetReferences = AssetReferenceScope & {
   entityId: string; references: readonly AssetReference[]; primaryKey?: string;
   truncated?: boolean;
 };
 export type AssetReferenceServiceState = {
-  phase: 'idle' | 'installing' | 'ready' | 'unavailable' | 'failed';
-  scope?: AssetReferenceScope; error?: string; packageId?: string; pluginUid?: number;
+  phase: 'idle' | 'ready' | 'unavailable' | 'failed';
+  scope?: AssetReferenceScope; error?: string;
 };
 export type AssetReferenceService = {
   getState(): AssetReferenceServiceState;
@@ -53,8 +47,8 @@ export function explicitEntityAssetReferences(inspection: WorkspaceEntityInspect
     const values = component.values && typeof component.values === 'object' && !Array.isArray(component.values)
       ? component.values as Record<string, unknown> : {};
     return Object.entries(component.fields ?? {}).flatMap(([field, schema]) => {
-      const array = /^array<shared<[^>]+>>$/.test(schema.type);
-      if (!array && !/^shared<[^>]+>$/.test(schema.type) && !/assetref/i.test(schema.type)) return [];
+      const array = /^array<asset<[^>]+>>$/.test(schema.type);
+      if (!array && !/^asset<[^>]+>$/.test(schema.type) && !/assetref/i.test(schema.type)) return [];
       const raw = values[field];
       const entries = array && Array.isArray(raw) ? raw : [raw];
       return entries.flatMap((value, index) => {

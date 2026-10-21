@@ -1,7 +1,7 @@
-import { World } from '@forgeax/engine-ecs';
 import { createRenderReadLease } from '@forgeax/engine-ecs/projection';
-import type { TerrainAsset } from '@forgeax/engine-types';
 import { expect, it } from 'vitest';
+import { MeshChanges, ShadowMeshReads } from '../../device/mesh-changes';
+import { worldRenderResources } from '../../publication/resource-scope';
 import { prepareDirectionalShadowCache } from '../../record/directional-shadow-cache';
 import type { DirectionalShadowCache, RenderFrameState } from '../../record/frame-snapshot';
 import type { RenderSystemInternals } from '../../record/render-context';
@@ -11,39 +11,23 @@ import type {
   ExtractedLights,
   RenderableSnapshot,
 } from '../../render-system-extract';
+import type { FrameList } from '../../scene/frame-list';
+import { MaterialFrame } from '../../scene/material-dispatch';
+import { MeshFrame } from '../../scene/mesh-frame';
 import type { PersistentShadowCasterProjection } from '../../scene/render-scene';
 import { projectTerrainView } from '../../terrain/view';
+import { runtimeTerrainFixture, terrainViewPreparation } from './runtime-fixture';
 
 it('invalidates real cache decisions for only fractional or neighbor geometry while old World/caster/light proofs remain true', () => {
-  const world = new World(),
-    lease = createRenderReadLease(world);
-  const root = {
-    kind: 'terrain',
-    materialEncoding: { kind: 'weights' },
+  const fixture = runtimeTerrainFixture({
     columns: 8,
     rows: 8,
     subsectionVertices: 8,
     spacing: 1,
-    heightRange: [0, 1],
-    sections: [{ x: 0, z: 0, minHeight: 0, maxHeight: 0 }],
-  } as unknown as TerrainAsset;
-  const source = {
-    worldId: 0,
-    entityKey: 42,
-    transform: { world: new Float32Array([1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1]) },
-    materials: [{ materialHandle: 1 }],
-    terrain: {
-      asset: root,
-      handle: 3,
-      grids: [10, 11, 12],
-      heightTextures: [4],
-      weightTextures: [5],
-      passes: [[]],
-      forcedLod: -1,
-      lod0Diameter: 1,
-      layer: 0,
-    },
-  } as unknown as RenderableSnapshot;
+    heights: new Float32Array(64),
+  });
+  const { world, source } = fixture,
+    lease = createRenderReadLease(world);
   const project = (lod: number) => {
     const distance = (7 * 2 ** lod) / Math.tan(Math.PI / 6);
     const camera = {
@@ -55,14 +39,30 @@ it('invalidates real cache decisions for only fractional or neighbor geometry wh
     return projectTerrainView(
       { renderables: [source], dispatch: [], cameras: [camera] } as unknown as ExtractedFrame,
       new Map(),
-    ).renderables;
+      source.materials.reduce(
+        (frame, material) => frame.with(material),
+        new MaterialFrame(undefined),
+      ),
+      [world].map(worldRenderResources),
+      ...terrainViewPreparation(fixture.assets),
+    ).frame.renderables;
   };
   const owner = {},
     a = project(0.25),
     b = project(0.75);
-  const casters = (sections: readonly RenderableSnapshot[]) =>
+  const casters = (sections: FrameList<RenderableSnapshot>) =>
     ({
-      content: { owner, sceneRevision: 1, dispatchRevision: 1, terrainSections: sections },
+      meshDraws: { meshDrawSlot: () => 0, beginMeshDrawFrame: () => {} },
+      prepareDrawDispatch: () => [],
+      content: {
+        meshes: new MeshFrame(),
+        subsurface: { source: 0, authorVisible: 0, admitted: 0 },
+        owner,
+        sceneRevision: 1,
+        dispatchRevision: 1,
+        viewDraws: sections,
+        materials: new MaterialFrame(undefined),
+      },
       renderables: sections,
       dispatch: [],
       worldBoundsOf: () => undefined,
@@ -81,16 +81,18 @@ it('invalidates real cache decisions for only fractional or neighbor geometry wh
     lightViewProj: [new Float32Array(16)],
     directionalShadowQuality: { kind: 'pcf', kernel: 3 },
   } as unknown as ExtractedLights;
-  const shadowMesh = { contentEpoch: 1 };
-  const decide = (sections: readonly RenderableSnapshot[]) =>
+  const changes = new MeshChanges();
+  const reads = new ShadowMeshReads(changes);
+  reads.add(changes.create());
+  const decide = (sections: FrameList<RenderableSnapshot>) =>
     prepareDirectionalShadowCache(
       internals,
       state,
-      [world],
+      [world].map(worldRenderResources),
       [lease],
       lights,
       1024,
-      [{ mesh: shadowMesh }] as never,
+      { reads, epoch: changes.epoch, change: 'quiet' },
       casters(sections),
     );
   const version = lease.captureVersion();
@@ -101,8 +103,8 @@ it('invalidates real cache decisions for only fractional or neighbor geometry wh
     const accepted = state.directionalShadowCache;
     expect(decide(a).miss).toBeUndefined();
     // Same root, same integer grid, same immutable caster revisions and fixed lightVP.
-    expect(a[0]?.assetHandle).toBe(b[0]?.assetHandle);
-    expect(a[0]?.terrainSection?.lod).not.toBe(b[0]?.terrainSection?.lod);
+    expect(a.at(0)?.assetHandle).toBe(b.at(0)?.assetHandle);
+    expect(a.at(0)?.terrainSection?.lod).not.toBe(b.at(0)?.terrainSection?.lod);
     expect(lease.captureVersion()).toEqual(version);
     const changed = decide(b);
     expect(changed.miss).toBe('content-changed');
@@ -120,10 +122,10 @@ it('invalidates real cache decisions for only fractional or neighbor geometry wh
     });
     expect(decide(next).miss).toBe('content-changed');
     expect(lease.captureVersion()).toEqual(version);
-    expect(
-      (state.directionalShadowCache as DirectionalShadowCache).meshContent[0]?.contentEpoch,
-    ).toBe(1);
+    expect((state.directionalShadowCache as DirectionalShadowCache).meshEpoch).toBe(1);
   } finally {
+    reads.release();
+    changes.reset();
     lease.dispose();
   }
 });

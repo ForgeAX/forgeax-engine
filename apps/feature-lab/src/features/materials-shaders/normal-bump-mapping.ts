@@ -1,5 +1,7 @@
+import { AssetRegistry } from '@forgeax/engine/assets-runtime';
+import { createPrimitiveMesh } from '@forgeax/engine/geometry';
 import { defineFeature } from '../../lab/feature';
-import { MESH, spawnMesh, spawnStage, standard } from '../../lab/stage';
+import { spawnMesh, spawnStage, standard } from '../../lab/stage';
 import { materialToggle } from './lib/swap';
 import { heightMap, pixels, texture } from './lib/textures';
 
@@ -12,6 +14,12 @@ export default defineFeature({
   expect:
     'ON: the left cube shows strong vertical ridges from the normal map and the right cube shows round dimples from the bump map, both under grazing light. OFF: both cubes are flat and smooth.',
   setup({ world }) {
+    const primitiveAssets = world.assets;
+    if (!(primitiveAssets instanceof AssetRegistry))
+      throw new Error('Scene requires its runtime asset owner');
+
+    const stageCube = primitiveAssets.create(createPrimitiveMesh('cube').unwrap()).unwrap();
+
     spawnStage(world, { eye: [0, 1.6, 4.5], target: [0, 0.8, 0] });
     const normals = texture(
       world,
@@ -35,11 +43,11 @@ export default defineFeature({
     });
     const bumpMat = standard(world, { ...base, bumpTexture: bumps as never, bumpScale: 4 });
     const plain = standard(world, base);
-    const left = spawnMesh(world, MESH.cube, normalMat, {
+    const left = spawnMesh(world, stageCube, normalMat, {
       pos: [-1, 0.8, 0],
       scale: [1.4, 1.4, 1.4],
     });
-    const right = spawnMesh(world, MESH.cube, bumpMat, {
+    const right = spawnMesh(world, stageCube, bumpMat, {
       pos: [1, 0.8, 0],
       scale: [1.4, 1.4, 1.4],
     });

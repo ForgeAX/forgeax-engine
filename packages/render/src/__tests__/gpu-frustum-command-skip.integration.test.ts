@@ -41,7 +41,8 @@ it.each([
   );
   const initialized = await renderer.initialization;
   if (!initialized.ok) throw initialized.error;
-  const world = new World();
+  const assets = renderer.assetRegistry;
+  const world = new World({ assets });
   const attachment = renderer.attach(world);
   if (!attachment.ok) throw attachment.error;
   const attached = attachment.value;
@@ -61,15 +62,9 @@ it.each([
       },
     )
     .unwrap();
-  const material = world.allocSharedRef(
-    'MaterialAsset',
-    Materials.standard({ baseColor: [1, 1, 1, 1] }),
-  );
+  const material = assets.create(Materials.standard({ baseColor: [1, 1, 1, 1] })).unwrap();
   const entities = Array.from({ length: 9 }, (_, index) => {
-    const mesh = world.allocSharedRef(
-      'MeshAsset',
-      createBoxGeometry(1 + index / 10, 1, 1).unwrap(),
-    );
+    const mesh = assets.create(createBoxGeometry(1 + index / 10, 1, 1).unwrap()).unwrap();
     return world
       .spawn(
         { component: Transform, data: { pos: [0, 0, index === 0 ? 0 : 8] } },

@@ -1,5 +1,6 @@
 import type { World } from '@forgeax/engine-ecs';
-import { err, type Handle, type Result } from '@forgeax/engine-types';
+import type { AssetHandle } from '@forgeax/engine-types';
+import { err, type Result } from '@forgeax/engine-types';
 import {
   type DynamicGeometryCandidate,
   DynamicGeometryError,
@@ -19,6 +20,7 @@ export interface AsyncDynamicGeometryHost
     | 'isDynamicGeometryCurrent'
     | 'cancelDynamicGeometry'
     | 'retireDynamicGeometry'
+    | 'retireSupersededDynamicGeometry'
   > {
   currentGeneration(): number | undefined;
   /** Same token preserves currentness answers for the same immutable candidate
@@ -34,7 +36,7 @@ export interface AsyncDynamicGeometryHost
   ): Promise<Result<readonly DynamicGeometryCandidate[], DynamicGeometryError>>;
   prepareMeshResidency(
     world: World,
-    meshHandle: Handle<'MeshAsset', 'shared'>,
+    meshHandle: AssetHandle<'mesh'>,
     options?: { readonly signal?: AbortSignal },
   ): Promise<Result<PreparedMeshResidency, MeshResidencyError>>;
 }
@@ -103,5 +105,7 @@ export function createAsyncDynamicGeometryHost(renderer: Renderer): AsyncDynamic
     dynamicGeometryReceipt: (candidate) => renderer.dynamicGeometryReceipt(candidate),
     cancelDynamicGeometry: (candidate) => renderer.cancelDynamicGeometry(candidate),
     retireDynamicGeometry: (candidate) => renderer.retireDynamicGeometry(candidate),
+    retireSupersededDynamicGeometry: (candidate, successor) =>
+      renderer.retireSupersededDynamicGeometry(candidate, successor),
   };
 }

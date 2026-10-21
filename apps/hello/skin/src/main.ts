@@ -1,3 +1,4 @@
+import type { AssetHandle } from '@forgeax/engine-types';
 import { installGpuDrivenEvidence } from '@forgeax/apps-shared/gpu-driven-evidence';
 import { configureRuntimeAssetCatalog, createRuntimeAssetImportTransport, runtimeBinding } from '@forgeax/apps-shared/asset-runtime-config';
 import { Update } from '@forgeax/engine-ecs';
@@ -52,7 +53,7 @@ import { perspective } from '@forgeax/engine-render';
 import { EngineEnvironmentError } from '@forgeax/engine-runtime';
 import { SceneInstance } from '@forgeax/engine-render';
 
-import { ok, type AnimationClip, type Handle, type SceneAsset } from '@forgeax/engine-types';
+import { ok } from '@forgeax/engine-types';
 import * as rhiWebgpu from '@forgeax/engine-rhi-webgpu';
 import { forgeaxBundlerAdapter } from 'virtual:forgeax/bundler';
 
@@ -168,16 +169,15 @@ async function bootstrap(target: HTMLCanvasElement): Promise<void> {
     console.error('[skin] AssetGuid.parse(scene) failed');
     return;
   }
-  const sceneRes = await assets.loadByGuid<SceneAsset>(sceneGuidRes.value);
+  const sceneRes = await assets.load(sceneGuidRes.value, 'scene');
   if (!sceneRes.ok) {
-    console.error('[skin] loadByGuid(scene) failed:', sceneRes.error);
+    console.error('[skin] load(scene) failed:', sceneRes.error);
     return;
   }
-  // loadByGuid returns the payload (D-17); mint a user-tier SceneAsset column
-  // handle before instantiate.
-  const sceneHandle = world.allocSharedRef('SceneAsset', sceneRes.value);
+  // Reuse the managed scene handle for instantiation.
+  const sceneHandle = sceneRes.value;
 
-  type ClipHandle = Handle<'AnimationClip', 'shared'>;
+  type ClipHandle = AssetHandle<'animation-clip'>;
   const clipHandles: { name: string; clip: ClipHandle }[] = [];
   for (const def of CLIPS) {
     const guidRes = AssetGuid.parse(def.guid);
@@ -185,17 +185,17 @@ async function bootstrap(target: HTMLCanvasElement): Promise<void> {
       console.error('[skin] AssetGuid.parse failed for', def.name);
       return;
     }
-    const clipRes = await assets.loadByGuid<AnimationClip>(guidRes.value);
+    const clipRes = await assets.load(guidRes.value, 'animation-clip');
     if (!clipRes.ok) {
-      console.error('[skin] loadByGuid failed for', def.name, clipRes.error);
+      console.error('[skin] load failed for', def.name, clipRes.error);
       return;
     }
-    // loadByGuid returns the payload (D-17); mint a user-tier column handle.
-    const clip = world.allocSharedRef('AnimationClip', clipRes.value);
+    // AnimationPlayer consumes the loaded clip handle directly.
+    const clip = clipRes.value;
     clipHandles.push({ name: def.name, clip });
   }
 
-  const instRes = assets.instantiate<SceneAsset>(sceneHandle, world);
+  const instRes = assets.instantiate(sceneHandle, world);
   if (!instRes.ok) {
     console.error('[skin] instantiate failed:', (instRes.error as { code: string }).code);
     return;
@@ -416,7 +416,7 @@ async function bootstrap(target: HTMLCanvasElement): Promise<void> {
   // Resolve clip handles by semantic name once -- the blend driver references
   // Walk / Run / Survey by role rather than CLIPS array index so re-ordering
   // CLIPS does not silently flip behaviour.
-  const findClip = (name: string): Handle<'AnimationClip', 'shared'> => {
+  const findClip = (name: string): AssetHandle<'animation-clip'> => {
     const entry = clipHandles.find((c) => c.name === name);
     if (entry === undefined) throw new Error(`[skin] clip '${name}' missing from CLIPS`);
     return entry.clip;

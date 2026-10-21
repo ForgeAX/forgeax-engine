@@ -13,13 +13,13 @@ import type {
 import { RhiError } from '@forgeax/engine-rhi';
 import { err, ok } from '@forgeax/engine-types';
 import { RhiNullCommandEncoder } from './command-encoder';
-import { RhiNullDevice, type RhiNullDeviceOptions } from './device';
+import { NULL_LIMITS, RhiNullDevice, type RhiNullDeviceOptions } from './device';
 import { RhiNullQueue } from './queue';
 
-/** Headless descriptor support, without hardware execution or numeric limits. */
+/** Headless descriptor support, without hardware execution. */
 export class RhiNullAdapter implements RhiAdapter {
   readonly features: ReadonlySet<GPUFeatureName> = new Set(['depth32float-stencil8']);
-  readonly limits: Readonly<Record<string, number>> = {};
+  readonly limits = NULL_LIMITS;
 
   /** `options` flows into every device; `{ rayQuery: limits }` simulates a Ray Query device. */
   constructor(private readonly deviceOptions: RhiNullDeviceOptions = {}) {}

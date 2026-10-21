@@ -36,6 +36,7 @@ it('decodes regular and probe-sentinel specular environment scales without tint 
     {
       id: 'forgeax::specular-environment-scale-test',
       imports: {
+        'forgeax_pbr::pmrem': readFileSync(resolve('packages/shader/src/ibl-pmrem.wgsl'), 'utf8'),
         'forgeax_pbr::ibl_shared': readFileSync(
           resolve('packages/shader/src/ibl-shared.wgsl'),
           'utf8',

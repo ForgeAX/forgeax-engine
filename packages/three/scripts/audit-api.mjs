@@ -7,7 +7,7 @@ import ts from 'typescript';
 const root = fileURLToPath(new URL('../', import.meta.url));
 const require = createRequire(new URL('../package.json', import.meta.url));
 const upstreamRoot = resolve(dirname(require.resolve('three/src/Three.js')), '..');
-const upstreamTypes = resolve(dirname(require.resolve('@types/three/package.json')), 'index.d.ts');
+const upstreamTypes = resolve(dirname(require.resolve('@types/three/package.json')), 'src/Three.WebGPU.d.ts');
 const facadeTypes = resolve(root, 'src/index.ts');
 const config = ts.readConfigFile(resolve(root, 'tsconfig.test.json'), ts.sys.readFile);
 if (config.error) throw new Error(ts.flattenDiagnosticMessageText(config.error.messageText, '\n'));
@@ -85,13 +85,20 @@ for (const [name, source] of expected) {
   if (isClass && !checker.isTypeAssignableTo(valueType(target), valueType(source)))
     mismatches.push({ name, reason: 'incompatible-constructor-or-static-members' });
 }
-const upstream = await import('three/src/Three.js');
+const upstream = await import('three/src/Three.WebGPU.js');
 const facade = await import('../dist/index.mjs');
 const manifest = JSON.parse(await readFile(resolve(root, 'package.json'), 'utf8'));
 const addonPaths = (await readdir(resolve(upstreamRoot, 'examples/jsm'), { recursive: true }))
   .filter(path => path.endsWith('.js')).map(path => `./addons/${path.replaceAll('\\', '/')}`).sort();
 const report = {
   revision: upstream.REVISION,
+  scope: {
+    renderer: 'Three r184 WebGPURenderer / WebGPU',
+    excludedWebGL: Object.keys(upstream).filter(name => /^(WebGL|GLSLNodeBuilder)/.test(name)),
+    deferredAddons: true,
+    removedUpstreamRendererMembers: ['waitForGPU'],
+    note: 'Keep the raw inventory complete. Excluded WebGL, deferred addons and removed upstream APIs do not establish native rendering work.',
+  },
   runtimeExports: { expected: Object.keys(upstream).length, missing: Object.keys(upstream).filter(name => !(name in facade)) },
   declarationExports: { expected: expected.size, mismatches },
   addonModules: { expected: addonPaths.length, missing: addonPaths.filter(path => manifest.exports[path] === undefined) },

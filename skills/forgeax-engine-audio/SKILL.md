@@ -27,9 +27,9 @@ const created = await createApp(canvas, { plugins: [webAudioPlugin(), audioPlugi
 if (!created.ok) throw created.error;
 const app = created.value;
 
-const loaded = await app.renderer.assets.loadByGuid<AudioClipAsset>(clipGuid);
+const loaded = await app.renderer.assets.load(clipGuid, 'audio');
 if (!loaded.ok) throw loaded.error;
-const clip = app.world.allocSharedRef('AudioClipAsset', loaded.value);
+const clip = loaded.value;
 
 app.world.spawn({
   component: AudioSource,
@@ -55,7 +55,7 @@ Attach `Transform` to spatial `AudioSource` entities and `AudioListener` to the 
 | Owner | Data | Rule |
 |:--|:--|:--|
 | ECS World | `AudioSource`, `AudioListener`, playing edges, source and listener pose | Realm-neutral gameplay authority |
-| Engine Worker | `createAudioIntentBackend()` and a per-frame intent batch | No Web Audio objects; first play carries bounded bytes or a stream index, later plays reuse `sourceKey` |
+| Engine Worker | `createAudioIntentBackend()` and a per-frame intent batch | No Web Audio objects; first play carries bounded bytes or a stream index, later plays reuse the owner/handle/revision publication |
 | Host | `createHostAudioConsumer()` and `WebAudioEngine` | Owns decode cache, `AudioBuffer`, nodes, buses, gesture resume, and `AudioContext` |
 | Kernel Worker | Nothing | Audio is never a Shared Kernel concern |
 
@@ -77,7 +77,7 @@ Attach `Transform` to spatial `AudioSource` entities and `AudioListener` to the 
 
 ## Clip and async safety
 
-`AudioClipAsset` is POD: buffered encoded bytes or a Cook-validated PCM16 stream index and HTTP locator. The Host caches the decode Promise by `sourceKey`. Only pending plays retain per-entity options. Late decode completion checks the current pending play and source publication before creating a source; stop, replacement and disposal invalidate that identity. Volume changes during decode update those pending options.
+`AudioClipAsset` is POD: buffered bytes or a validated PCM16 stream descriptor. Playback takes the asset owner and handle; the owner supplies its revision. The Host caches by owner/handle/revision, keeping `sourceKey` as provenance. Each play and music preparation uses fixed content; edits affect subsequent plays without invalidating existing voices. Stop, entity replacement and disposal fence pending decode. Preserve Host publication rejection feedback when implementing a custom transport so replay can republish rejected bytes.
 
 Set Host cache budgets with `createHostAudioConsumer(engine, options)` when the defaults do not fit the project; units and rejection behavior are defined in `packages/audio-webaudio/README.md`. Bus settings apply even before the first context is created.
 

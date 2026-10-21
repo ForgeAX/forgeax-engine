@@ -6,7 +6,7 @@ import { drawReadyFrame } from '../../../../../scripts/test/ready-render-frame.m
 // Pixel-level replica of the LO 4.2 stencil outline path: metal.png floor +
 // two marble.jpg cubes + scale-1.1 outline cubes with pure-color unlit
 // outline-solid shader. Textures are decoded from the filesystem via
-// `decodeImageFromFile` and registered with `registerWithGuid`.
+// `decodeImageFromFile` and created with `assets.create`.
 //
 // The outline-solid WGSL is composed at smoke-time from the source .wgsl
 // file + the engine common.wgsl import via `@forgeax/engine-naga`.
@@ -42,6 +42,10 @@ import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { existsSync, readFileSync } from 'node:fs';
 import { emitSmokeReceipt } from '../../../../shared/scripts/smoke-receipt.mjs';
+import { AssetRegistry } from '@forgeax/engine-assets-runtime';
+
+import { createPrimitiveMesh } from '@forgeax/engine-geometry';
+
 
 const SMOKE_MIN_FRAMES = Number.parseInt(process.env.SMOKE_MIN_FRAMES ?? '60', 10);
 const SMOKE_PIXEL_THRESHOLD = Number.parseFloat(process.env.SMOKE_PIXEL_THRESHOLD ?? '0.05');
@@ -232,10 +236,7 @@ const { decodeImageFromFile } = await import('@forgeax/engine-image/decode-image
 const { constructRuntimeRendererHost } = await import('@forgeax/engine-runtime/internal/renderer-host');
 const { Camera, DirectionalLight, MeshFilter, MeshRenderer, perspective } = await import('@forgeax/engine-render');
 const { Transform } = await import('@forgeax/engine-scene');
-const {
-  HANDLE_CUBE,
-  HANDLE_QUAD,
-} = await import('@forgeax/engine-assets-runtime');
+
 const { unwrapHandle } = await import('@forgeax/engine-types');
 const { AssetGuid } = await import('@forgeax/engine-pack/guid');
 
@@ -307,8 +308,15 @@ if (!metalGuidRes.ok || !marbleGuidRes.ok) {
   process.exit(1);
 }
 
-// World must exist before allocSharedRef mints any column handle.
-const world = new World();
+// Bind the World to the asset registry used by this scene.
+const world = new World({ assets: assets });
+const sceneAssets = world.assets;
+if (!(sceneAssets instanceof AssetRegistry)) throw new Error('Scene requires its runtime asset owner');
+
+const primitiveQuad = sceneAssets.create(createPrimitiveMesh('quad').unwrap()).unwrap();
+
+const primitiveCube = sceneAssets.create(createPrimitiveMesh('cube').unwrap()).unwrap();
+
 const worldAttachment1 = renderer.attach(world);
 if (!worldAttachment1.ok) throw worldAttachment1.error;
 const lease = worldAttachment1.value;
@@ -335,13 +343,13 @@ const marbleTexAsset = {
   colorSpace: marbleDecoded.colorSpace,
   mips: marbleDecoded.mipmap ? { kind: 'generate' } : { kind: 'none' },
 };
-const metalHandle = unwrapHandle(world.allocSharedRef('TextureAsset', metalTexAsset));
-const marbleHandle = unwrapHandle(world.allocSharedRef('TextureAsset', marbleTexAsset));
+const metalHandle = unwrapHandle(world.assets.create(metalTexAsset).unwrap());
+const marbleHandle = unwrapHandle(world.assets.create(marbleTexAsset).unwrap());
 console.log(`[learn-render-2-stencil-testing] registered metal handle id=${metalHandle}`);
 
 // Register materials with pass-based MaterialAsset shape.
 // ── Floor material: PBR with stencilWriteMask=0x00 ────────────────
-const floorMatHandle = world.allocSharedRef('MaterialAsset', {
+const floorMatHandle = world.assets.create({
   kind: 'material',
   passes: [
     {
@@ -359,10 +367,10 @@ const floorMatHandle = world.allocSharedRef('MaterialAsset', {
     roughness: 0.9,
     baseColorTexture: metalHandle,
   },
-});
+}).unwrap();
 
 // ── Cube material: PBR with stencil write (ref=1, mask=0xFF) ─────
-const cubeMatHandle = world.allocSharedRef('MaterialAsset', {
+const cubeMatHandle = world.assets.create({
   kind: 'material',
   passes: [
     {
@@ -382,11 +390,11 @@ const cubeMatHandle = world.allocSharedRef('MaterialAsset', {
     roughness: 0.5,
     baseColorTexture: marbleHandle,
   },
-});
+}).unwrap();
 
 // ── Outline material: unlit solid color, stencil test only ───────
 const OUTLINE_COLOR = [0.04, 0.28, 0.26, 1.0];
-const outlineMatHandle = world.allocSharedRef('MaterialAsset', {
+const outlineMatHandle = world.assets.create({
   kind: 'material',
   passes: [
     {
@@ -408,7 +416,7 @@ const outlineMatHandle = world.allocSharedRef('MaterialAsset', {
   values: {
     baseColor: OUTLINE_COLOR,
   },
-});
+}).unwrap();
 
 // Floor: HANDLE_QUAD is 1x1 in XY, rotated -90 deg around X to lie flat.
 const SIN_NEG_90 = Math.sin(-Math.PI / 4);
@@ -420,7 +428,7 @@ world
       data: {
         pos: [0, -0.5, 0], quat: [0, 0, 0, 1], scale: [5, 5, 5],quat: [SIN_NEG_90, 0, 0, COS_NEG_90],},
     },
-    { component: MeshFilter, data: { assetHandle: HANDLE_QUAD } },
+    { component: MeshFilter, data: { assetHandle: primitiveQuad } },
     { component: MeshRenderer, data: { materials: [floorMatHandle] } },
   )
   .unwrap();
@@ -433,7 +441,7 @@ world
       data: {
         pos: [-1, 0, -1], quat: [0, 0, 0, 1], scale: [1, 1, 1],},
     },
-    { component: MeshFilter, data: { assetHandle: HANDLE_CUBE } },
+    { component: MeshFilter, data: { assetHandle: primitiveCube } },
     { component: MeshRenderer, data: { materials: [cubeMatHandle] } },
   )
   .unwrap();
@@ -446,7 +454,7 @@ world
       data: {
         pos: [2, 0, 0], quat: [0, 0, 0, 1], scale: [1, 1, 1],},
     },
-    { component: MeshFilter, data: { assetHandle: HANDLE_CUBE } },
+    { component: MeshFilter, data: { assetHandle: primitiveCube } },
     { component: MeshRenderer, data: { materials: [cubeMatHandle] } },
   )
   .unwrap();
@@ -460,7 +468,7 @@ world
       data: {
         pos: [-1, 0, -1], quat: [0, 0, 0, 1], scale: [OUTLINE_SCALE, OUTLINE_SCALE, OUTLINE_SCALE],},
     },
-    { component: MeshFilter, data: { assetHandle: HANDLE_CUBE } },
+    { component: MeshFilter, data: { assetHandle: primitiveCube } },
     { component: MeshRenderer, data: { materials: [outlineMatHandle] } },
   )
   .unwrap();
@@ -473,7 +481,7 @@ world
       data: {
         pos: [2, 0, 0], quat: [0, 0, 0, 1], scale: [OUTLINE_SCALE, OUTLINE_SCALE, OUTLINE_SCALE],},
     },
-    { component: MeshFilter, data: { assetHandle: HANDLE_CUBE } },
+    { component: MeshFilter, data: { assetHandle: primitiveCube } },
     { component: MeshRenderer, data: { materials: [outlineMatHandle] } },
   )
   .unwrap();

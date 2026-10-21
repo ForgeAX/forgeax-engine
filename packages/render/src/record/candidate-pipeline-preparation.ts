@@ -3,9 +3,15 @@ import { err, type MeshAsset, ok, type Result } from '@forgeax/engine-types';
 import type { MeshGpuHandles } from '../device/gpu-residency';
 import { DynamicGeometryError } from '../dynamic-geometry';
 import { buildGpuDrivenDraws } from '../extract/gpu-driven';
-import { collectGpuDrivenMaterialArtifacts } from '../gpu-driven/material-artifacts';
+import { eligibleGpuDrivenDraws } from '../gpu-driven/batch-topology';
+import {
+  collectGpuDrivenMaterialArtifacts,
+  GpuDrivenMaterialProgramProjection,
+} from '../gpu-driven/material-artifacts';
+import { MaterialResource } from '../material-resource';
 import type { MeshPipelinePreparation } from '../publication/contract';
 import type { RenderableSnapshot } from '../render-system-extract';
+import { MaterialFrame } from '../scene/material-dispatch';
 import type { InstalledFrameGraph, ValidatedRenderable } from './frame-snapshot';
 import type { _InternalRenderPipelineContext } from './render-context';
 import { prepareShadowMaterialPipelines } from './shadow-pass';
@@ -32,6 +38,7 @@ type Request = {
     readonly reflectionFallback: boolean;
     readonly shadowViews: boolean;
     readonly entry: ValidatedRenderable;
+    readonly materials: MaterialFrame;
     readonly artifacts: ReturnType<typeof collectGpuDrivenMaterialArtifacts>;
   };
   finish(result: Prepared): void;
@@ -112,8 +119,35 @@ export class CandidatePipelinePreparationOwner {
           projection.shadowViews !== shadowViews
         ) {
           const { preparation } = input;
+          const resources = new Map<number, MaterialResource>();
+          let materials = new MaterialFrame(undefined);
+          for (const row of preparation.materials) {
+            const resource = new MaterialResource(row.value);
+            resources.set(row.id, resource);
+            materials = materials.with(resource);
+          }
+          const resourceFor = (id: number): MaterialResource => {
+            const resource = resources.get(id);
+            if (resource === undefined) throw new Error(`candidate material ${id} is absent`);
+            return resource;
+          };
+          const {
+            material,
+            materials: materialIds,
+            materialOverrides,
+            ...snapshot
+          } = preparation.template.snapshot;
           const base: RenderableSnapshot = {
-            ...preparation.template.snapshot,
+            ...snapshot,
+            material: resourceFor(material),
+            materials: materialIds.map(resourceFor),
+            ...(materialOverrides === undefined
+              ? {}
+              : {
+                  materialOverrides: materialOverrides.map((id) =>
+                    id === 0 ? undefined : resourceFor(id),
+                  ),
+                }),
             entityKey: preparation.entity,
             worldId,
             transform: preparation.transform,
@@ -124,9 +158,9 @@ export class CandidatePipelinePreparationOwner {
             ...base,
             gpuDrivenDraws: buildGpuDrivenDraws({
               mesh: input.asset,
-              materials: base.materials,
-              fallbackMaterial: base.material,
-              baseSnapshot: base,
+              materials: base.materials.map((resource) => resource.snapshot),
+              fallbackMaterial: base.material.snapshot,
+              deformation: base.skin === undefined ? 'rigid' : 'skin',
               ...(context.runtime.getMaterialShaderArtifact === undefined
                 ? {}
                 : { getMaterialShaderArtifact: context.runtime.getMaterialShaderArtifact }),
@@ -136,7 +170,8 @@ export class CandidatePipelinePreparationOwner {
             source,
             mesh: input.mesh,
             renderableIndex: 0,
-            renderState: source.material.renderState,
+            meshSlot: 0,
+            renderState: source.material.snapshot.renderState,
             stencilReference: undefined,
           };
           const dispatch = preparation.template.dispatch.map((pass) => ({
@@ -145,8 +180,9 @@ export class CandidatePipelinePreparationOwner {
             renderableIndex: 0,
           }));
           const artifacts = collectGpuDrivenMaterialArtifacts({
-            rows: [entry],
-            dispatch,
+            batches: eligibleGpuDrivenDraws(source),
+            programs: new GpuDrivenMaterialProgramProjection().project(dispatch, materials),
+            probeBlend: source.probeBlendRecord !== undefined,
             resolve: context.runtime.getMaterialShaderArtifact,
             clustered,
             reflectionFallback,
@@ -159,15 +195,17 @@ export class CandidatePipelinePreparationOwner {
             reflectionFallback,
             shadowViews,
             entry,
+            materials,
             artifacts,
           };
         }
-        const { entry, artifacts } = projection;
+        const { entry, artifacts, materials } = projection;
         const state = { ...context.frameState, pipelinePreparationPending: false };
         delete state.pipelinePreparationPendingReason;
         const candidateContext: _InternalRenderPipelineContext = {
           ...context,
           frameState: state,
+          materialFrame: materials,
           pipelinePreparationEntries: [entry],
           gpuDrivenShadowPreparationArtifacts: artifacts.shadowMaterialArtifacts,
         };

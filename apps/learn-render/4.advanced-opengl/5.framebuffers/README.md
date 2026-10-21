@@ -95,7 +95,7 @@ The Standard topology is fixed; only the fullscreen mode payload changes. The re
 | Kernel convolution | `float offset = 1.0 / 300.0; vec2 offsets[9] = ...; float kernel[9] = ...` in fragment shader | Identical WGSL kernel literal in each `*.wgsl` file; `texelSize` via `1.0 / vec2(textureDimensions(screenTexture, 0))` |
 | Post-process shaders | Inline GLSL fragments in `framebuffers.cpp` | Six separate `*.wgsl` files, one `@fragment fs_main` per file |
 | Keyboard input | GLFW `processInput(GLFWwindow*)` checking `glfwGetKey` per key | `window.addEventListener('keydown', ...)` in dev mode, `installPipelineByKey(export)` for smoke harness |
-| Scene | Two cubes + floor (container.jpg + metal.png) | Identical scene: two `HANDLE_CUBE` + one `HANDLE_QUAD` (floor) with the same textures |
+| Scene | Two cubes + floor (container.jpg + metal.png) | Identical scene: two `createPrimitiveMesh('cube')` + one `createPrimitiveMesh('quad')` (floor) with the same textures |
 | Window + loop | `glfwCreateWindow` + `while(!glfwWindowShouldClose)` | `createApp(canvas, opts)` from `@forgeax/engine-app` |
 
 ## Differences from the LearnOpenGL original

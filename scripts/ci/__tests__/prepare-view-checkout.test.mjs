@@ -37,7 +37,10 @@ function missingViewSources(workflow) {
       const unconditional = scalar(step, 'if') === undefined;
       if (uses?.startsWith('actions/checkout@')) {
         const repository = scalar(step, 'repository');
-        if (repository === undefined || repository === 'ForgeaX-Games/forgeax-engine') {
+        if (
+          (repository === undefined || repository === 'ForgeaX-Games/forgeax-engine') &&
+          rootDirectory(scalar(step, 'path'))
+        ) {
           ready = unconditional && ['true', 'recursive'].includes(scalar(step, 'submodules'));
           pins.clear();
         } else if (repository === 'ForgeaX-Games/forgeax-view' && unconditional) {
@@ -158,6 +161,31 @@ test('source admission rejects missing, late, conditional, unauthenticated and s
       ),
     ),
     [],
+  );
+});
+
+test('a secondary Engine checkout neither retires nor supplies root View preparation', () => {
+  const controller = checkout.replace(
+    '          submodules:',
+    '          path: release-controller\n          submodules:',
+  );
+  assert.deepEqual(missingViewSources(workflow(checkout + prepare + controller + install)), []);
+  assert.deepEqual(missingViewSources(workflow(checkout + controller + install)), ['consumer']);
+  assert.deepEqual(
+    missingViewSources(
+      workflow(
+        checkout + controller.replace('submodules: false', 'submodules: recursive') + install,
+      ),
+    ),
+    ['consumer'],
+  );
+  assert.deepEqual(
+    missingViewSources(
+      workflow(
+        checkout + prepare + controller.replace('path: release-controller', 'path: .') + install,
+      ),
+    ),
+    ['consumer'],
   );
 });
 

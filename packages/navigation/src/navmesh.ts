@@ -1,6 +1,7 @@
 import { err, type NavigationMeshAsset, ok, type Result } from '@forgeax/engine-types';
 import { invalidInput, type NavigationError } from './errors';
 import { createNavigationGraph, type NavigationEdge, type NavigationGraph } from './graph';
+import { MAX_POLYGONS, validateNavigationMesh } from './validate-navmesh';
 
 export type NavigationPoint = readonly [number, number, number];
 export interface NavigationProjection {
@@ -18,7 +19,6 @@ type Bounds = readonly [number, number, number, number, number, number];
 type Branch =
   | { bounds: Bounds; polygons: number[] }
   | { bounds: Bounds; left: Branch; right: Branch };
-const MAX_POLYGONS = 131072;
 const finitePoint = (p: ArrayLike<number>) =>
   p.length === 3 && Number.isFinite(p[0]) && Number.isFinite(p[1]) && Number.isFinite(p[2]);
 const point = (v: readonly number[], i: number): NavigationPoint => [
@@ -405,38 +405,9 @@ class NavigationMesh {
 export function createNavigationMesh(
   input: NavigationMeshAsset,
 ): Result<NavigationMesh, NavigationError> {
-  if (
-    !input ||
-    input.kind !== 'navigation-mesh' ||
-    input.version !== 'recast-poly/1' ||
-    typeof input.sourceDigest !== 'string' ||
-    !input.sourceDigest ||
-    !Array.isArray(input.vertices) ||
-    input.vertices.length < 9 ||
-    input.vertices.length % 3 !== 0 ||
-    input.vertices.length > 786432 ||
-    !input.vertices.every(Number.isFinite) ||
-    !Array.isArray(input.polygons) ||
-    !input.polygons.every((p) => Array.isArray(p)) ||
-    input.polygons.length < 1 ||
-    input.polygons.length > MAX_POLYGONS
-  )
-    return err(invalidInput('navigation-mesh', input, 'Versioned bounded polygon data'));
+  const valid = validateNavigationMesh(input);
+  if (!valid.ok) return valid;
   const s = input.settings;
-  if (
-    !s ||
-    ![s.radius, s.height, s.maxSlopeDeg, s.maxStep, s.cellSize, s.cellHeight].every(
-      Number.isFinite,
-    ) ||
-    s.radius < 0 ||
-    s.height <= 0 ||
-    s.maxSlopeDeg < 0 ||
-    s.maxSlopeDeg >= 90 ||
-    s.maxStep < 0 ||
-    s.cellSize <= 0 ||
-    s.cellHeight <= 0
-  )
-    return err(invalidInput('settings', s, 'Finite ground-agent bake settings'));
   const asset: NavigationMeshAsset = {
     ...input,
     settings: { ...s },
@@ -447,29 +418,14 @@ export function createNavigationMesh(
     boxes: Bounds[] = [],
     edges: NavigationEdge[] = [],
     portals = new Map<string, readonly [NavigationPoint, NavigationPoint]>();
-  const shared = new Map<string, { polygon: number; paired: boolean }>();
+  const shared = new Map<string, { polygon: number }>();
   for (let id = 0; id < asset.polygons.length; id++) {
     const p = asset.polygons[id] as readonly number[];
-    if (
-      p.length < 3 ||
-      p.length > 6 ||
-      new Set(p).size !== p.length ||
-      p.some((n) => !Number.isInteger(n) || n < 0 || n >= asset.vertices.length / 3)
-    )
-      return err(invalidInput('polygon', p, '3..6 distinct in-range indices'));
     const centre = [0, 0, 0],
       b = [Infinity, Infinity, Infinity, -Infinity, -Infinity, -Infinity];
-    let sign = 0;
     for (let i = 0; i < p.length; i++) {
       const a = point(asset.vertices, p[i] as number),
-        q = point(asset.vertices, p[(i + 1) % p.length] as number),
-        r = point(asset.vertices, p[(i + 2) % p.length] as number);
-      const cross = (q[0] - a[0]) * (r[2] - q[2]) - (q[2] - a[2]) * (r[0] - q[0]);
-      if (Math.abs(cross) > 1e-10) {
-        if (sign && sign * cross < 0)
-          return err(invalidInput('polygon', p, 'Convex nondegenerate XZ polygon'));
-        sign = Math.sign(cross);
-      }
+        q = point(asset.vertices, p[(i + 1) % p.length] as number);
       for (let axis = 0; axis < 3; axis++) {
         (centre[axis] as number) += (a[axis] as number) / p.length;
         b[axis] = Math.min(b[axis] as number, a[axis] as number);
@@ -480,23 +436,21 @@ export function createNavigationMesh(
         key = `${Math.min(ia, ib)}:${Math.max(ia, ib)}`,
         previous = shared.get(key);
       if (previous) {
-        if (previous.paired) return err(invalidInput('polygon', p, 'Manifold shared edges'));
-        previous.paired = true;
         edges.push({ from: previous.polygon, to: id }, { from: id, to: previous.polygon });
         portals.set(`${id}:${previous.polygon}`, [a, q]);
         portals.set(`${previous.polygon}:${id}`, [a, q]);
-      } else shared.set(key, { polygon: id, paired: false });
+      } else shared.set(key, { polygon: id });
     }
-    if (!sign) return err(invalidInput('polygon', p, 'Nonzero XZ area'));
     centres.push(...centre);
     boxes.push(b as unknown as Bounds);
   }
   const graph = createNavigationGraph({ positions: centres, edges });
   if (!graph.ok) return graph;
-  for (const [key, [a, b]] of portals) {
-    const [from, to] = key.split(':').map(Number),
-      p = point(centres, from as number),
-      q = point(centres, to as number);
+  for (const { from, to } of edges) {
+    const key = `${from}:${to}`;
+    const [a, b] = portals.get(key) as readonly [NavigationPoint, NavigationPoint];
+    const p = point(centres, from),
+      q = point(centres, to);
     const cross = (q[0] - p[0]) * (a[2] - b[2]) - (q[2] - p[2]) * (a[0] - b[0]);
     portals.set(key, cross >= 0 ? [a, b] : [b, a]);
   }

@@ -4,7 +4,7 @@
   "private": true,
   "type": "module",
   "license": "Apache-2.0",
-  "description": "learn-render LearnOpenGL section 2.6 multiple lights \u2014 combined 1 directional + 4 point + 1 spot (flashlight) scene with diffuse+specular textured cubes and first-person camera.",
+  "description": "learn-render LearnOpenGL section 2.6 multiple lights — combined 1 directional + 4 point + 1 spot (flashlight) scene with diffuse+specular textured cubes and first-person camera.",
   "scripts": {
     "dev": "vite",
     "typecheck": "tsc --noEmit",
@@ -56,7 +56,8 @@
     "@forgeax/engine-runtime": "workspace:*",
     "@forgeax/engine-types": "workspace:*",
     "@forgeax/engine-scene": "workspace:*",
-    "@forgeax/engine-render": "workspace:*"
+    "@forgeax/engine-render": "workspace:*",
+    "@forgeax/engine-geometry": "workspace:*"
   },
   "devDependencies": {
     "@forgeax/apps-shared": "workspace:*",

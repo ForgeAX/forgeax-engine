@@ -1,3 +1,4 @@
+import type { AssetHandle } from './asset-handle';
 // === Package interface (feat-20260618-asset-and-pack-name-fields M1 / w2) ======
 //
 // Decision anchors:
@@ -106,11 +107,11 @@ export interface SceneInstanceOverride {
 
 /**
  * Nested scene declaration attached to a named entity. `source` is a producer
- * GUID in the public model; pack refs indices are resolved by the decoder and
- * never leak into authored data.
+ * GUID in source data and an owned asset reference after runtime admission.
+ * Pack refs indices are resolved by the decoder before admission.
  */
 export interface SceneInstanceDeclaration {
-  readonly source: string;
+  readonly source: string | AssetHandle<'scene'>;
   readonly overrides?: readonly SceneInstanceOverride[];
 }
 

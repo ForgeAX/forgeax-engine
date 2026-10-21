@@ -2,6 +2,7 @@ import type { Buffer, RhiDevice, Texture } from '@forgeax/engine-rhi';
 import { ok, type Result } from '@forgeax/engine-types';
 import { expectTypeOf } from 'vitest';
 import type { RhiDebugError } from '../errors';
+import type { JsonValue, WorkPipeline } from '../frame-model';
 import type { ReplayExecutionContext } from '../replay/execute';
 import { passCall, requireResource } from '../replay/execute-support';
 import type { ResourceTable } from '../replay/resources';
@@ -72,3 +73,17 @@ passCall(
     return ok(undefined);
   },
 );
+
+// The availability discriminator proves the payload without additional field checks.
+declare const pipeline: WorkPipeline;
+if (pipeline.status === 'available') {
+  expectTypeOf(pipeline.pipelineHandleId).toEqualTypeOf<string>();
+  expectTypeOf(pipeline.descriptor).toEqualTypeOf<JsonValue>();
+  expectTypeOf(pipeline.kind).toEqualTypeOf<'render' | 'compute'>();
+} else {
+  expectTypeOf(pipeline.reason).toEqualTypeOf<'pipeline-not-bound' | 'descriptor-unavailable'>();
+  expectTypeOf(pipeline.shaders).toEqualTypeOf<readonly []>();
+}
+// @ts-expect-error Availability cannot omit the captured descriptor and handle.
+const incompletePipeline: WorkPipeline = { status: 'available', shaders: [] };
+void incompletePipeline;

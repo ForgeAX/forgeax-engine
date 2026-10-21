@@ -1,3 +1,4 @@
+import { decodeMaterialProgramWire } from '@forgeax/engine-pack/runtime';
 import type {
   AssetEnvelopeV2,
   AssetLoadError,
@@ -8,14 +9,15 @@ import type {
 } from '@forgeax/engine-types';
 import { err, ok } from '@forgeax/engine-types';
 import { packEnvelopeIssue } from './pack-envelope.js';
-import { jsonOf, readPackage } from './package-read.js';
+import { readPackage } from './package-read.js';
+import { readRetainedPackJson } from './retained-pack-json.js';
 import { assetLoadCancelled, waitForAsset } from './wait-for-asset.js';
 
 interface PackReaderOptions {
   readonly fetcher?: PackageFetcher;
 }
 
-type VerifiedPack = PackV2<unknown>;
+export type VerifiedPack = PackV2<unknown>;
 
 function invalid(guid: string, reason: string): Result<never, AssetLoadError> {
   return err({
@@ -102,7 +104,7 @@ export class PackReader {
     boundFetcher?: PackageFetcher,
   ): Promise<Result<VerifiedPack, AssetLoadError>> {
     const fetcher = boundFetcher ?? this.fetcher ?? globalThis.fetch.bind(globalThis);
-    const read = await readPackage(fetcher, packageUrl, jsonOf, { signal });
+    const read = await readPackage(fetcher, packageUrl, readRetainedPackJson, { signal });
     if (!read.ok) {
       if (read.error.malformed) return invalid(packageUrl, 'invalid JSON');
       if (signal.aborted) return err(assetLoadCancelled(packageUrl));
@@ -126,6 +128,9 @@ export class PackReader {
   }
 
   verify(value: unknown, expected: AssetPublicationTuple): Result<VerifiedPack, AssetLoadError> {
+    const decoded = decodeMaterialProgramWire(value);
+    if (!decoded.ok) return invalid('', 'invalid material program table');
+    value = decoded.value;
     const checked = validatePackEnvelope(value, expected);
     if (!checked.ok) return checked;
     return ok(freezePackValue(value as VerifiedPack));

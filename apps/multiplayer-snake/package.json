@@ -59,7 +59,12 @@
           "multiplayer-snake-browser-e2e",
           "multiplayer-snake-real-websocket-chaos-proxy"
         ],
-        "legs": ["semantic", "live", "behavioral", "recovery"]
+        "legs": [
+          "semantic",
+          "live",
+          "behavioral",
+          "recovery"
+        ]
       },
       "oracle": {
         "stdoutIncludes": [
@@ -73,7 +78,9 @@
       }
     },
     "rhiDebug": {
-      "riskFamilies": ["materials-textures"]
+      "riskFamilies": [
+        "materials-textures"
+      ]
     },
     "metrics": {
       "bundle-size": {
@@ -109,7 +116,8 @@
     "@forgeax/engine-runtime": "workspace:*",
     "@forgeax/engine-types": "workspace:*",
     "@forgeax/engine-scene": "workspace:*",
-    "@forgeax/engine-render": "workspace:*"
+    "@forgeax/engine-render": "workspace:*",
+    "@forgeax/engine-geometry": "workspace:*"
   },
   "devDependencies": {
     "@forgeax/engine-vite-plugin-rhi-debug": "workspace:*",

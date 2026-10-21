@@ -1,6 +1,7 @@
 import { readFile } from 'node:fs/promises';
 import { fileURLToPath } from 'node:url';
 import { finalizePackageTransportSource } from '@forgeax/engine-pack/build';
+import { createRuntimePackPublication } from '@forgeax/engine-pack/runtime';
 import { definePackageId } from '@forgeax/engine-pack/source';
 import { type MaterialAsset, ok } from '@forgeax/engine-types';
 import type { Plugin } from 'vite';
@@ -68,7 +69,7 @@ export function weaponSpiritMaterialFixture(engineShadow = false): Plugin {
             },
           },
         );
-        const pack = JSON.stringify(
+        const packSource = JSON.stringify(
           {
             schemaVersion: '2.0.0',
             kind: 'internal-text-package',
@@ -94,7 +95,18 @@ export function weaponSpiritMaterialFixture(engineShadow = false): Plugin {
           },
           (_key, value) => (value instanceof Uint8Array ? [...value] : value),
         );
-        return { pack, artifacts };
+        const published = createRuntimePackPublication({
+          scopeId: 'asset-runtime',
+          sourcePath: `${prefix}materials.pack.json`,
+          sourceRevision: 'fixture',
+          packageUrl: `${prefix}materials.pack.json`,
+          pack: JSON.parse(packSource),
+        });
+        return {
+          pack: JSON.stringify(published.pack),
+          publication: published.publication,
+          artifacts,
+        };
       };
       let publication: ReturnType<typeof build> | undefined;
       server.middlewares.use(async (request, response, next) => {
@@ -102,13 +114,16 @@ export function weaponSpiritMaterialFixture(engineShadow = false): Plugin {
         response.setHeader('content-type', 'application/json');
         try {
           if (request.url === `${prefix}pack-index.json`) {
+            publication ??= build();
+            const published = await publication;
             response.end(
               JSON.stringify(
                 [rootGuid, childGuid].map((guid) => ({
                   guid,
                   kind: 'material',
                   packageUrl: `${prefix}materials.pack.json`,
-                  sourcePath: guid,
+                  sourcePath: `${prefix}materials.pack.json`,
+                  publication: published.publication,
                 })),
               ),
             );

@@ -1,4 +1,3 @@
-import { RuntimeMaterialValue } from '@forgeax/engine-assets-runtime';
 // apps/shadertoy/happy-blob/src/index.ts
 //
 // Original raymarched SDF creature (no third-party shader code). A blobby
@@ -69,9 +68,9 @@ async function bootstrap(target: HTMLCanvasElement): Promise<void> {
 
   const constructed = await constructRuntimeRendererHost(target, {}, forgeaxBundlerAdapter());
   if (!constructed.ok) throw constructed.error;
-  const { renderer } = constructed.value;
+  const { renderer, assets } = constructed.value;
   console.warn('[happy-blob] Standard pipeline active');
-  const world = new World();
+  const world = new World({ assets });
   const worldAttachment1 = renderer.attach(world);
   if (!worldAttachment1.ok) throw worldAttachment1.error;
   const frameRequest = {
@@ -84,7 +83,7 @@ async function bootstrap(target: HTMLCanvasElement): Promise<void> {
     iResolution: [target.width, target.height],
     iTime: 0,
   };
-  const materialHandle = world.allocSharedRef<'MaterialAsset', MaterialAsset>('MaterialAsset', {
+  const materialHandle = assets.create<MaterialAsset>({
     kind: 'material',
     passes: [
       {
@@ -100,17 +99,15 @@ async function bootstrap(target: HTMLCanvasElement): Promise<void> {
       },
     ],
     values,
-  });
+  }).unwrap();
 
-  const timeValue = world.spawn({ component: RuntimeMaterialValue, data: { asset: materialHandle, parameter: 'iTime', value: [0] } }).unwrap();
-  const resolutionValue = world.spawn({ component: RuntimeMaterialValue, data: { asset: materialHandle, parameter: 'iResolution', kind: 2, value: [target.width, target.height] } }).unwrap();
 
   const planeRes = createPlaneGeometry(1, 1);
   if (!planeRes.ok) {
     console.error('[happy-blob] createPlaneGeometry failed:', planeRes.error);
     return;
   }
-  const planeMeshHandle = world.allocSharedRef('MeshAsset', planeRes.value);
+  const planeMeshHandle = assets.create(planeRes.value).unwrap();
 
   world
     .spawn(
@@ -133,14 +130,14 @@ async function bootstrap(target: HTMLCanvasElement): Promise<void> {
       const h = target.clientHeight || cssH;
       target.width = Math.max(1, Math.floor(w * renderScale));
       target.height = Math.max(1, Math.floor(h * renderScale));
-      world.set(resolutionValue, RuntimeMaterialValue, { value: [target.width, target.height] }).unwrap();
+      assets.update(materialHandle, { values: { iResolution: [target.width, target.height] } }).unwrap();
     });
   }
 
   const startTime = typeof performance !== 'undefined' ? performance.now() : Date.now();
   const frame = (): void => {
     const now = typeof performance !== 'undefined' ? performance.now() : Date.now();
-    world.set(timeValue, RuntimeMaterialValue, { value: [(now - startTime) / 1000] }).unwrap();
+    assets.update(materialHandle, { values: { iTime: (now - startTime) / 1000 } }).unwrap();
     world.update().unwrap();
     const r = renderer.draw(frameRequest);
     if (!r.ok) console.error('[happy-blob] draw error:', r.error);

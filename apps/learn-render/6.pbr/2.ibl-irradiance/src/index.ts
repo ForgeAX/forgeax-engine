@@ -1,3 +1,4 @@
+import type { AssetHandle } from '@forgeax/engine-types';
 // apps/learn-render/6.pbr/2.ibl-irradiance/src/index.ts
 // LearnOpenGL section 6.2 IBL -- diffuse irradiance sphere matrix.
 //
@@ -35,7 +36,7 @@ import { EngineEnvironmentError } from '@forgeax/engine-runtime';
 import { Materials, Skylight } from '@forgeax/engine-render';
 
 import { createSphereGeometry } from '@forgeax/engine-geometry';
-import type { EquirectAsset, Handle, MaterialAsset } from '@forgeax/engine-types';
+
 
 import { forgeaxBundlerAdapter } from 'virtual:forgeax/bundler';
 import {
@@ -46,6 +47,8 @@ import {
   exposeLearnRenderTestApp,
   trackLearnRenderTestBootstrap,
 } from '../../../../shared/src/learn-render-test-lifecycle';
+import { AssetRegistry } from '@forgeax/engine-assets-runtime';
+
 
 // 2. example-specific glue
 
@@ -68,7 +71,10 @@ const CAMERA_FAR = 100;
 async function setupIblSkylight(
   app: App,
   world: World,
-): Promise<Handle<'EquirectAsset', 'shared'> | null> {
+): Promise<AssetHandle<'equirect'> | null> {
+const sceneAssets = world.assets;
+if (!(sceneAssets instanceof AssetRegistry)) throw new Error('Scene requires its runtime asset owner');
+
   const assets = app.assets;
   if (assets === undefined) {
     console.error('[ibl-irradiance skylight] App asset owner is unavailable');
@@ -84,10 +90,10 @@ async function setupIblSkylight(
     return null;
   }
 
-  const hdrHandleRes = await assets.loadByGuid<EquirectAsset>(guidRes.value);
+  const hdrHandleRes = await assets.load(guidRes.value, 'equirect');
   if (!hdrHandleRes.ok) {
     console.error(
-      `[ibl-irradiance skylight] loadByGuid(newport_loft.hdr) failed: ${hdrHandleRes.error.code} hint=${hdrHandleRes.error.hint}`,
+      `[ibl-irradiance skylight] load(newport_loft.hdr) failed: ${hdrHandleRes.error.code} hint=${hdrHandleRes.error.hint}`,
     );
     return null;
   }
@@ -95,7 +101,7 @@ async function setupIblSkylight(
   // loadByGuid returns the EquirectAsset PAYLOAD (D-17); mint a user-tier source
   // handle. The equirect->cubemap + irradiance convolution is now INTERNAL to the
   // engine (lazy, in the render record arm) -- no manual cubemap upload call.
-  return world.allocSharedRef('EquirectAsset', hdrHandleRes.value);
+  return hdrHandleRes.value;
 }
 
 // 3. bootstrap
@@ -130,6 +136,8 @@ async function bootstrap(target: HTMLCanvasElement): Promise<void> {
     return;
   }
   const app = appRes.value;
+if (app.assets === undefined) throw new Error('This scene requires the App asset owner');
+
   exposeLearnRenderTestApp(app, target);
   const renderer = app.renderer;
   const world = app.world;
@@ -154,21 +162,18 @@ async function bootstrap(target: HTMLCanvasElement): Promise<void> {
     console.error('[learn-render 6.pbr 2.ibl-irradiance] createSphereGeometry failed:', sphereRes.error);
     return;
   }
-  const sphereAssetHandle = world.allocSharedRef('MeshAsset', sphereRes.value);
+  const sphereAssetHandle = app.assets.create(sphereRes.value).unwrap();
 
   for (let row = 0; row < GRID_ROWS; row++) {
     for (let col = 0; col < GRID_COLS; col++) {
       const roughness = 0.1 + row * 0.4;
       const metallic = col * 0.5;
 
-      const matHandle = world.allocSharedRef<'MaterialAsset', MaterialAsset>(
-        'MaterialAsset',
-        Materials.standard({
+      const matHandle = app.assets.create(Materials.standard({
           baseColor: [0.8, 0.8, 0.8, 1],
           metallic,
           roughness,
-        }),
-      );
+        })).unwrap();
 
       const cx = (col - (GRID_COLS - 1) / 2) * SPACING;
       const cy = ((GRID_ROWS - 1) / 2 - row) * SPACING;

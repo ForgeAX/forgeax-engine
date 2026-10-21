@@ -12,7 +12,7 @@
 import { defineComponent } from '@forgeax/engine-ecs';
 
 export const AudioSource = defineComponent('AudioSource', {
-  clip: { type: 'shared<AudioClipAsset>' },
+  clip: { type: 'asset<audio>' },
   playing: { type: 'bool', default: false },
   loop: { type: 'bool', default: false },
   paused: { type: 'bool', default: false },

@@ -1,5 +1,5 @@
-import { HANDLE_CUBE } from '@forgeax/engine-assets-runtime';
 import { World } from '@forgeax/engine-ecs';
+import { createPrimitiveMesh } from '@forgeax/engine-geometry';
 import {
   ANTIALIAS_NONE,
   BarrelDistortion,
@@ -21,21 +21,26 @@ import {
   pixelOffset,
   readBarrelPixels,
 } from './barrel-distortion-gpu-fixture';
+import { testAssets } from './helpers/runtime-assets';
 
 /** Saturated, pairwise-separated colours make each GPU marker independently observable. */
 
 function spawnMarkerScene(world: World) {
-  const markerMaterial = world.allocSharedRef(
-    'MaterialAsset',
-    Materials.unlit([0.95, 0.05, 0.05, 1]),
-  );
+  const markerMaterial = testAssets(world)
+    .create(Materials.unlit([0.95, 0.05, 0.05, 1]))
+    .unwrap();
   const marker = world
     .spawn(
       {
         component: Transform,
         data: { pos: [0, 0, 0], scale: [0.9, 0.9, 0.9] },
       },
-      { component: MeshFilter, data: { assetHandle: HANDLE_CUBE } },
+      {
+        component: MeshFilter,
+        data: {
+          assetHandle: testAssets(world).create(createPrimitiveMesh('cube').unwrap()).unwrap(),
+        },
+      },
       { component: MeshRenderer, data: { materials: [markerMaterial] } },
     )
     .unwrap();
@@ -126,10 +131,9 @@ function sceneUvToWorldPosition(uv: readonly [number, number]): readonly [number
 
 function spawnDisplayMatrixScene(world: World) {
   const markers = DISPLAY_MATRIX_SAMPLES.map(({ uv }, index) => {
-    const material = world.allocSharedRef(
-      'MaterialAsset',
-      Materials.unlit(DISPLAY_MARKER_COLORS[DISPLAY_MATRIX_SAMPLES[index]?.color ?? 'red']),
-    );
+    const material = testAssets(world)
+      .create(Materials.unlit(DISPLAY_MARKER_COLORS[DISPLAY_MATRIX_SAMPLES[index]?.color ?? 'red']))
+      .unwrap();
     return world
       .spawn(
         {
@@ -140,7 +144,12 @@ function spawnDisplayMatrixScene(world: World) {
             scale: [0.1, 0.1, 0.1],
           },
         },
-        { component: MeshFilter, data: { assetHandle: HANDLE_CUBE } },
+        {
+          component: MeshFilter,
+          data: {
+            assetHandle: testAssets(world).create(createPrimitiveMesh('cube').unwrap()).unwrap(),
+          },
+        },
         { component: MeshRenderer, data: { materials: [material] } },
       )
       .unwrap();

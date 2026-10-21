@@ -15,7 +15,7 @@
       "sourceIndex": 0,
       "sourceKey": "volumetric-fog/density.raw",
       "name": "volumetric-density",
-      "kind": "volumetric-density"
+      "kind": "texture"
     }
   ]
 }

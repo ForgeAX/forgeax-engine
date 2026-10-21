@@ -16,7 +16,9 @@
   "forgeax": {
     "smokeInvocation": "pnpm --filter @forgeax/app-learn-render-4-advanced-opengl-4-face-culling smoke",
     "rhiDebug": {
-      "riskFamilies": ["raster-state"]
+      "riskFamilies": [
+        "raster-state"
+      ]
     },
     "metrics": {
       "bundle-size": {
@@ -52,7 +54,8 @@
     "@forgeax/engine-runtime": "workspace:*",
     "@forgeax/engine-types": "workspace:*",
     "@forgeax/engine-scene": "workspace:*",
-    "@forgeax/engine-render": "workspace:*"
+    "@forgeax/engine-render": "workspace:*",
+    "@forgeax/engine-geometry": "workspace:*"
   },
   "devDependencies": {
     "@forgeax/apps-shared": "workspace:*",

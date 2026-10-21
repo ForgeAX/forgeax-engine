@@ -1,3 +1,4 @@
+import { AssetRegistry } from '@forgeax/engine/assets-runtime';
 import type { EntityHandle } from '@forgeax/engine/ecs';
 import { SceneInstance } from '@forgeax/engine/render';
 import { ChildOf, GlobalTransform, Name } from '@forgeax/engine/scene';
@@ -56,6 +57,10 @@ export default defineFeature({
   expect:
     'PASS when the room instantiates under a SceneInstance root with lamp parented to root and resolved to world (1,2,0), and a scene referencing an uncatalogued mesh GUID fails with asset-not-found leaving the entity count unchanged.',
   setup({ app, world, frames }) {
+    const sceneAssets = world.assets;
+    if (!(sceneAssets instanceof AssetRegistry))
+      throw new Error('Scene requires its runtime asset owner');
+
     spawnStage(world);
     return {
       async checks() {
@@ -63,7 +68,7 @@ export default defineFeature({
         const assets = app.assets;
         checks.ok('asset registry available', assets !== undefined);
         if (assets === undefined) return checks.items;
-        const instantiated = assets.instantiate(world.allocSharedRef('SceneAsset', ROOM), world);
+        const instantiated = assets.instantiate(sceneAssets.create(ROOM).unwrap(), world);
         checks.ok(
           'instantiate succeeds',
           instantiated.ok,
@@ -90,7 +95,7 @@ export default defineFeature({
         checks.equal('lamp world position', worldPos, [1, 2, 0]);
 
         const before = world.inspect().entityCount;
-        const failed = assets.instantiate(world.allocSharedRef('SceneAsset', BROKEN), world);
+        const failed = assets.instantiate(sceneAssets.create(BROKEN).unwrap(), world);
         checks.equal('missing GUID fails', failed.ok ? 'ok' : failed.error.code, 'asset-not-found');
         checks.equal('failed attempt rolls back', world.inspect().entityCount, before);
         return checks.items;

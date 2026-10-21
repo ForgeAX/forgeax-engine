@@ -16,7 +16,7 @@ import { lowerMaterialVariantContext } from './variant-context.js';
 
 const MATERIAL_COOK_PROFILE = 'webgpu/v1';
 const MATERIAL_COOK_COMPILER_VERSION = 'forgeax-material-cooker/1';
-export interface MaterialPublicationInput {
+interface MaterialPublicationInput {
   readonly guid: string;
   readonly source: MaterialAsset;
   readonly compilerFingerprint?: string;
@@ -77,7 +77,12 @@ export function materialPrograms(
           context: pass.context,
           address: variant.address,
           entry,
-          abi: pass.abi,
+          abi: {
+            ...pass.abi,
+            ...(variant.compile.reflection.entryPoints === undefined
+              ? {}
+              : { entryPoints: variant.compile.reflection.entryPoints }),
+          },
         },
       ];
       programs.set(specializationKey, {

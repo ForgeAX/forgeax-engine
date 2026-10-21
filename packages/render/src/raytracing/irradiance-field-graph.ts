@@ -25,6 +25,7 @@ import {
   resolveKernelBinding,
 } from './kernel-graph-access';
 import { addCardAtlasPasses } from './probe-card-graph';
+import { addRayDiffuseCompositePass } from './ray-graph-shared';
 import type { IrradianceFieldExtent, PreparedIrradianceField } from './renderer-irradiance-field';
 import type { PreparedWorldAcceleration } from './renderer-world-acceleration';
 
@@ -48,6 +49,7 @@ export function irradianceFieldGraphShape(prepared: PreparedIrradianceField) {
     prepared.composeRequired(),
     prepared.capture(),
     prepared.cards.capture.revision,
+    prepared.cards.textureRevision,
     prepared.cards.capture.bufferReads.length,
     prepared.cards.capture.textureReads.length,
     extent.width,
@@ -489,6 +491,7 @@ export interface FieldGatherExtent {
   readonly height: number;
   readonly gatherWidth: number;
   readonly gatherHeight: number;
+  /** Present only when this field gathers the view. */
   readonly gathered: Buffer | undefined;
   readonly upsampled: Buffer | undefined;
 }
@@ -592,39 +595,16 @@ export function addFieldGatherPasses<E extends FieldGatherExtent>({
     if (!upsampledPass.ok) return upsampledPass;
     signal = upsampled;
   }
-  const composited = graph.addRasterPass(`${label}.composite`, {
-    accesses: [
-      { resource: target.scene.view, usage: 'color-attachment' },
-      { resource: signal, usage: 'storage-read' },
-      { resource: target.depth, usage: 'sampled-read' },
-      { resource: target.normal.view, usage: 'sampled-read' },
-      { resource: target.albedo.view, usage: 'sampled-read' },
-      { resource: target.f0.view, usage: 'sampled-read' },
-      { resource: view, usage: 'uniform-read' },
-      ...(reflectionResponse === undefined
-        ? []
-        : [{ resource: reflectionResponse, usage: 'sampled-read' as const }]),
-    ],
-    colorAttachments: [{ view: target.scene.view, loadOp: 'load', storeOp: 'store' }],
-    encode: ({ pass, resources }) =>
-      current()
-        .composite.record(
-          pass,
-          {
-            irradiance: resources.buffer(signal).unwrap(),
-            ...(reflectionResponse === undefined
-              ? {}
-              : { reflectionResponse: resources.textureView(reflectionResponse).unwrap() }),
-            depth: resources.textureView(target.depth).unwrap(),
-            normal: resources.textureView(target.normal.view).unwrap(),
-            albedoMetallic: resources.textureView(target.albedo.view).unwrap(),
-            f0Occlusion: resources.textureView(target.f0.view).unwrap(),
-            view: { buffer: resources.buffer(view).unwrap(), size: VIEW_UNIFORM_BYTES },
-          },
-          pixelCount,
-        )
-        .unwrap(),
-  });
+  const composited = addRayDiffuseCompositePass(
+    graph,
+    `${label}.composite`,
+    () => current().composite,
+    target,
+    signal,
+    view,
+    pixelCount,
+    reflectionResponse,
+  );
   if (!composited.ok) return composited;
   return ok(undefined);
 }

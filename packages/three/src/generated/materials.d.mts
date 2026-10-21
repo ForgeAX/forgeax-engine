@@ -1,2 +1,2 @@
-/** Base64-encoded zstd material publication, generated before bundling. */
+/** Base64 zstd publication of the native skinned Unlit ABI. */
 export declare const materialPrograms: string;

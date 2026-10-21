@@ -1,5 +1,5 @@
-/** Five atmosphere textures extend the full physical Standard layout of 26. */
-export const ATMOSPHERE_REQUIRED_SAMPLED_TEXTURES = 31;
+/** Five atmosphere textures extend the full physical Standard layout of 27. */
+export const ATMOSPHERE_REQUIRED_SAMPLED_TEXTURES = 32;
 export function atmosphereAvailable(
   storageBuffer: boolean,
   maxSampledTextures: number | undefined,

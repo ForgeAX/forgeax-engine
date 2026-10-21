@@ -113,7 +113,7 @@ export const ResetPose = defineComponent('GameDefaultResetPose', {
 /** Asset projection for a target's authored material slots and clearcoat flag. */
 export const TargetPresentation = defineComponent(
   'GameDefaultTargetPresentation',
-  { authoredMaterials: 'array<shared<MaterialAsset>>', clearcoat: { type: 'u32', default: 0 } },
+  { authoredMaterials: 'array<asset<material>>', clearcoat: { type: 'u32', default: 0 } },
   { transient: true },
 );
 

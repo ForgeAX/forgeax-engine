@@ -49,7 +49,7 @@ describe('R0-03A producer-owned field-shape fixtures', () => {
       vector: 'array<f32, 3>',
       quaternion: 'array<f32, 4>',
       values: 'array<f32>',
-      material: 'shared<MaterialAsset>',
+      material: 'asset<material>',
     });
     expect(componentDefinition(FieldShapePrimitiveFixture).defaults).toMatchObject({
       scalar: 0,

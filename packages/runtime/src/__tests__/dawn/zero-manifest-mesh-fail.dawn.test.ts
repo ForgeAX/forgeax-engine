@@ -100,20 +100,17 @@ describe('bug-20260519 AC-03 dawn mirror: mesh + zero manifest -> render-time fa
 
     // Material parameter declarations now belong to MaterialAsset, so catalog
     // validation does not depend on a shader-manifest registration side table.
-    const matRes = assets.catalog<MaterialAsset>(
-      assets.parseGuid('00000000-0000-4000-8000-000000000a01'),
-      {
-        kind: 'material',
-        passes: [
-          {
-            name: 'Forward',
-            program: { module: 'forgeax::default-unlit' },
-            renderState: { tags: { LightMode: 'Forward' }, queue: 2000 },
-          },
-        ],
-        values: { baseColor: [1, 0, 0, 1] },
-      } as MaterialAsset,
-    );
+    const matRes = assets.create({
+      kind: 'material',
+      passes: [
+        {
+          name: 'Forward',
+          program: { module: 'forgeax::default-unlit' },
+          renderState: { tags: { LightMode: 'Forward' }, queue: 2000 },
+        },
+      ],
+      values: { baseColor: [1, 0, 0, 1] },
+    } as MaterialAsset);
     expect(matRes.ok).toBe(true);
   });
 });

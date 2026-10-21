@@ -4,7 +4,7 @@ import { createServer } from 'node:http';
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { AssetRegistry } from '@forgeax/engine-assets-runtime';
-import { packMeshBin } from '@forgeax/engine-geometry';
+import { meshAssetContribution, packMeshBin } from '@forgeax/engine-geometry';
 import {
   finalizeImportProducts,
   ImporterRegistry,
@@ -13,10 +13,17 @@ import {
   publishImportPublication,
   runImport,
 } from '@forgeax/engine-import';
-import { ShaderRegistry } from '@forgeax/engine-shader';
-import type { ImportedAsset, MeshAsset } from '@forgeax/engine-types';
+import { createRuntimePackPublication } from '@forgeax/engine-pack/runtime';
+import {
+  type AssetHandle,
+  type CatalogDelta,
+  type CatalogEntry,
+  type ImportedAsset,
+  ok,
+} from '@forgeax/engine-types';
 import { describe, expect, it } from 'vitest';
 import { DdcEntryStore } from '../../../ddc/src/entry-store';
+import { importedMesh } from '../../../import/src/__tests__/fixtures/runtime-import';
 import { meshAssetDataProducer } from '../../../import/src/scriptable-pack-output-producers';
 import { gltfImporter } from '../gltf-importer';
 
@@ -67,7 +74,10 @@ async function fixture() {
   const requests: string[] = [];
   let selectedKey: string | undefined;
   let corruptField: Uint8Array | undefined;
-  let catalog: { guid: string; kind: string; packageUrl: string; sourcePath: string }[] = [];
+  let catalog: CatalogEntry[] = [];
+  const listeners = new Set<(delta: CatalogDelta) => void>();
+  let handle: AssetHandle<'mesh'> | undefined;
+  let pending = false;
   const server = createServer(async (request, response) => {
     const path = request.url ?? '/';
     requests.push(path);
@@ -95,8 +105,38 @@ async function fixture() {
   await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
   const address = server.address();
   if (!address || typeof address === 'string') throw new Error('missing port');
-  const registry = new AssetRegistry(new ShaderRegistry({ manifestUrl: undefined }));
-  registry.configurePackIndex(`http://127.0.0.1:${address.port}/catalog.json`);
+  const baseUrl = `http://127.0.0.1:${address.port}`;
+  const registry = new AssetRegistry({
+    scopeId: 'mesh-field',
+    catalog: {
+      enumerate: async () =>
+        ok((await (await fetch(`${baseUrl}/catalog.json`)).json()) as CatalogEntry[]),
+      openPackage: () => fetch,
+      subscribe: (listener) => {
+        listeners.add(listener);
+        return () => {
+          listeners.delete(listener);
+        };
+      },
+    },
+  });
+  registry.installDecoder(meshAssetContribution.kind, meshAssetContribution.decoder);
+  const load = async () => {
+    if (handle === undefined) {
+      const result = await registry.load(GUID, 'mesh');
+      if (result.ok) {
+        handle = result.value;
+        pending = false;
+      }
+      return result;
+    }
+    if (pending) {
+      const result = await registry.reload(handle, { conflict: 'reject' });
+      if (!result.ok) return result;
+      pending = false;
+    }
+    return ok(handle);
+  };
   return {
     registry,
     requests,
@@ -106,15 +146,37 @@ async function fixture() {
         { assets: [asset], sourceDependencies: ['independent.gltf'] },
         'fixture',
       );
-      const descriptors = cooked[0]?.artifacts;
+      const descriptors =
+        cooked[0]?.artifacts === undefined
+          ? undefined
+          : Object.fromEntries(
+              Object.entries(cooked[0].artifacts).map(([key, value]) => [
+                key,
+                { ...value, contentEncoding: 'identity' as const },
+              ]),
+            );
       if (!descriptors) throw new Error('missing descriptors');
-      const body = {
+      const raw = {
         ...pack,
         assets: pack.assets.map((row) => ({ ...row, artifacts: descriptors })),
       };
+      const publication = createRuntimePackPublication({
+        scopeId: 'mesh-field',
+        sourcePath: 'independent.gltf',
+        sourceRevision: hash(JSON.stringify(raw)),
+        packageUrl: `${baseUrl}/mesh.pack.json`,
+        pack: raw,
+      });
+      const body = publication.pack;
       const serialized = JSON.stringify(body);
-      const nextCatalog = [
-        { guid: GUID, kind: 'mesh', sourcePath: 'independent.gltf', packageUrl: '/mesh.pack.json' },
+      const nextCatalog: CatalogEntry[] = [
+        {
+          guid: GUID,
+          kind: 'mesh',
+          sourcePath: 'independent.gltf',
+          packageUrl: `${baseUrl}/mesh.pack.json`,
+          publication: publication.publication,
+        },
       ];
       const started = performance.now();
       const result = await publishImportPublication({
@@ -137,27 +199,28 @@ async function fixture() {
         selectedKey = result.key;
         corruptField = undefined;
         catalog = nextCatalog;
-        registry.invalidate(GUID);
+        pending = true;
+        for (const listener of listeners)
+          listener({ added: nextCatalog, changed: [], removed: [] });
       }
       return { result, ms: performance.now() - started, descriptors };
     },
     async corrupt(bytes: Uint8Array) {
       corruptField = bytes;
-      registry.invalidate(GUID);
+      pending = true;
     },
-    async load() {
-      const result = await registry.loadByGuid<MeshAsset>(registry.parseGuid(GUID));
-      return result;
+    load,
+    async reload() {
+      pending = true;
+      return load();
     },
     async mesh() {
-      const result = await registry.loadByGuid<MeshAsset>(registry.parseGuid(GUID));
+      const result = await load();
       if (!result.ok) throw new Error(JSON.stringify(result.error));
-      const mesh = registry.lookup(GUID);
-      if (mesh?.kind !== 'mesh') throw new Error('expected loaded mesh');
-      return mesh;
+      return registry.read(result.value as AssetHandle<'mesh'>).unwrap();
     },
     async close() {
-      registry.invalidateAll();
+      registry.dispose();
       server.closeAllConnections();
       await new Promise<void>((resolve) => server.close(() => resolve()));
       await rm(root, { recursive: true, force: true });
@@ -200,7 +263,7 @@ describe('optional mesh distance field publication through actual HTTP Catalog',
       expect(warm.result.ok).toBe(true);
       const warmMesh = await f.mesh();
       const before = f.requests.length;
-      expect(await f.mesh()).toBe(warmMesh);
+      expect(await f.mesh()).toEqual(warmMesh);
       expect(f.requests.length).toBe(before);
       const disabled = await produce(false);
       report.production = {
@@ -234,8 +297,8 @@ describe('optional mesh distance field publication through actual HTTP Catalog',
       expect(b.distanceField?.sectionSidedness).toEqual([1]);
       const broken = await f.publish(first.asset, true);
       expect(broken.result.ok).toBe(false);
-      expect(await f.mesh()).toBe(b);
-      f.registry.invalidate(GUID);
+      expect(await f.mesh()).toEqual(b);
+      expect((await f.reload()).ok).toBe(true);
       expect((await f.mesh()).distanceField?.meshDigest).toBe(b.distanceField?.meshDigest);
       const same = await produce({ voxelSize: 0.25 }, 3, true, 'MASK');
       expect(same.asset.artifacts['distance-field.bin']?.bytes).toEqual(
@@ -260,10 +323,16 @@ describe('optional mesh distance field publication through actual HTTP Catalog',
       try {
         const source = (await produce({ voxelSize: 0.5 })).asset;
         const other = (await produce({ voxelSize: 0.5 }, 5)).asset;
-        const payload = { ...(source.payload as Record<string, unknown>) };
+        const payload: Record<string, unknown> = {
+          ...(binary ? {} : importedMesh(source)),
+          ...(source.payload as Record<string, unknown>),
+        };
         const artifacts = { ...source.artifacts };
         if (fault === 'geometry') {
-          Object.assign(payload, other.payload);
+          Object.assign(
+            payload,
+            binary ? other.payload : { ...importedMesh(other), ...(other.payload as object) },
+          );
           if (other.artifacts.body) artifacts.body = other.artifacts.body;
         }
         if (fault === 'sidedness') payload.distanceField = { sectionSidedness: [1] };
@@ -290,7 +359,10 @@ describe('optional mesh distance field publication through actual HTTP Catalog',
           };
         if (!binary) delete artifacts.body;
         expect((await f.publish({ ...source, payload, artifacts })).result.ok).toBe(true);
-        expect(await f.load()).toMatchObject({ ok: false, error: { code: 'asset-parse-failed' } });
+        expect(await f.load()).toMatchObject({
+          ok: false,
+          error: { code: 'asset-package-invalid' },
+        });
       } finally {
         await f.close();
       }
@@ -308,7 +380,7 @@ describe('optional mesh distance field publication through actual HTTP Catalog',
       await f.corrupt(bytes);
       expect(await f.load()).toMatchObject({
         ok: false,
-        error: { code: 'asset-artifact-integrity-mismatch' },
+        error: { code: 'asset-integrity-failed' },
       });
     } finally {
       await f.close();
@@ -404,7 +476,7 @@ it.runIf(process.env.FORGEAX_MESH_FIELD_SPONZA === '1')(
         assetCodec: fieldArtifact.assetCodec,
       });
       const before = f.requests.length;
-      expect(await f.mesh()).toBe(mesh);
+      expect(await f.mesh()).toEqual(mesh);
       expect(f.requests.length).toBe(before);
       const data = {
         sample: 'Khronos Sponza, all 103 source sections',

@@ -1,6 +1,7 @@
 import { readFileSync } from 'node:fs';
-import { AssetRegistry, HANDLE_CUBE } from '@forgeax/engine-assets-runtime';
+import { AssetRegistry } from '@forgeax/engine-assets-runtime';
 import { Time, World } from '@forgeax/engine-ecs';
+import { createBoxGeometry } from '@forgeax/engine-geometry';
 import {
   Camera,
   createRenderPublisher,
@@ -17,8 +18,9 @@ import {
   buildEngineShaderManifest,
   publishShaderManifest,
 } from '@forgeax/engine-vite-plugin-shader';
-import { afterAll, expect, it } from 'vitest';
+import { afterAll, assert, expect, it } from 'vitest';
 import { completeReadyFrame } from '../../../../../scripts/test/ready-render-frame.mjs';
+import { installDefaultAssetDecoders } from '../../../../runtime/src/asset-contributions';
 import { createRenderer } from '../../../../runtime/src/createRenderer';
 
 function required<T>(
@@ -64,8 +66,12 @@ it.each([
   gpuEnabled,
 }) => {
   const run = async (cpu: boolean) => {
-    const world = new World();
-    const assets = new AssetRegistry(new ShaderRegistry({ manifestUrl: undefined }));
+    const assets = new AssetRegistry({
+      shaderRegistry: new ShaderRegistry({ manifestUrl: undefined }),
+    });
+    installDefaultAssetDecoders(assets);
+    const world = new World({ assets });
+    const mesh = assets.create(createBoxGeometry(1, 1, 1).unwrap()).unwrap();
     const identity = { source: 'late-shadow-native', epoch: 1 };
     const camera = world
       .spawn(
@@ -100,25 +106,25 @@ it.each([
         },
       })
       .unwrap();
-    const red = world.allocSharedRef(
-      'MaterialAsset',
-      Materials.standard({ baseColor: [0.8, 0.1, 0.05, 1], roughness: 0.8 }),
-    );
-    const blue = world.allocSharedRef(
-      'MaterialAsset',
-      Materials.standard({ baseColor: [0.05, 0.1, 0.8, 1], roughness: 0.8 }),
-    );
+    const red = assets
+      .create(Materials.standard({ baseColor: [0.8, 0.1, 0.05, 1], roughness: 0.8 }))
+      .unwrap();
+    const blue = assets
+      .create(Materials.standard({ baseColor: [0.05, 0.1, 0.8, 1], roughness: 0.8 }))
+      .unwrap();
     const spawn = (material = red) =>
       world
         .spawn(
           { component: Transform, data: {} },
-          { component: MeshFilter, data: { assetHandle: HANDLE_CUBE } },
+          { component: MeshFilter, data: { assetHandle: mesh } },
           { component: MeshRenderer, data: { materials: [material] } },
         )
         .unwrap();
     const floor = spawn(blue);
     world.set(floor, Transform, { pos: [0, -1, 0], scale: [5, 0.2, 5] }).unwrap();
     const caster = spawn();
+    const redPasses = assets.read(red).unwrap().passes;
+    const bluePasses = assets.read(blue).unwrap().passes;
     const publisher = createRenderPublisher(world, assets, identity);
     let added = caster;
     let device: GPUDevice | undefined, texture: GPUTexture | undefined;
@@ -156,6 +162,23 @@ it.each([
     let mixedResidualFrames = 0;
     try {
       for (let frameIndex = 0; frameIndex < 6; frameIndex++) {
+        const directRed = cpu || gpuEnabled[frameIndex] !== true;
+        for (const [handle, passes, direct] of [
+          [red, redPasses, directRed],
+          [blue, bluePasses, cpu],
+        ] as const) {
+          assert(passes);
+          assets
+            .update(handle, {
+              passes: passes.map((pass) =>
+                (pass.renderState?.tags as { LightMode?: string } | undefined)?.LightMode ===
+                  'ShadowCaster' && direct
+                  ? { ...pass, renderState: { ...pass.renderState, depthWriteEnabled: true } }
+                  : pass,
+              ) as unknown as typeof passes,
+            })
+            .unwrap();
+        }
         world
           .set(sun, DirectionalLight, { cascadeCount: cascades[frameIndex] as 1 | 2 | 3 | 4 })
           .unwrap();
@@ -171,19 +194,6 @@ it.each([
           const packet = structuredClone(candidate.packet);
           candidate.accept();
           try {
-            const gpuShadow = !cpu && gpuEnabled[frameIndex] === true;
-            if (!gpuShadow) {
-              for (const template of packet.templates) {
-                const row = template.snapshot;
-                if (row.shadowCasterPasses !== undefined)
-                  Object.assign(row, {
-                    shadowCasterPasses: row.shadowCasterPasses.map((pass) => ({
-                      ...pass,
-                      gpuDrivenEligible: false,
-                    })),
-                  });
-              }
-            }
             const receipt = required(renderer.draw({ publication: packet }));
             required(await receipt.completed);
             return receipt;
@@ -247,10 +257,24 @@ it.each([
           buffer.destroy();
         }
       }
+      for (let frame = 6; frame < 60; frame++) {
+        world.update(1 / 60).unwrap();
+        await completeReadyFrame(async () => {
+          const candidate = publisher.prepare(world.getResource(Time).elapsed).unwrap();
+          const packet = structuredClone(candidate.packet);
+          candidate.accept();
+          try {
+            const receipt = required(renderer.draw({ publication: packet }));
+            required(await receipt.completed);
+            return receipt;
+          } finally {
+            publisher.recycle(packet.revision, renderPublicationTransfers(packet)).unwrap();
+          }
+        });
+      }
       expect(errors).toEqual([]);
       expect(cpu ? shadowClaims === 0 : shadowClaims > 0).toBe(true);
-      // Delta templates change only the updated casters: unchanged floor
-      // templates retain their admitted GPU lane, so this case is mixed.
+      // Red-material casters use the direct pass while the blue floor retains its GPU pass.
       if (!cpu && gpuEnabled.some((value) => !value))
         expect(mixedResidualFrames).toBeGreaterThan(0);
       return images;

@@ -1,5 +1,5 @@
-import { HANDLE_CUBE } from '@forgeax/engine-assets-runtime';
 import { World } from '@forgeax/engine-ecs';
+import { createPrimitiveMesh } from '@forgeax/engine-geometry';
 import { Camera, Materials, MeshFilter, MeshRenderer, type Renderer } from '@forgeax/engine-render';
 import {
   buildFrameModel,
@@ -12,6 +12,7 @@ import {
 import * as webgpu from '@forgeax/engine-rhi-webgpu';
 import { propagateTransforms, Transform } from '@forgeax/engine-scene';
 import { expect } from 'vitest';
+import { testAssets } from './helpers/runtime-assets';
 
 type Save = (name: string, bytes: Uint8Array) => void | Promise<void>;
 function value<T>(result: { ok: true; value: T } | { ok: false; error: unknown }): T {
@@ -32,11 +33,16 @@ export async function verifyReverseZ(
     if (event.kind === 'error') errors.push(event.error);
   });
   const box = (z: number, size: number, color: [number, number, number, number]) => {
-    const material = world.allocSharedRef('MaterialAsset', Materials.unlit(color));
+    const material = testAssets(world).create(Materials.unlit(color)).unwrap();
     return world
       .spawn(
         { component: Transform, data: { pos: [0, 0, z], scale: [size, size, 0.25] } },
-        { component: MeshFilter, data: { assetHandle: HANDLE_CUBE } },
+        {
+          component: MeshFilter,
+          data: {
+            assetHandle: testAssets(world).create(createPrimitiveMesh('cube').unwrap()).unwrap(),
+          },
+        },
         { component: MeshRenderer, data: { materials: [material] } },
       )
       .unwrap();

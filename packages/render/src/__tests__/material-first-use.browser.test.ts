@@ -1,5 +1,5 @@
-import { HANDLE_CUBE } from '@forgeax/engine-assets-runtime';
 import { World } from '@forgeax/engine-ecs';
+import { createBoxGeometry } from '@forgeax/engine-geometry';
 import * as webgpu from '@forgeax/engine-rhi-webgpu';
 import { registerPropagateTransforms, Transform } from '@forgeax/engine-scene';
 import { expect, it } from 'vitest';
@@ -37,7 +37,8 @@ it('reports a malformed first-use Standard variant through the renderer error ch
     expect(rejectedSource).toBeUndefined();
     const errors: unknown[] = [];
     renderer.onError((error) => errors.push(error));
-    const world = new World();
+    const assets = renderer.assetRegistry;
+    const world = new World({ assets });
     const attachment = renderer.attach(world);
     if (!attachment.ok) throw attachment.error;
     const attached = attachment.value;
@@ -64,27 +65,39 @@ it('reports a malformed first-use Standard variant through the renderer error ch
         },
       )
       .unwrap();
-    const material = world.allocSharedRef(
-      'MaterialAsset',
-      Materials.standard({
-        baseColor: [1, 0.5, 0.25, 1],
-        renderState: { blend: { color: {}, alpha: {} } },
-      }),
-    );
+    const material = assets
+      .create(
+        Materials.standard({
+          baseColor: [1, 0.5, 0.25, 1],
+          renderState: { blend: { color: {}, alpha: {} } },
+        }),
+      )
+      .unwrap();
+    const mesh = assets.create(createBoxGeometry(1, 1, 1).unwrap()).unwrap();
     world
       .spawn(
         { component: Transform, data: {} },
-        { component: MeshFilter, data: { assetHandle: HANDLE_CUBE } },
+        { component: MeshFilter, data: { assetHandle: mesh } },
         { component: MeshRenderer, data: { materials: [material] } },
       )
       .unwrap();
     world.update().unwrap();
-    const drawn = renderer.draw({
-      leases: [attached],
-      camera: { lease: attached },
-      environment: { lease: attached },
-    });
-    expect(rejectedSource).toBeDefined();
+    const draw = () =>
+      renderer.draw({
+        leases: [attached],
+        camera: { lease: attached },
+        environment: { lease: attached },
+      });
+    await expect
+      .poll(
+        () => {
+          draw();
+          return rejectedSource;
+        },
+        { timeout: 10_000 },
+      )
+      .toBeDefined();
+    const drawn = draw();
     await renderer.device.queue.onSubmittedWorkDone();
     await expect.poll(() => errors.length).toBeGreaterThan(0);
     expect(JSON.stringify(errors)).toContain('first_use_invalid_variant');

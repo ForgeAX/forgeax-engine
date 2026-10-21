@@ -25,7 +25,7 @@ import { AssetGuid } from '@forgeax/engine-pack/guid';
 import { readbackTexturePixels } from '@forgeax/engine-rhi-debug';
 import type { CookedMaterialRecord } from '@forgeax/engine-pack';
 import type {
-  Handle,
+  AssetHandle,
   MaterialAsset,
   MaterialGenerationVector,
   MaterialTextureValue,
@@ -130,33 +130,9 @@ const UV0_SAMPLING_INPUT = {
 const BASE_COLOR_TEXTURE_GUID = '01935b00-7d8c-7c4e-9f12-345678abcd11';
 const NORMAL_TEXTURE_GUID = '01935b00-7d8c-7c4e-9f12-345678abcd12';
 
-const BASE_COLOR_TEXTURE_PAYLOAD: TextureAsset = {
-  kind: 'texture',
-  shape: { viewDimension: '2d', extent: { width: 2, height: 2 } },
-  format: 'rgba8unorm-srgb',
-  data: new Uint8Array([
-    255, 96, 32, 255,
-    32, 96, 255, 255,
-    32, 96, 255, 255,
-    255, 96, 32, 255,
-  ]),
-  colorSpace: 'srgb',
-  mips: { kind: 'none' },
-};
-
-const NORMAL_TEXTURE_PAYLOAD: TextureAsset = {
-  ...BASE_COLOR_TEXTURE_PAYLOAD,
-  data: new Uint8Array([
-    32, 224, 32, 255,
-    224, 32, 32, 255,
-    224, 32, 32, 255,
-    32, 224, 32, 255,
-  ]),
-};
-
 function materialFromCookedRecord(
   record: CookedMaterialRecord,
-  textureHandles: Readonly<{ baseColor: number; normal: number }>,
+  textureHandles: Readonly<{ baseColor: AssetHandle<'texture'>; normal: AssetHandle<'texture'> }>,
   samplingInput: Readonly<Record<string, readonly number[]>>,
 ): MaterialAsset {
   const [firstPass, ...remainingPasses] = record.resolved.passes;
@@ -176,7 +152,7 @@ function materialFromCookedRecord(
   }
   if (declared.has('baseColorTexture')) {
     values.baseColorTexture = {
-      texture: textureHandles.baseColor as unknown as AssetGuid,
+      texture: textureHandles.baseColor,
       coordinates: {
         set: 0,
         transform: {
@@ -188,7 +164,7 @@ function materialFromCookedRecord(
   }
   if (declared.has('normalTexture')) {
     values.normalTexture = {
-      texture: textureHandles.normal as unknown as AssetGuid,
+      texture: textureHandles.normal,
       coordinates: {
         set: 1,
         transform: {
@@ -220,7 +196,7 @@ function declaredMaterialValues(
 
 function rebindMaterialTextures(
   material: MaterialAsset,
-  textureHandles: Readonly<{ baseColor?: number; normal?: number }>,
+  textureHandles: Readonly<{ baseColor?: AssetHandle<'texture'>; normal?: AssetHandle<'texture'> }>,
 ): MaterialAsset {
   const values = material.values ?? {};
   const nextValues: Record<string, MaterialValue | null> = { ...values };
@@ -232,9 +208,11 @@ function rebindMaterialTextures(
     if (textureValue === null || typeof textureValue !== 'object' || Array.isArray(textureValue)) {
       throw new Error(`[custom-shader] derived material has no structured ${valueKey} value`);
     }
+    const binding = textureValue as MaterialTextureValue;
+    if (binding.source !== undefined) throw new Error(`[custom-shader] ${valueKey} is not an asset texture binding`);
     nextValues[valueKey] = {
-      ...(textureValue as MaterialTextureValue),
-      texture: handle as unknown as AssetGuid,
+      ...binding,
+      texture: handle,
     };
   }
   return {
@@ -282,13 +260,9 @@ async function bootstrap(target: HTMLCanvasElement): Promise<void> {
   console.warn('[custom-shader] Standard pipeline active');
 
   configureRuntimeAssetCatalog(assets, runtimeBinding);
-  const catalogedBaseColorTexture = assets.catalog(
-    BASE_COLOR_TEXTURE_GUID,
-    BASE_COLOR_TEXTURE_PAYLOAD,
-  );
-  if (!catalogedBaseColorTexture.ok) throw catalogedBaseColorTexture.error;
-  const catalogedNormalTexture = assets.catalog(NORMAL_TEXTURE_GUID, NORMAL_TEXTURE_PAYLOAD);
-  if (!catalogedNormalTexture.ok) throw catalogedNormalTexture.error;
+  const baseColorTextureHandle = (await assets.load(BASE_COLOR_TEXTURE_GUID, 'texture')).unwrap();
+  const normalTextureHandle = (await assets.load(NORMAL_TEXTURE_GUID, 'texture')).unwrap();
+  const baseColorTexturePayload = assets.read(baseColorTextureHandle).unwrap();
   const rootGuid = AssetGuid.parse(ACTIVE_ROOT_MATERIAL_GUID);
   const derivedGuid = AssetGuid.parse(ACTIVE_DERIVED_MATERIAL_GUID);
   if (!rootGuid.ok || !derivedGuid.ok) throw new Error('[custom-shader] material GUID is malformed');
@@ -296,8 +270,8 @@ async function bootstrap(target: HTMLCanvasElement): Promise<void> {
     ACTIVE_ROOT_MATERIAL_GUID === ROOT_MATERIAL_GUID &&
     ACTIVE_DERIVED_MATERIAL_GUID === DERIVED_MATERIAL_GUID
       ? await Promise.all([
-          assets.loadByGuid<MaterialAsset>(rootGuid.value),
-          assets.loadByGuid<MaterialAsset>(derivedGuid.value),
+          assets.load(rootGuid.value, 'material'),
+          assets.load(derivedGuid.value, 'material'),
         ])
       : undefined;
   if (catalogMaterialPair !== undefined && (!catalogMaterialPair[0].ok || !catalogMaterialPair[1].ok)) {
@@ -311,6 +285,10 @@ async function bootstrap(target: HTMLCanvasElement): Promise<void> {
         : { code: derivedLoaded.error.code, expected: derivedLoaded.error.expected, hint: derivedLoaded.error.hint, detail: derivedLoaded.error.detail },
     });
     throw new Error('[custom-shader] runtime catalog did not load the material inheritance pair');
+  }
+
+  if (catalogMaterialPair !== undefined) {
+    for (const loaded of catalogMaterialPair) if (loaded.ok) assets.release(loaded.value).unwrap();
   }
 
   const materialCache = new MaterialGenerationCache();
@@ -401,7 +379,7 @@ async function bootstrap(target: HTMLCanvasElement): Promise<void> {
   if (falsify === 'missing-derived-parent') throw new Error('FALSIFY_EXPECTED_FAILURE:missing-derived-parent');
   if (falsify === 'missing-normal-resource') throw new Error('FALSIFY_EXPECTED_FAILURE:missing-normal-resource');
 
-  const world = new World();
+  const world = new World({ assets });
   const worldAttachment1 = renderer.attach(world);
   if (!worldAttachment1.ok) throw worldAttachment1.error;
   const frameRequest = {
@@ -420,7 +398,7 @@ async function bootstrap(target: HTMLCanvasElement): Promise<void> {
   }
 
   const liveSwapNormalTexturePayload: TextureAsset = {
-    ...BASE_COLOR_TEXTURE_PAYLOAD,
+    ...baseColorTexturePayload,
     data: new Uint8Array([
       224, 32, 224, 255,
       32, 32, 224, 255,
@@ -429,7 +407,7 @@ async function bootstrap(target: HTMLCanvasElement): Promise<void> {
     ]),
   };
   const liveSwapBaseColorTexturePayload: TextureAsset = {
-    ...BASE_COLOR_TEXTURE_PAYLOAD,
+    ...baseColorTexturePayload,
     data: new Uint8Array([
       32, 224, 224, 255,
       224, 224, 32, 255,
@@ -437,10 +415,8 @@ async function bootstrap(target: HTMLCanvasElement): Promise<void> {
       32, 224, 224, 255,
     ]),
   };
-  const baseColorTextureHandle = world.allocSharedRef('TextureAsset', BASE_COLOR_TEXTURE_PAYLOAD);
-  const normalTextureHandle = world.allocSharedRef('TextureAsset', NORMAL_TEXTURE_PAYLOAD);
-  const liveSwapNormalTextureHandle = world.allocSharedRef('TextureAsset', liveSwapNormalTexturePayload);
-  const liveSwapBaseColorTextureHandle = world.allocSharedRef('TextureAsset', liveSwapBaseColorTexturePayload);
+  const liveSwapNormalTextureHandle = assets.create(liveSwapNormalTexturePayload).unwrap();
+  const liveSwapBaseColorTextureHandle = assets.create(liveSwapBaseColorTexturePayload).unwrap();
   const resolvedTextureHandles = {
     baseColor: baseColorTextureHandle,
     normal: normalTextureHandle,
@@ -471,8 +447,8 @@ async function bootstrap(target: HTMLCanvasElement): Promise<void> {
     } satisfies GltfMaterialIr,
     {
       textureHandles: new Map([
-        [0, renderedTextureHandles.baseColor as unknown as Handle<'TextureAsset', 'shared'>],
-        [1, renderedTextureHandles.normal as unknown as Handle<'TextureAsset', 'shared'>],
+        [0, renderedTextureHandles.baseColor as AssetHandle<'texture'>],
+        [1, renderedTextureHandles.normal as AssetHandle<'texture'>],
       ]),
     },
   );
@@ -514,7 +490,7 @@ async function bootstrap(target: HTMLCanvasElement): Promise<void> {
     baseColor: liveSwapBaseColorTextureHandle,
     normal: liveSwapNormalTextureHandle,
   });
-  const inheritanceReplacementTextureHandles: readonly [number, number] =
+  const inheritanceReplacementTextureHandles: readonly [AssetHandle<'texture'>, AssetHandle<'texture'>] =
     falsify === 'live-inheritance-rebind'
       ? [renderedTextureHandles.baseColor, renderedTextureHandles.normal]
       : [liveSwapBaseColorTextureHandle, liveSwapNormalTextureHandle];
@@ -522,11 +498,11 @@ async function bootstrap(target: HTMLCanvasElement): Promise<void> {
     baseColor: inheritanceReplacementTextureHandles[0],
     normal: inheritanceReplacementTextureHandles[1],
   });
-  const rootMaterialHandle = world.allocSharedRef('MaterialAsset', rootMaterial);
-  const derivedMaterialHandle = world.allocSharedRef('MaterialAsset', derivedMaterial);
-  const liveSwapMaterialHandle = world.allocSharedRef('MaterialAsset', liveSwapMaterial);
-  const liveTwoSlotSwapMaterialHandle = world.allocSharedRef('MaterialAsset', liveTwoSlotSwapMaterial);
-  const inheritanceReplacementMaterialHandle = world.allocSharedRef('MaterialAsset', inheritanceReplacementMaterial);
+  const rootMaterialHandle = assets.create(rootMaterial).unwrap();
+  const derivedMaterialHandle = assets.create(derivedMaterial).unwrap();
+  const liveSwapMaterialHandle = assets.create(liveSwapMaterial).unwrap();
+  const liveTwoSlotSwapMaterialHandle = assets.create(liveTwoSlotSwapMaterial).unwrap();
+  const inheritanceReplacementMaterialHandle = assets.create(inheritanceReplacementMaterial).unwrap();
   const liveReplacementMaterialHandle = liveTwoSlotSwap
     ? liveTwoSlotSwapMaterialHandle
       : liveNormalSlotSwap
@@ -606,7 +582,7 @@ async function bootstrap(target: HTMLCanvasElement): Promise<void> {
     console.error('[custom-shader] createBoxGeometry failed:', boxRes.error);
     return;
   }
-  const boxMeshHandle = world.allocSharedRef('MeshAsset', boxRes.value);
+  const boxMeshHandle = assets.create(boxRes.value).unwrap();
 
   // Compose the World: cube + camera + directional light. Direct light
   // ensures the pulse-material lit path produces a non-black baseline
@@ -702,14 +678,14 @@ async function bootstrap(target: HTMLCanvasElement): Promise<void> {
         ...declaredMaterialValues(fresh.value.record, gltfTextureValues),
       },
     };
-    const freshHandle = world.allocSharedRef('MaterialAsset', freshMaterial);
+    const freshHandle = assets.create(freshMaterial).unwrap();
     const mutation = world.set(derivedEntity, MeshRenderer, { materials: [freshHandle] });
     if (!mutation.ok) {
-      world.sharedRefs.release(freshHandle);
+      assets.release(freshHandle);
       freshEvidence = { status: 'error', error: { code: mutation.error.code } };
       return freshEvidence;
     }
-    const allocationRelease = world.sharedRefs.release(freshHandle);
+    const allocationRelease = assets.release(freshHandle);
     if (!allocationRelease.ok) {
       freshEvidence = {
         status: 'error',
@@ -729,7 +705,7 @@ async function bootstrap(target: HTMLCanvasElement): Promise<void> {
       siblingArtifactDigest: rootReady.record.artifactDigest,
       currentMaterialHandle: currentDerivedHandle,
       allocationRelease: { ok: allocationRelease.ok },
-      materialRefcount: world.sharedRefs.refcount(currentDerivedHandle),
+      materialRetained: assets.validate(currentDerivedHandle).ok,
       sameWorld: world === stableWorld,
       sameRenderer: renderer === stableRenderer,
     };

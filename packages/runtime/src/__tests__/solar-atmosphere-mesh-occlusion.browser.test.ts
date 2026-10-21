@@ -10,6 +10,7 @@ import { scenePlugin } from '@forgeax/engine-scene';
 import { expect, it } from 'vitest';
 import { createWave1RenderingRecipe } from '../../../../scripts/dev-verify/wave1-rendering/recipe';
 import { createRenderer } from '../createRenderer';
+import { testAssets } from './helpers/runtime-assets';
 import {
   attachRenderer,
   captureFrame,
@@ -32,7 +33,10 @@ it('keeps sun disc occlusion stable across ordinary Mesh pause and resume redraw
   const renderer = rendererResult.value;
   const world = new World();
   const scene = await createWorldContext(world, [scenePlugin()]);
-  const recipe = createWave1RenderingRecipe(world, { aspect: 1, includeAtmosphere: true });
+  const recipe = createWave1RenderingRecipe(world, testAssets(world), {
+    aspect: 1,
+    includeAtmosphere: true,
+  });
   const atmosphere = recipe.entities.atmosphere;
   if (atmosphere === undefined) throw new Error('sun-atmosphere: fixture Atmosphere missing');
   recipe.destroy(recipe.entities.floor);

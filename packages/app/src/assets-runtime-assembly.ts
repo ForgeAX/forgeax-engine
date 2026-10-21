@@ -4,17 +4,24 @@ import {
   createCatalogSource,
   type PackageFetcher,
 } from '@forgeax/engine-assets-runtime';
-import { err, type Loader, ok, type Result, type RuntimeAssetBinding } from '@forgeax/engine-types';
+import { defaultAssetDecoderContributions } from '@forgeax/engine-runtime';
+import {
+  type AssetDecoderContributionRef,
+  type AssetKind,
+  err,
+  ok,
+  type Result,
+  type RuntimeAssetBinding,
+} from '@forgeax/engine-types';
 
-/** The decoder contribution shape is the existing Loader contract, not a second facade. */
-export type AssetDecoderContribution = Loader<unknown>;
+export type { AssetDecoderContributionRef } from '@forgeax/engine-types';
 
 /** Explicit inputs accepted by the app's Registry assembly seam. */
 export interface AssetRuntimeAssemblyOptions {
   readonly registry?: AssetRegistry;
   readonly catalogSource?: CatalogSource;
   readonly fetcher?: PackageFetcher;
-  readonly decoderContributions?: readonly AssetDecoderContribution[];
+  readonly decoderContributions?: readonly AssetDecoderContributionRef[];
   readonly runtimeBinding?: RuntimeAssetBinding;
 }
 
@@ -29,7 +36,7 @@ export interface AssetRuntimeAssembly {
   readonly registry: AssetRegistry;
   readonly catalogSource: CatalogSource;
   readonly fetcher: PackageFetcher;
-  readonly decoderContributions: readonly AssetDecoderContribution[];
+  readonly decoderContributions: readonly AssetDecoderContributionRef[];
   readonly ownsRegistry: boolean;
   dispose(): void;
 }
@@ -81,28 +88,32 @@ export function createDefaultAssetCatalogSource(
 /** Install decoder contributions and make the CatalogSource part of the same lease. */
 export function assembleAssetRuntime(
   registry: AssetRegistry,
-  contributions: readonly AssetDecoderContribution[],
+  contributions: readonly AssetDecoderContributionRef[],
   options: AssetRuntimeAssemblyInstallOptions = {},
 ): Result<AssetRuntimeAssembly, AssetRuntimeAssemblyError> {
   const disposers: Array<() => void> = [];
   let catalogSource: CatalogSource | undefined;
   try {
     for (const contribution of contributions) {
-      disposers.push(registry.loaders.register(contribution));
+      const lease = registry.installDecoder(
+        contribution.kind as AssetKind<unknown>,
+        contribution.decoder,
+      );
+      disposers.push(() => lease.dispose());
     }
 
     if (options.runtimeBinding !== undefined) {
       registry.configureRuntimeBinding(options.runtimeBinding);
-    } else if (registry.packIndexUrl === undefined && options.catalogSource === undefined) {
-      registry.configurePackIndex(defaultAssetCatalogUrl());
     }
     catalogSource =
       options.catalogSource ??
-      createDefaultAssetCatalogSource(options.runtimeBinding, registry.packIndexUrl);
-    registry.setCatalogSource(catalogSource, options.fetcher);
+      registry.catalogSource ??
+      createDefaultAssetCatalogSource(options.runtimeBinding);
+    if (catalogSource !== registry.catalogSource || options.fetcher !== undefined)
+      registry.setCatalogSource(catalogSource, options.fetcher);
   } catch (cause) {
     for (const dispose of disposers.reverse()) dispose();
-    return err(assemblyError(contributions[disposers.length]?.kind ?? 'catalog', cause));
+    return err(assemblyError(contributions[disposers.length]?.kind.kind ?? 'catalog', cause));
   }
 
   const installedCatalogSource = catalogSource;
@@ -123,7 +134,7 @@ export function assembleAssetRuntime(
       disposed = true;
       for (const dispose of disposers.reverse()) dispose();
       registry.clearCatalogSource();
-      if (ownsRegistry) registry.invalidateAll();
+      if (ownsRegistry) registry.dispose();
     },
   });
 }
@@ -165,7 +176,10 @@ export function createAssetRuntimeAssembly(
     );
   }
 
-  const contributions = options.decoderContributions ?? [];
+  const contributions = [
+    ...defaultAssetDecoderContributions,
+    ...(options.decoderContributions ?? []),
+  ];
   return assembleAssetRuntime(registry, contributions, {
     ...(options.catalogSource === undefined ? {} : { catalogSource: options.catalogSource }),
     ...(options.fetcher === undefined ? {} : { fetcher: options.fetcher }),

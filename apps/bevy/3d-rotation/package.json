@@ -4,7 +4,7 @@
   "private": true,
   "type": "module",
   "license": "Apache-2.0",
-  "description": "Reproduction of Bevy's `3d_rotation` example (a cube spinning about +Y) \u2014 the loop's first MOTION demo: exercises createApp's managed frame-loop + auto-Time resource + a world.addSystem Update system driving quat.rotateAxis, the new incremental-rotate helper.",
+  "description": "Reproduction of Bevy's `3d_rotation` example (a cube spinning about +Y) — the loop's first MOTION demo: exercises createApp's managed frame-loop + auto-Time resource + a world.addSystem Update system driving quat.rotateAxis, the new incremental-rotate helper.",
   "scripts": {
     "dev": "vite",
     "typecheck": "tsc --noEmit",
@@ -49,7 +49,8 @@
     "@forgeax/engine-math": "workspace:*",
     "@forgeax/engine-runtime": "workspace:*",
     "@forgeax/engine-scene": "workspace:*",
-    "@forgeax/engine-render": "workspace:*"
+    "@forgeax/engine-render": "workspace:*",
+    "@forgeax/engine-geometry": "workspace:*"
   },
   "devDependencies": {
     "@forgeax/engine-image": "workspace:*",

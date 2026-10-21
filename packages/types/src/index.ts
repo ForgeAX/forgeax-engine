@@ -4,6 +4,7 @@
 /// <reference types="@webgpu/types" />
 
 export type { AudioStreamManifest } from './asset.js';
+export type { AssetHandle, AssetReferenceOwner } from './asset-handle.js';
 export {
   type AssetPublicationInput,
   assetPublicationGeneration,
@@ -11,6 +12,7 @@ export {
   createAssetPublication,
 } from './asset-publication.js';
 export { encodeBase64 } from './base64.js';
+export { canonicalJson } from './canonical-json.js';
 export * from './core-contracts.js';
 export { fnv1a32, fnv1aUtf16 } from './fnv1a.js';
 export * from './material-program-abi.js';
@@ -19,6 +21,7 @@ export type { NavigationBakeSettings, NavigationMeshAsset } from './navigation.j
 export type { PackageFetcher, PackageRequest, PackageResponse } from './package-fetch.js';
 export * from './plugin-asset.js';
 export * from './runtime-contracts.js';
+export { sha256 } from './sha256.js';
 export type {
   TerrainAsset,
   TerrainError,

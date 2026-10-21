@@ -124,14 +124,10 @@ interface Scratch {
   hierarchyRootCursor: DerivedRangeCursor;
   hierarchyStates: Uint8Array[];
   hierarchyChanged: Uint8Array[];
-  hierarchyBindingTables: number[];
-  hierarchyBindingRows: number[];
+  hierarchyTouched: number[];
   flatChanged: Uint8Array[];
-  flatBindingTables: number[];
-  flatBindingRows: number[];
   flatCursor: DerivedRangeCursor;
   flatTouched: number[];
-  flatPublished: Uint8Array;
   /**
    * False until one full hierarchy pass succeeds, and again after any error.
    * While true, every hierarchy row's world matrix is proven against its
@@ -277,14 +273,10 @@ function scratchFor(world: World): Scratch {
     hierarchyRootCursor: createHierarchyRootCursor(),
     hierarchyStates: [],
     hierarchyChanged: [],
-    hierarchyBindingTables: [],
-    hierarchyBindingRows: [],
+    hierarchyTouched: [] as number[],
     flatChanged: [],
-    flatBindingTables: [],
-    flatBindingRows: [],
     flatCursor: { bindingIndex: -1, row: -1 },
     flatTouched: [] as number[],
-    flatPublished: new Uint8Array(0),
     hierarchyValid: false,
   };
   SCRATCH.set(world, created);
@@ -457,7 +449,6 @@ function propagateFlat(
   const changedRoots: EntityHandle[] = [];
   if (candidates.length === 0 && globalEdited.length === 0) return ok(changedRoots);
   const transformBindings = transformWriter.bindings as readonly TransformBinding[];
-  ensureFlatBuffers(scratch, transformBindings);
   const cursor = scratch.flatCursor;
   const touched = scratch.flatTouched;
   touched.length = 0;
@@ -466,34 +457,33 @@ function propagateFlat(
     const parentRaw = world[worldRead].getFieldValue(entity, ChildOf, 'parent');
     if (parentRaw !== undefined && parentRaw !== ENTITY_NULL_RAW) return;
     const binding = transformBindings[cursor.bindingIndex];
+    if (binding !== undefined) ensureFlatBinding(scratch, binding, cursor.bindingIndex);
     const changed = scratch.flatChanged[cursor.bindingIndex];
     if (binding === undefined || changed === undefined || changed[cursor.row] !== 0) return;
     countPropagation('flatStructuralRootRows');
-    composeBindingRow(binding, cursor.row, undefined, 0, scratch, changed);
+    composeBindingRow(
+      binding,
+      cursor.row,
+      undefined,
+      0,
+      scratch,
+      changed,
+      touched,
+      cursor.bindingIndex,
+    );
     if (changed[cursor.row] === 0) return;
-    touched.push(cursor.bindingIndex, cursor.row);
     changedRoots.push(entity);
   };
-  for (const entity of candidates) visit(entity);
-  for (const entity of globalEdited) visit(entity);
-  let result: Result<EntityHandle[], SceneError> = ok(changedRoots);
-  const published = scratch.flatPublished;
-  for (let index = 0; index < touched.length; index += 2) {
-    const touchedBinding = touched[index] as number;
-    const changed = scratch.flatChanged[touchedBinding];
-    if (changed === undefined || published[touchedBinding] !== 0) continue;
-    published[touchedBinding] = 1;
-    const publication = transformWriter.publishChangedRows(touchedBinding, changed);
-    if (!publication.ok && result.ok) {
-      result = err(derivedWriteError(publication.error, touchedBinding));
-    }
-  }
+  const published = transformWriter.writeRows(touched, () => {
+    for (const entity of candidates) visit(entity);
+    for (const entity of globalEdited) visit(entity);
+  });
   for (let index = 0; index < touched.length; index += 2) {
     const changed = scratch.flatChanged[touched[index] as number];
     if (changed !== undefined) changed[touched[index + 1] as number] = 0;
   }
   touched.length = 0;
-  published.fill(0);
+  const result = published.ok ? ok(changedRoots) : err(derivedWriteError(published.error, -1));
   return result;
 }
 
@@ -539,13 +529,18 @@ function writeCandidate(
   row: number,
   candidate: Mat4,
   changed: Uint8Array,
+  touched: number[],
+  bindingIndex: number,
 ): void {
   const worlds = worldColumn(binding);
   const base = row * 16;
   for (let index = 0; index < 16; index += 1) {
     if (worlds[base + index] !== candidate[index]) {
+      if (changed[row] === 0) {
+        changed[row] = 1;
+        touched.push(bindingIndex, row);
+      }
       worlds.set(candidate, base);
-      changed[row] = 1;
       return;
     }
   }
@@ -558,6 +553,8 @@ function composeBindingRow(
   parentRow: number,
   scratch: Scratch,
   changed: Uint8Array,
+  touched: number[],
+  bindingIndex: number,
 ): void {
   // Hierarchy bindings carry the parent column; flat structural-root repair
   // uses the same numeric kernel but is intentionally counted separately.
@@ -586,58 +583,34 @@ function composeBindingRow(
     // matrix path: Global = Parent * Local, with no TRS decomposition.
     mat4.multiply(scratch.candidate, scratch.parent, scratch.local);
   }
-  writeCandidate(binding, row, scratch.candidate, changed);
+  writeCandidate(binding, row, scratch.candidate, changed, touched, bindingIndex);
 }
 
-function ensureHierarchyBuffers(scratch: Scratch, bindings: readonly HierarchyBinding[]): void {
-  let same = scratch.hierarchyBindingTables.length === bindings.length;
-  if (same) {
-    for (let index = 0; index < bindings.length; index += 1) {
-      const binding = bindings[index];
-      if (
-        binding === undefined ||
-        scratch.hierarchyBindingTables[index] !== binding.tableId ||
-        scratch.hierarchyBindingRows[index] !== binding.rowCapacity
-      ) {
-        same = false;
-        break;
-      }
-    }
-  }
-  if (same) return;
-  scratch.hierarchyBindingTables = bindings.map((binding) => binding.tableId);
-  scratch.hierarchyBindingRows = bindings.map((binding) => binding.rowCapacity);
-  scratch.hierarchyStates = bindings.map((binding) => new Uint8Array(binding.rowCapacity));
-  scratch.hierarchyChanged = bindings.map((binding) => new Uint8Array(binding.rowCapacity));
+function ensureHierarchyBinding(scratch: Scratch, binding: HierarchyBinding, index: number): void {
+  const capacity = binding.entities.length;
+  const previous = scratch.hierarchyStates[index];
+  if ((previous?.length ?? 0) >= capacity) return;
+  const states = new Uint8Array(capacity);
+  if (previous !== undefined) states.set(previous);
+  scratch.hierarchyStates[index] = states;
+  scratch.hierarchyChanged[index] = new Uint8Array(capacity);
 }
 
-function resetHierarchyBuffers(scratch: Scratch): void {
-  for (let index = 0; index < scratch.hierarchyStates.length; index += 1) {
+function resetHierarchyBuffers(scratch: Scratch, bindings: readonly HierarchyBinding[]): void {
+  // Full baseline/recovery only. Incremental walks preserve complete rows and
+  // refresh only the actual subtree they execute.
+  for (let index = 0; index < bindings.length; index++) {
+    const binding = bindings[index];
+    if (binding === undefined) continue;
+    ensureHierarchyBinding(scratch, binding, index);
     scratch.hierarchyStates[index]?.fill(0);
-    scratch.hierarchyChanged[index]?.fill(0);
   }
 }
 
-function ensureFlatBuffers(scratch: Scratch, bindings: readonly TransformBinding[]): void {
-  let same = scratch.flatBindingTables.length === bindings.length;
-  if (same) {
-    for (let index = 0; index < bindings.length; index += 1) {
-      const binding = bindings[index];
-      if (
-        binding === undefined ||
-        scratch.flatBindingTables[index] !== binding.tableId ||
-        scratch.flatBindingRows[index] !== binding.rowCapacity
-      ) {
-        same = false;
-        break;
-      }
-    }
-  }
-  if (same) return;
-  scratch.flatBindingTables = bindings.map((binding) => binding.tableId);
-  scratch.flatBindingRows = bindings.map((binding) => binding.rowCapacity);
-  scratch.flatChanged = bindings.map((binding) => new Uint8Array(binding.rowCapacity));
-  scratch.flatPublished = new Uint8Array(bindings.length);
+function ensureFlatBinding(scratch: Scratch, binding: TransformBinding, index: number): void {
+  const capacity = binding.entities.length;
+  if ((scratch.flatChanged[index]?.length ?? 0) < capacity)
+    scratch.flatChanged[index] = new Uint8Array(capacity);
 }
 
 function derivedWriteError(cause: EcsError, bindingIndex: number): SceneError {
@@ -663,10 +636,13 @@ function findHierarchyLocation(
   bindings: readonly HierarchyBinding[],
   entity: EntityHandle,
   cursor: DerivedRangeCursor,
+  scratch: Scratch,
 ): HierarchyBinding | undefined {
   countPropagation('hierarchyEntityLookups');
   if (!writer.locateEntity(entity, cursor)) return undefined;
-  return bindings[cursor.bindingIndex];
+  const binding = bindings[cursor.bindingIndex];
+  if (binding !== undefined) ensureHierarchyBinding(scratch, binding, cursor.bindingIndex);
+  return binding;
 }
 
 function findTransformLocation(
@@ -680,21 +656,11 @@ function findTransformLocation(
   return bindings[cursor.bindingIndex];
 }
 
-function countPublishedRows(changed: Uint8Array): void {
+function countPublishedRows(touched: readonly number[], ranges: number): void {
   const trace = propagationTrace;
   if (trace === undefined) return;
-  let runOpen = false;
-  for (let row = 0; row < changed.length; row += 1) {
-    if ((changed[row] ?? 0) !== 0) {
-      trace.hierarchyPublishedRows += 1;
-      if (!runOpen) {
-        trace.hierarchyPublishedRuns += 1;
-        runOpen = true;
-      }
-    } else {
-      runOpen = false;
-    }
-  }
+  trace.hierarchyPublishedRows += touched.length / 2;
+  trace.hierarchyPublishedRuns += ranges;
 }
 
 function noteHierarchyError(current: SceneError | undefined, next: SceneError): SceneError {
@@ -715,7 +681,7 @@ function composeLocalHierarchyEntity(
   changed: Uint8Array[],
 ): boolean {
   const cursor = scratch.hierarchyCurrentCursor;
-  const binding = findHierarchyLocation(writer, bindings, entity, cursor);
+  const binding = findHierarchyLocation(writer, bindings, entity, cursor, scratch);
   if (binding === undefined) return false;
   composeBindingRow(
     binding,
@@ -724,6 +690,8 @@ function composeLocalHierarchyEntity(
     0,
     scratch,
     changed[cursor.bindingIndex] as Uint8Array,
+    scratch.hierarchyTouched,
+    cursor.bindingIndex,
   );
   const states = scratch.hierarchyStates[cursor.bindingIndex];
   if (states !== undefined) states[cursor.row] = 3;
@@ -749,7 +717,13 @@ function handleActiveCycle(
   }
   if (cycleStart < 0) return;
   const repeatedCursor: DerivedRangeCursor = { bindingIndex: -1, row: -1 };
-  const repeatedBinding = findHierarchyLocation(writer, bindings, repeated, repeatedCursor);
+  const repeatedBinding = findHierarchyLocation(
+    writer,
+    bindings,
+    repeated,
+    repeatedCursor,
+    scratch,
+  );
   const repeatedParent =
     repeatedBinding === undefined
       ? repeated
@@ -796,7 +770,7 @@ function walkChildren(
   // expanded this root and all reachable Children edges, so do not repeat it.
   const rootCursor = scratch.hierarchyRootCursor;
   if (!allowCompletedRoot) countPropagation('hierarchyRootCursorReuses');
-  if (findHierarchyLocation(writer, bindings, root, rootCursor) !== undefined) {
+  if (findHierarchyLocation(writer, bindings, root, rootCursor, scratch) !== undefined) {
     const state = scratch.hierarchyStates[rootCursor.bindingIndex]?.[rootCursor.row] ?? 0;
     if (allowCompletedRoot ? state === 4 : state !== 0 && !refresh) return;
   }
@@ -814,7 +788,13 @@ function walkChildren(
       stackChildren.pop();
       continue;
     }
-    const hierarchyBinding = findHierarchyLocation(writer, bindings, current, currentCursor);
+    const hierarchyBinding = findHierarchyLocation(
+      writer,
+      bindings,
+      current,
+      currentCursor,
+      scratch,
+    );
     const nextChild = stackChildren[top] ?? -1;
     if (nextChild < 0) {
       if (hierarchyBinding !== undefined) {
@@ -836,7 +816,13 @@ function walkChildren(
               parent,
               parentCursor,
             );
-            const parentHierarchy = findHierarchyLocation(writer, bindings, parent, childCursor);
+            const parentHierarchy = findHierarchyLocation(
+              writer,
+              bindings,
+              parent,
+              childCursor,
+              scratch,
+            );
             // A parent outside the hierarchy bindings is a flat root, already complete (2).
             const parentState =
               parentHierarchy === undefined
@@ -886,6 +872,8 @@ function walkChildren(
               parentCursor.row,
               scratch,
               scratch.hierarchyChanged[currentCursor.bindingIndex] as Uint8Array,
+              scratch.hierarchyTouched,
+              currentCursor.bindingIndex,
             );
           }
           if (states !== undefined && states[currentCursor.row] === 1) {
@@ -903,7 +891,13 @@ function walkChildren(
       stackChildren.pop();
       if (allowCompletedRoot) {
         const completedCursor = scratch.hierarchyResidualCursor;
-        const completedBinding = findHierarchyLocation(writer, bindings, current, completedCursor);
+        const completedBinding = findHierarchyLocation(
+          writer,
+          bindings,
+          current,
+          completedCursor,
+          scratch,
+        );
         const completedStates =
           completedBinding === undefined
             ? undefined
@@ -930,7 +924,7 @@ function walkChildren(
       continue;
     }
     const child = childRaw as EntityHandle;
-    const childBinding = findHierarchyLocation(writer, bindings, child, childCursor);
+    const childBinding = findHierarchyLocation(writer, bindings, child, childCursor, scratch);
     if (childBinding === undefined) {
       report(
         hierarchyError(
@@ -1031,7 +1025,7 @@ function resolveResidualPath(
   let current = entity;
   while (true) {
     countPropagation('hierarchyResidualParentProbes');
-    const binding = findHierarchyLocation(writer, bindings, current, cursor);
+    const binding = findHierarchyLocation(writer, bindings, current, cursor, scratch);
     if (binding === undefined) break;
     const states = scratch.hierarchyStates[cursor.bindingIndex];
     const state = states?.[cursor.row] ?? 0;
@@ -1096,7 +1090,13 @@ function resolveResidualPath(
       parent,
       parentTransformCursor,
     );
-    const parentHierarchy = findHierarchyLocation(writer, bindings, parent, parentHierarchyCursor);
+    const parentHierarchy = findHierarchyLocation(
+      writer,
+      bindings,
+      parent,
+      parentHierarchyCursor,
+      scratch,
+    );
     if (parentHierarchy === undefined) {
       report(
         hierarchyError(
@@ -1181,37 +1181,35 @@ function parentEdgeMirrored(
   if (parentRaw === undefined || parentRaw === ENTITY_NULL_RAW) return true;
   const parent = parentRaw as EntityHandle;
   if (!transformWriter.locateEntity(parent, cursor)) return false;
-  const length = world[worldRead].getArrayLength(parent, Children, 'entities') ?? 0;
-  for (let index = 0; index < length; index += 1) {
-    if (world[worldRead].getArrayElement(parent, Children, 'entities', index) === child)
-      return true;
-  }
-  return false;
+  return world[worldRead].hasRelationshipEdge(ChildOf, child, parent);
 }
 
-/**
- * Highest dirty entities: those with no dirty ancestor. The ancestor walk is
- * bounded by the hierarchy row count so a malformed parent loop cannot spin;
- * exceeding it returns undefined and the caller runs the full pass.
- */
+function nextHierarchyParent(world: World, value: number | undefined): number | undefined {
+  return value === undefined || value === ENTITY_NULL_RAW
+    ? undefined
+    : world[worldRead].getFieldValue(value as EntityHandle, ChildOf, 'parent');
+}
+
+/** Highest dirty ancestors, with constant-space cycle detection on actual paths. */
 function highestDirtyEntities(
   world: World,
   dirty: ReadonlySet<EntityHandle>,
-  hierarchyRows: number,
 ): EntityHandle[] | undefined {
   const roots: EntityHandle[] = [];
   for (const entity of dirty) {
     let parent = world[worldRead].getFieldValue(entity, ChildOf, 'parent');
     let covered = false;
-    let hops = 0;
+    let slow = parent;
+    let fast = parent;
     while (parent !== undefined && parent !== ENTITY_NULL_RAW) {
       if (dirty.has(parent as EntityHandle)) {
         covered = true;
         break;
       }
-      hops += 1;
-      if (hops > hierarchyRows) return undefined;
-      parent = world[worldRead].getFieldValue(parent as EntityHandle, ChildOf, 'parent');
+      parent = nextHierarchyParent(world, parent);
+      slow = nextHierarchyParent(world, slow);
+      fast = nextHierarchyParent(world, nextHierarchyParent(world, fast));
+      if (slow !== undefined && slow !== ENTITY_NULL_RAW && slow === fast) return undefined;
     }
     if (!covered) roots.push(entity);
   }
@@ -1219,7 +1217,7 @@ function highestDirtyEntities(
 }
 
 interface StructuralCandidates {
-  /** Live Transform entities whose storage block changed membership. */
+  /** Live Transform entities named by accepted structural evidence. */
   readonly entities: readonly EntityHandle[];
   /** A candidate left the Transform pair while still holding a hierarchy edge. */
   readonly relationLeftTransform: boolean;
@@ -1231,11 +1229,9 @@ const NO_STRUCTURAL_CANDIDATES: StructuralCandidates = {
 };
 
 /**
- * Structural changes are discovered per 256-row storage block rather than by
- * rescanning every Transform row: the projection enqueues the previous and
- * current occupants of each block whose membership changed. Its first read
- * (and any read after invalidation) returns every Transform row, which is the
- * cold full pass.
+ * The projection reads World-owned structural identity evidence. Its first
+ * read (and explicit invalidation) establishes the full Transform baseline;
+ * ordinary migrations do not enumerate unrelated block occupants.
  */
 function readStructuralCandidates(world: World, scratch: Scratch): StructuralCandidates {
   const transformWriter = scratch.transformWriter;
@@ -1288,8 +1284,6 @@ function propagateHierarchy(
     // Keep the flat-only lane independent: it must not allocate hierarchy
     // markers or scan every Transform row merely to prove that no ChildOf
     // archetype exists.
-    scratch.hierarchyBindingTables.length = 0;
-    scratch.hierarchyBindingRows.length = 0;
     scratch.hierarchyStates.length = 0;
     scratch.hierarchyChanged.length = 0;
     scratch.hierarchyValid = true;
@@ -1321,82 +1315,23 @@ function propagateHierarchy(
   for (const entity of globalEdited) dirty.add(entity);
   for (const entity of flatRoots) dirty.add(entity);
   if (!rebuild && dirty.size === 0) return ok(undefined);
-  ensureHierarchyBuffers(scratch, hierarchyBindings);
   let dirtyRoots: EntityHandle[] | undefined;
   if (!rebuild) {
-    let hierarchyRows = 0;
-    for (const binding of hierarchyBindings) hierarchyRows += binding.rowCapacity;
-    dirtyRoots = highestDirtyEntities(world, dirty, hierarchyRows);
+    dirtyRoots = highestDirtyEntities(world, dirty);
   }
   if (dirtyRoots === undefined) {
-    resetHierarchyBuffers(scratch);
-  } else {
-    // Rows outside the dirty subtrees keep the worlds proven by the last
-    // successful pass; mark them complete so parent-first checks accept them.
-    for (const states of scratch.hierarchyStates) states.fill(2);
-    for (const changed of scratch.hierarchyChanged) changed.fill(0);
+    resetHierarchyBuffers(scratch, hierarchyBindings);
   }
   let firstError: SceneError | undefined;
   const report = (error: SceneError): void => {
     firstError = noteHierarchyError(firstError, error);
   };
 
-  if (dirtyRoots !== undefined) {
-    for (const entity of dirtyRoots) {
-      walkChildren(
-        world,
-        entity,
-        hierarchyWriter,
-        hierarchyBindings,
-        transformWriter,
-        transformBindings,
-        scratch,
-        report,
-        false,
-        true,
-      );
-    }
-  } else {
-    // Start only at actual roots (flat Transform rows and null-parent
-    // ChildOf rows). Descendants are discovered exclusively through the ECS
-    // materialized Children lists, so every normal frame is parent-first and
-    // linear in rows plus relationship edges.
-    for (const binding of transformBindings) {
-      const entities = binding.entities;
-      for (let row = 0; row < binding.rowCapacity; row += 1) {
-        const entity = (entities[row] ?? 0) as EntityHandle;
-        const parentRaw = world[worldRead].getFieldValue(entity, ChildOf, 'parent');
-        if (parentRaw === undefined || parentRaw === ENTITY_NULL_RAW) {
-          walkChildren(
-            world,
-            entity,
-            hierarchyWriter,
-            hierarchyBindings,
-            transformWriter,
-            transformBindings,
-            scratch,
-            report,
-            false,
-          );
-        }
-      }
-    }
-
-    // Any remaining hierarchy row is either behind a malformed/missing mirror
-    // edge or belongs to a rootless cycle. Follow each residual parent chain
-    // once with the same row-state machine (not a per-node parent search), then
-    // cut that complete residual path to local space. This keeps malformed
-    // coverage linear in residual rows and edges while normal frames remain
-    // exclusively Children-driven.
-    for (let bindingIndex = 0; bindingIndex < hierarchyBindings.length; bindingIndex += 1) {
-      const binding = hierarchyBindings[bindingIndex];
-      if (binding === undefined) continue;
-      const entities = binding.entities;
-      const states = scratch.hierarchyStates[bindingIndex];
-      for (let row = 0; row < binding.rowCapacity; row += 1) {
-        if ((states?.[row] ?? 0) !== 0) continue;
-        const entity = (entities[row] ?? 0) as EntityHandle;
-        resolveResidualPath(
+  const touched = scratch.hierarchyTouched;
+  const published = hierarchyWriter.writeRows(touched, () => {
+    if (dirtyRoots !== undefined) {
+      for (const entity of dirtyRoots) {
+        walkChildren(
           world,
           entity,
           hierarchyWriter,
@@ -1405,47 +1340,105 @@ function propagateHierarchy(
           transformBindings,
           scratch,
           report,
+          false,
+          true,
         );
       }
-    }
-  }
+    } else {
+      // Start only at actual roots (flat Transform rows and null-parent
+      // ChildOf rows). Descendants are discovered exclusively through the ECS
+      // materialized Children lists, so every normal frame is parent-first and
+      // linear in rows plus relationship edges.
+      for (const binding of transformBindings) {
+        const entities = binding.entities;
+        for (let row = 0; row < binding.rowCapacity; row += 1) {
+          const entity = (entities[row] ?? 0) as EntityHandle;
+          const parentRaw = world[worldRead].getFieldValue(entity, ChildOf, 'parent');
+          if (parentRaw === undefined || parentRaw === ENTITY_NULL_RAW) {
+            walkChildren(
+              world,
+              entity,
+              hierarchyWriter,
+              hierarchyBindings,
+              transformWriter,
+              transformBindings,
+              scratch,
+              report,
+              false,
+            );
+          }
+        }
+      }
 
-  for (let bindingIndex = 0; bindingIndex < hierarchyBindings.length; bindingIndex += 1) {
-    const changed = scratch.hierarchyChanged[bindingIndex];
-    if (changed === undefined) continue;
-    countPublishedRows(changed);
-    const published = hierarchyWriter.publishChangedRows(bindingIndex, changed);
-    if (!published.ok) {
-      const cause = published.error as EcsError;
-      report(derivedWriteError(cause, bindingIndex));
+      // Any remaining hierarchy row is either behind a malformed/missing mirror
+      // edge or belongs to a rootless cycle. Follow each residual parent chain
+      // once with the same row-state machine (not a per-node parent search), then
+      // cut that complete residual path to local space. This keeps malformed
+      // coverage linear in residual rows and edges while normal frames remain
+      // exclusively Children-driven.
+      for (let bindingIndex = 0; bindingIndex < hierarchyBindings.length; bindingIndex += 1) {
+        const binding = hierarchyBindings[bindingIndex];
+        if (binding === undefined) continue;
+        const entities = binding.entities;
+        const states = scratch.hierarchyStates[bindingIndex];
+        for (let row = 0; row < binding.rowCapacity; row += 1) {
+          if ((states?.[row] ?? 0) !== 0) continue;
+          const entity = (entities[row] ?? 0) as EntityHandle;
+          resolveResidualPath(
+            world,
+            entity,
+            hierarchyWriter,
+            hierarchyBindings,
+            transformWriter,
+            transformBindings,
+            scratch,
+            report,
+          );
+        }
+      }
     }
+  });
+  if (!published.ok) report(derivedWriteError(published.error, -1));
+  else countPublishedRows(touched, published.value);
+  for (let index = 0; index < touched.length; index += 2) {
+    const changed = scratch.hierarchyChanged[touched[index] as number];
+    if (changed !== undefined) changed[touched[index + 1] as number] = 0;
   }
+  touched.length = 0;
   scratch.hierarchyValid = firstError === undefined;
   return firstError === undefined ? ok(undefined) : err(firstError);
 }
 
 export function propagateTransforms(world: World): Result<void, SceneError> {
   const scratch = scratchFor(world);
-  const pairs = validateTransformPairs(world, scratch);
-  if (!pairs.ok) return pairs;
-  const structural = readStructuralCandidates(world, scratch);
-  const globalEdited: EntityHandle[] = [];
-  for (const span of scratch.dirtyGlobals?.spans().unwrap() ?? []) {
-    for (let row = 0; row < span.length; row++)
-      globalEdited.push(span.entities[row] as EntityHandle);
-  }
-  const flat = propagateFlat(world, scratch, structural.entities, globalEdited);
-  if (!flat.ok) {
+  try {
+    const pairs = validateTransformPairs(world, scratch);
+    if (!pairs.ok) return pairs;
+    const structural = readStructuralCandidates(world, scratch);
+    const globalEdited: EntityHandle[] = [];
+    for (const span of scratch.dirtyGlobals?.spans().unwrap() ?? []) {
+      for (let row = 0; row < span.length; row++)
+        globalEdited.push(span.entities[row] as EntityHandle);
+    }
+    const flat = propagateFlat(world, scratch, structural.entities, globalEdited);
+    if (!flat.ok) {
+      scratch.structure?.invalidate();
+      scratch.hierarchyValid = false;
+      return flat;
+    }
+    const hierarchy = propagateHierarchy(world, scratch, structural, globalEdited, flat.value);
+    // Consume our own derived publications, while preserving later external edits.
+    for (const _span of scratch.dirtyGlobals?.spans().unwrap() ?? []) {
+      /* observation only */
+    }
+    return hierarchy;
+  } catch (cause) {
+    // Private temporal readers may already have accepted discovery before a
+    // planning allocation fails. Explicit recovery must not retry as clean.
     scratch.structure?.invalidate();
     scratch.hierarchyValid = false;
-    return flat;
+    throw cause;
   }
-  const hierarchy = propagateHierarchy(world, scratch, structural, globalEdited, flat.value);
-  // Consume our own derived publications, while preserving later external edits.
-  for (const _span of scratch.dirtyGlobals?.spans().unwrap() ?? []) {
-    /* observation only */
-  }
-  return hierarchy;
 }
 
 export const PropagateTransforms: SystemHandle<readonly []> = defineSystem({

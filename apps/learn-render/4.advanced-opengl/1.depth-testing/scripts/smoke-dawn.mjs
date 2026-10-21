@@ -5,10 +5,10 @@ import { drawReadyFrame } from '../../../../../scripts/test/ready-render-frame.m
 // LearnOpenGL section 4.advanced-opengl 1.depth-testing dawn-node smoke.
 // Pixel-level replica of the LO 4.1 normal path: metal.png floor + two
 // marble.jpg cubes with PBR shading. Textures are decoded from the
-// filesystem via `decodeImageFromFile` and registered with `registerWithGuid`
+// filesystem via `decodeImageFromFile` and created with `assets.create`
 // (mirrors 1.4-textures smoke pattern).
 //
-// Falsifiable: delete/change texture GUID -> loadByGuid fails -> smoke FAIL.
+// Falsifiable: delete/change texture GUID -> load fails -> smoke FAIL.
 //
 // Output literals (preserved for grep tooling):
 //   - `[learn-render-1-depth-testing] backend=<backend>`
@@ -19,6 +19,10 @@ import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { existsSync } from 'node:fs';
 import { emitSmokeReceipt } from '../../../../shared/scripts/smoke-receipt.mjs';
+import { AssetRegistry } from '@forgeax/engine-assets-runtime';
+
+import { createPrimitiveMesh } from '@forgeax/engine-geometry';
+
 
 const SMOKE_MIN_FRAMES = Number.parseInt(process.env.SMOKE_MIN_FRAMES ?? '60', 10);
 const SMOKE_PIXEL_THRESHOLD = Number.parseFloat(process.env.SMOKE_PIXEL_THRESHOLD ?? '0.05');
@@ -146,10 +150,7 @@ const { decodeImageFromFile } = await import('@forgeax/engine-image/decode-image
 const { constructRuntimeRendererHost } = await import('@forgeax/engine-runtime/internal/renderer-host');
 const { Camera, DirectionalLight, MeshFilter, MeshRenderer } = await import('@forgeax/engine-render');
 const { Transform } = await import('@forgeax/engine-scene');
-const {
-  HANDLE_CUBE,
-  HANDLE_QUAD,
-} = await import('@forgeax/engine-assets-runtime');
+
 const { unwrapHandle } = await import('@forgeax/engine-types');
 const { AssetGuid } = await import('@forgeax/engine-pack/guid');
 
@@ -235,21 +236,25 @@ const marbleTexAsset = {
   colorSpace: marbleDecoded.colorSpace,
   mips: marbleDecoded.mipmap ? { kind: 'generate' } : { kind: 'none' },
 };
-const world = new World();
+const world = new World({ assets: assets });
+const sceneAssets = world.assets;
+if (!(sceneAssets instanceof AssetRegistry)) throw new Error('Scene requires its runtime asset owner');
+
+const primitiveQuad = sceneAssets.create(createPrimitiveMesh('quad').unwrap()).unwrap();
+
+const primitiveCube = sceneAssets.create(createPrimitiveMesh('cube').unwrap()).unwrap();
+
 const worldAttachment1 = renderer.attach(world);
 if (!worldAttachment1.ok) throw worldAttachment1.error;
 const lease = worldAttachment1.value;
 
-// feat-20260614 M8 (D-15/D-17): textures mint user-tier column handles via
-// allocSharedRef; GUIDs are catalogued for loadByGuid parity.
-const metalHandle = unwrapHandle(world.allocSharedRef('TextureAsset', metalTexAsset));
-const marbleHandle = unwrapHandle(world.allocSharedRef('TextureAsset', marbleTexAsset));
-assets.catalog(metalGuidRes.value, metalTexAsset);
-assets.catalog(marbleGuidRes.value, marbleTexAsset);
+// Create managed texture handles from the decoded fixture values.
+const metalHandle = unwrapHandle(world.assets.create(metalTexAsset).unwrap());
+const marbleHandle = unwrapHandle(world.assets.create(marbleTexAsset).unwrap());
 console.log(`[learn-render-1-depth-testing] registered metal handle id=${metalHandle}`);
 
 // Register materials with pass-based MaterialAsset shape.
-const floorMatHandle = world.allocSharedRef('MaterialAsset', {
+const floorMatHandle = world.assets.create({
   kind: 'material',
   passes: [
     {
@@ -264,8 +269,8 @@ const floorMatHandle = world.allocSharedRef('MaterialAsset', {
     roughness: 0.9,
     baseColorTexture: metalHandle,
   },
-});
-const cubeMatHandle = world.allocSharedRef('MaterialAsset', {
+}).unwrap();
+const cubeMatHandle = world.assets.create({
   kind: 'material',
   passes: [
     {
@@ -280,7 +285,7 @@ const cubeMatHandle = world.allocSharedRef('MaterialAsset', {
     roughness: 0.5,
     baseColorTexture: marbleHandle,
   },
-});
+}).unwrap();
 
 // Floor: HANDLE_QUAD is 1x1 in XY, rotated -90 deg around X to lie flat.
 const SIN_NEG_90 = Math.sin(-Math.PI / 4);
@@ -292,7 +297,7 @@ world
       data: {
         pos: [0, -0.5, 0], quat: [0, 0, 0, 1], scale: [5, 5, 5],quat: [SIN_NEG_90, 0, 0, COS_NEG_90],},
     },
-    { component: MeshFilter, data: { assetHandle: HANDLE_QUAD } },
+    { component: MeshFilter, data: { assetHandle: primitiveQuad } },
     { component: MeshRenderer, data: { materials: [floorMatHandle] } },
   )
   .unwrap();
@@ -305,7 +310,7 @@ world
       data: {
         pos: [-1, 0, -1], quat: [0, 0, 0, 1], scale: [1, 1, 1],},
     },
-    { component: MeshFilter, data: { assetHandle: HANDLE_CUBE } },
+    { component: MeshFilter, data: { assetHandle: primitiveCube } },
     { component: MeshRenderer, data: { materials: [cubeMatHandle] } },
   )
   .unwrap();
@@ -318,7 +323,7 @@ world
       data: {
         pos: [2, 0, 0], quat: [0, 0, 0, 1], scale: [1, 1, 1],},
     },
-    { component: MeshFilter, data: { assetHandle: HANDLE_CUBE } },
+    { component: MeshFilter, data: { assetHandle: primitiveCube } },
     { component: MeshRenderer, data: { materials: [cubeMatHandle] } },
   )
   .unwrap();

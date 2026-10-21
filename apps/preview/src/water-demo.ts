@@ -25,7 +25,7 @@ import {
   TONEMAP_ACES_FILMIC,
 } from '@forgeax/engine-render';
 import { Transform } from '@forgeax/engine-scene';
-import type { EquirectAsset, MaterialAsset } from '@forgeax/engine-types';
+import type { AssetHandle } from '@forgeax/engine-types';
 import { surfaceEvidenceGuid } from './surface-standard-evidence-identity';
 
 const canvas = document.querySelector<HTMLCanvasElement>('#water');
@@ -34,52 +34,42 @@ if (!canvas || !status) throw new Error('Missing water demo shell');
 canvas.width = Math.min(innerWidth * devicePixelRatio, 1920);
 canvas.height = Math.round((canvas.width * innerHeight) / innerWidth);
 try {
-  const app = (
-    await createApp(
-      canvas,
-      {
-        ...(runtimeBinding ? { assetRuntimeBinding: runtimeBinding } : {}),
-      },
-      {
-        ...forgeaxBundlerAdapter(),
-        ...(import.meta.env.DEV && runtimeBinding
-          ? { importTransport: createRuntimeAssetImportTransport(runtimeBinding) }
-          : {}),
-      },
-    )
-  ).unwrap();
+  const created = await createApp(
+    canvas,
+    {
+      ...(runtimeBinding ? { assetRuntimeBinding: runtimeBinding } : {}),
+    },
+    {
+      ...forgeaxBundlerAdapter(),
+      ...(import.meta.env.DEV && runtimeBinding
+        ? { importTransport: createRuntimeAssetImportTransport(runtimeBinding) }
+        : {}),
+    },
+  );
+  if (!created.ok) throw created.error;
+  const app = created.value;
   const assets = app.assets;
   if (!assets) throw new Error('Water demo requires the App asset registry');
   configureRuntimeAssetCatalog(assets, runtimeBinding);
-  await assets.refreshCatalog();
+  const catalog = await assets.catalogSource?.enumerate();
+  if (catalog === undefined) throw new Error('Water demo requires a Catalog source');
+  if (!catalog.ok) throw catalog.error;
   const world = app.world;
   const loadMaterial = async (name: string) =>
-    (
-      await assets.loadByGuid<MaterialAsset>(
-        assets.parseGuid(surfaceEvidenceGuid(`material/${name}`)),
-      )
-    ).unwrap();
+    (await assets.load(surfaceEvidenceGuid(`material/${name}`), 'material')).unwrap();
   const [water, sand, rock, wood, foliage] = await Promise.all(
     ['water-shore', 'shore-sand', 'shore-rock', 'shore-wood', 'shore-foliage'].map(loadMaterial),
   );
   if (!water || !sand || !rock || !wood || !foliage) throw new Error('Missing shoreline materials');
-  const cube = world.allocSharedRef('MeshAsset', createBoxGeometry(1, 1, 1).unwrap());
-  const sphere = world.allocSharedRef('MeshAsset', createSphereGeometry(1, 16, 12).unwrap());
-  const materialHandles = new Map(
-    [sand, rock, wood, foliage].map((material) => [
-      material,
-      world.allocSharedRef('MaterialAsset', material),
-    ]),
-  );
+  const cube = app.assets.create(createBoxGeometry(1, 1, 1).unwrap()).unwrap();
+  const sphere = app.assets.create(createSphereGeometry(1, 16, 12).unwrap()).unwrap();
   const spawn = (
-    material: MaterialAsset,
+    material: AssetHandle<'material'>,
     pos: number[],
     scale: number[],
     rounded = false,
     rot = quat.create(),
   ) => {
-    const materialHandle = materialHandles.get(material);
-    if (materialHandle === undefined) throw new Error('Undeclared shoreline material');
     return world
       .spawn(
         { component: Transform, data: { pos, scale, quat: rot } },
@@ -87,7 +77,7 @@ try {
         {
           component: MeshRenderer,
           data: {
-            materials: [materialHandle],
+            materials: [material],
           },
         },
       )
@@ -131,12 +121,12 @@ try {
       {
         component: MeshFilter,
         data: {
-          assetHandle: world.allocSharedRef('MeshAsset', createPlaneGeometry(200, 200).unwrap()),
+          assetHandle: app.assets.create(createPlaneGeometry(200, 200).unwrap()).unwrap(),
         },
       },
       {
         component: MeshRenderer,
-        data: { materials: [world.allocSharedRef('MaterialAsset', water)] },
+        data: { materials: [water] },
       },
     )
     .unwrap();
@@ -220,13 +210,12 @@ try {
       },
     })
     .unwrap();
-  const sky = (
-    await assets.loadByGuid<EquirectAsset>(assets.parseGuid('81eec382-392f-5a93-8998-0ecf11ef7990'))
+  const environment = (
+    await assets.load('81eec382-392f-5a93-8998-0ecf11ef7990', 'equirect')
   ).unwrap();
-  const environment = world.allocSharedRef('EquirectAsset', sky);
   world.spawn({ component: Skylight, data: { equirect: environment, intensity: 0.85 } }).unwrap();
   world.spawn({ component: SkyboxBackground, data: { equirect: environment } }).unwrap();
-  const schema = water.surface?.dynamicInput;
+  const schema = assets.read(water).unwrap().surface?.dynamicInput;
   if (!schema) throw new Error('Water material has no event schema');
   const page = ReadonlyDynamicInputPage.create({
     sourceId: 'shore-footsteps',

@@ -101,7 +101,7 @@ own listeners/capture on teardown. The demo exercises these paths and resize.
 ## Retained presentation and verification
 
 `createGizmoPresentation` allocates five mesh shapes, four unlit materials and
-sixteen handle parts once. Its normal overlay roster is bounded:
+sixteen handle parts once. Presentation uses the World asset owner supplied by the host; a standalone World must bind an AssetRegistry first. Its normal overlay roster is bounded:
 
 | Mode | Visible draws | Geometry |
 |:--|--:|:--|
@@ -130,3 +130,7 @@ parent conversion, projection size, cancellation, snapping and stale handles.
 
 These are mechanism references; the Engine implementation uses its own ECS,
 Geometry and Render contracts and does not redistribute Unreal source.
+
+Constraint math and retained presentation share the ordered handle axes, plane
+axes, and plane extents. Plane geometry derives its center and size from the
+same bounds used by hit testing.

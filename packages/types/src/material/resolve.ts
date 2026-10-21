@@ -39,21 +39,37 @@ function valueType(value: MaterialValue): string {
   return 'texture';
 }
 
+function finiteVector(value: unknown): value is number[] {
+  if (!Array.isArray(value)) return false;
+  for (const part of value)
+    if (typeof part !== 'number' || !Number.isFinite(Math.fround(part))) return false;
+  return true;
+}
+
 function parameterTypeMatches(parameter: MaterialParameter, value: MaterialValue): boolean {
   switch (parameter.type) {
     case 'bool':
       return typeof value === 'boolean';
     case 'f32':
+      return typeof value === 'number' && Number.isFinite(Math.fround(value));
     case 'i32':
+      return (
+        typeof value === 'number' &&
+        Number.isInteger(value) &&
+        value >= -0x8000_0000 &&
+        value <= 0x7fff_ffff
+      );
     case 'u32':
-      return typeof value === 'number';
+      return (
+        typeof value === 'number' && Number.isInteger(value) && value >= 0 && value <= 0xffff_ffff
+      );
     case 'vec2':
-      return Array.isArray(value) && value.length === 2;
+      return Array.isArray(value) && value.length === 2 && finiteVector(value);
     case 'vec3':
-      return Array.isArray(value) && value.length === 3;
+      return Array.isArray(value) && value.length === 3 && finiteVector(value);
     case 'vec4':
     case 'color':
-      return Array.isArray(value) && value.length === 4;
+      return Array.isArray(value) && value.length === 4 && finiteVector(value);
     case 'texture':
     case 'texture_2d_array':
     case 'texture_3d':
@@ -71,13 +87,28 @@ function parameterTypeMatches(parameter: MaterialParameter, value: MaterialValue
   }
 }
 
-function validateValues(
+/** Validate only the supplied values against a prepared parameter index. */
+export function validateMaterialValues(
   material: string,
   values: Readonly<Record<string, MaterialValue | null>>,
-  parameters: readonly MaterialParameter[] | undefined,
+  declarations: ReadonlyMap<string, MaterialParameter> | undefined,
 ): Result<true, MaterialError> {
-  if (parameters === undefined) return ok(true);
-  const declarations = new Map(parameters.map((parameter) => [parameter.name, parameter]));
+  for (const [name, value] of Object.entries(values)) {
+    if (
+      (typeof value === 'number' && !Number.isFinite(Math.fround(value))) ||
+      (Array.isArray(value) && !finiteVector(value))
+    )
+      return err(
+        createMaterialError('material-value-type-mismatch', {
+          code: 'material-value-type-mismatch',
+          material,
+          parameter: name,
+          expectedType: 'finite GPU numeric values',
+          actualType: 'invalid numeric value',
+        }),
+      );
+  }
+  if (declarations === undefined) return ok(true);
   for (const [name, value] of Object.entries(values)) {
     const parameter = declarations.get(name);
     if (parameter === undefined) {
@@ -116,6 +147,20 @@ function validateValues(
     }
   }
   return ok(true);
+}
+
+function validateValues(
+  material: string,
+  values: Readonly<Record<string, MaterialValue | null>>,
+  parameters: readonly MaterialParameter[] | undefined,
+): Result<true, MaterialError> {
+  return validateMaterialValues(
+    material,
+    values,
+    parameters === undefined
+      ? undefined
+      : new Map(parameters.map((parameter) => [parameter.name, parameter])),
+  );
 }
 
 function mergeMaterial(parent: MaterialAsset, child: MaterialAsset): MaterialAsset {
@@ -204,7 +249,12 @@ function resolveChain(
     for (const [name, value] of Object.entries(current.values ?? {})) {
       if (value !== null) values[name] = value;
     }
-    const valid = validateValues(id, values, current.parameters);
+    const defaults = Object.fromEntries(
+      (current.parameters ?? []).flatMap((parameter) =>
+        parameter.default === undefined ? [] : [[parameter.name, parameter.default]],
+      ),
+    );
+    const valid = validateValues(id, { ...defaults, ...values }, current.parameters);
     if (!valid.ok) return valid;
     return ok({ leaf, chain: [id], asset: { ...current, values } });
   }

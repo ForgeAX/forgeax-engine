@@ -1,6 +1,8 @@
+import { AssetRegistry } from '@forgeax/engine/assets-runtime';
+import { createPrimitiveMesh } from '@forgeax/engine/geometry';
 import { Instances } from '@forgeax/engine/render';
 import { CheckList, defineFeature } from '../../lab/feature';
-import { MESH, spawnMesh, spawnStage, standard } from '../../lab/stage';
+import { spawnMesh, spawnStage, standard } from '../../lab/stage';
 
 function grid(side: number): Float32Array {
   const transforms = new Float32Array(side * side * 16);
@@ -23,10 +25,16 @@ export default defineFeature({
   expect:
     'ON: a 5x5 grid of 25 orange cubes from one entity. OFF: the same entity holds a single instance, so only the center cube remains.',
   setup({ world }) {
+    const primitiveAssets = world.assets;
+    if (!(primitiveAssets instanceof AssetRegistry))
+      throw new Error('Scene requires its runtime asset owner');
+
+    const stageCube = primitiveAssets.create(createPrimitiveMesh('cube').unwrap()).unwrap();
+
     spawnStage(world, { eye: [0, 5, 7], target: [0, 0, 0] });
     const entity = spawnMesh(
       world,
-      MESH.cube,
+      stageCube,
       standard(world, { baseColor: [1, 0.45, 0.1, 1] }),
       { pos: [0, 0.3, 0] },
       {

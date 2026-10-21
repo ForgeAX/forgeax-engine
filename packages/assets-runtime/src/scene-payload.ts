@@ -1,16 +1,13 @@
 // @forgeax/engine-assets-runtime -- keyed scene payload parse + ref resolution
 
 import { parseManagedArraySchema } from '@forgeax/engine-ecs/internal';
-import type { SceneAsset, SceneEntity, SceneInstanceOverride } from '@forgeax/engine-types';
+import type {
+  ParseErrorDetail,
+  SceneAsset,
+  SceneEntity,
+  SceneInstanceOverride,
+} from '@forgeax/engine-types';
 import { err, ok, type Result } from '@forgeax/engine-types';
-
-export interface ParseSceneError {
-  readonly entityKey: string;
-  readonly component: string;
-  readonly field: string;
-  readonly index: number;
-  readonly refsLength: number;
-}
 
 /** Decode only schema-declared shared references; every other storage family stays native. */
 export function resolveSceneComponentFields(
@@ -19,11 +16,11 @@ export function resolveSceneComponentFields(
   rawFields: Record<string, unknown>,
   refs: readonly string[] | undefined,
   schema: Readonly<Record<string, string>> | undefined,
-): Result<Record<string, unknown>, ParseSceneError> {
+): Result<Record<string, unknown>, ParseErrorDetail> {
   const resolved: Record<string, unknown> = {};
   for (const [fieldName, value] of Object.entries(rawFields)) {
     const type = schema?.[fieldName];
-    const handleField = type?.startsWith('shared<') === true;
+    const handleField = type?.startsWith('asset<') === true;
     if (handleField && value === null) {
       resolved[fieldName] = 0;
       continue;
@@ -43,7 +40,7 @@ export function resolveSceneComponentFields(
     }
     const array = type === undefined ? null : parseManagedArraySchema(type);
     if (
-      array?.elementType.startsWith('shared<') &&
+      array?.elementType.startsWith('asset<') &&
       (Array.isArray(value) || (ArrayBuffer.isView(value) && 'length' in value))
     ) {
       const values: unknown[] = [];

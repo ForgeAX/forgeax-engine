@@ -1,4 +1,4 @@
-import type { ImportError } from '@forgeax/engine-types';
+import { IMPORT_ERROR_HINTS, type ImportError } from '@forgeax/engine-types';
 
 const SOURCE_PACKAGE_ERROR_POLICY = {
   'source-package-meta-invalid': {
@@ -121,23 +121,6 @@ function importFailureCode(error: ImportError): SourcePackageErrorCode {
   }
 }
 
-const IMPORT_ERROR_CODES = new Set([
-  'importer-not-registered',
-  'source-read-failed',
-  'import-produced-no-assets',
-  'guid-mismatch',
-  'mesh-material-slot-topology-change',
-  'mesh-lod-contract-invalid',
-  'mesh-lod-topology-change',
-  'mesh-lod-authority-conflict',
-  'import-internal-error',
-  'source-validation-failed',
-  'unknown-source-key',
-  'duplicate-source-key',
-  'invalid-source-overrides',
-  'invalid-source-override-payload',
-]);
-
 function findNormalizableCause(error: unknown, seen = new Set<unknown>()): unknown {
   if (error === null || typeof error !== 'object' || seen.has(error)) return undefined;
   seen.add(error);
@@ -193,7 +176,7 @@ function isSourcePackageError(error: unknown): error is SourcePackageError {
     typeof error === 'object' &&
     'code' in error &&
     typeof error.code === 'string' &&
-    error.code in SOURCE_PACKAGE_ERROR_POLICY &&
+    Object.hasOwn(SOURCE_PACKAGE_ERROR_POLICY, error.code) &&
     'expected' in error &&
     typeof error.expected === 'string' &&
     'hint' in error &&
@@ -216,7 +199,7 @@ function isImportError(error: unknown): error is ImportError {
     typeof error === 'object' &&
     'code' in error &&
     typeof error.code === 'string' &&
-    IMPORT_ERROR_CODES.has(error.code) &&
+    Object.hasOwn(IMPORT_ERROR_HINTS, error.code) &&
     'expected' in error &&
     'hint' in error &&
     'detail' in error

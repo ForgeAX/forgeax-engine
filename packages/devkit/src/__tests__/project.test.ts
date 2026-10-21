@@ -65,6 +65,18 @@ describe('readProjectFacts', () => {
     expect(await readProjectStartupTimeoutMs(root)).toEqual({ ok: true, value: 120_000 });
     expect(await readProjectStartupTimeoutMs(unbounded)).toEqual({ ok: true, value: null });
   });
+  it('validates the independent subsequent-frame deadline policy', async () => {
+    for (const frameTimeoutMs of [null, 5000]) {
+      expect(
+        await readProjectFacts(await project({}, { forgeax: { frameTimeoutMs } })),
+      ).toMatchObject({ ok: true, value: { frameTimeoutMs } });
+    }
+    for (const frameTimeoutMs of [0, -1, 1.5, 2_147_483_648, '2000']) {
+      expect(
+        await readProjectFacts(await project({}, { forgeax: { frameTimeoutMs } })),
+      ).toMatchObject({ ok: false, error: { code: 'package-manifest-invalid' } });
+    }
+  });
   it('reads backend startup policy from a package root without forge.json', async () => {
     const root = await realpath(await mkdtemp(resolve(tmpdir(), 'forgeax-workspace-')));
     temporary.push(root);

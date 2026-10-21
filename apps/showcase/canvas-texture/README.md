@@ -30,13 +30,11 @@ and uses built-in geometry; it needs no downloaded images or private assets.
 ```ts
 import { CanvasTexture, Materials } from '@forgeax/engine/render';
 
-// HANDLE_QUAD uses top-left UVs. Leave the option out for bottom-left UVs.
+// The built-in quad uses top-left UVs. Leave the option out for bottom-left UVs.
 const texture = new CanvasTexture(canvas, { flipY: false });
-const source = world.allocSharedRef('CanvasTextureSource', texture.source);
-const material = world.allocSharedRef(
-  'MaterialAsset',
-  Materials.unlit('#ffffff', { baseColorTexture: source }),
-);
+const material = assets.create(
+  Materials.unlit('#ffffff', { baseColorTexture: { source: texture.source } }),
+).unwrap();
 // Assign material to MeshRenderer.materials, then call after drawing:
 texture.update();
 // When the source is no longer needed:

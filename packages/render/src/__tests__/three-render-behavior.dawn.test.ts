@@ -92,6 +92,7 @@ it('IBL separates reflected single scattering from diffuse multiple scattering',
     ${kernel('ibl-sampling', 'EnvironmentScattering')}
     ${kernel('brdf', 'specularF90')}
     ${kernel('ibl-sampling', 'environmentMultiScattering')}
+    ${kernel('ibl-sampling', 'environmentScatteringFromDfg')}
     ${kernel('ibl-sampling', 'environmentScattering')}
     ${kernel('ibl-sampling', 'projectSpecularRadiance')}
     @group(0) @binding(1) var lut: texture_2d<f32>;

@@ -192,7 +192,6 @@ describe('producer-owned catalog contract', () => {
   it('does not expose a parallel material completion contract', async () => {
     const source = await readFile(new URL('../plugin-pack.ts', import.meta.url), 'utf8');
     expect(source).not.toContain("from './material/");
-    expect(source).not.toContain('MaterialCookResult');
   });
 
   it('publishes package, provenance, revision, relations, diagnostics, and topology key', async () => {

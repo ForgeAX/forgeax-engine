@@ -60,6 +60,10 @@ describe('plugin asset authoring', () => {
       config,
     });
     expect(created).toMatchObject({ ok: true });
+    if (format === 'pack.ts')
+      expect(created).toMatchObject({
+        value: { source: expect.stringContaining('plugins: true') },
+      });
     const inspected = await runUnifiedCli(['asset', 'plugin', 'inspect', '--root', root, '--json']);
     expect(inspected).toMatchObject({ ok: true, value: { assets: [{ asset: { config } }] } });
     expect(JSON.parse(JSON.stringify(inspected))).toMatchObject({

@@ -1,8 +1,10 @@
+import { AssetRegistry } from '@forgeax/engine/assets-runtime';
 import { defineComponent, defineSystem, Time, Update } from '@forgeax/engine/ecs';
+import { createPrimitiveMesh } from '@forgeax/engine/geometry';
 import { ANTIALIAS_TAA, MotionBlur } from '@forgeax/engine/render';
 import { Transform } from '@forgeax/engine/scene';
 import { CheckList, defineFeature } from '../../lab/feature';
-import { MESH, spawnCamera, spawnMesh, unlit } from '../../lab/stage';
+import { spawnCamera, spawnMesh, unlit } from '../../lab/stage';
 
 const BLUR = { shutterAngle: 360, maxRadiusPixels: 48, sampleCount: 16, targetFps: 60 } as const;
 const Spin = defineComponent('FeatureLabMotionBlurSpin', { speed: { type: 'f32', default: 6 } });
@@ -16,6 +18,12 @@ export default defineFeature({
   expect:
     'ON: the fast-spinning yellow and cyan bars become soft fan-shaped streaks. OFF: each bar is a crisp, sharp-edged rectangle frozen in place.',
   setup({ app, world, frames }) {
+    const primitiveAssets = world.assets;
+    if (!(primitiveAssets instanceof AssetRegistry))
+      throw new Error('Scene requires its runtime asset owner');
+
+    const stageCube = primitiveAssets.create(createPrimitiveMesh('cube').unwrap()).unwrap();
+
     world
       .addSystem(
         Update,
@@ -34,14 +42,14 @@ export default defineFeature({
       .unwrap();
     spawnMesh(
       world,
-      MESH.cube,
+      stageCube,
       unlit(world, [1, 0.85, 0.1, 1]),
       { pos: [-1.6, 0, 0], scale: [2.6, 0.35, 0.35] },
       { component: Spin, data: { speed: 7 } },
     );
     spawnMesh(
       world,
-      MESH.cube,
+      stageCube,
       unlit(world, [0.1, 0.9, 1, 1]),
       { pos: [1.6, 0, 0], scale: [2.6, 0.35, 0.35] },
       { component: Spin, data: { speed: -9 } },

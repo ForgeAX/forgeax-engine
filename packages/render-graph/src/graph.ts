@@ -154,12 +154,6 @@ export interface ResourceInfo {
 
 // ── Internalized graph ───────────────────────────────────────────
 
-export interface InternalizedPass {
-  readonly name: string;
-  readonly reads: readonly string[];
-  readonly writes: readonly string[];
-}
-
 /**
  * RHI buffer binding type a buffer resource resolves to after compile.
  * Mirrors the `@webgpu/types` GPUBufferBindingType subset used by the
@@ -181,7 +175,7 @@ export interface ResolvedBuffer {
 }
 
 export interface InternalizedGraph {
-  readonly passes: readonly InternalizedPass[];
+  readonly passes: readonly PassInfo[];
   /**
    * Buffer resources resolved to a concrete RHI binding type (AC-09).
    * Empty when the graph declares no `kind:'buffer'` resources.
@@ -201,11 +195,6 @@ export interface InternalizedGraph {
 // ── Compile options ──────────────────────────────────────────────
 
 export interface CompileOptions {
-  // D-6: second independent literal union (NOT derived from RhiCaps['backendKind']);
-  // add-only '|null' member so passthrough callers forwarding
-  // device.caps.backendKind type-check. Deriving from RhiCaps to collapse the
-  // duplicate is a known OOS follow-on (architecture-principles #2 Derive).
-  readonly backendKind: 'webgpu' | 'wgpu-native' | 'wgpu-webgl2' | 'null';
   readonly caps: RhiCaps;
   /**
    * RHI device interface handle for real GPU texture allocation (D-1).
@@ -513,6 +502,7 @@ export class RenderGraph<Ctx = unknown> {
     descriptor: ComputePassDescriptor<Ctx>,
     before?: string,
   ): PassEntry<Ctx> {
+    const { begin, onBeginError, encode, after } = descriptor;
     return this.passes.add(
       name,
       {
@@ -524,25 +514,25 @@ export class RenderGraph<Ctx = unknown> {
           const encoder = (
             frame as Ctx & { readonly encoder: import('@forgeax/engine-rhi').RhiCommandEncoder }
           ).encoder;
-          const begin = descriptor.begin?.(frame);
+          const passDescriptor = begin?.call(descriptor, frame);
           let pass: RhiComputePassEncoder;
           try {
             pass = encoder.beginComputePass({
               label: name,
-              ...(begin?.timestampWrites === undefined
+              ...(passDescriptor?.timestampWrites === undefined
                 ? {}
-                : { timestampWrites: begin.timestampWrites }),
+                : { timestampWrites: passDescriptor.timestampWrites }),
             });
           } catch (cause) {
-            descriptor.onBeginError?.(frame, cause);
+            onBeginError?.call(descriptor, frame, cause);
             return;
           }
           try {
-            descriptor.encode({ pass, frame, resources });
+            encode.call(descriptor, { pass, frame, resources });
           } finally {
             pass.end();
           }
-          descriptor.after?.(frame);
+          after?.call(descriptor, frame);
         },
       },
       before,
@@ -593,7 +583,7 @@ export class RenderGraph<Ctx = unknown> {
     const formatErr = this.validateColorTargetFormats();
     if (!formatErr.ok) return formatErr;
 
-    const internalizedPasses: InternalizedPass[] = passList.map((pass) => {
+    const internalizedPasses: PassInfo[] = passList.map((pass) => {
       return {
         name: pass.name,
         reads: pass.descriptor.reads,

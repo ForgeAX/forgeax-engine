@@ -17,6 +17,7 @@ const imports = Object.fromEntries(
     'cloud',
     'brdf',
     'ibl-sampling',
+    'ibl-pmrem',
     'ibl-shared',
     'lighting-attenuation',
     'lighting-directional',
@@ -62,7 +63,7 @@ struct Parameters { address: vec4<u32>, expected: vec4<f32> };
 @group(0) @binding(100) var<storage, read> probeBlendRecords: array<vec4<f32>>;
 @group(0) @binding(101) var<uniform> parameters: Parameters;
 @group(0) @binding(102) var irradiance: texture_cube<f32>;
-@group(0) @binding(103) var prefilter: texture_cube<f32>;
+@group(0) @binding(103) var prefilter: texture_2d<f32>;
 @group(0) @binding(104) var brdf: texture_2d<f32>;
 @group(0) @binding(105) var sampleState: sampler;
 var<private> coefficientReads: u32;
@@ -76,7 +77,7 @@ fn environment(sh: array<vec4<f32>, 9>, blend: f32) -> vec3<f32> {
   let result = evaluateStandardEnvironment(vec3<f32>(0.0), vec3<f32>(0.0, 0.0, 1.0),
     vec3<f32>(0.0, 0.0, 1.0), vec3<f32>(0.7, 0.5, 0.3),
     vec3<f32>(0.4, 0.2, 0.1) * parameters.expected.y, 0.0, 0.6, vec3<f32>(0.04),
-    sky, irradiance, sampleState, prefilter, sampleState, brdf, prefilter, sh, blend);
+    vec4<f32>(0.04, 0.04, 0.04, 1.0), vec3<f32>(0.7, 0.5, 0.3), sky, irradiance, sampleState, prefilter, sampleState, brdf, prefilter, sh, blend);
   return result.diffuse + result.specular;
 }
 fn candidate() -> vec4<f32> {
@@ -132,7 +133,7 @@ fn reference() -> vec4<f32> {
         format: 'rgba32float',
         usage: GPUTextureUsage.RENDER_ATTACHMENT | GPUTextureUsage.COPY_SRC,
       });
-      const textures = [6, 6, 1].map((layers) =>
+      const textures = [6, 1, 1].map((layers) =>
         device.createTexture({
           size: [1, 1, layers],
           format: 'rgba8unorm',
@@ -141,13 +142,13 @@ fn reference() -> vec4<f32> {
       );
       try {
         for (const [i, texture] of textures.entries()) {
-          const bytes = new Uint8Array((i < 2 ? 6 : 1) * 4);
+          const bytes = new Uint8Array((i === 0 ? 6 : 1) * 4);
           for (let j = 0; j < bytes.length; j += 4)
             bytes.set(i === 2 ? [128, 64, 0, 255] : [128, 128, 128, 255], j);
           device.queue.writeTexture({ texture }, bytes, { bytesPerRow: 4, rowsPerImage: 1 }, [
             1,
             1,
-            i < 2 ? 6 : 1,
+            i === 0 ? 6 : 1,
           ]);
         }
         const module = device.createShaderModule({ code: compiled.value.wgsl });
@@ -162,7 +163,7 @@ fn reference() -> vec4<f32> {
             { binding: 100, resource: { buffer: record } },
             { binding: 101, resource: { buffer: uniform } },
             { binding: 102, resource: required(textures[0]).createView({ dimension: 'cube' }) },
-            { binding: 103, resource: required(textures[1]).createView({ dimension: 'cube' }) },
+            { binding: 103, resource: required(textures[1]).createView({ dimension: '2d' }) },
             { binding: 104, resource: required(textures[2]).createView() },
             {
               binding: 105,

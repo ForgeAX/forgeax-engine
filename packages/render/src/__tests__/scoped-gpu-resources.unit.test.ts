@@ -1,9 +1,11 @@
+import { AssetRegistry } from '@forgeax/engine-assets-runtime';
 import { World } from '@forgeax/engine-ecs';
 import { rhi } from '@forgeax/engine-rhi-null';
-import { type TextureAsset, toShared } from '@forgeax/engine-types';
+import type { AssetHandle, TextureAsset } from '@forgeax/engine-types';
 import { expect, it } from 'vitest';
 import { GpuResidencyCache } from '../device/gpu-residency';
 import { ScopedGpuResources } from '../device/scoped-gpu-resources';
+import { worldRenderResources } from '../publication/resource-scope';
 
 it('isolates complete numeric handles and retires empty namespace tables during traversal', () => {
   const resources = new ScopedGpuResources<object>();
@@ -36,14 +38,7 @@ it('isolates complete numeric handles and retires empty namespace tables during 
 it('keeps overlapping World and numeric texture owners through replacement, completion and sweeping', async () => {
   const device = (await (await rhi.requestAdapter()).unwrap().requestDevice()).unwrap();
   const store = new GpuResidencyCache();
-  store.configureGpuDevice(
-    device,
-    undefined,
-    () => {
-      throw Error('No cubemap');
-    },
-    device.caps,
-  );
+  store.configureGpuDevice(device, undefined, device.caps);
   const texture: TextureAsset = {
     kind: 'texture',
     format: 'rgba8unorm',
@@ -52,8 +47,14 @@ it('keeps overlapping World and numeric texture owners through replacement, comp
     mips: { kind: 'none' },
     data: new Uint8Array([1, 2, 3, 255]),
   };
-  const scopes = [new World(), new World(), 0, 1, -1];
-  const handle = toShared<'TextureAsset'>(2 ** 32 + 1);
+  const scopes = [
+    worldRenderResources(new World({ assets: new AssetRegistry() })),
+    worldRenderResources(new World({ assets: new AssetRegistry() })),
+    0,
+    1,
+    -1,
+  ];
+  const handle = (2 ** 32 + 1) as AssetHandle<'texture'>;
   const entries = scopes.map((scope) => store.ensureResident(handle, texture, scope).unwrap());
   expect(new Set(entries.map((entry) => entry.view)).size).toBe(scopes.length);
   let finish!: () => void;

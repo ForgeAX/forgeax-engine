@@ -64,9 +64,11 @@ export async function runFieldLifecycle(context) {
   };
   assets.setCatalogSource(source);
   unwrap(await assets.enumerateCatalog());
-  const firstTexture = unwrap(await assets.loadByGuid(assets.parseGuid(guid)));
+  const firstTexture = unwrap(await assets.load(assets.parseGuid(guid), 'texture'));
+  const held = assets.snapshot(firstTexture).unwrap();
   const original = record('constant-60');
-  assert.equal(original.fieldUploads, 1);
+  assert.equal(original.fieldUploadBytes, original.fieldLiveBytes,
+    'initial metadata and sample slices seed one retained field');
   assert.equal(original.completedFrames, 60);
   try {
     artifactPending = new Promise(resolvePending => { release = resolvePending; });
@@ -83,14 +85,17 @@ export async function runFieldLifecycle(context) {
     // Join ordinary Catalog reconciliation before making the delayed-artifact
     // assertion. No engine deadline, frame count or acceptance threshold changes.
     await new Promise(resolveTurn => setTimeout(resolveTurn, 0));
-    const loading = assets.loadByGuid(assets.parseGuid(guid));
+    const loading = assets.reload(firstTexture, {conflict: 'reject'});
     await step(1);
     const pending = record('replacement-pending-61');
     assert.equal(pending.fieldUploads, original.fieldUploads);
+    assert.equal(pending.fieldUploadBytes, original.fieldUploadBytes);
     assert.equal(pending.simulationUpdates, original.simulationUpdates + 1);
     release();
-    const secondTexture = unwrap(await loading);
-    assert.notEqual(firstTexture, secondTexture, 'ordinary same-GUID reload returns fresh accepted content');
+    unwrap(await loading);
+    const current = assets.snapshot(firstTexture).unwrap();
+    assert(current.version(firstTexture).unwrap() > held.version(firstTexture).unwrap(), 'reload advances the original texture version');
+    current.dispose();
     await step(59);
     const capture = recorder.captureFrame();
     unwrap(await recorder.frameBoundary());
@@ -144,7 +149,12 @@ export async function runFieldLifecycle(context) {
       finally { nativeReplayDevice.destroy(); }
     }
     const accepted = record('replacement-accepted-121');
-    assert.equal(accepted.fieldUploads, original.fieldUploads + 1);
+    assert.equal(accepted.fieldLiveBytes, original.fieldLiveBytes,
+      'replacement retains the existing field allocation');
+    assert(accepted.fieldUploadBytes > original.fieldUploadBytes,
+      'replacement samples reach the GPU');
+    assert(accepted.fieldUploadBytes - original.fieldUploadBytes <= accepted.fieldLiveBytes,
+      'replacement uploads at most one complete field');
     unwrap(world.set(scene.player, ParticleEffectPlayer, { playing: false }));
     const beforeStopped = await readLivePixels();
     await step(60);
@@ -154,6 +164,7 @@ export async function runFieldLifecycle(context) {
     persist();
     assert.equal(stopped.simulationUpdates, accepted.simulationUpdates);
     assert.equal(stopped.fieldUploads, accepted.fieldUploads);
+    assert.equal(stopped.fieldUploadBytes, accepted.fieldUploadBytes);
     assert(report.stoppedPixelError <= report.pixelBound);
     unwrap(await host.detachWorld({ world }));
     await step(60);
@@ -173,6 +184,6 @@ export async function runFieldLifecycle(context) {
   } catch (error) {
     report.verdict = 'fail'; report.failure = String(error); persist(); throw error;
   } finally {
-    release?.(); assets.clearCatalogSource();
+    release?.(); held.dispose(); assets.clearCatalogSource();
   }
 }

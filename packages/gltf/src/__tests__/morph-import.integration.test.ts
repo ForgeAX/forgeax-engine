@@ -1,8 +1,21 @@
 import { readFile } from 'node:fs/promises';
+import { AnimationTargetId, animationClipContribution } from '@forgeax/engine-animation';
 import { AssetRegistry } from '@forgeax/engine-assets-runtime';
+import { World } from '@forgeax/engine-ecs';
 import { ImporterRegistry, type RunImportMeta, runImport } from '@forgeax/engine-import';
-import type { AnimationClip, MeshAsset, SceneAsset } from '@forgeax/engine-types';
+import { MeshFilter, MeshRenderer, materialContribution } from '@forgeax/engine-render';
+import {
+  ChildOf,
+  MorphWeights,
+  Name,
+  sceneAssetContribution,
+  Transform,
+} from '@forgeax/engine-scene';
 import { describe, expect, it } from 'vitest';
+import {
+  importedMesh,
+  importedSource,
+} from '../../../import/src/__tests__/fixtures/runtime-import';
 import { gltfImporter } from '../gltf-importer.js';
 
 const MESH_GUID = '11111111-1111-4111-8111-111111111111';
@@ -50,7 +63,7 @@ async function importFixture() {
 }
 
 describe('real glTF morph import through Pack and AssetRegistry', () => {
-  it('preserves two targets and two animation keyframes through loadByGuid', async () => {
+  it('preserves two targets and two animation keyframes through source loading', async () => {
     const pack = await importFixture();
     const meshEntry = pack.assets.find((asset) => asset.guid === MESH_GUID);
     const sceneEntry = pack.assets.find((asset) => asset.guid === SCENE_GUID);
@@ -59,18 +72,16 @@ describe('real glTF morph import through Pack and AssetRegistry', () => {
     expect(sceneEntry?.kind).toBe('scene');
     expect(animationEntry?.kind).toBe('animation-clip');
 
-    const meshPayload = meshEntry?.payload as {
-      readonly vertices: number[];
-      readonly morphTargets?: readonly { readonly position?: number[] }[];
-      readonly morphWeights?: number[];
-    };
+    if (!meshEntry) throw new Error('missing mesh');
+    expect(meshEntry.payload).toEqual({ kind: 'mesh' });
+    const meshPayload = importedMesh(meshEntry);
     expect(meshPayload.morphTargets).toHaveLength(2);
     expect(meshPayload.morphTargets?.every((target) => target.position?.length === 24 * 3)).toBe(
       true,
     );
     expect(meshPayload.morphTargets?.[0]?.position?.some((value) => value !== 0)).toBe(true);
     expect(meshPayload.morphTargets?.[1]?.position?.some((value) => value !== 0)).toBe(true);
-    expect(meshPayload.morphWeights).toEqual([0, 0]);
+    expect(Array.from(meshPayload.morphWeights ?? [])).toEqual([0, 0]);
 
     const animationPayload = animationEntry?.payload as {
       readonly channels: readonly {
@@ -83,33 +94,34 @@ describe('real glTF morph import through Pack and AssetRegistry', () => {
     expect(animationPayload.channels[0]?.sampler.input).toEqual([0, 1]);
     expect(animationPayload.channels[0]?.sampler.output).toEqual([0, 0.75, 0.25, 0]);
 
-    const runtime = new AssetRegistry({} as never);
-    const parsedMesh = runtime.parseAssetPayload('mesh', meshEntry?.payload ?? {});
-    const parsedAnimation = runtime.parseAssetPayload(
-      'animation-clip',
-      animationEntry?.payload ?? {},
-    );
-    expect(parsedMesh).toMatchObject({ kind: 'mesh', morphWeights: new Float32Array([0, 0]) });
-    expect(parsedAnimation).toMatchObject({ kind: 'animation-clip' });
-    expect(runtime.catalog(MESH_GUID, parsedMesh as never).ok).toBe(true);
-    expect(runtime.catalog(SCENE_GUID, sceneEntry?.payload as never).ok).toBe(true);
-    expect(runtime.catalog(ANIMATION_GUID, parsedAnimation as never).ok).toBe(true);
-
-    const loadedMesh = await runtime.loadByGuid<MeshAsset>(runtime.parseGuid(MESH_GUID));
-    const loadedScene = await runtime.loadByGuid<SceneAsset>(runtime.parseGuid(SCENE_GUID));
-    const loadedAnimation = await runtime.loadByGuid<AnimationClip>(
-      runtime.parseGuid(ANIMATION_GUID),
-    );
-    expect(loadedMesh.ok).toBe(true);
-    expect(loadedScene.ok).toBe(true);
-    expect(loadedAnimation.ok).toBe(true);
-    if (!loadedMesh.ok || !loadedScene.ok || !loadedAnimation.ok) return;
-    expect(Array.from(loadedMesh.value.morphWeights ?? [])).toEqual([0, 0]);
-    const sceneEntity = Object.values(loadedScene.value.entities)[0];
+    const runtime = new AssetRegistry({ scopeId: 'import-fixture' });
+    const world = new World({ assets: runtime });
+    for (const token of [
+      Transform,
+      Name,
+      ChildOf,
+      MeshFilter,
+      MeshRenderer,
+      MorphWeights,
+      AnimationTargetId,
+    ])
+      world.components.register(token).unwrap();
+    runtime.installDecoder(sceneAssetContribution.kind, sceneAssetContribution.decoder);
+    runtime.installDecoder(animationClipContribution.kind, animationClipContribution.decoder);
+    runtime.installDecoder(materialContribution.kind, materialContribution.decoder);
+    importedSource(pack, runtime);
+    const loadedMesh = runtime.read((await runtime.load(MESH_GUID, 'mesh')).unwrap()).unwrap();
+    const loadedScene = runtime.read((await runtime.load(SCENE_GUID, 'scene')).unwrap()).unwrap();
+    const loadedAnimation = runtime
+      .read((await runtime.load(ANIMATION_GUID, 'animation-clip')).unwrap())
+      .unwrap();
+    expect(Array.from(loadedMesh.morphWeights ?? [])).toEqual([0, 0]);
+    const sceneEntity = Object.values(loadedScene.entities)[0];
     expect(sceneEntity?.components.MorphWeights?.weights).toEqual([0, 0]);
-    expect(loadedAnimation.value.channels[0]?.property).toBe('weights');
-    const channel = loadedAnimation.value.channels[0];
+    expect(loadedAnimation.channels[0]?.property).toBe('weights');
+    const channel = loadedAnimation.channels[0];
     if (channel?.property !== 'weights') throw new Error('fixture requires a morph channel');
     expect(Array.from(channel.sampler.output)).toEqual([0, 0.75, 0.25, 0]);
+    runtime.dispose();
   });
 });

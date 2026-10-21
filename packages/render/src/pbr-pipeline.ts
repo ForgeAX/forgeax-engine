@@ -236,6 +236,7 @@ export function omittedStandardMaterialBindings(
   standard: boolean,
   canonical = false,
   materialBindings?: readonly number[],
+  userRegionEnd = 1 + textureFields.length * 2,
 ): ReadonlySet<number> {
   const omitted = new Set<number>();
   if (standard && !transmissionAvailable) {
@@ -255,7 +256,7 @@ export function omittedStandardMaterialBindings(
   }
   // Standard backdrop sampling uses the existing clamp/linear IBL prefilter
   // sampler, keeping the complete clustered layout within 16 sampler slots.
-  const backdropSampler = 1 + textureFields.length * 2 + 6;
+  const backdropSampler = userRegionEnd + 6;
   if (materialBindings === undefined ? standard : !materialBindings.includes(backdropSampler)) {
     omitted.add(backdropSampler);
   }
@@ -331,11 +332,11 @@ export function appendInjection(
           visibility: GPU_SHADER_STAGE_FRAGMENT,
           sampler: { type: 'filtering' },
         },
-        // binding start+2: prefilterMap (texture_cube)
+        // binding start+2: prefilterMap (CubeUV atlas)
         {
           binding: start + 2,
           visibility: GPU_SHADER_STAGE_FRAGMENT,
-          texture: { sampleType: 'float', viewDimension: 'cube' },
+          texture: { sampleType: 'float', viewDimension: '2d' },
         },
         // binding start+3: prefilterSampler
         {
@@ -658,6 +659,11 @@ export function buildPbrViewBglEntries(caps: PbrCaps): GPUBindGroupLayoutEntry[]
   const lowLimitCloudBindings = extendedLighting === false && caps.projectorAvailable === false;
   if (extendedLighting) {
     entries.push(
+      {
+        binding: 24,
+        visibility: GPU_SHADER_STAGE_FRAGMENT,
+        texture: { sampleType: 'float', viewDimension: '2d-array' },
+      },
       {
         binding: 9,
         visibility: GPU_SHADER_STAGE_FRAGMENT,
@@ -1551,7 +1557,7 @@ export function buildBindGroupLayoutDescriptor(
       // GPU-driven scene-index draws use a physically distinct slot-3 layout.
       // The ordinary instances BGL intentionally stays one-entry for direct
       // draws, while ProbeBlend owns binding(1). Keep the compact visible
-      // `(instanceRow, materialRow, palette, fade)` stream at binding(2) so a future probe-enabled
+      // `(instanceRow, materialRow, candidateRow, fade)` stream at binding(2) so a future probe-enabled
       // GPU variant can coexist without colliding with the probe record.
       return {
         label: 'pbr-gpu-driven-instances-bgl',
@@ -1759,7 +1765,7 @@ export function buildBindGroupLayoutDescriptor(
               {
                 binding: 47,
                 visibility: GPU_SHADER_STAGE_FRAGMENT,
-                texture: { sampleType: 'float' as const, viewDimension: 'cube' as const },
+                texture: { sampleType: 'float' as const, viewDimension: '2d' as const },
               },
             ]),
       ];
@@ -1773,6 +1779,7 @@ export function buildBindGroupLayoutDescriptor(
         isStandardPbrMaterialShader(spec.shader.id),
         isCanonicalStandardPbrMaterialShader(spec.shader.id),
         sharedMaterialBindingDeclarations(options.registry, spec.shader.id),
+        userRegion.length,
       );
       return {
         label: 'pbr-material-skylight-bgl',
@@ -1797,122 +1804,43 @@ export function buildBindGroupLayoutDescriptor(
         entries: [...(desc.entries ?? [])],
       };
     }
-    case 'fullscreen-post': {
-      // Fullscreen post-process BGL: 2 entries (input texture + sampler).
-      // R3 fix: derive sampleType from spec.attachments. Depth attachments
-      // (depth32float) need `sampleType: 'depth'`; r32float needs
-      // `'unfilterable-float'`; everything else (rgba8unorm-srgb, rgba16float,
-      // bgra8unorm, …) is filterable `'float'`.
-      return {
-        label: 'fullscreen-post-bgl',
-        entries: buildFullscreenPostInputEntries(spec),
-      };
-    }
-    case 'fullscreen-post-with-params': {
-      // feat-20260621 D-2: the same input texture@0 + sampler@1 as
-      // 'fullscreen-post', plus binding 2 = per-frame params UBO (uniform).
-      // The first two entries reuse buildFullscreenPostInputEntries so the
-      // sampleType derivation stays a single SSOT; 'fullscreen-post' is
-      // untouched (param-less zero-regression, R-A7).
-      return {
-        label: 'fullscreen-post-with-params-bgl',
-        entries: [
-          ...buildFullscreenPostInputEntries(spec),
-          {
-            binding: 2,
-            visibility: GPU_SHADER_STAGE_FRAGMENT,
-            buffer: { type: 'uniform' },
-          },
-        ],
-      };
-    }
-    case 'fullscreen-post-with-scene-depth': {
-      // plan-strategy D-3: 5-entry BGL for post-process passes that read the
-      // camera scene depth. color@0 + sampler@1 reuse buildFullscreenPostInputEntries
-      // (float+filtering for color). depthTex@3 uses `sampleType: 'depth'` and
-      // `dimension: '2d'`; depthSampler@4 uses `type: 'non-filtering'` (nearest
-      // + clamp-to-edge, D-2 — NOT comparison). params@2 is always present
-      // (uniform) to avoid a 2x2 kind explosion per D-3.
-      return {
-        label: 'fullscreen-post-with-scene-depth-bgl',
-        entries: [
-          ...buildFullscreenPostInputEntries(spec),
-          {
-            binding: 2,
-            visibility: GPU_SHADER_STAGE_FRAGMENT,
-            buffer: { type: 'uniform' },
-          },
-          {
-            binding: 3,
-            visibility: GPU_SHADER_STAGE_FRAGMENT,
-            texture: { sampleType: 'depth', viewDimension: '2d' },
-          },
-          {
-            binding: 4,
-            visibility: GPU_SHADER_STAGE_FRAGMENT,
-            sampler: { type: 'non-filtering' },
-          },
-        ],
-      };
-    }
-    case 'fullscreen-post-with-scene-depth-msaa': {
-      return {
-        label: 'fullscreen-post-with-scene-depth-msaa-bgl',
-        entries: [
-          ...buildFullscreenPostInputEntries(spec),
-          {
-            binding: 2,
-            visibility: GPU_SHADER_STAGE_FRAGMENT,
-            buffer: { type: 'uniform' },
-          },
-          {
-            binding: 3,
-            visibility: GPU_SHADER_STAGE_FRAGMENT,
-            texture: { sampleType: 'depth', viewDimension: '2d', multisampled: true },
-          },
-          {
-            binding: 4,
-            visibility: GPU_SHADER_STAGE_FRAGMENT,
-            sampler: { type: 'non-filtering' },
-          },
-        ],
-      };
-    }
+    case 'fullscreen-post':
+    case 'fullscreen-post-with-params':
+    case 'fullscreen-post-with-scene-depth':
+    case 'fullscreen-post-with-scene-depth-msaa':
     case 'fullscreen-post-with-paired-msaa': {
-      return {
-        label: 'fullscreen-post-with-paired-msaa-bgl',
-        entries: [
+      const entries = buildFullscreenPostInputEntries(
+        spec,
+        options.kind === 'fullscreen-post-with-paired-msaa',
+      );
+      if (options.kind !== 'fullscreen-post') {
+        entries.push({
+          binding: 2,
+          visibility: GPU_SHADER_STAGE_FRAGMENT,
+          buffer: { type: 'uniform' },
+        });
+      }
+      if (options.kind !== 'fullscreen-post' && options.kind !== 'fullscreen-post-with-params') {
+        entries.push(
           {
-            binding: 0,
+            binding: 3,
             visibility: GPU_SHADER_STAGE_FRAGMENT,
             texture: {
-              sampleType: 'unfilterable-float',
+              sampleType: 'depth',
               viewDimension: '2d',
-              multisampled: true,
+              ...(options.kind === 'fullscreen-post-with-scene-depth'
+                ? {}
+                : { multisampled: true }),
             },
           },
           {
-            binding: 1,
-            visibility: GPU_SHADER_STAGE_FRAGMENT,
-            sampler: { type: 'filtering' },
-          },
-          {
-            binding: 2,
-            visibility: GPU_SHADER_STAGE_FRAGMENT,
-            buffer: { type: 'uniform' },
-          },
-          {
-            binding: 3,
-            visibility: GPU_SHADER_STAGE_FRAGMENT,
-            texture: { sampleType: 'depth', viewDimension: '2d', multisampled: true },
-          },
-          {
             binding: 4,
             visibility: GPU_SHADER_STAGE_FRAGMENT,
             sampler: { type: 'non-filtering' },
           },
-        ],
-      };
+        );
+      }
+      return { label: `${options.kind}-bgl`, entries };
     }
   }
 }
@@ -1921,18 +1849,22 @@ export function buildBindGroupLayoutDescriptor(
  * The shared texture@0 + sampler@1 entries for fullscreen post-process BGLs.
  * sampleType is derived from `spec.attachments` (R3 fix): depth attachments →
  * `'depth'` + `'comparison'` sampler; `'r32float'` → `'unfilterable-float'`;
- * else → `'float'` + `'filtering'`. Both `'fullscreen-post'` and
- * `'fullscreen-post-with-params'` reuse this so the derivation is one SSOT.
+ * else → `'float'` + `'filtering'`. Paired MSAA fixes color to an unfilterable
+ * multisampled input; all five fullscreen layouts share this projection.
  */
-function buildFullscreenPostInputEntries(spec: PipelineSpec): GPUBindGroupLayoutEntry[] {
+function buildFullscreenPostInputEntries(
+  spec: PipelineSpec,
+  multisampled: boolean,
+): GPUBindGroupLayoutEntry[] {
   const inputFormat: GPUTextureFormat | undefined =
     spec.attachments.depthFormat ?? spec.attachments.colorFormats[0];
-  const sampleType: GPUTextureSampleType =
-    inputFormat === 'depth32float' ||
-    inputFormat === 'depth24plus' ||
-    inputFormat === 'depth32float-stencil8' ||
-    inputFormat === 'depth24plus-stencil8' ||
-    inputFormat === 'depth16unorm'
+  const sampleType: GPUTextureSampleType = multisampled
+    ? 'unfilterable-float'
+    : inputFormat === 'depth32float' ||
+        inputFormat === 'depth24plus' ||
+        inputFormat === 'depth32float-stencil8' ||
+        inputFormat === 'depth24plus-stencil8' ||
+        inputFormat === 'depth16unorm'
       ? 'depth'
       : inputFormat === 'r32float'
         ? 'unfilterable-float'
@@ -1941,7 +1873,7 @@ function buildFullscreenPostInputEntries(spec: PipelineSpec): GPUBindGroupLayout
     {
       binding: 0,
       visibility: GPU_SHADER_STAGE_FRAGMENT,
-      texture: { sampleType, viewDimension: '2d' },
+      texture: { sampleType, viewDimension: '2d', ...(multisampled ? { multisampled: true } : {}) },
     },
     {
       binding: 1,

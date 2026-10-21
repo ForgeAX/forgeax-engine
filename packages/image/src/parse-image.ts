@@ -1,11 +1,6 @@
 import type { DecodedImage, ImageColorSpace, ImageError } from '@forgeax/engine-types';
-import * as jpeg from 'jpeg-js';
-// Static imports of upng-js + jpeg-js. tsup external keeps both as runtime
-// require() calls so the browser bundle still tree-shakes them out when
-// only image-decoder-browser.ts (createImageBitmap) is reached at runtime.
-// Synchronous decode is required by the parseImage signature contract (see
-// plan-strategy section 3.3).
-import * as UPNG from 'upng-js';
+import jpeg from 'jpeg-js';
+import UPNG from 'upng-js';
 import { imageError } from './errors.js';
 import { downscaleRgba } from './resize-image.js';
 import type { Result } from './result.js';
@@ -45,20 +40,6 @@ export interface ParseImageOptions {
 
 const DEFAULT_MAX_DIMENSION = 16384;
 
-const SUPPORTED_MIMES: readonly string[] = ['image/png', 'image/jpeg'];
-
-interface UpngDecoded {
-  readonly width: number;
-  readonly height: number;
-  readonly data: Uint8Array;
-}
-
-interface JpegDecoded {
-  readonly width: number;
-  readonly height: number;
-  readonly data: Uint8Array;
-}
-
 /**
  * Pure synchronous image decoder. Translates raw byte stream + mime hint
  * into a tight-packed RGBA `DecodedImage` POD. Surfaces all four
@@ -80,7 +61,7 @@ export function parseImage(
   mime: string,
   opts: ParseImageOptions = {},
 ): Result<DecodedImage, ImageError> {
-  if (!SUPPORTED_MIMES.includes(mime)) {
+  if (mime !== 'image/png' && mime !== 'image/jpeg') {
     return err(
       imageError({
         code: 'image-format-unsupported',
@@ -96,17 +77,10 @@ export function parseImage(
 
   try {
     if (mime === 'image/png') {
-      const upngMod: {
-        decode: (b: Uint8Array | ArrayBuffer) => UpngDecoded;
-        toRGBA8: (i: UpngDecoded) => ArrayBuffer[];
-      } = ((UPNG as unknown as { default?: typeof UPNG }).default ?? UPNG) as unknown as {
-        decode: (b: Uint8Array | ArrayBuffer) => UpngDecoded;
-        toRGBA8: (i: UpngDecoded) => ArrayBuffer[];
-      };
-      const decoded = upngMod.decode(bytes);
+      const decoded = UPNG.decode(bytes);
       width = decoded.width;
       height = decoded.height;
-      const frames = upngMod.toRGBA8(decoded);
+      const frames = UPNG.toRGBA8(decoded);
       const first = frames[0];
       if (first === undefined) {
         return err(
@@ -119,19 +93,7 @@ export function parseImage(
       }
       rgba = new Uint8Array(first);
     } else {
-      // image/jpeg
-      const jpegMod: {
-        decode: (
-          b: Uint8Array | ArrayBuffer,
-          o?: { useTArray?: boolean; formatAsRGBA?: boolean },
-        ) => JpegDecoded;
-      } = ((jpeg as unknown as { default?: typeof jpeg }).default ?? jpeg) as unknown as {
-        decode: (
-          b: Uint8Array | ArrayBuffer,
-          o?: { useTArray?: boolean; formatAsRGBA?: boolean },
-        ) => JpegDecoded;
-      };
-      const decoded = jpegMod.decode(bytes, { useTArray: true, formatAsRGBA: true });
+      const decoded = jpeg.decode(bytes, { useTArray: true, formatAsRGBA: true });
       width = decoded.width;
       height = decoded.height;
       rgba = decoded.data;
@@ -169,7 +131,7 @@ export function parseImage(
     bytes: rgba,
     width,
     height,
-    mime: mime as 'image/png' | 'image/jpeg',
+    mime,
     colorSpace: opts.colorSpace ?? 'srgb',
     mipmap: opts.mipmap ?? true,
   });

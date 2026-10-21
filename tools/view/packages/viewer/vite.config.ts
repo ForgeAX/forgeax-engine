@@ -2,12 +2,11 @@ import { panelsChunk, panelsEntry, revisionPlugin } from '../../scripts/build-in
 import { resolve } from 'node:path';
 import { defineConfig } from 'vite';
 import react from '@vitejs/plugin-react';
-import { assetReferenceVitePlugin } from '../../scripts/asset-reference-program.mjs';
 
 const viewHostOrigin = process.env.FORGEAX_VIEW_DEV_HOST_ORIGIN;
 
 export default defineConfig({
-  plugins: [revisionPlugin, assetReferenceVitePlugin, react()],
+  plugins: [revisionPlugin, react()],
   resolve: { dedupe: ['react', 'react-dom'] },
   root: resolve(import.meta.dirname),
   build: {

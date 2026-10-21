@@ -14,7 +14,8 @@
  * scalar form).
  *
  * `.detail = { component, field, fieldType, actualValue, index? }`
- * `.hint` — names the field and points at `AssetRegistry.load + allocSharedRef`.
+ * `.hint` distinguishes non-asset `world.allocSharedRef` values from
+ * `asset<kind>` fields bound directly to `assets.load` or `assets.create` handles.
  */
 export class SharedFieldInvalidValueError extends Error {
   override readonly name = 'SharedFieldInvalidValueError';
@@ -41,8 +42,8 @@ export class SharedFieldInvalidValueError extends Error {
     const hint =
       `'${fieldName}${at}' on '${componentName}' is a ${fieldType} reference; ` +
       `got ${typeof actualValue} (${JSON.stringify(actualValue)}). ` +
-      `Resolve the GUID to a handle first: AssetRegistry.load(guid, kind) then allocSharedRef(...), ` +
-      `and bind the returned numeric handle — not the raw GUID / sidecar object.`;
+      `Allocate non-asset resources with world.allocSharedRef(target, value). ` +
+      `Managed assets use asset<kind> fields and assets.load(guid, kind) or assets.create(value).`;
     super(
       `${componentName}.${fieldName}${at}: shared field bound to a non-handle value.\n` +
         `  code: shared-field-invalid-value\n` +

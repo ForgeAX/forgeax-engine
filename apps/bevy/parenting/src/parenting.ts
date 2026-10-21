@@ -18,13 +18,17 @@ import {
   type EntityHandle,
   type World,
 } from '@forgeax/engine-ecs';
-import { HANDLE_CUBE } from '@forgeax/engine-assets-runtime';
+
 import { ChildOf, Transform } from '@forgeax/engine-scene';
 import { Camera, DirectionalLight, MeshFilter, MeshRenderer } from '@forgeax/engine-render';
 import { perspective } from '@forgeax/engine-render';
 import { Materials } from '@forgeax/engine-render';
-import type { MaterialAsset } from '@forgeax/engine-runtime';
+
 import { quat } from '@forgeax/engine-math';
+import { AssetRegistry } from '@forgeax/engine-assets-runtime';
+
+import { createPrimitiveMesh } from '@forgeax/engine-geometry';
+
 
 /** Rotations per second for the parent cube (Bevy's 3.0 rad/s). */
 export const SPIN_SPEED = 3.0;
@@ -45,15 +49,17 @@ export const Rotator = defineComponent('Rotator', {
  * derives its world position as parent.world × child.local each frame.
  */
 export function buildParentingWorld(world: World): void {
-  const cubeMat = world.allocSharedRef<'MaterialAsset', MaterialAsset>(
-    'MaterialAsset',
-    Materials.standard({ baseColor: [0.8, 0.7, 0.6, 1] }),
-  );
+const sceneAssets = world.assets;
+if (!(sceneAssets instanceof AssetRegistry)) throw new Error('Scene requires its runtime asset owner');
+
+const primitiveCube = sceneAssets.create(createPrimitiveMesh('cube').unwrap()).unwrap();
+
+  const cubeMat = sceneAssets.create(Materials.standard({ baseColor: [0.8, 0.7, 0.6, 1] })).unwrap();
 
   // ── Parent cube, 2×2×2 at (0,0,1), spins about X ─────────────────────
   const parent = world.spawn(
     { component: Transform, data: { pos: [0, 0, 1], quat: [0, 0, 0, 1], scale: [2, 2, 2] } },
-    { component: MeshFilter, data: { assetHandle: HANDLE_CUBE } },
+    { component: MeshFilter, data: { assetHandle: primitiveCube } },
     { component: MeshRenderer, data: { materials: [cubeMat] } },
     { component: Rotator, data: { speed: SPIN_SPEED } },
   ).unwrap();
@@ -61,7 +67,7 @@ export function buildParentingWorld(world: World): void {
   // ── Child cube, 2×2×2 at local (0,0,3) — orbits parent ───────────────
   world.spawn(
     { component: Transform, data: { pos: [0, 0, 3], quat: [0, 0, 0, 1], scale: [2, 2, 2] } },
-    { component: MeshFilter, data: { assetHandle: HANDLE_CUBE } },
+    { component: MeshFilter, data: { assetHandle: primitiveCube } },
     { component: MeshRenderer, data: { materials: [cubeMat] } },
     { component: ChildOf, data: { parent } },
   );

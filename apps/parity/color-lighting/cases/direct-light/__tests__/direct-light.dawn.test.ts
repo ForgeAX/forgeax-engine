@@ -1,9 +1,9 @@
 import { readFileSync, writeFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import Ajv2020 from 'ajv/dist/2020.js';
-import { HANDLE_CUBE } from '@forgeax/engine-assets-runtime';
+import type { AssetRegistry } from '@forgeax/engine-assets-runtime';
 import { World } from '@forgeax/engine-ecs';
-import { createPlaneGeometry } from '@forgeax/engine-geometry';
+import { createPlaneGeometry, createPrimitiveMesh } from '@forgeax/engine-geometry';
 import { readShaderManifestPublication } from '@forgeax/engine-shader';
 import type { TextureAsset } from '@forgeax/engine-types';
 import {
@@ -255,6 +255,7 @@ function createDawnSurface(width: number, height: number): DawnSurface {
 
 function spawnHdrpScene(
   world: World,
+  assets: AssetRegistry,
   sceneCase: SceneCase,
   spotScene?: SpotShadowScene,
   falsifier?: SpotShadowFalsifierId,
@@ -265,13 +266,13 @@ function spawnHdrpScene(
   if (light === undefined) throw new Error(`HDRP case ${sceneCase.caseId} is missing light metadata`);
   const plane = createPlaneGeometry(spotScene?.floor.size[0] ?? 2.8, spotScene?.floor.size[1] ?? 2.8);
   if (!plane.ok) throw new Error(`HDRP plane creation failed: ${plane.error.code}`);
-  const meshHandle = world.allocSharedRef('MeshAsset', plane.value);
-  const materialHandle = world.allocSharedRef('MaterialAsset', Materials.standard({
+  const meshHandle = assets.create(plane.value).unwrap();
+  const materialHandle = assets.create(Materials.standard({
     baseColor: [0.55, 0.55, 0.6, 1],
     metallic: 0,
     roughness: 0.9,
     ...(receiver === 'clearcoat' ? { clearcoat: 1, clearcoatRoughness: 0.2 } : {}),
-  }));
+  })).unwrap();
   world.spawn(
     {
       component: Transform,
@@ -304,11 +305,11 @@ function spawnHdrpScene(
   ).unwrap();
 
   if (spotScene !== undefined && falsifier !== 'no-caster') {
-    const occluderMaterial = world.allocSharedRef('MaterialAsset', Materials.standard({
+    const occluderMaterial = assets.create(Materials.standard({
       baseColor: [0.85, 0.5, 0.25, 1],
       metallic: 0,
       roughness: 0.6,
-    }));
+    })).unwrap();
     const occluderPosition = falsifier === 'reverse-occlusion'
       ? [
         spotScene.occluder.position[0],
@@ -318,7 +319,7 @@ function spawnHdrpScene(
       : spotScene.occluder.position;
     world.spawn(
       { component: Transform, data: { pos: occluderPosition } },
-      { component: MeshFilter, data: { assetHandle: HANDLE_CUBE } },
+      { component: MeshFilter, data: { assetHandle: assets.create(createPrimitiveMesh('cube').unwrap()).unwrap() } },
       { component: MeshRenderer, data: { materials: [occluderMaterial] } },
     ).unwrap();
   }
@@ -337,7 +338,7 @@ function spawnHdrpScene(
   }
   const spot = spotScene?.light;
   const projectorHandle = projectorEnabled
-    ? world.allocSharedRef('TextureAsset', projectorTexture())
+    ? assets.create(projectorTexture()).unwrap()
     : undefined;
   world.spawn(
     { component: Transform, data: { pos: spot?.position ?? [0, 0, 2] } },
@@ -465,7 +466,7 @@ async function capturePipelineEvidence(
     if (renderer.inspect().profile.renderPath !== expectedRenderPath) {
       throw new Error(`direct-light ${pipelineId} selected ${renderer.inspect().profile.renderPath} instead of ${expectedRenderPath}`);
     }
-    const world = new World();
+    const world = new World({ assets: constructed.value.assets });
     const worldAttachment1 = renderer.attach(world);
     if (!worldAttachment1.ok) throw worldAttachment1.error;
     lease = worldAttachment1.value;
@@ -474,7 +475,7 @@ async function capturePipelineEvidence(
       : sceneCase.caseId === 'direct-spot-hdrp'
         ? SPOT_SHADOW_SCENES.hdrp
         : undefined;
-    spawnHdrpScene(world, sceneCase, spotScene, falsifier, receiver, projectorEnabled);
+    spawnHdrpScene(world, constructed.value.assets, sceneCase, spotScene, falsifier, receiver, projectorEnabled);
     world.update().unwrap();
     for (let frame = 0; frame < captureFrames; frame += 1) {
       await drawReadyFrame(renderer, {

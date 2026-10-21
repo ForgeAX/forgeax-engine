@@ -1,3 +1,4 @@
+import { createPrimitiveMesh } from '@forgeax/engine-geometry';
 import testQuality from '../../../../scripts/test/render-quality.json' with { type: 'json' };
 import { shaderManifestUrl as createShaderManifestUrl } from '../../../../packages/runtime/src/__tests__/shader-manifest-url.fixture';
 // hello-scene-nesting dawn smoke — w34 (red phase, TDD).
@@ -12,28 +13,15 @@ import { shaderManifestUrl as createShaderManifestUrl } from '../../../../packag
 // Plan-strategy §5.1 TDD: this test file is written first (red), then w36
 // writes main.ts + fixture to turn it green.
 
-import { dirname, resolve } from 'node:path';
+import { dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import { World } from '@forgeax/engine-ecs';
-import { AssetGuid } from '@forgeax/engine-pack/guid';
-import {
-  ChildOf,
-  Children,
-  Transform,
-  worldInstantiateScene,
-  worldSetSceneAssetResolver,
-} from '@forgeax/engine-scene';
-import {
-  Camera,
-  DirectionalLight,
-  MeshFilter,
-  MeshRenderer,
-} from '@forgeax/engine-render';
+import { ChildOf, Children, Transform, worldInstantiateScene } from '@forgeax/engine-scene';
+import { Camera, DirectionalLight, MeshFilter, MeshRenderer } from '@forgeax/engine-render';
 import { Materials, SceneInstance } from '@forgeax/engine-render';
 import { constructRuntimeRendererHost } from '@forgeax/engine-runtime/internal/renderer-host';
-import type { Handle, SceneAsset } from '@forgeax/engine-types';
-import { err, ok } from '@forgeax/engine-types';
+import type { SceneAsset } from '@forgeax/engine-types';
 import { describe, expect, it } from 'vitest';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
@@ -50,10 +38,6 @@ const ENGINE_MANIFEST = await buildEngineShaderManifest();
 const MANIFEST_URL = createShaderManifestUrl(ENGINE_MANIFEST);
 
 // ─── Helpers ─────────────────────────────────────────────────────────────
-
-function registerManagedRef(world: World, asset: SceneAsset): Handle<'SceneAsset', 'shared'> {
-  return world.allocSharedRef('SceneAsset', asset);
-}
 
 function registerSceneComponents(world: World): void {
   for (const component of [
@@ -93,10 +77,13 @@ describe('hello-scene-nesting w34 - dawn draw scene with mount (AC-33)', () => {
         cube: {
           components: {
             Transform: {
-              pos: [0, 0.5, 0], quat: [0, 0, 0, 1], scale: [0.5, 0.5, 0.5],},
+              pos: [0, 0.5, 0],
+              quat: [0, 0, 0, 1],
+              scale: [0.5, 0.5, 0.5],
+            },
             MeshFilter: { assetHandle: 1 },
             MeshRenderer: { materials: [] },
-          } as Record<string, unknown>,
+          },
         },
       },
     };
@@ -109,7 +96,10 @@ describe('hello-scene-nesting w34 - dawn draw scene with mount (AC-33)', () => {
         sibling: {
           components: {
             Transform: {
-              pos: [0, 0, 0], quat: [0, 0, 0, 1], scale: [1, 1, 1],},
+              pos: [0, 0, 0],
+              quat: [0, 0, 0, 1],
+              scale: [1, 1, 1],
+            },
           },
         },
         inner: {
@@ -177,7 +167,11 @@ describe('hello-scene-nesting w34 - dawn draw scene with mount (AC-33)', () => {
 
     let host: Awaited<ReturnType<typeof constructRuntimeRendererHost>>;
     try {
-      host = await constructRuntimeRendererHost(mockCanvas, {}, { shaderManifestUrl: MANIFEST_URL });
+      host = await constructRuntimeRendererHost(
+        mockCanvas,
+        {},
+        { shaderManifestUrl: MANIFEST_URL },
+      );
     } finally {
       globalThis.navigator.gpu.requestAdapter = originalRequestAdapter;
     }
@@ -187,41 +181,51 @@ describe('hello-scene-nesting w34 - dawn draw scene with mount (AC-33)', () => {
 
     // ── 3. Register inner scene in World + wire resolver ─────────────────
 
-    const world = new World();
+    const world = new World({ assets: assets });
     registerSceneComponents(world);
     const worldAttachment1 = renderer.attach(world);
     if (!worldAttachment1.ok) throw worldAttachment1.error;
 
-    // Catalog a material (unlit) so the scene's GUID ref resolves.
-    const unlitMatGuidResult = AssetGuid.parse('008e4f75-e7a3-4715-b05b-b93a9ec12074');
-    if (!unlitMatGuidResult.ok) return;
-    assets.catalog(unlitMatGuidResult.value, Materials.unlit([0.8, 0.4, 0.2, 1]));
-
-    // Register inner scene as a managed ref so _resolveSceneAsset works.
-    const innerHandle = registerManagedRef(world, innerScene);
-
-    // Wire the keyed instance source on the parent outer handle -> innerHandle.
-    // Outer scene is instantiated first; its instance source resolves to
-    // the inner handle.
-    let outerHandleVal: number | undefined;
-    worldSetSceneAssetResolver(world, (sourceKey: string | number, parentHandle: Handle<'SceneAsset', 'shared'>) => {
-      void sourceKey;
-      const parentRaw = parentHandle as unknown as number;
-      if (outerHandleVal !== undefined && parentRaw === outerHandleVal) {
-        return ok(innerHandle);
-      }
-      return err({ code: 'asset-not-found', expected: 'source index resolved', hint: 'no match' });
-    });
-
-    // Register outer scene as a managed ref.
-    const outerHandle = registerManagedRef(world, outerScene);
-    outerHandleVal = outerHandle as unknown as number;
+    const mesh = assets.create(createPrimitiveMesh('cube').unwrap()).unwrap();
+    const material = assets.create(Materials.unlit([0.8, 0.4, 0.2, 1])).unwrap();
+    const innerHandle = assets
+      .create({
+        ...innerScene,
+        entities: {
+          cube: {
+            components: {
+              ...innerScene.entities.cube?.components,
+              MeshFilter: { assetHandle: mesh },
+              MeshRenderer: { materials: [material] },
+            },
+          },
+        },
+      })
+      .unwrap();
+    const nested = outerScene.entities.inner;
+    if (nested?.instance === undefined)
+      throw new Error('Nested scene fixture is missing its source');
+    const outerHandle = assets
+      .create({
+        ...outerScene,
+        entities: {
+          ...outerScene.entities,
+          inner: { ...nested, instance: { ...nested.instance, source: innerHandle } },
+        },
+      })
+      .unwrap();
 
     // ── 4. Camera + light ───────────────────────────────────────────────
 
     world.spawn(
-      { component: Transform, data: {
-        pos: [0, 1, 3], quat: [0, 0, 0, 1], scale: [1, 1, 1],} },
+      {
+        component: Transform,
+        data: {
+          pos: [0, 1, 3],
+          quat: [0, 0, 0, 1],
+          scale: [1, 1, 1],
+        },
+      },
       { component: Camera, data: { fov: 60, aspect: WIDTH / HEIGHT, near: 0.1, far: 100 } },
     );
     world.spawn({
@@ -230,7 +234,8 @@ describe('hello-scene-nesting w34 - dawn draw scene with mount (AC-33)', () => {
         mapSize: testQuality.shadowMapSize,
         cascadeCount: testQuality.cascadeCount,
         direction: [-0.3, -1.0, -0.5],
-        color: [1.0, 0.95, 0.9], intensity: 1.0,
+        color: [1.0, 0.95, 0.9],
+        intensity: 1.0,
       },
     });
 

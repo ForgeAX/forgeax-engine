@@ -8,11 +8,24 @@
     "rootDir": "./src",
     "tsBuildInfoFile": "./dist/.tsbuildinfo"
   },
-  "include": ["src/**/*"],
+  "include": [
+    "src/**/*"
+  ],
   "references": [
-    { "path": "../ecs" },
-    { "path": "../math" },
-    { "path": "../types" },
-    { "path": "../pack" }
+    {
+      "path": "../ecs"
+    },
+    {
+      "path": "../math"
+    },
+    {
+      "path": "../types"
+    },
+    {
+      "path": "../pack"
+    }
+  ],
+  "exclude": [
+    "src/**/__tests__/**/*.ts"
   ]
 }

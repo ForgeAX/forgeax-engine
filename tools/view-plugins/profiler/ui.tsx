@@ -26,7 +26,7 @@ function ProfilePanel({ readCapture }: { readCapture: (bytes: string) => Result 
   <button onClick={() => input.current?.click()}>Open capture</button><input ref={input} type="file" accept=".json" hidden onChange={event => void load(event.target.files?.[0])} /></header>
   {error && <p role="alert">{error}</p>}
   {!model && !error && <p className="fx-profile-empty">Select a real Engine capture. No runtime or GPU is started by this page.</p>}
-  {model && <><h2>{name}</h2><div className="fx-profile-summary"><span>{model.summary.frameCount} frames</span><span>{model.summary.recordCount} records</span><span>P95 {model.summary.p95DurationMicros ?? '—'} µs</span><span>{model.completeness.status}</span></div>
+  {model && <><h2>{name}</h2><div className="fx-profile-summary"><span>{model.summary.frameCount} frames</span><span>{model.summary.recordCount} records</span><span>P95 {model.summary.p95DurationMicros ?? '—'} µs</span><span>{model.summary.completeness.status}</span></div>
   <svg viewBox="0 0 1000 180" role="img" aria-label="Frame CPU durations" data-profile-frames={model.frames.length}>
    {model.frames.map((frame, i) => <rect key={frame.frameId} x={i * 1000 / model.frames.length} y={170 - frame.durationMicros / max * 160} width={Math.max(1, 1000 / model.frames.length - 1)} height={frame.durationMicros / max * 160} fill="currentColor"><title>Frame {frame.frameId}: {frame.durationMicros} µs</title></rect>)}
   </svg><table><thead><tr><th>Source / phase</th><th>Samples</th><th>Skipped</th><th>P95 (µs)</th></tr></thead><tbody>{model.phases.map((phase,i) => <tr key={i}><td>{phase.source} / {phase.phase}</td><td>{phase.count}</td><td>{phase.skipCount}</td><td>{phase.p95DurationMicros ?? '—'}</td></tr>)}</tbody></table></>}

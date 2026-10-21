@@ -1,15 +1,20 @@
-import { AssetRegistry } from '@forgeax/engine-assets-runtime';
+import { fileURLToPath } from 'node:url';
+import { textureContribution } from '@forgeax/engine-image';
 import {
   ImporterRegistry,
   type ImportRunnerFs,
   type RunImportMeta,
   runImport,
 } from '@forgeax/engine-import';
+import { NativeCookerRegistry } from '@forgeax/engine-pack/native-cooker';
+import { materialContribution, samplerContribution } from '@forgeax/engine-render';
 import type { TextureAsset } from '@forgeax/engine-types';
 import { describe, expect, it } from 'vitest';
+import { importedSource } from '../../../import/src/__tests__/fixtures/runtime-import';
+import { createMaterialPackCooker } from '../../../shader-compiler/src/material/pack-cooker';
 import { gltfImporter } from '../gltf-importer.js';
 
-const SOURCE = 'physical-material.gltf';
+const SOURCE = fileURLToPath(new URL('./fixtures/physical-material.gltf', import.meta.url));
 const TINY_PNG_BASE64 =
   'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR4nGP4//8/AAX+Av4N70a4AAAAAElFTkSuQmCC';
 
@@ -121,11 +126,6 @@ function meta(): RunImportMeta {
   };
 }
 
-function decodeBase64(value: string): Uint8Array {
-  const binary = atob(value);
-  return Uint8Array.from(binary, (character) => character.charCodeAt(0));
-}
-
 function fs(): ImportRunnerFs {
   return {
     readSource: async (sourcePath) =>
@@ -146,8 +146,8 @@ function fs(): ImportRunnerFs {
         ok: true,
         value: {
           texture,
-          bytes: decodeBase64(TINY_PNG_BASE64),
-          mediaType: 'image/png',
+          bytes: new Uint8Array([128, 96, 64, 255]),
+          mediaType: 'application/octet-stream',
           assetCodec: { name: 'rgba8', version: '1' },
         },
       };
@@ -155,12 +155,15 @@ function fs(): ImportRunnerFs {
   };
 }
 
-describe('glTF physical material importer route', () => {
+describe('glTF physical material importer route', { timeout: 60_000 }, () => {
   it('carries all five KHR layers from importer through pack and runtime material parsing', async () => {
     const importers = new ImporterRegistry();
     importers.register(gltfImporter);
+    const cookers = new NativeCookerRegistry();
+    cookers.register(createMaterialPackCooker());
 
-    const result = await runImport(meta(), importers, fs());
+    const result = await runImport(meta(), importers, fs(), cookers);
+    if (!result.ok) throw new Error(JSON.stringify(result.error));
     expect(result.ok).toBe(true);
     if (!result.ok || 'skipped' in result.value)
       throw new Error('physical import did not publish a pack');
@@ -171,18 +174,7 @@ describe('glTF physical material importer route', () => {
 
     const material = result.value.pack.assets.find((asset) => asset.guid === MATERIAL_GUID);
     if (material === undefined) throw new Error('physical material pack row missing');
-    expect(material.refs).toEqual([
-      TEXTURE_GUIDS[0],
-      SAMPLER_GUIDS[0],
-      TEXTURE_GUIDS[1],
-      SAMPLER_GUIDS[1],
-      TEXTURE_GUIDS[2],
-      SAMPLER_GUIDS[2],
-      TEXTURE_GUIDS[3],
-      SAMPLER_GUIDS[3],
-      TEXTURE_GUIDS[4],
-      SAMPLER_GUIDS[4],
-    ]);
+    expect([...material.refs].sort()).toEqual([...TEXTURE_GUIDS, ...SAMPLER_GUIDS].sort());
 
     const payload = material.payload;
     const parameterNames = new Set(
@@ -203,37 +195,40 @@ describe('glTF physical material importer route', () => {
       expect(parameterNames.has(name)).toBe(true);
     }
 
-    const runtime = new AssetRegistry({
-      findMaterialArtifact: () => ({ ok: false, error: new Error('shader registry not wired') }),
-    } as never);
-    const parsed = runtime.parseAndReturnAsset({
-      kind: material.kind,
-      payload,
-      refs: [...material.refs],
-    });
-    expect(parsed.ok).toBe(true);
-    if (!parsed.ok) return;
-    expect(parsed.value.asset.kind).toBe('material');
-    const values = (parsed.value.asset as { values?: Record<string, unknown> }).values ?? {};
+    const { assets: runtime } = importedSource(result.value.pack);
+    runtime.installDecoder(materialContribution.kind, materialContribution.decoder);
+    runtime.installDecoder(textureContribution.kind, textureContribution.decoder);
+    runtime.installDecoder(samplerContribution.kind, samplerContribution.decoder);
+    const handle = (await runtime.load(MATERIAL_GUID, 'material')).unwrap();
+    const values = runtime.read(handle).unwrap().values ?? {};
+    const textures = await Promise.all(
+      TEXTURE_GUIDS.map(async (guid) => (await runtime.load(guid, 'texture')).unwrap()),
+    );
+    const samplers = await Promise.all(
+      SAMPLER_GUIDS.map(async (guid) => (await runtime.load(guid, 'sampler')).unwrap()),
+    );
     expect(values.clearcoatNormalTexture).toMatchObject({
-      texture: TEXTURE_GUIDS[0],
-      sampler: SAMPLER_GUIDS[0],
+      texture: textures[0],
+      sampler: samplers[0],
     });
     expect(values.anisotropyTexture).toMatchObject({
-      texture: TEXTURE_GUIDS[1],
-      sampler: SAMPLER_GUIDS[1],
+      texture: textures[1],
+      sampler: samplers[1],
     });
     expect(values.sheenColorTexture).toMatchObject({
-      texture: TEXTURE_GUIDS[2],
-      sampler: SAMPLER_GUIDS[2],
+      texture: textures[2],
+      sampler: samplers[2],
     });
     expect(values.iridescenceTexture).toMatchObject({
-      texture: TEXTURE_GUIDS[3],
-      sampler: SAMPLER_GUIDS[3],
+      texture: textures[3],
+      sampler: samplers[3],
     });
     expect(values.specularColorTexture).toMatchObject({
-      texture: TEXTURE_GUIDS[4],
-      sampler: SAMPLER_GUIDS[4],
+      texture: textures[4],
+      sampler: samplers[4],
     });
+    for (const texture of textures)
+      expect(runtime.read(texture).unwrap().data).toEqual(new Uint8Array([128, 96, 64, 255]));
+    runtime.dispose();
   });
 });

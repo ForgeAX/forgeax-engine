@@ -1,17 +1,3 @@
-// feat-20260713-animation-state-machine-plugin M3 / w21 — DAG eval fills the
-// variable N-slot columns (AC-08).
-//
-// AC-08: post-order DAG evaluation spreads each Clip leaf's effective weight
-// into the variable-length weights[] / clips[] columns; a single eval frame is
-// then a valid input to advanceAnimationPlayer's N-way blend. This test drives a
-// 5-child Blend (proving the retired 4-slot cap is gone) and asserts the derived
-// slot distribution equals the expected normalized shares, that clips[] carry
-// the source handles in leaf order, and that the derived columns feed advance
-// without a length fault.
-//
-// TDD red anchor: before w24 + w25 the file fails to compile; after them the
-// slots read back at the expected distribution.
-
 import {
   AnimationPlayer,
   advanceAnimationPlayer,
@@ -22,20 +8,11 @@ import type { EntityHandle } from '@forgeax/engine-ecs';
 import { World } from '@forgeax/engine-ecs';
 import type { AnimationClip } from '@forgeax/engine-types';
 import { describe, expect, it } from 'vitest';
+import { testAssets } from './helpers/runtime-assets';
 
-function registerClip(world: World, duration: number): number {
+function registerClip(world: World, duration: number) {
   const clip: AnimationClip = { kind: 'animation-clip', duration, channels: [] };
-  return world.allocSharedRef('AnimationClip', clip) as unknown as number;
-}
-
-const lookupClip = (_guid: string): AnimationClip => ({
-  kind: 'animation-clip',
-  duration: 10,
-  channels: [],
-});
-
-function asClipGuid(raw: number): string {
-  return `test/animation-clip-${raw}`;
+  return testAssets(world).create(clip).unwrap();
 }
 
 interface Slots {
@@ -57,18 +34,18 @@ describe('evaluateAnimationGraph — variable N-slot fill (M3 / w21)', () => {
     // Blend of FIVE equal-weight clips -> normalized 0.2 each; 5 > 4 proves the
     // fixed 4-slot cap is retired.
     const built = defineAnimationGraph((b) => {
-      const leaves = handles.map((h) => b.clip(asClipGuid(h)));
+      const leaves = handles.map((h) => b.clip(h));
       return b.blend(leaves);
     });
     expect(built.ok).toBe(true);
     if (!built.ok) return;
-    const graphH = world.allocSharedRef('AnimationGraph', built.value);
+    const graphH = testAssets(world).create(built.value).unwrap();
 
     const e = world
       .spawn({ component: AnimationPlayer, data: { graph: graphH } })
       .unwrap() as EntityHandle;
 
-    evaluateAnimationGraph(world, 0, lookupClip);
+    evaluateAnimationGraph(world, 0);
 
     const ap = readSlots(world, e);
     expect(ap.clips.length).toBe(5);
@@ -78,7 +55,7 @@ describe('evaluateAnimationGraph — variable N-slot fill (M3 / w21)', () => {
 
     for (let i = 0; i < 5; i++) {
       // clips[] carry the leaf handles in construction (leaf) order.
-      expect(ap.clips[i]).toBeGreaterThan(0);
+      expect(ap.clips[i]).toBe(handles[i]);
       // Each of five equal leaves gets a normalized 0.2 share.
       expect(ap.weights[i]).toBeCloseTo(0.2, 5);
       // Derived path parks speeds[]=0 (eval owns the seek-time, D-7).

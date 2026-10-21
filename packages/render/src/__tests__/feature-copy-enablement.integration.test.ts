@@ -142,3 +142,91 @@ it('records exactly the live ordered copies through one retained real host/graph
     host.dispose();
   }
 });
+
+it.each([
+  false,
+  true,
+])('projects ordered upload slices with one destination (read/write alias=%s)', async (alias) => {
+  const device = (await (await rhi.requestAdapter()).unwrap().requestDevice()).unwrap();
+  const gpu = createRenderFeatureGpuWorkOwner({
+    getDevice: () => device,
+    getShaderModuleFactory: () => ({
+      createShaderModule: () => {
+        throw new Error('Copies do not compile shaders');
+      },
+    }),
+  });
+  const current: RenderFeatureWorkPlan = {
+    ...plan(),
+    passes: [
+      {
+        kind: 'copy',
+        name: 'field-uploads',
+        copies: alias
+          ? [
+              { source: 'a', destination: 'b', size: 8 },
+              { source: 'b', destination: 'c', size: 8 },
+            ]
+          : [
+              { source: 'a', destination: 'c', size: 8 },
+              { source: 'b', destination: 'c', size: 4, destinationOffset: 8 },
+              { source: 'b', destination: 'c', size: 4, sourceOffset: 4, destinationOffset: 12 },
+            ],
+      },
+    ],
+  };
+  const host = createRenderFeatureHost([
+    {
+      identity: 'field-uploads',
+      extract: () => ok(undefined),
+      plan: () => ok({ work: [{ ...current, scope: { view: 'main' } }] }),
+    },
+  ]).unwrap();
+  try {
+    const frame = runSingleViewFeatureFrame(host, {
+      worlds: [],
+      owner: 0,
+      frameNumber: 1,
+      caps: device.caps,
+      gpuWork: gpu,
+      generation: 0,
+    });
+    expect(frame.errors).toEqual([]);
+    const planned = frame.plans[0];
+    if (planned === undefined) throw new Error('Missing upload plan');
+    const execution = getRenderFeaturePlanExecutionProjection(planned);
+    if (execution === undefined) throw new Error('Missing upload execution');
+    const builder = new RenderGraphBuilder<RenderFeatureExecutionFrame>();
+    const projected = new RenderFeatureComputeGraphProjection(builder).addPasses(execution.passes);
+    projected.unwrap();
+    const compiled = builder.compile({ device, surfaceSize: { width: 1, height: 1 } });
+    if (alias) {
+      expect(compiled).toMatchObject({ ok: false, error: { code: 'access-conflict' } });
+      return;
+    }
+    const graph = compiled.unwrap();
+    try {
+      const encoder = device.createCommandEncoder().unwrap();
+      const copy = vi.spyOn(encoder, 'copyBufferToBuffer');
+      graph.execute({ encoder, featureExecutions: [execution] }).unwrap();
+      expect(copy.mock.calls).toEqual(
+        execution.passes
+          .flatMap((pass) => pass.resolvedGpuCopies ?? [])
+          .map((entry) => [
+            entry.source.buffer,
+            entry.sourceOffset,
+            entry.destination.buffer,
+            entry.destinationOffset,
+            entry.size,
+          ]),
+      );
+      expect(copy).toHaveBeenCalledTimes(3);
+      frame.onSubmitted();
+    } finally {
+      await graph.retire();
+    }
+  } finally {
+    gpu.dispose().unwrap();
+    host.dispose();
+  }
+});

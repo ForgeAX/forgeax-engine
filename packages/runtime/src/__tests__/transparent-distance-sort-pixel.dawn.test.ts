@@ -1,13 +1,14 @@
 import testQuality from '../../../../scripts/test/render-quality.json' with { type: 'json' };
 import { shaderManifestUrl } from './shader-manifest-url.fixture';
+
 // Distance-mode transparent sorting must decide the blended draw order on the
 // real record path. Unlit publishes a ShadowCaster pass in the opaque queue;
 // those entries must not pin the view rows to spawn order ahead of the sorted
 // transparent entries. The far panel is spawned last, so a spawn-order draw
 // puts it on top from the front camera.
 
-import { HANDLE_CUBE } from '@forgeax/engine-assets-runtime';
 import { World } from '@forgeax/engine-ecs';
+import { createBoxGeometry } from '@forgeax/engine-geometry';
 import {
   Camera,
   DirectionalLight,
@@ -140,11 +141,12 @@ describe('transparent distance sort (dawn)', () => {
       globalThis.navigator.gpu.requestAdapter = originalRequestAdapter;
     }
     if (!host.ok) throw host.error;
-    const { renderer } = host.value;
+    const { renderer, assets } = host.value;
     const device = sharedDevice;
     if (device === undefined) throw new Error('GPUDevice not captured');
 
-    const world = new World();
+    const world = new World({ assets });
+    const cube = assets.create(createBoxGeometry(1, 1, 1).unwrap()).unwrap();
     const attachment = renderer.attach(world);
     if (!attachment.ok) throw attachment.error;
     TransparentSort.configure(world, { mode: TransparentSort.distance, yzAlpha: 1 });
@@ -153,15 +155,16 @@ describe('transparent distance sort (dawn)', () => {
       world
         .spawn(
           { component: Transform, data: { pos: [0, 0, z], scale: [2, 2, 0.05] } },
-          { component: MeshFilter, data: { assetHandle: HANDLE_CUBE } },
+          { component: MeshFilter, data: { assetHandle: cube } },
           {
             component: MeshRenderer,
             data: {
               materials: [
-                world.allocSharedRef(
-                  'MaterialAsset',
-                  Materials.unlit(rgba, { queue: RenderQueue.Transparent, renderState: BLEND }),
-                ),
+                assets
+                  .create(
+                    Materials.unlit(rgba, { queue: RenderQueue.Transparent, renderState: BLEND }),
+                  )
+                  .unwrap(),
               ],
             },
           },

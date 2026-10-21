@@ -26,3 +26,17 @@ it('keeps earlier gesture snapshots usable after a later frame moves or cancels 
   const swipe = processGestureFrame([event('up', 100)], new Map(), down, 100);
   expect(swipe.gestureEvents).toMatchObject([{ kind: 'swipe', direction: 'right' }]);
 });
+
+it('consumes long-press arming once and rearms only on a new down', () => {
+  const pointers = new Map([[1, pointer]]);
+  const down = processGestureFrame([event('down')], pointers, createRecognizerState(), 0).newState;
+  const fired = processGestureFrame([], pointers, down, 501);
+  expect(fired.gestureEvents.filter((event) => event.kind === 'long-press')).toHaveLength(1);
+  const moved = processGestureFrame([event('move', 20)], pointers, fired.newState, 600).newState;
+  expect(processGestureFrame([], pointers, moved, 1100).gestureEvents).toEqual([]);
+  const again = processGestureFrame([event('up'), event('down')], pointers, moved, 1200).newState;
+  expect(processGestureFrame([], pointers, again, 1701).gestureEvents).toMatchObject([
+    { kind: 'long-press', pointerId: 1 },
+  ]);
+  expect(processGestureFrame([], pointers, down, 501).gestureEvents).toEqual(fired.gestureEvents);
+});

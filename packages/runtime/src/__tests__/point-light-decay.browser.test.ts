@@ -20,6 +20,7 @@ import { commands } from 'vitest/browser';
 import { completeReadyFrame } from '../../../../scripts/test/ready-render-frame.mjs';
 import { constructRuntimeRendererHost } from '../renderer-host';
 import { luminanceRgba16f } from './contact-shadow.fixture';
+import { testAssets } from './helpers/runtime-assets';
 import { collectWebGpuValidationErrors } from './webgpu-validation.fixture';
 
 function value<T>(result: RenderResult<T, unknown> | undefined): T {
@@ -77,14 +78,17 @@ it.each([
     const off = renderer.subscribe((event) => {
       if (event.kind === 'error') errors.push(event.error);
     });
-    const world = new World();
-    const mesh = world.allocSharedRef('MeshAsset', createBoxGeometry(2, 2, 0.1).unwrap());
-    const material = world.allocSharedRef(
-      'MaterialAsset',
-      mode === 'volume'
-        ? Materials.unlit([0, 0, 0, 1])
-        : Materials.standard({ baseColor: [0.5, 0.5, 0.5, 1], roughness: 1, metallic: 0 }),
-    );
+    const world = new World({ assets });
+    const mesh = testAssets(world)
+      .create(createBoxGeometry(2, 2, 0.1).unwrap())
+      .unwrap();
+    const material = testAssets(world)
+      .create(
+        mode === 'volume'
+          ? Materials.unlit([0, 0, 0, 1])
+          : Materials.standard({ baseColor: [0.5, 0.5, 0.5, 1], roughness: 1, metallic: 0 }),
+      )
+      .unwrap();
     world
       .spawn(
         { component: Transform, data: { pos: [0, 0, -4] } },
@@ -118,14 +122,16 @@ it.each([
       .unwrap();
     const density =
       mode === 'volume'
-        ? world.allocSharedRef('TextureAsset', {
-            kind: 'texture',
-            shape: { viewDimension: '3d', extent: { width: 2, height: 2, depth: 2 } },
-            format: 'rgba8unorm',
-            colorSpace: 'linear',
-            mips: { kind: 'none' },
-            data: new Uint8Array(32).fill(255),
-          })
+        ? testAssets(world)
+            .create({
+              kind: 'texture',
+              shape: { viewDimension: '3d', extent: { width: 2, height: 2, depth: 2 } },
+              format: 'rgba8unorm',
+              colorSpace: 'linear',
+              mips: { kind: 'none' },
+              data: new Uint8Array(32).fill(255),
+            })
+            .unwrap()
         : undefined;
     if (density !== undefined)
       world
@@ -293,10 +299,10 @@ it.each([
     } finally {
       off();
       publisher?.dispose();
+      testAssets(world).release(mesh).unwrap();
+      testAssets(world).release(material).unwrap();
+      if (density !== undefined) testAssets(world).release(density).unwrap();
       value(await renderer.dispose());
-      world.sharedRefs.release(mesh).unwrap();
-      world.sharedRefs.release(material).unwrap();
-      if (density !== undefined) world.sharedRefs.release(density).unwrap();
       (await recorder.dispose()).unwrap();
       canvas.remove();
     }

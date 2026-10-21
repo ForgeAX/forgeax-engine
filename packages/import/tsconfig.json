@@ -12,6 +12,7 @@
     "types": ["node"]
   },
   "include": ["src/**/*"],
+  "exclude": ["src/**/__tests__/**/*.ts"],
   "references": [
     { "path": "../ddc" },
     { "path": "../geometry" },

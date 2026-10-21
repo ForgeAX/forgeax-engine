@@ -15,7 +15,8 @@ export default defineProject({
     name: '@forgeax/engine-gltf',
     typecheck: {
       enabled: true,
-      tsconfig: './tsconfig.json',
+      tsconfig: './tsconfig.test.json',
+      include: ['src/**/*.test.ts', 'src/**/*.test-d.ts'],
     },
     include: [
       'src/**/__tests__/**/*.test.ts',

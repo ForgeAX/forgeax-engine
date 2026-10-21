@@ -43,6 +43,7 @@ import {
   VOLUMETRIC_FOG_PARAMS_BYTES,
 } from '../volume/resources';
 import { resolveVolumeTemporalReset } from '../volume/temporal';
+import { testAssets } from './helpers/runtime-assets';
 import { standardPbrManifestRow } from './shader-manifest-fixture';
 
 const MAX_MEMORY_BYTES = 48 * 1024 * 1024;
@@ -239,7 +240,7 @@ describe('volumetric fog budget and recovery contract', () => {
           component: VolumetricFog,
           data: {
             light,
-            density: world.allocSharedRef('TextureAsset', densityAsset()),
+            density: testAssets(world).create(densityAsset()).unwrap(),
             boundsMin: [x - 0.4, -0.4, -18],
             boundsMax: [x + 0.4, 0.4, -16],
             extinction: [0.2, 0.2, 0.2],
@@ -329,7 +330,7 @@ describe('volumetric fog budget and recovery contract', () => {
           component: VolumetricFog,
           data: {
             light,
-            density: world.allocSharedRef('TextureAsset', densityAsset()),
+            density: testAssets(world).create(densityAsset()).unwrap(),
             boundsMin: min,
             boundsMax: [min[0] + 2, min[1] + 2, min[2] + 2],
             extinction: [0.2, 0.2, 0.2],
@@ -738,12 +739,13 @@ describe('volumetric fog budget and recovery contract', () => {
     const { renderer } = created.value;
     const world = new World();
     const scalar = densityAsset();
-    const density = world.allocSharedRef(
-      'TextureAsset',
-      sampling === 2
-        ? { ...scalar, format: 'rgba8unorm', data: new Uint8Array(4 * 64 ** 3).fill(32) }
-        : scalar,
-    );
+    const density = testAssets(world)
+      .create(
+        sampling === 2
+          ? { ...scalar, format: 'rgba8unorm', data: new Uint8Array(4 * 64 ** 3).fill(32) }
+          : scalar,
+      )
+      .unwrap();
     world
       .spawn(
         { component: Transform, data: { pos: [0, 0, 3] } },
@@ -922,7 +924,7 @@ describe('volumetric fog budget and recovery contract', () => {
     ).toHaveLength(3);
 
     const world = new World();
-    const density = world.allocSharedRef('TextureAsset', densityAsset());
+    const density = testAssets(world).create(densityAsset()).unwrap();
     world
       .spawn(
         { component: Transform, data: { pos: [0, 0, 3] } },

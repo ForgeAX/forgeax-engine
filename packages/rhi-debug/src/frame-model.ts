@@ -12,7 +12,7 @@ import {
   isWorkEvent,
   resourceKindForEvent,
 } from './protocol/event-semantics';
-import type { TapeWorkEntry } from './protocol/tape-index';
+import type { TapePassEntry, TapeWorkEntry } from './protocol/tape-index';
 import { buildTapeIndex } from './protocol/tape-index';
 import type { Tape as V7Tape } from './protocol/types';
 import { computeTextureLayout, projectTextureExtent } from './texel-layout';
@@ -35,12 +35,8 @@ export interface CommandEntry {
   readonly marker?: string;
 }
 
-export interface FramePass {
-  readonly passIndex: number;
-  readonly kind: 'render' | 'compute';
-  readonly beginEventIndex: number;
+export interface FramePass extends Omit<TapePassEntry, 'endEventIndex'> {
   readonly endEventIndex: number | null;
-  readonly workIndices: readonly number[];
   readonly commandIndices: readonly number[];
   colorAttachmentViewHandleIds: readonly string[];
   /**
@@ -99,19 +95,34 @@ export interface WorkAccelerationStructure {
   readonly blasHandleIds: readonly string[];
 }
 
-export interface WorkPipeline {
-  readonly status: 'available' | 'unavailable';
-  readonly pipelineHandleId?: string;
-  readonly kind?: 'render' | 'compute';
-  readonly descriptor?: JsonValue;
-  readonly shaders: readonly {
-    readonly stage: 'vertex' | 'fragment' | 'compute';
-    readonly moduleHandleId: string;
-    readonly entryPoint: string | null;
-    readonly source: string | null;
-  }[];
-  readonly reason?: 'pipeline-not-bound' | 'descriptor-unavailable';
-}
+export type WorkPipeline =
+  | {
+      readonly status: 'available';
+      readonly pipelineHandleId: string;
+      readonly kind: 'render' | 'compute';
+      readonly descriptor: JsonValue;
+      readonly shaders: readonly {
+        readonly stage: 'vertex' | 'fragment' | 'compute';
+        readonly moduleHandleId: string;
+        readonly entryPoint: string | null;
+        readonly source: string | null;
+      }[];
+      readonly reason?: never;
+    }
+  | {
+      readonly status: 'unavailable';
+      readonly reason: 'pipeline-not-bound' | 'descriptor-unavailable';
+      readonly shaders: readonly [];
+      readonly pipelineHandleId?: never;
+      readonly kind?: never;
+      readonly descriptor?: never;
+    };
+
+type PipelineEvent = Extract<
+  RhiCallEvent,
+  { kind: 'createRenderPipeline' | 'createComputePipeline' }
+>;
+type ShaderEvent = Extract<RhiCallEvent, { kind: 'createShaderModule' }>;
 
 export interface WorkEntry extends TapeWorkEntry {
   readonly commandIndex: number;
@@ -233,8 +244,8 @@ function bindingAccess(
 
 function workPipeline(
   pipelineId: string | undefined,
-  pipelineEvents: ReadonlyMap<string, RhiCallEvent>,
-  shaderEvents: ReadonlyMap<string, RhiCallEvent>,
+  pipelineEvents: ReadonlyMap<string, PipelineEvent>,
+  shaderEvents: ReadonlyMap<string, ShaderEvent>,
 ): WorkPipeline {
   if (pipelineId === undefined)
     return { status: 'unavailable', shaders: [], reason: 'pipeline-not-bound' };
@@ -245,20 +256,22 @@ function workPipeline(
   const shaderRefs =
     event.kind === 'createRenderPipeline'
       ? [
-          ['vertex', event.vertexShaderModuleHandleId, event.desc.vertex?.entryPoint],
-          ['fragment', event.fragmentShaderModuleHandleId, event.desc.fragment?.entryPoint],
+          ['vertex', event.vertexShaderModuleHandleId, event.desc.vertex?.entryPoint] as const,
+          [
+            'fragment',
+            event.fragmentShaderModuleHandleId,
+            event.desc.fragment?.entryPoint,
+          ] as const,
         ]
-      : event.kind === 'createComputePipeline'
-        ? [['compute', event.computeShaderModuleHandleId, event.desc.compute.entryPoint]]
-        : [];
+      : [['compute', event.computeShaderModuleHandleId, event.desc.compute.entryPoint] as const];
   for (const [stage, moduleId, entryPoint] of shaderRefs) {
     if (typeof moduleId !== 'string') continue;
     const shader = shaderEvents.get(moduleId);
     shaders.push({
-      stage: stage as 'vertex' | 'fragment' | 'compute',
+      stage,
       moduleHandleId: moduleId,
       entryPoint: typeof entryPoint === 'string' ? entryPoint : null,
-      source: shader?.kind === 'createShaderModule' ? shader.wgslCode : null,
+      source: shader?.wgslCode ?? null,
     });
   }
   return {
@@ -340,8 +353,8 @@ export function buildFrameModel(tape: V7Tape): FrameModel {
     if (isPop) groupPath.pop();
   }
 
-  const pipelineEvents = new Map<string, RhiCallEvent>();
-  const shaderEvents = new Map<string, RhiCallEvent>();
+  const pipelineEvents = new Map<string, PipelineEvent>();
+  const shaderEvents = new Map<string, ShaderEvent>();
   const bindGroups = new Map<string, Extract<RhiCallEvent, { kind: 'createBindGroup' }>>();
   const bindGroupLayouts = new Map<
     string,

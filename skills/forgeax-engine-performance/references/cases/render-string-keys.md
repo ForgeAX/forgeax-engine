@@ -11,6 +11,9 @@ object tokens, while changed publications still compare sorted string class
 identities. This existing PR3855 improvement reduces reconstruction frequency;
 it does not make every remaining class or PSO key numeric.
 
+The current main/shadow selection owner is identified below; the timing tables
+remain evidence for their recorded source revisions.
+
 Optimize construction, reverse parsing and the work around lookup before
 choosing a different key representation. Existing GUIDs, shader identities and
 pass labels are legitimate text identities; looking them up does not imply that
@@ -20,8 +23,7 @@ new long strings are generated for every draw.
 
 | Owner | Actual key work | Decision |
 | --- | --- | --- |
-| [Shadow claims](../../../../packages/render/src/gpu-driven/shadow-claims.ts) | Membership-backed snapshot misses formerly formatted entity/material/draw strings | Already replaced by a flat numeric bucket index with complete-field collision checks; see [measured case](persistent-scene-prefix.md#numeric-shadow-claim-lookup) |
-| [Main GPU ownership](../../../../packages/render/src/scene/render-scene.ts) and [CPU validation](../../../../packages/render/src/gpu-driven/production-raster.ts) | New snapshot/validation misses still format draw identities before Set lookup; unchanged snapshots/validation can hit their existing memo | High-priority follow-up: carry the admitted numeric draw identity through its existing producer. Preserve material changes, World rebasing and raw mutable-input observations |
+| [Main/shadow draw selection](../../../../packages/render/src/gpu-driven/draw-selection.ts) | Accepted batches are indexed by material resource, World, mesh and source draw; shadow slot lookup searches ordered primitive slots and checks their generations | Shared execution membership replaces the separate entity shadow-claim table and main draw-key Set. Preserve complete geometry/LOD checks; the [earlier claim benchmark](persistent-scene-prefix.md#numeric-shadow-claim-lookup) describes the retired implementation |
 | [Instance chunks](../../../../packages/render/src/record/main-pass-geometry.ts) | Every chunk formats owner/start; every owner then scans the complete cache with a text prefix; [frame cleanup](../../../../packages/render/src/record/fold-buckets.ts) parses every owner prefix again | Implemented here: numeric collection owner owns numeric chunk starts; query and stale-chunk cleanup stay inside that collection |
 | [Filtered contributions](../../../../packages/render/src/gpu-driven/filtered-plan-contributions.ts) | Changed contributions rebuild group keys; unchanged publications return before grouping | Measure churn first. Retained base keys already avoid repeating complete static serialization |
 | [Batch topology](../../../../packages/render/src/gpu-driven/batch-topology.ts) | Batch/LOD JSON and candidate strings are built on membership changes | Do not treat them as unconditional per-frame cost. A replacement needs exact geometry, ABI, LOD and candidate separation |
@@ -95,9 +97,8 @@ emulated uniform capability. It is not real WebGL2 or GPU visual acceptance.
 
 ## Continue from actual ownership
 
-Prioritize the remaining main draw-key consumers when a current capture shows
-frequent snapshot/validation misses. Remove their text roundtrip at the admitted
-draw producer, preserving raw callers' mutable aliases and failure observations.
+Investigate main/shadow membership work through the shared draw-selection owner,
+preserving geometry and LOD validation and primitive generations.
 For grouping/PSO keys, reduce reconstruction frequency before adding numeric
 indexes. Hierarchical containers require a real ownership or data hierarchy,
 such as this collection's blocks; field count alone does not justify layers.

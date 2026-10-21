@@ -35,6 +35,7 @@ import type { StandardClusterGraphBuffers } from './standard-lighting/graph';
 export const DEFERRED_LIGHTING_PARAMS_BYTES = 2 * 4 * Float32Array.BYTES_PER_ELEMENT;
 
 export interface StandardDeferredShaderSources {
+  readonly shadowVariance?: string;
   readonly decalProject?: string;
   readonly decalApply?: string;
   readonly subsurface?: string;
@@ -103,6 +104,7 @@ export function addStandardDeferredLighting(
     readonly ssao?: RenderPipelineTarget;
     readonly directionalShadow?: RenderPipelineTarget;
     readonly spotShadow: RenderPipelineTarget;
+    readonly shadowMoments?: RenderPipelineTarget | undefined;
     readonly pointShadow?: RenderPipelineTarget;
     readonly cloudShadow?: RenderPipelineTarget;
     readonly environment?: GraphEnvironment;
@@ -160,6 +162,7 @@ export function addStandardDeferredLighting(
           ? undefined
           : buildCapsuleShadowFrame(
               light.renderables,
+              internal.materialFrame,
               frame.camera,
               light.direction,
               light.coneHalfAngle,
@@ -224,6 +227,7 @@ export function addStandardDeferredLighting(
       input.ssao,
       input.directionalShadow,
       input.spotShadow,
+      input.shadowMoments,
       input.pointShadow,
       input.cloudShadow,
     ].flatMap((target) => (target === undefined ? [] : [target.view])),
@@ -269,7 +273,7 @@ export function addStandardDeferredLighting(
       const device = frame.runtime.device;
       const usesLut = (internal.validatedOrdered ?? []).some((entry) =>
         entry.source.materials.some((material) =>
-          materialUsesDirectDfgLut(material.materialParamSchema),
+          materialUsesDirectDfgLut(material.snapshot.materialParamSchema),
         ),
       );
       const source =
@@ -347,7 +351,7 @@ export function addStandardDeferredLighting(
                   visibility: 2,
                   texture: {
                     sampleType: 'float' as const,
-                    viewDimension: binding === 10 ? ('2d' as const) : ('cube' as const),
+                    viewDimension: binding === 8 ? ('cube' as const) : ('2d' as const),
                   },
                 })),
                 { binding: 12, visibility: 2, buffer: { type: 'uniform', minBindingSize: 80 } },
@@ -481,6 +485,7 @@ export function addStandardDeferredLighting(
                 },
           directionalShadow: view(input.directionalShadow),
           spotShadow: view(input.spotShadow),
+          shadowMoments: view(input.shadowMoments),
           cloudShadow: view(input.cloudShadow),
           projector: internal.spotLightProjector?.view,
           projectorSampler: internal.spotLightProjector?.sampler,

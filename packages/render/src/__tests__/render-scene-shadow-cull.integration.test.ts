@@ -1,6 +1,7 @@
-import { AssetRegistry, HANDLE_CUBE } from '@forgeax/engine-assets-runtime';
+import { AssetRegistry } from '@forgeax/engine-assets-runtime';
 import { World } from '@forgeax/engine-ecs';
 import { createRenderReadLease } from '@forgeax/engine-ecs/projection';
+import { createPrimitiveMesh } from '@forgeax/engine-geometry';
 import { mat4 } from '@forgeax/engine-math';
 import { registerPropagateTransforms, Transform } from '@forgeax/engine-scene';
 import { ShaderRegistry } from '@forgeax/engine-shader';
@@ -10,18 +11,32 @@ import { extractFrames } from '../render-system-extract-tail';
 import { PersistentRenderScene } from '../scene/render-scene';
 import * as shadowVisibility from '../scene/shadow-visibility';
 
+const BUILTIN_CUBE = createPrimitiveMesh('cube').unwrap();
+
 it('constructs shadow frusta only for off-camera CPU casters and preserves their depth dispatch', () => {
-  const world = new World();
-  registerPropagateTransforms(world);
-  const handle = world.allocSharedRef('MaterialAsset', {
-    kind: 'material',
-    passes: ['Forward', 'ShadowCaster'].map((mode) => ({
-      name: mode,
-      program: { module: 'test::shadow-cull' },
-      renderState: { tags: { LightMode: mode }, queue: 2000 },
-    })),
-    values: {},
+  const assets = new AssetRegistry({
+    shaderRegistry: new ShaderRegistry({ manifestUrl: undefined }),
   });
+  const world = new World({ assets });
+  registerPropagateTransforms(world);
+  const handle = assets
+    .create({
+      kind: 'material',
+      passes: [
+        {
+          name: 'Forward',
+          program: { module: 'test::shadow-cull' },
+          renderState: { tags: { LightMode: 'Forward' }, queue: 2000 },
+        },
+        {
+          name: 'ShadowCaster',
+          program: { module: 'test::shadow-cull' },
+          renderState: { tags: { LightMode: 'ShadowCaster' }, queue: 2000 },
+        },
+      ],
+      values: {},
+    })
+    .unwrap();
   const camera = world
     .spawn(
       { component: Transform, data: { pos: [0, 0, 20] } },
@@ -31,13 +46,12 @@ it('constructs shadow frusta only for off-camera CPU casters and preserves their
   const caster = world
     .spawn(
       { component: Transform, data: {} },
-      { component: MeshFilter, data: { assetHandle: HANDLE_CUBE } },
+      { component: MeshFilter, data: { assetHandle: assets.create(BUILTIN_CUBE).unwrap() } },
       { component: MeshRenderer, data: { materials: [handle] } },
     )
     .unwrap();
   const lease = createRenderReadLease(world);
   const scene = new PersistentRenderScene();
-  const assets = new AssetRegistry(new ShaderRegistry({ manifestUrl: undefined }));
   const owner = { cameraOwner: 0, resourceOwner: 0 };
   const lightMatrix = mat4.identity(mat4.create());
   lightMatrix[0] = 0.01;
@@ -49,7 +63,7 @@ it('constructs shadow frusta only for off-camera CPU casters and preserves their
     return scene.extractComposition(
       [world],
       owner,
-      0,
+      assets,
       (request) => {
         const frame = extractFrames(
           [world],
@@ -72,7 +86,7 @@ it('constructs shadow frusta only for off-camera CPU casters and preserves their
     expect(build).not.toHaveBeenCalled();
     world.set(caster, Transform, { pos: [30, 0, 0] }).unwrap();
     const offCamera = draw();
-    expect(scene.shadowCasterProjection()?.renderables[0]?.transform.world[12]).toBe(30);
+    expect(scene.shadowCasterProjection()?.renderables.at(0)?.transform.world[12]).toBe(30);
     expect(offCamera.frustumStats).toEqual({ culled: 1, total: 1 });
     expect(build).toHaveBeenCalledTimes(1);
     expect(offCamera.renderables).toHaveLength(1);

@@ -9,6 +9,7 @@ import { defineComponent } from '@forgeax/engine-ecs';
  * ordinary ECS writes and apply on the next extracted frame.
  */
 export const ShadowParticipation = defineComponent('ShadowParticipation', {
+  channels: { type: 'f64', default: 0xffffffff },
   cast: { type: 'bool', default: true },
   receive: { type: 'bool', default: true },
 });

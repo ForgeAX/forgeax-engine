@@ -1,4 +1,5 @@
 import { fileURLToPath } from 'node:url';
+import { createRuntimePackPublication } from '@forgeax/engine-pack/runtime';
 import type { MaterialAsset } from '@forgeax/engine-types';
 import type { Plugin } from 'vite';
 import { createMaterialPackCooker } from '../../packages/shader-compiler/src/material/pack-cooker';
@@ -7,7 +8,7 @@ export const EXTERNAL_TEXTURE_MATERIAL_GUID = '4b9e0c51-2f63-4d8a-9a57-6c1e2d7f0
 const prefix = '/__external-texture-material/';
 
 export function externalTextureMaterialFixture(): Plugin {
-  let publication: Promise<string> | undefined;
+  let publication: ReturnType<typeof build> | undefined;
   const build = async () => {
     const root = fileURLToPath(
       new URL('../../packages/runtime/src/__tests__/fixtures/external-texture/', import.meta.url),
@@ -30,14 +31,23 @@ export function externalTextureMaterialFixture(): Plugin {
     };
     const guid = EXTERNAL_TEXTURE_MATERIAL_GUID;
     const cooked = await createMaterialPackCooker([root]).cook({ guid, source: material });
-    return JSON.stringify(
-      {
-        schemaVersion: '2.0.0',
-        kind: 'internal-text-package',
-        assets: [{ guid, kind: 'material', payload: cooked.payload, refs: [], artifacts: {} }],
-      },
-      (_key, value) => (value instanceof Uint8Array ? [...value] : value),
+    const sourcePath = `${prefix}material.pack.json`;
+    const pack = JSON.parse(
+      JSON.stringify(
+        {
+          assets: [{ guid, kind: 'material', payload: cooked.payload, refs: [], artifacts: {} }],
+        },
+        (_key, value) => (value instanceof Uint8Array ? [...value] : value),
+      ),
     );
+    const published = createRuntimePackPublication({
+      scopeId: 'asset-runtime',
+      sourcePath,
+      sourceRevision: 'fixture',
+      packageUrl: sourcePath,
+      pack,
+    });
+    return { pack: JSON.stringify(published.pack), publication: published.publication };
   };
   return {
     name: 'external-texture-material-fixture',
@@ -47,19 +57,22 @@ export function externalTextureMaterialFixture(): Plugin {
         response.setHeader('content-type', 'application/json');
         try {
           if (request.url === `${prefix}pack-index.json`) {
+            publication ??= build();
+            const published = await publication;
             response.end(
               JSON.stringify([
                 {
                   guid: EXTERNAL_TEXTURE_MATERIAL_GUID,
                   kind: 'material',
                   packageUrl: `${prefix}material.pack.json`,
-                  sourcePath: EXTERNAL_TEXTURE_MATERIAL_GUID,
+                  sourcePath: `${prefix}material.pack.json`,
+                  publication: published.publication,
                 },
               ]),
             );
           } else if (request.url === `${prefix}material.pack.json`) {
             publication ??= build();
-            response.end(await publication);
+            response.end((await publication).pack);
           } else {
             response.statusCode = 404;
             response.end('{}');

@@ -5,8 +5,9 @@ import { WGSL_NUMERIC_LAYOUT } from '../wgsl-numeric-layout.js';
 export const MATERIAL_SURFACE_MODELS = ['standard', 'single-layer-medium'] as const;
 export type MaterialSurfaceModel = (typeof MATERIAL_SURFACE_MODELS)[number];
 
-/** The first non-Standard model; its name deliberately describes the model. */
-export const SINGLE_LAYER_MEDIUM_SURFACE_MODEL = 'single-layer-medium' as const;
+export function isMaterialSurfaceModel(value: unknown): value is MaterialSurfaceModel {
+  return (MATERIAL_SURFACE_MODELS as readonly unknown[]).includes(value);
+}
 
 /** POD scalar/vector shapes accepted by a read-only dynamic record. */
 export type MaterialDynamicFieldType = keyof typeof FIELD_FACTS;
@@ -273,7 +274,7 @@ export function isMaterialSurfaceDeclaration(value: unknown): value is MaterialS
   if (value === null || typeof value !== 'object' || Array.isArray(value)) return false;
   const declaration = value as Record<string, unknown>;
   if (
-    (declaration.model !== 'standard' && declaration.model !== 'single-layer-medium') ||
+    !isMaterialSurfaceModel(declaration.model) ||
     typeof declaration.module !== 'string' ||
     declaration.module.length === 0
   ) {

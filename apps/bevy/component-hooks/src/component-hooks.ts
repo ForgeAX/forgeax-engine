@@ -1,8 +1,12 @@
-import { HANDLE_CUBE } from '@forgeax/engine-assets-runtime';
+
 import { Time, Update, World, defineComponent, type EntityHandle } from '@forgeax/engine-ecs';
 import { Camera, Materials, MeshFilter, MeshRenderer, orthographic } from '@forgeax/engine-render';
-import type { MaterialAsset } from '@forgeax/engine-runtime';
+
 import { Transform } from '@forgeax/engine-scene';
+import { AssetRegistry } from '@forgeax/engine-assets-runtime';
+
+import { createPrimitiveMesh } from '@forgeax/engine-geometry';
+
 
 const HOOK_STEP = 0.5;
 interface HookBook {
@@ -60,9 +64,14 @@ function spawnMarker(
   color: readonly [number, number, number, number],
   component?: { component: typeof HookedMarker; data: { key: number; value: number } },
 ): EntityHandle {
-  const material = world.allocSharedRef<'MaterialAsset', MaterialAsset>('MaterialAsset', Materials.unlit(color));
+const sceneAssets = world.assets;
+if (!(sceneAssets instanceof AssetRegistry)) throw new Error('Scene requires its runtime asset owner');
+
+const primitiveCube = sceneAssets.create(createPrimitiveMesh('cube').unwrap()).unwrap();
+
+  const material = sceneAssets.create(Materials.unlit(color)).unwrap();
   const transform = { component: Transform, data: { pos, quat: [0, 0, 0, 1], scale: [80, 80, 1] } };
-  const meshFilter = { component: MeshFilter, data: { assetHandle: HANDLE_CUBE } };
+  const meshFilter = { component: MeshFilter, data: { assetHandle: primitiveCube } };
   const meshRenderer = { component: MeshRenderer, data: { materials: [material] } };
   if (component) {
     return world.spawn(transform, meshFilter, meshRenderer, component).unwrap();

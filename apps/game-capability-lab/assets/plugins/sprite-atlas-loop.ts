@@ -1,9 +1,9 @@
+import type { AssetHandle } from '@forgeax/engine-types';
 import type { AssetRegistry } from '@forgeax/engine-assets-runtime';
 import { Update, type EntityHandle, type World } from '@forgeax/engine-ecs';
 import { SpriteAnimation } from '@forgeax/engine-render/authoring';
 import { spriteAnimationTickSystem } from '@forgeax/engine-runtime';
 import { AssetGuid } from '@forgeax/engine-pack/guid';
-import type { Handle, MaterialAsset, TextureAsset } from '@forgeax/engine-runtime';
 
 /** GUID emitted by the hello/sprite-atlas PNG sidecar. */
 export const GAME_DEFAULT_SPRITE_ATLAS_GUID = '0e8657b1-c0ab-4940-a4f6-27fcd976823c';
@@ -40,9 +40,10 @@ export type SpriteAtlasSnapshot = {
 };
 
 export type SpriteAtlasLoop = {
+  dispose(): void;
   readonly available: true;
-  readonly spriteMaterialHandle: Handle<'MaterialAsset', 'shared'>;
-  readonly spriteLitMaterialHandle: Handle<'MaterialAsset', 'shared'>;
+  readonly spriteMaterialHandle: AssetHandle<'material'>;
+  readonly spriteLitMaterialHandle: AssetHandle<'material'>;
   readonly frameCount: number;
   readonly frameDuration: number;
   readonly regions: Float32Array;
@@ -78,19 +79,16 @@ function unavailable(errorCode: string | null = null): SpriteAtlasSnapshot {
 }
 
 function cloneWithTexture(
-  world: World,
-  source: Handle<'MaterialAsset', 'shared'>,
-  texture: Handle<'TextureAsset', 'shared'>,
-): Handle<'MaterialAsset', 'shared'> | undefined {
-  const resolved = world.sharedRefs.resolve<'MaterialAsset', MaterialAsset>(source);
-  if (!resolved.ok) return undefined;
-  return world.allocSharedRef('MaterialAsset', {
-    ...resolved.value,
-    values: {
-      ...resolved.value.values,
-      baseColorTexture: texture,
-    },
-  });
+  assets: AssetRegistry,
+  source: AssetHandle<'material'>,
+  texture: AssetHandle<'texture'>,
+): AssetHandle<'material'> | undefined {
+  const copied = assets.copy(source);
+  if (!copied.ok) return undefined;
+  const updated = assets.update(copied.value, { values: { baseColorTexture: texture } });
+  if (updated.ok) return copied.value;
+  assets.release(copied.value).unwrap();
+  return undefined;
 }
 
 /**
@@ -102,8 +100,8 @@ function cloneWithTexture(
 export async function createSpriteAtlasLoop(
   world: World,
   assets: AssetRegistry | undefined,
-  spriteMaterial: Handle<'MaterialAsset', 'shared'> | undefined,
-  spriteLitMaterial: Handle<'MaterialAsset', 'shared'> | undefined,
+  spriteMaterial: AssetHandle<'material'> | undefined,
+  spriteLitMaterial: AssetHandle<'material'> | undefined,
 ): Promise<SpriteAtlasLoop | undefined> {
   if (assets === undefined || spriteMaterial === undefined || spriteLitMaterial === undefined) return undefined;
   const guid = AssetGuid.parse(GAME_DEFAULT_SPRITE_ATLAS_GUID);
@@ -111,15 +109,19 @@ export async function createSpriteAtlasLoop(
     console.warn(`[game] sprite atlas GUID invalid: ${guid.error.code}`);
     return undefined;
   }
-  const loaded = await assets.loadByGuid<TextureAsset>(guid.value);
+  const loaded = await assets.load(guid.value, 'texture');
   if (!loaded.ok) {
     console.warn(`[game] sprite atlas unavailable: ${loaded.error.code} — ${loaded.error.hint}`);
     return undefined;
   }
-  const texture = world.allocSharedRef('TextureAsset', loaded.value);
-  const spriteMaterialHandle = cloneWithTexture(world, spriteMaterial, texture);
-  const spriteLitMaterialHandle = cloneWithTexture(world, spriteLitMaterial, texture);
+  const texture = loaded.value;
+  const texturePayload = assets.read(texture).unwrap();
+  const spriteMaterialHandle = cloneWithTexture(assets, spriteMaterial, texture);
+  const spriteLitMaterialHandle = cloneWithTexture(assets, spriteLitMaterial, texture);
   if (spriteMaterialHandle === undefined || spriteLitMaterialHandle === undefined) {
+    if (spriteMaterialHandle !== undefined) assets.release(spriteMaterialHandle).unwrap();
+    if (spriteLitMaterialHandle !== undefined) assets.release(spriteLitMaterialHandle).unwrap();
+    assets.release(texture).unwrap();
     console.warn('[game] sprite atlas material clone failed; retaining the original projectile materials');
     return undefined;
   }
@@ -161,17 +163,22 @@ export async function createSpriteAtlasLoop(
       animatedHits,
       swaps,
       guid: GAME_DEFAULT_SPRITE_ATLAS_GUID,
-      name: assets.resolveName(GAME_DEFAULT_SPRITE_ATLAS_GUID),
-      kind: loaded.value.kind,
-      width: loaded.value.shape.extent.width,
-      height: loaded.value.shape.extent.height,
-      format: loaded.value.format,
-      colorSpace: loaded.value.colorSpace,
+      name: assets.catalogEntry(GAME_DEFAULT_SPRITE_ATLAS_GUID)?.name ?? GAME_DEFAULT_SPRITE_ATLAS_GUID,
+      kind: texturePayload.kind,
+      width: texturePayload.shape.extent.width,
+      height: texturePayload.shape.extent.height,
+      format: texturePayload.format,
+      colorSpace: texturePayload.colorSpace,
       errorCode,
     };
   };
 
   return {
+    dispose() {
+      assets.release(spriteMaterialHandle).unwrap();
+      assets.release(spriteLitMaterialHandle).unwrap();
+      assets.release(texture).unwrap();
+    },
     available: true,
     spriteMaterialHandle,
     spriteLitMaterialHandle,

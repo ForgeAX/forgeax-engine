@@ -1,4 +1,4 @@
-import { HANDLE_CUBE } from '@forgeax/engine-assets-runtime';
+import { AssetRegistry } from '@forgeax/engine-assets-runtime';
 import { Update, World, type EntityHandle } from '@forgeax/engine-ecs';
 import {
   snapshotFromSample,
@@ -12,6 +12,9 @@ import { registerStatesPlugin } from '@forgeax/engine-state';
 import { describe, expect, it } from 'vitest';
 import { GameplayInput, PlayerMotion } from '../assets/plugins/components/gameplay';
 import { installGameplayInput } from '../assets/plugins/gameplay-input';
+import { createPrimitiveMesh } from '@forgeax/engine-geometry';
+const BUILTIN_CUBE = createPrimitiveMesh('cube').unwrap();
+
 
 const WIDTH = 1600;
 const HEIGHT = 900;
@@ -41,7 +44,8 @@ function makeWorld(): {
   player: EntityHandle;
   camera: EntityHandle;
 } {
-  const world = new World();
+  const assets = new AssetRegistry();
+  const world = new World({ assets });
   registerStatesPlugin(world);
   const pitch = -Math.atan2(13, 9);
   const cameraRotation = quat.fromAxisAngle(quat.create(), [1, 0, 0], pitch);
@@ -61,7 +65,7 @@ function makeWorld(): {
   world
     .spawn(
       { component: Transform, data: { pos: [0, -0.1, 0], scale: [24, 0.2, 24] } },
-      { component: MeshFilter, data: { assetHandle: HANDLE_CUBE } },
+      { component: MeshFilter, data: { assetHandle: assets.create(BUILTIN_CUBE).unwrap() } },
       { component: MeshRenderer, data: {} },
     )
     .unwrap();

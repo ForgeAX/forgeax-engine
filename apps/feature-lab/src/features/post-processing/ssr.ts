@@ -1,6 +1,8 @@
+import { AssetRegistry } from '@forgeax/engine/assets-runtime';
+import { createPrimitiveMesh } from '@forgeax/engine/geometry';
 import { DEFAULT_STANDARD_PROFILE, ScreenSpaceReflection, Skylight } from '@forgeax/engine/render';
 import { CheckList, defineFeature, type FeatureDefinition } from '../../lab/feature';
-import { MESH, spawnCamera, spawnMesh, spawnSun, standard } from '../../lab/stage';
+import { spawnCamera, spawnMesh, spawnSun, standard } from '../../lab/stage';
 
 const SSR = { maxDistance: 12, thickness: 0.2, maxRoughness: 0.65 } as const;
 
@@ -22,9 +24,15 @@ export default defineFeature<FeatureDefinition>({
     },
   },
   setup({ app, world, frames }) {
+    const primitiveAssets = world.assets;
+    if (!(primitiveAssets instanceof AssetRegistry))
+      throw new Error('Scene requires its runtime asset owner');
+
+    const stageCube = primitiveAssets.create(createPrimitiveMesh('cube').unwrap()).unwrap();
+
     spawnMesh(
       world,
-      MESH.cube,
+      stageCube,
       standard(world, { baseColor: [0.05, 0.05, 0.06, 1], metallic: 1, roughness: 0.05 }),
       {
         pos: [0, -0.05, 0],
@@ -44,7 +52,7 @@ export default defineFeature<FeatureDefinition>({
         emissiveIntensity: 3,
         roughness: 0.6,
       });
-      spawnMesh(world, MESH.cube, emissive, {
+      spawnMesh(world, stageCube, emissive, {
         pos: [-1.8 + i * 1.8, 1, -1.5],
         scale: [0.8, 2, 0.8],
       });

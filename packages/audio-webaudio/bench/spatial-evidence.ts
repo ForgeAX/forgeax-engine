@@ -1,3 +1,4 @@
+import { AssetRegistry } from '@forgeax/engine-assets-runtime';
 import {
   AudioSource,
   type AudioIntent,
@@ -107,12 +108,14 @@ async function cpu(count: number, mode: '2D' | 'static' | 'moving') {
   };
   const buffer = toneBuffer(context, [440]);
   engine.decode = async () => buffer;
-  const world = new World(),
-    clip = world.allocSharedRef('AudioClipAsset', {
+  const assets = new AssetRegistry();
+  const world = new World({ assets }),
+    clip = assets.create({
       kind: 'audio',
       sourceKey: 'cpu',
+      mediaType: 'audio/wav',
       bytes: Uint8Array.of(1),
-    });
+    }).unwrap();
   const entities = Array.from({ length: count }, () =>
     world
       .spawn(
@@ -172,6 +175,7 @@ async function cpu(count: number, mode: '2D' | 'static' | 'moving') {
     raw,
   };
   consumer.dispose();
+  assets.dispose();
   if (engine.getActiveSourceCount() !== 0) throw new Error('cleanup failed');
   await context.close();
   return row;

@@ -1,5 +1,7 @@
 import { DerivedPhysicsError, type PhysicsConstraintInput } from '@forgeax/engine-physics';
 import { err, ok, type Result } from '@forgeax/engine-types';
+import type { JointData } from '../pkg/rapier.mjs';
+import type { Rapier3DModule } from './wasm-loader.js';
 
 export function validateConstraintInput(
   input: PhysicsConstraintInput,
@@ -62,4 +64,20 @@ export function validateConstraintInput(
     );
   }
   return ok(input);
+}
+
+/** Project a validated derived constraint into its native joint descriptor. */
+export function createDerivedJointData(
+  rapier: Rapier3DModule,
+  input: PhysicsConstraintInput,
+): JointData {
+  const anchorA = { x: input.anchorA[0], y: input.anchorA[1], z: input.anchorA[2] };
+  const anchorB = { x: input.anchorB[0], y: input.anchorB[1], z: input.anchorB[2] };
+  return input.kind === 'spring'
+    ? rapier.JointData.spring(input.restLength, input.stiffness, input.damping, anchorA, anchorB)
+    : rapier.JointData.revolute(anchorA, anchorB, {
+        x: input.axis[0],
+        y: input.axis[1],
+        z: input.axis[2],
+      });
 }

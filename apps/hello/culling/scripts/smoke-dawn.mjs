@@ -12,6 +12,7 @@
 //       the grid outside the frustum every frame, so maxVisible / total
 //       <= 0.20 across the run (culling actually removes the majority)
 
+import { drawReadyFrame } from '../../../../scripts/test/ready-render-frame.mjs';
 import { setTimeout as delay } from 'node:timers/promises';
 import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
@@ -122,11 +123,28 @@ const mathPkg = await import('@forgeax/engine-math');
 const { Camera, DirectionalLight, MeshFilter, MeshRenderer } = await import('@forgeax/engine-render');
 const { Transform } = await import('@forgeax/engine-scene');
 const { quat } = mathPkg;
-const {
-  HANDLE_CUBE,
-} = await import('@forgeax/engine-assets-runtime');
 
-const world = new World();
+
+const here = dirname(fileURLToPath(import.meta.url));
+const MANIFEST_PATH = resolve(here, '..', 'dist', 'shaders', 'manifest.json');
+const MANIFEST_URL = `data:application/json,${encodeURIComponent(readFileSync(MANIFEST_PATH, 'utf8'))}`;
+
+let renderer;
+let assets;
+let renderDiagnostics;
+try {
+  const constructed = await constructRuntimeRendererHost(mockCanvas, {}, { shaderManifestUrl: MANIFEST_URL });
+  if (!constructed.ok) throw constructed.error;
+  renderer = constructed.value.renderer;
+  assets = constructed.value.assets;
+  renderDiagnostics = constructed.value.debugDrawHost;
+} catch (err) {
+  console.error(`[smoke] FAIL - createRenderer threw: ${err instanceof Error ? err.message : String(err)}`);
+  process.exit(1);
+} finally {
+  globalThis.navigator.gpu.requestAdapter = originalAmbientRequestAdapter;
+}
+const world = new World({ assets });
 // Spawn DirectionalLight
 world.spawn({
   component: DirectionalLight,
@@ -136,23 +154,6 @@ world.spawn({
   },
 });
 
-const here = dirname(fileURLToPath(import.meta.url));
-const MANIFEST_PATH = resolve(here, '..', 'dist', 'shaders', 'manifest.json');
-const MANIFEST_URL = `data:application/json,${encodeURIComponent(readFileSync(MANIFEST_PATH, 'utf8'))}`;
-
-let renderer;
-let renderDiagnostics;
-try {
-  const constructed = await constructRuntimeRendererHost(mockCanvas, {}, { shaderManifestUrl: MANIFEST_URL });
-  if (!constructed.ok) throw constructed.error;
-  renderer = constructed.value.renderer;
-  renderDiagnostics = constructed.value.debugDrawHost;
-} catch (err) {
-  console.error(`[smoke] FAIL - createRenderer threw: ${err instanceof Error ? err.message : String(err)}`);
-  process.exit(1);
-} finally {
-  globalThis.navigator.gpu.requestAdapter = originalAmbientRequestAdapter;
-}
 const worldAttachment1 = renderer.attach(world);
 if (!worldAttachment1.ok) throw worldAttachment1.error;
 
@@ -165,17 +166,14 @@ renderer.subscribe((event) => {
 });
 
 
-// Register a custom cube mesh with a known AABB through the renderer's
-// asset registry. The built-in HANDLE_CUBE uses engine-internal handle
-// values; using a custom mesh ensures the AABB lookup path works on the
-// dawn-node mock canvas path.
+// Create a procedural cube to exercise owner-prepared bounds through Dawn.
 const { createBoxGeometry } = geometryPkg;
 const boxResult = createBoxGeometry(1, 1, 1, 1, 1, 1);
 if (!boxResult.ok) {
   console.error(`[smoke] FAIL - createBoxGeometry failed: ${boxResult.error.code}`);
   process.exit(1);
 }
-const customCubeHandle = world.allocSharedRef('MeshAsset', boxResult.value);
+const customCubeHandle = assets.create(boxResult.value).unwrap();
 
 // Spawn cubes AFTER the renderer is ready (assets must be registered
 // so AABB lookup succeeds). Frustum culling is unconditional; the orbit
@@ -239,12 +237,11 @@ for (let i = 0; i < TARGET_FRAMES; i++) {
   });
 
   world.update().unwrap();
-  const r = renderer.draw({
+  await drawReadyFrame(renderer, {
     leases: [worldAttachment1.value],
     camera: { lease: worldAttachment1.value },
     environment: { lease: worldAttachment1.value },
   });
-  if (!r.ok) console.error(`[smoke] draw frame ${i} error: ${r.error.code}`);
 
   // Low-level host diagnostics prove culling; public Renderer inspection is POD-only.
   const stats = renderDiagnostics.frustumStats;

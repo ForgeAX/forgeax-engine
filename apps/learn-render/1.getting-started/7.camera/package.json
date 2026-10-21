@@ -4,7 +4,7 @@
   "private": true,
   "type": "module",
   "license": "Apache-2.0",
-  "description": "learn-render LearnOpenGL section 1.7 camera \u2014 first-person WASD + mouse yaw/pitch via @forgeax/engine-input (M11 milestone fills index.ts + smoke).",
+  "description": "learn-render LearnOpenGL section 1.7 camera — first-person WASD + mouse yaw/pitch via @forgeax/engine-input (M11 milestone fills index.ts + smoke).",
   "scripts": {
     "dev": "vite",
     "typecheck": "tsc --noEmit",
@@ -50,7 +50,8 @@
     "@forgeax/engine-runtime": "workspace:*",
     "@forgeax/engine-types": "workspace:*",
     "@forgeax/engine-scene": "workspace:*",
-    "@forgeax/engine-render": "workspace:*"
+    "@forgeax/engine-render": "workspace:*",
+    "@forgeax/engine-geometry": "workspace:*"
   },
   "devDependencies": {
     "@forgeax/apps-shared": "workspace:*",

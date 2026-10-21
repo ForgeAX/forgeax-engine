@@ -1,4 +1,6 @@
 #!/usr/bin/env node
+import { constructRuntimeRendererHost } from '@forgeax/engine-runtime/internal/renderer-host';
+let smokeAssets;
 import { createSmokeRenderer, drawSmokeFrame, rendererBackend, subscribeSmokeErrors } from "../../scripts/renderer-smoke.mjs";
 // bevy-logs headless dawn smoke — structural-only.
 // Verifies webgpu backend, no RHI errors, and log output intercepted.
@@ -96,7 +98,9 @@ console.error = (...args) => logCalls.push({ level: 'error', msg: args.join(' ')
 
 let renderer;
 try {
-  renderer = await createSmokeRenderer(createRenderer, mockCanvas, {}, { shaderManifestUrl: MANIFEST_URL });
+  const hostResult = await constructRuntimeRendererHost(mockCanvas, {}, { shaderManifestUrl: MANIFEST_URL });
+if (!hostResult.ok) throw hostResult.error;
+({ renderer, assets: smokeAssets } = hostResult.value);
 } catch (err) {
   console.error = _origErr;
   console.error(`[smoke] FAIL - createRenderer: ${err instanceof Error ? err.message : String(err)}`);
@@ -110,7 +114,7 @@ subscribeSmokeErrors(renderer, (err) => errors.push({ code: err.code, hint: err.
 const { buildLogsWorld } = await import(resolve(here, '..', 'src', 'logs.ts'));
 const { quat } = await import('@forgeax/engine-math');
 
-const world = new World();
+const world = new World({ assets: smokeAssets });
 const worldAttachment1 = renderer.attach(world);
 if (!worldAttachment1.ok) throw worldAttachment1.error;
 buildLogsWorld(world);

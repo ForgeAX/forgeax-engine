@@ -1,6 +1,6 @@
 # @forgeax/engine-remote
 
-> **Single capability — `eval` a live engine.** Send a JavaScript snippet to a running engine instance, have it executed against the live World / Renderer / AssetRegistry, and receive a structured result. Aligned with [Bevy BRP](https://github.com/bevyengine/bevy/discussions/15323) and [Unreal Remote Control](https://dev.epicgames.com/documentation/en-us/unreal-engine/remote-control-api-http-reference-for-unreal-engine) — "evaluate code against a live instance" rather than "attach a debugger UI panel." Four required roots plus the optional `profiler` root are injected into eval scope; `_import(specifier)` enables dynamic ESM imports. No Registry, no pre-built commands, no read-only sandbox. A `switch` over the closed `RemoteErrorCode` union is the only error vocabulary.
+> **Single capability — `eval` a live engine.** Send a JavaScript snippet to a running engine instance, have it executed against the live World / Renderer / AssetRegistry, and receive a structured result. Aligned with [Bevy BRP](https://github.com/bevyengine/bevy/discussions/15323) and [Unreal Remote Control](https://dev.epicgames.com/documentation/en-us/unreal-engine/remote-control-api-http-reference-for-unreal-engine) — "evaluate code against a live instance" rather than "attach a debugger UI panel." Named roots from `ExecuteContext` are injected into eval scope; `_import(specifier)` enables dynamic ESM imports. No Registry, no pre-built commands, no read-only sandbox. A `switch` over the closed `RemoteErrorCode` union is the only error vocabulary.
 
 ```mermaid
 flowchart LR
@@ -29,7 +29,7 @@ sequenceDiagram
     participant W as World / Renderer / Assets
 
     C->>S: { method: "eval", params: { script: "…" } }
-    S->>E: new Function(world, renderer, assets, rhiCapture, _import, body)
+    S->>E: async function(named roots, _import)
     E->>E: await _import('@forgeax/engine-ecs')
     E->>W: world.query(descriptor)
     W-->>E: Query row iteration
@@ -41,8 +41,10 @@ sequenceDiagram
 
 ### Script contract
 
-**Your script is the body of an async function** with `world` / `renderer` / `assets` /
-`rhiCapture` / `_import` in scope. Concretely:
+**Your script is the body of an async function** with `world`, `renderer`, `assets`,
+`rhiCapture`, `simulation`, `profiler`, `execution`, `plugins` and `_import` in scope.
+One ordered root-name list drives compilation and invocation; host adapters share
+`ExecuteContext`. Simple function parameters preserve top-level strict directives. Concretely:
 
 - **A lone expression is auto-returned** — `renderer.backend` yields `"webgpu"` (a trailing
   semicolon is fine).
@@ -62,7 +64,7 @@ Three live engine roots are always present in eval scope. Diagnostics are struct
 |:--|:--|:--|
 | `world` | `World` (from `@forgeax/engine-ecs`) | ECS read/write: `spawn`, `despawn`, `set`, `query` |
 | `renderer` | `Renderer` | Renderer control: create/destroy render targets, read backbuffer |
-| `assets` | `AssetRegistry` | Asset queries: `loadByGuid`, `resolveName`, `rename` |
+| `assets` | `AssetRegistry` | Asset queries: `load(guid, kind)`, `read`, `update`, `enumerateCatalog` |
 | `rhiCapture` | `{ captureFrame(options?) } \| undefined` | Single-frame RHI capture returning one `{ kind: 'rhi-tape', digest, bytes }` artifact. **Only defined when the app was created with `FORGEAX_ENGINE_RHI_DEBUG=1`** (else `undefined` — guard before use). Browser capture uses the same `window.__forgeax.captureFrame(options?)` capability. |
 | `profiler` | `Profiler \| undefined` | Bounded CPU capture: `startCapture({ frameLimit, eventLimit })`. **Only defined when the host passes `profiler` to `createApp` or `startServer`.** |
 | `execution` | `{ report(): unknown; rebuild(): Promise<unknown> } \| undefined` | App-owned execution report and explicit poisoned-World rebuild. Remote imports no App or ECS execution type. |

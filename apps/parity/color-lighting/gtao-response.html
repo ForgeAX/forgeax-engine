@@ -1,0 +1,6 @@
+<!doctype html><html lang="zh"><meta charset="utf-8"><link rel="icon" href="data:,"><title>GTAO 分阶段对照</title>
+<style>body{margin:32px;background:#111820;color:#e4eaf2;font:16px system-ui}p{max-width:1000px;line-height:1.6}section{display:flex;gap:16px;flex-wrap:wrap;margin:24px 0}h2{width:100%;font-size:20px}figure{margin:0}canvas{width:240px;height:240px;image-rendering:pixelated}figcaption{font-size:14px;padding:8px 0}pre{white-space:pre-wrap}</style>
+<h1>GTAO：相同深度与法线，逐阶段比较</h1>
+<p>平面、斜面、接触台阶、远处遮挡边缘使用相同的视空间几何。GTAONode 默认没有降噪；右侧另列显式添加 DenoiseNode 的结果。Forgeax 保留经独立积分验证的斜面与正交相机修正，以及深度像素中心一致性。</p>
+<p>光照合成也有独立约定：Forgeax 默认只遮蔽环境光，directLightingStrength=0；Three 的 aoNode 进入材质间接光，示例中用场景颜色乘 AO 则会同时压暗直射光。它们是不同接法，不能用同一张最终截图判断积分是否一致。</p>
+<main></main><pre id="status">Rendering…</pre><script type="module" src="/src/gtao-response.mjs"></script></html>

@@ -1,63 +1,36 @@
-// extract-image-bytes.ts - resolve glTF `images[<imageIndex>]` into raw
-// PNG / JPEG bytes (feat-20260608 M3 D-6 / requirements AC-08 + AC-09 + AC-10).
-//
-// The gltfImporter walks `images[]` and funnels three image source paths
-// through a single decode seam:
-//   (a) bufferView    : slice the named buffer at the bufferView range
-//   (b) data: URI     : base64-decode the URI payload
-//   (c) external URI  : ctx.readSibling(uri) reads the file co-located
-//                       with the .gltf source
-//
-// This module owns the byte-extraction (no decoding); decoding is the job of
-// ctx.decodeImage (D-1 seam: gltfImporter never imports
-// `@forgeax/engine-image` directly). On any failure the caller produces a
-// `gltf-image-extract-failed` GltfError carrying { imageIndex, source,
-// reason }.
-//
-// Why not reuse parse-gltf.ts's buffer resolution? parseGltf.ts encapsulates
-// buffer / bufferView decoding inside `parseGltfWithBin` and never surfaces
-// the byte arrays. Re-running that machinery for image extraction would
-// double the work; instead the gltfImporter parses the doc twice (parseGltf
-// for the IR, this helper for the raw bytes) — both passes are O(file
-// size) and the importer only runs at build time.
-
-import type { ImportContext, ImportError as ImportErrorType } from '@forgeax/engine-types';
+import type { BufferViewJson } from './accessor/decode-accessor.js';
 import { dataUriBase64Payload, decodeBase64 } from './data-uri.js';
-import { parseGlbChunks } from './parse-glb-chunks.js';
+import { err, type GltfError, gltfErr, ok, type Result } from './errors.js';
 
-/** Source of an image: matches `GltfImageExtractFailedDetail.source`. */
-type ImageSourceKind = 'bufferView' | 'data-uri' | 'external-uri';
+export interface GltfImageJson {
+  readonly name?: string;
+  readonly mimeType?: string;
+  readonly uri?: string;
+  readonly bufferView?: number;
+}
 
-/** One extracted image: bytes + the source kind that produced them. */
+/** Source locators are resolved while the parser owns their backing buffers. */
+export interface GltfImageIr {
+  readonly name?: string;
+  readonly mimeType?: string;
+  readonly source:
+    | { readonly kind: 'bufferView'; readonly bytes: Result<Uint8Array, string> }
+    | { readonly kind: 'data-uri'; readonly uri: string }
+    | { readonly kind: 'external-uri'; readonly uri: string; readonly bytes: Uint8Array };
+}
+
+type ImageSourceKind = GltfImageIr['source']['kind'];
 interface ExtractedImage {
   readonly bytes: Uint8Array;
   readonly mimeType: 'image/png' | 'image/jpeg';
   readonly source: ImageSourceKind;
 }
-
-/**
- * Failure shape — the importer wraps this in a `gltf-image-extract-failed`
- * GltfError. `source` may be undefined when the image row is malformed
- * (no uri / no bufferView), so the importer can name 'bufferView' (most
- * common) by default.
- */
 interface ExtractFailure {
   readonly imageIndex: number;
   readonly source: ImageSourceKind;
   readonly reason: string;
 }
-
 const DATA_URI_MIME_RE = /^data:([^;,]+)(?:;[^,;]+)*;base64,/;
-
-/** Pull the source-read-failed reason out of an ImportError without
- * widening the discriminated union — the caller only ever sees
- * source-read-failed here (readSibling's only failure shape). The
- * ImportError class carries a structurally typed `.detail` field that does
- * not auto-narrow on the `.code` discriminator, so we read `.message`
- * which the class composes from `expected: ...; reason: ...`. */
-function describeImportError(err: ImportErrorType): string {
-  return err.message;
-}
 
 /** Pick PNG vs JPEG from declared mimeType + magic-byte fallback. */
 function classifyMime(
@@ -80,264 +53,111 @@ function classifyMime(
   return undefined;
 }
 
-interface BufferViewJsonSlim {
-  readonly buffer: number;
-  readonly byteOffset?: number;
-  readonly byteLength: number;
-}
-
-interface ImageJsonSlim {
-  readonly uri?: string;
-  readonly mimeType?: string;
-  readonly bufferView?: number;
-}
-
-interface BufferJsonSlim {
-  readonly uri?: string;
-  readonly byteLength: number;
-}
-
-interface RootJsonSlim {
-  readonly images?: readonly ImageJsonSlim[];
-  readonly bufferViews?: readonly BufferViewJsonSlim[];
-  readonly buffers?: readonly BufferJsonSlim[];
-}
-
-/**
- * Extract raw image bytes for every `images[]` row in the parsed glTF doc.
- *
- * @param sourceBytes the original .glb / .gltf file bytes (the GLB BIN
- *   chunk is reconstructed from these for buffer-0 lookups).
- * @param sourcePath  the meta.source path; used only for diagnostics
- *   (parseGlbChunks errors carry it through).
- * @param ctx         the ImportContext — reused for `readSibling` (external
- *   buffer .bin / external image .png/.jpg). data: URIs do not call ctx.
- *
- * Returns a Map<imageIndex, ExtractedImage> with one entry per resolved
- * image. Rows that fail to extract are returned in `failures[]` so the
- * caller can emit one `gltf-image-extract-failed` per failure (single
- * failure does not abort the whole importer — the runner's GUID iron-law
- * check then surfaces missing image GUIDs as a structured outage instead
- * of the silent white-box render).
- */
-export async function extractImageBytes(
-  sourceBytes: Uint8Array,
-  sourcePath: string,
-  ctx: ImportContext,
-): Promise<{
-  readonly extracted: ReadonlyMap<number, ExtractedImage>;
-  readonly failures: readonly ExtractFailure[];
-}> {
-  const isGlb = sourcePath.toLowerCase().endsWith('.glb');
-  let json: RootJsonSlim;
-  let glbBin: Uint8Array | undefined;
-
-  if (isGlb) {
-    const ab = sourceBytes.buffer.slice(
-      sourceBytes.byteOffset,
-      sourceBytes.byteOffset + sourceBytes.byteLength,
-    ) as ArrayBuffer;
-    const chunks = parseGlbChunks(ab, sourcePath);
-    if (!chunks.ok) {
-      return {
-        extracted: new Map(),
-        failures: [
-          {
-            imageIndex: -1,
-            source: 'bufferView',
-            reason: `GLB chunk parse failed: ${chunks.error.code}`,
-          },
-        ],
-      };
-    }
-    try {
-      json = JSON.parse(new TextDecoder().decode(chunks.value.jsonChunk)) as RootJsonSlim;
-    } catch (e) {
-      return {
-        extracted: new Map(),
-        failures: [
-          {
-            imageIndex: -1,
-            source: 'bufferView',
-            reason: `GLB JSON parse failed: ${e instanceof Error ? e.message : String(e)}`,
-          },
-        ],
-      };
-    }
-    glbBin = chunks.value.binChunk;
-  } else {
-    try {
-      json = JSON.parse(new TextDecoder().decode(sourceBytes)) as RootJsonSlim;
-    } catch (e) {
-      return {
-        extracted: new Map(),
-        failures: [
-          {
-            imageIndex: -1,
-            source: 'bufferView',
-            reason: `gltf JSON parse failed: ${e instanceof Error ? e.message : String(e)}`,
-          },
-        ],
-      };
-    }
+function imageBufferView(
+  index: number,
+  bufferViews: readonly BufferViewJson[],
+  buffers: readonly Uint8Array[],
+): Result<Uint8Array, string> {
+  const view = bufferViews[index];
+  if (view === undefined) return err(`bufferView index ${index} out of range`);
+  const buffer = buffers[view.buffer];
+  if (buffer === undefined)
+    return err(`buffer index ${view.buffer} out of range (have ${buffers.length})`);
+  const offset = view.byteOffset ?? 0;
+  const length = view.byteLength;
+  if (offset + length > buffer.byteLength) {
+    return err(
+      `bufferView ${index} byte range [${offset}..${offset + length}) exceeds buffer ${view.buffer} length ${buffer.byteLength}`,
+    );
   }
+  return ok(buffer.slice(offset, offset + length));
+}
 
-  const images = json.images ?? [];
-  const bufferViews = json.bufferViews ?? [];
-  const buffersJson = json.buffers ?? [];
-  const extracted = new Map<number, ExtractedImage>();
-  const failures: ExtractFailure[] = [];
-
-  // Resolve buffers (lazy: only buffers actually referenced by images get fetched).
-  const buffersCache = new Map<number, Uint8Array | { readonly error: ImportErrorType | string }>();
-  async function getBuffer(bufferIndex: number): Promise<Uint8Array | { readonly error: string }> {
-    const cached = buffersCache.get(bufferIndex);
-    if (cached !== undefined) {
-      if (cached instanceof Uint8Array) return cached;
-      const e = cached.error;
-      return { error: typeof e === 'string' ? e : e.message };
-    }
-    const bufJson = buffersJson[bufferIndex];
-    if (bufJson === undefined) {
-      const reason = `buffer index ${bufferIndex} out of range (have ${buffersJson.length})`;
-      buffersCache.set(bufferIndex, { error: reason });
-      return { error: reason };
-    }
-    if (bufJson.uri === undefined) {
-      // GLB BIN chunk slot — buffer-0.
-      if (glbBin === undefined) {
-        const reason = `buffer ${bufferIndex} has no uri and no GLB BIN chunk available`;
-        buffersCache.set(bufferIndex, { error: reason });
-        return { error: reason };
-      }
-      buffersCache.set(bufferIndex, glbBin);
-      return glbBin;
-    }
-    const dataPayload = dataUriBase64Payload(bufJson.uri);
-    if (dataPayload !== undefined) {
-      try {
-        const bytes = decodeBase64(dataPayload);
-        buffersCache.set(bufferIndex, bytes);
-        return bytes;
-      } catch (e) {
-        const reason = `buffer ${bufferIndex} data URI base64 decode failed: ${e instanceof Error ? e.message : String(e)}`;
-        buffersCache.set(bufferIndex, { error: reason });
-        return { error: reason };
-      }
-    }
-    const sib = await ctx.readSibling(bufJson.uri);
-    if (!sib.ok) {
-      const reason = `external buffer "${bufJson.uri}" read failed: ${describeImportError(sib.error)}`;
-      buffersCache.set(bufferIndex, { error: reason });
-      return { error: reason };
-    }
-    buffersCache.set(bufferIndex, sib.value);
-    return sib.value;
+export async function parseGltfImages(
+  images: readonly GltfImageJson[],
+  bufferViews: readonly BufferViewJson[],
+  buffers: readonly Uint8Array[],
+  externalLoader: (uri: string) => Promise<ArrayBuffer>,
+): Promise<Result<GltfImageIr[], GltfError>> {
+  // Preserve the document's MIME admission before any external image read.
+  for (const image of images) {
+    const mimeType = image.mimeType;
+    if (mimeType !== undefined && mimeType !== 'image/jpeg' && mimeType !== 'image/png')
+      return err(gltfErr('gltf-image-mime-unsupported', { mimeType }));
   }
-
-  for (let i = 0; i < images.length; i++) {
-    const img = images[i];
-    if (img === undefined) continue;
-
-    if (img.bufferView !== undefined) {
-      const bv = bufferViews[img.bufferView];
-      if (bv === undefined) {
-        failures.push({
-          imageIndex: i,
-          source: 'bufferView',
-          reason: `bufferView index ${img.bufferView} out of range`,
-        });
-        continue;
-      }
-      const buf = await getBuffer(bv.buffer);
-      if (!(buf instanceof Uint8Array)) {
-        failures.push({ imageIndex: i, source: 'bufferView', reason: buf.error });
-        continue;
-      }
-      const off = bv.byteOffset ?? 0;
-      const len = bv.byteLength;
-      if (off + len > buf.byteLength) {
-        failures.push({
-          imageIndex: i,
-          source: 'bufferView',
-          reason: `bufferView ${img.bufferView} byte range [${off}..${off + len}) exceeds buffer ${bv.buffer} length ${buf.byteLength}`,
-        });
-        continue;
-      }
-      const bytes = buf.subarray(off, off + len);
-      const mime = classifyMime(img.mimeType, bytes);
-      if (mime === undefined) {
-        failures.push({
-          imageIndex: i,
-          source: 'bufferView',
-          reason: `unsupported / unrecognised mime (declared "${img.mimeType ?? '<absent>'}", magic byte sniff failed)`,
-        });
-        continue;
-      }
-      extracted.set(i, { bytes: new Uint8Array(bytes), mimeType: mime, source: 'bufferView' });
-      continue;
-    }
-
-    if (img.uri !== undefined) {
-      const dataPayload = dataUriBase64Payload(img.uri);
-      if (dataPayload !== undefined) {
-        let bytes: Uint8Array;
+  const result: GltfImageIr[] = [];
+  for (const image of images) {
+    let source: GltfImageIr['source'];
+    if (image.bufferView !== undefined) {
+      source = {
+        kind: 'bufferView',
+        bytes: imageBufferView(image.bufferView, bufferViews, buffers),
+      };
+    } else if (image.uri !== undefined) {
+      if (dataUriBase64Payload(image.uri) !== undefined)
+        source = { kind: 'data-uri', uri: image.uri };
+      else {
         try {
-          bytes = decodeBase64(dataPayload);
-        } catch (e) {
-          failures.push({
-            imageIndex: i,
-            source: 'data-uri',
-            reason: `base64 decode failed: ${e instanceof Error ? e.message : String(e)}`,
-          });
-          continue;
+          source = {
+            kind: 'external-uri',
+            uri: image.uri,
+            bytes: new Uint8Array(await externalLoader(image.uri)),
+          };
+        } catch {
+          return err(gltfErr('gltf-texture-load-failed', { uri: image.uri }));
         }
-        const mimeMatch = DATA_URI_MIME_RE.exec(img.uri);
-        const declaredMime = mimeMatch?.[1] ?? img.mimeType;
-        const mime = classifyMime(declaredMime, bytes);
-        if (mime === undefined) {
-          failures.push({
-            imageIndex: i,
-            source: 'data-uri',
-            reason: `data: URI mime "${declaredMime ?? '<absent>'}" not png/jpeg`,
-          });
-          continue;
-        }
-        extracted.set(i, { bytes, mimeType: mime, source: 'data-uri' });
-        continue;
       }
-      const sib = await ctx.readSibling(img.uri);
-      if (!sib.ok) {
-        failures.push({
-          imageIndex: i,
-          source: 'external-uri',
-          reason: `external URI "${img.uri}" read failed: ${describeImportError(sib.error)}`,
-        });
-        continue;
-      }
-      const mime = classifyMime(img.mimeType, sib.value);
-      if (mime === undefined) {
-        failures.push({
-          imageIndex: i,
-          source: 'external-uri',
-          reason: `external URI "${img.uri}" mime not png/jpeg (declared "${img.mimeType ?? '<absent>'}", magic byte sniff failed)`,
-        });
-        continue;
-      }
-      extracted.set(i, {
-        bytes: new Uint8Array(sib.value),
-        mimeType: mime,
-        source: 'external-uri',
-      });
-      continue;
-    }
-
-    failures.push({
-      imageIndex: i,
-      source: 'bufferView',
-      reason: 'image row has neither bufferView nor uri',
+    } else source = { kind: 'bufferView', bytes: err('image row has neither bufferView nor uri') };
+    result.push({
+      source,
+      ...(image.name === undefined ? {} : { name: image.name }),
+      ...(image.mimeType === undefined ? {} : { mimeType: image.mimeType }),
     });
   }
+  return ok(result);
+}
 
+/** No source parsing or I/O: extraction consumes the parser's accepted image sources. */
+export function extractImageBytes(images: readonly GltfImageIr[]): {
+  readonly extracted: ReadonlyMap<number, ExtractedImage>;
+  readonly failures: readonly ExtractFailure[];
+} {
+  const extracted = new Map<number, ExtractedImage>();
+  const failures: ExtractFailure[] = [];
+  for (const [imageIndex, image] of images.entries()) {
+    const source = image.source;
+    let bytes: Uint8Array;
+    let declaredMime = image.mimeType;
+    if (source.kind === 'bufferView') {
+      if (!source.bytes.ok) {
+        failures.push({ imageIndex, source: source.kind, reason: source.bytes.error });
+        continue;
+      }
+      bytes = source.bytes.value;
+    } else if (source.kind === 'external-uri') bytes = source.bytes;
+    else {
+      try {
+        bytes = decodeBase64(dataUriBase64Payload(source.uri) ?? '');
+      } catch (error) {
+        failures.push({
+          imageIndex,
+          source: source.kind,
+          reason: `base64 decode failed: ${error instanceof Error ? error.message : String(error)}`,
+        });
+        continue;
+      }
+      declaredMime = DATA_URI_MIME_RE.exec(source.uri)?.[1] ?? declaredMime;
+    }
+    const mimeType = classifyMime(declaredMime, bytes);
+    if (mimeType === undefined) {
+      const reason =
+        source.kind === 'bufferView'
+          ? `unsupported / unrecognised mime (declared "${declaredMime ?? '<absent>'}", magic byte sniff failed)`
+          : source.kind === 'data-uri'
+            ? `data: URI mime "${declaredMime ?? '<absent>'}" not png/jpeg`
+            : `external URI "${source.uri}" mime not png/jpeg (declared "${declaredMime ?? '<absent>'}", magic byte sniff failed)`;
+      failures.push({ imageIndex, source: source.kind, reason });
+    } else extracted.set(imageIndex, { bytes, mimeType, source: source.kind });
+  }
   return { extracted, failures };
 }

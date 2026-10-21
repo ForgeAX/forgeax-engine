@@ -26,6 +26,7 @@ it('conserves rough-metal specular energy in a white furnace', async () => {
   const shared = readFileSync(resolve('packages/shader/src/ibl-shared.wgsl'), 'utf8');
   const imports = {
     'forgeax_pbr::ibl_shared': shared,
+    'forgeax_pbr::pmrem': readFileSync(resolve('packages/shader/src/ibl-pmrem.wgsl'), 'utf8'),
     'forgeax_pbr::brdf': readFileSync(resolve('packages/shader/src/brdf.wgsl'), 'utf8'),
   };
   const bake = await compiler.compileShader(

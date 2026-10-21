@@ -7,9 +7,7 @@ function snapshotInput(): Parameters<typeof createPointsLinesSnapshot>[0] {
     entityKey: 17,
     component: 'Points',
     meshHandle: 11,
-    meshGeneration: 4,
     materialHandle: 23,
-    materialGeneration: 8,
     style: { kind: 'points', sizePx: 6, shape: 'circle' },
     layer: 12,
     sortKey: -2,
@@ -21,7 +19,7 @@ function snapshotInput(): Parameters<typeof createPointsLinesSnapshot>[0] {
 }
 
 describe('Points/Lines retained snapshot', () => {
-  it('detaches ECS identity, owner generations, style, and view facts', () => {
+  it('detaches ECS identity, style, and view facts', () => {
     const source = snapshotInput();
     const snapshot = createPointsLinesSnapshot(source);
 
@@ -30,9 +28,7 @@ describe('Points/Lines retained snapshot', () => {
       entityKey: 17,
       component: 'Points',
       meshHandle: 11,
-      meshGeneration: 4,
       materialHandle: 23,
-      materialGeneration: 8,
       style: { kind: 'points', sizePx: 6, shape: 'circle' },
       layer: 12,
       sortKey: -2,
@@ -42,6 +38,8 @@ describe('Points/Lines retained snapshot', () => {
       projection: new Float32Array(16),
     });
     expect(snapshot).not.toHaveProperty('world');
+    expect(snapshot).not.toHaveProperty('meshGeneration');
+    expect(snapshot).not.toHaveProperty('materialGeneration');
     expect(snapshot.sourceBounds).not.toBe(source.sourceBounds);
     expect(snapshot.projection).not.toBe(source.projection);
   });

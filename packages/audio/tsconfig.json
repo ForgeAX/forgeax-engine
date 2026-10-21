@@ -8,12 +8,30 @@
     "rootDir": "./src",
     "tsBuildInfoFile": "./dist/.tsbuildinfo"
   },
-  "include": ["src/**/*"],
+  "include": [
+    "src/**/*"
+  ],
   "references": [
-    { "path": "../types" },
-    { "path": "../ecs" },
-    { "path": "../math" },
-    { "path": "../plugin" },
-    { "path": "../scene" }
+    {
+      "path": "../types"
+    },
+    {
+      "path": "../ecs"
+    },
+    {
+      "path": "../math"
+    },
+    {
+      "path": "../plugin"
+    },
+    {
+      "path": "../scene"
+    },
+    {
+      "path": "../assets-runtime"
+    }
+  ],
+  "exclude": [
+    "src/**/__tests__/**/*.ts"
   ]
 }

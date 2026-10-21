@@ -1,4 +1,6 @@
+import { createPrimitiveMesh } from '@forgeax/engine-geometry';
 import testQuality from '../../../../../scripts/test/render-quality.json' with { type: 'json' };
+import { testAssets } from '../helpers/runtime-assets';
 import { shaderManifestUrl } from '../shader-manifest-url.fixture';
 // instances-per-instance-pbr.dawn.test.ts -- feat-20260604-instances-per-instance-transform-shader-group3-bin
 // M1 / w2.
@@ -23,7 +25,7 @@ import { shaderManifestUrl } from '../shader-manifest-url.fixture';
 // Falsification is exercised by the parity smoke (AC-08) and learn-render
 // M3 smoke (AC-09).
 
-import { AssetRegistry, HANDLE_CUBE } from '@forgeax/engine-assets-runtime';
+import { AssetRegistry } from '@forgeax/engine-assets-runtime';
 import { World } from '@forgeax/engine-ecs';
 import {
   Camera,
@@ -192,10 +194,7 @@ describe('w2 -- PBR dual-state dawn smoke (AC-01 / AC-06)', () => {
 
     // --- Frame A: instances=N (grid spread) ---
     const worldN = new World();
-    const matHandleN = worldN.allocSharedRef<'MaterialAsset', MaterialAsset>(
-      'MaterialAsset',
-      matAsset,
-    );
+    const matHandleN = testAssets(worldN).create(matAsset).unwrap();
     worldN.spawn(
       {
         component: Transform,
@@ -205,7 +204,12 @@ describe('w2 -- PBR dual-state dawn smoke (AC-01 / AC-06)', () => {
           scale: [0.5, 0.5, 0.5],
         },
       },
-      { component: MeshFilter, data: { assetHandle: HANDLE_CUBE } },
+      {
+        component: MeshFilter,
+        data: {
+          assetHandle: testAssets(worldN).create(createPrimitiveMesh('cube').unwrap()).unwrap(),
+        },
+      },
       { component: MeshRenderer, data: { materials: [matHandleN] } },
       { component: Instances, data: { transforms: transformsN } },
     );
@@ -275,10 +279,7 @@ describe('w2 -- PBR dual-state dawn smoke (AC-01 / AC-06)', () => {
     singleTransform[15] = 1;
 
     const world1 = new World();
-    const matHandle1 = world1.allocSharedRef<'MaterialAsset', MaterialAsset>(
-      'MaterialAsset',
-      matAsset,
-    );
+    const matHandle1 = testAssets(world1).create(matAsset).unwrap();
     world1.spawn(
       {
         component: Transform,
@@ -288,7 +289,12 @@ describe('w2 -- PBR dual-state dawn smoke (AC-01 / AC-06)', () => {
           scale: [0.5, 0.5, 0.5],
         },
       },
-      { component: MeshFilter, data: { assetHandle: HANDLE_CUBE } },
+      {
+        component: MeshFilter,
+        data: {
+          assetHandle: testAssets(world1).create(createPrimitiveMesh('cube').unwrap()).unwrap(),
+        },
+      },
       { component: MeshRenderer, data: { materials: [matHandle1] } },
       { component: Instances, data: { transforms: singleTransform } },
     );
@@ -474,10 +480,7 @@ describe('w2 -- PBR dual-state dawn smoke (AC-01 / AC-06)', () => {
 
     // Frame A: N instances
     const worldN2 = new World();
-    const matHandleN2 = worldN2.allocSharedRef<'MaterialAsset', MaterialAsset>(
-      'MaterialAsset',
-      matAsset2,
-    );
+    const matHandleN2 = testAssets(worldN2).create(matAsset2).unwrap();
     worldN2.spawn(
       {
         component: Transform,
@@ -487,7 +490,12 @@ describe('w2 -- PBR dual-state dawn smoke (AC-01 / AC-06)', () => {
           scale: [0.5, 0.5, 0.5],
         },
       },
-      { component: MeshFilter, data: { assetHandle: HANDLE_CUBE } },
+      {
+        component: MeshFilter,
+        data: {
+          assetHandle: testAssets(worldN2).create(createPrimitiveMesh('cube').unwrap()).unwrap(),
+        },
+      },
       { component: MeshRenderer, data: { materials: [matHandleN2] } },
       { component: Instances, data: { transforms: transformsN2 } },
     );
@@ -553,10 +561,7 @@ describe('w2 -- PBR dual-state dawn smoke (AC-01 / AC-06)', () => {
     singleTransform2[15] = 1;
 
     const world12 = new World();
-    const matHandle12 = world12.allocSharedRef<'MaterialAsset', MaterialAsset>(
-      'MaterialAsset',
-      matAsset2,
-    );
+    const matHandle12 = testAssets(world12).create(matAsset2).unwrap();
     world12.spawn(
       {
         component: Transform,
@@ -566,7 +571,12 @@ describe('w2 -- PBR dual-state dawn smoke (AC-01 / AC-06)', () => {
           scale: [0.5, 0.5, 0.5],
         },
       },
-      { component: MeshFilter, data: { assetHandle: HANDLE_CUBE } },
+      {
+        component: MeshFilter,
+        data: {
+          assetHandle: testAssets(world12).create(createPrimitiveMesh('cube').unwrap()).unwrap(),
+        },
+      },
       { component: MeshRenderer, data: { materials: [matHandle12] } },
       { component: Instances, data: { transforms: singleTransform2 } },
     );

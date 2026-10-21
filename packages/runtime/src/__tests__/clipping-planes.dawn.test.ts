@@ -1,8 +1,6 @@
 import { mkdirSync, writeFileSync } from 'node:fs';
-import { AssetGuid } from '@forgeax/engine-pack/guid';
 import { attachRecorder } from '@forgeax/engine-rhi-debug';
 import * as webgpu from '@forgeax/engine-rhi-webgpu';
-import type { MaterialAsset } from '@forgeax/engine-types';
 import { buildEngineShaderManifest } from '@forgeax/engine-vite-plugin-shader';
 import { expect, it } from 'vitest';
 import { createDevImportTransport } from '../dev-import-transport';
@@ -51,18 +49,11 @@ it('verifies clipping color, depth, shadows and replay on fresh Dawn devices', {
       mkdirSync(`${directory}/view`, { recursive: true });
       writeFileSync(`${directory}/view/${name}`, bytes);
     });
-    const materials = await Promise.all(
-      server.guids.map(async (guid) =>
-        renderValue(
-          await host.assets.loadByGuid<MaterialAsset>(renderValue(AssetGuid.parse(guid))),
-        ),
-      ),
+    const handles = await Promise.all(
+      server.guids.map(async (guid) => (await host.assets.load(guid, 'material')).unwrap()),
     );
-    for (const material of materials) {
-      const projection = host.assets.getMaterialProjectionForPayload(material);
-      expect(projection).toBeDefined();
-      expect(material.values?.clippingControl).toBeDefined();
-    }
+    const materials = handles.map((handle) => host.assets.read(handle).unwrap());
+    for (const material of materials) expect(material.values?.clippingControl).toBeDefined();
     writeFileSync(`${directory}/materials.json`, JSON.stringify(materials));
     mkdirSync(`${directory}/material`, { recursive: true });
     await verifyClippingPlanes(
@@ -71,7 +62,7 @@ it('verifies clipping color, depth, shadows and replay on fresh Dawn devices', {
       (name, bytes) => {
         writeFileSync(`${directory}/material/${name}`, bytes);
       },
-      materials,
+      { assets: host.assets, handles },
     );
   } finally {
     await server.close();

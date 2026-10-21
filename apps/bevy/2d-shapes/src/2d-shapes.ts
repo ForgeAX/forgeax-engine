@@ -3,8 +3,10 @@ import { create2dGeometry, create2dRingGeometry, type Shape2d } from '@forgeax/e
 import { quat } from '@forgeax/engine-math';
 import { Camera, MeshFilter, MeshRenderer, orthographic } from '@forgeax/engine-render';
 import { Materials } from '@forgeax/engine-render';
-import type { MaterialAsset, MeshAsset } from '@forgeax/engine-types';
+import type { MeshAsset } from '@forgeax/engine-types';
 import { Transform } from '@forgeax/engine-scene';
+import { AssetRegistry } from '@forgeax/engine-assets-runtime';
+
 
 const X_EXTENT = 1000;
 const Y_EXTENT = 150;
@@ -73,8 +75,11 @@ function spawnMesh(
   position: readonly [number, number, number],
   color: readonly [number, number, number, number],
 ): EntityHandle {
-  const asset = world.allocSharedRef<'MeshAsset', MeshAsset>('MeshAsset', mesh);
-  const material = world.allocSharedRef<'MaterialAsset', MaterialAsset>('MaterialAsset', Materials.unlit(color));
+const sceneAssets = world.assets;
+if (!(sceneAssets instanceof AssetRegistry)) throw new Error('Scene requires its runtime asset owner');
+
+  const asset = sceneAssets.create(mesh).unwrap();
+  const material = sceneAssets.create(Materials.unlit(color)).unwrap();
   return world.spawn(
     { component: Transform, data: { pos: position, quat: [0, 0, 0, 1], scale: [1, 1, 1] } },
     { component: MeshFilter, data: { assetHandle: asset } },

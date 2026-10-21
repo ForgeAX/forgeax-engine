@@ -39,7 +39,16 @@ describe('Boss Lightning Data Interface Browser path', () => {
       ],
     });
     const result = host.resolveDataInterfaces({ requirements, generation: 4 });
-    expect(result).toMatchObject({ ok: true, value: { readiness: 'ready', generation: 4 } });
+    expect(result).toMatchObject({
+      ok: true,
+      value: {
+        generation: 4,
+        resources: [
+          { kind: 'camera', resource: { kind: 'buffer', size: 16, usage: 'uniform' } },
+          { kind: 'scene-depth', resource: { kind: 'texture-view' } },
+        ],
+      },
+    });
   });
 
   it('does not hide missing depth behind a transparent fallback', () => {

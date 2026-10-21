@@ -1,4 +1,4 @@
-import { HANDLE_QUAD } from '@forgeax/engine-assets-runtime';
+
 import type { EntityHandle, World } from '@forgeax/engine-ecs';
 import { quat, ray, vec3 } from '@forgeax/engine-math';
 import type { InputSnapshot } from '@forgeax/engine-input';
@@ -7,6 +7,10 @@ import { Camera, MeshFilter, MeshRenderer, orthographic } from '@forgeax/engine-
 import { SPRITE_PREMULTIPLIED_ALPHA_BLEND } from '@forgeax/engine-render/authoring';
 import { Transform } from '@forgeax/engine-scene';
 import type { MaterialAsset } from '@forgeax/engine-types';
+import { AssetRegistry } from '@forgeax/engine-assets-runtime';
+
+import { createPrimitiveMesh } from '@forgeax/engine-geometry';
+
 
 export const TEXTURE_SIZE = 48;
 
@@ -56,13 +60,15 @@ function spriteMaterial(texture: number): MaterialAsset {
 }
 
 export function buildRotateToCursorWorld(world: World, texture: number): RotateToCursorScene {
-  const material = world.allocSharedRef<'MaterialAsset', MaterialAsset>(
-    'MaterialAsset',
-    spriteMaterial(texture),
-  );
+const sceneAssets = world.assets;
+if (!(sceneAssets instanceof AssetRegistry)) throw new Error('Scene requires its runtime asset owner');
+
+const primitiveQuad = sceneAssets.create(createPrimitiveMesh('quad').unwrap()).unwrap();
+
+  const material = sceneAssets.create(spriteMaterial(texture)).unwrap();
   const ship = world.spawn(
     { component: Transform, data: { pos: [0, 0, 0], quat: [0, 0, 0, 1], scale: [64, 64, 1] } },
-    { component: MeshFilter, data: { assetHandle: HANDLE_QUAD } },
+    { component: MeshFilter, data: { assetHandle: primitiveQuad } },
     { component: MeshRenderer, data: { materials: [material] } },
   ).unwrap();
   const camera = world.spawn(

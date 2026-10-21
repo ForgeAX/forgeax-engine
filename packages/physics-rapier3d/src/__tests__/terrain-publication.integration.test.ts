@@ -1,9 +1,6 @@
-import { AssetRegistry, createCatalogSource } from '@forgeax/engine-assets-runtime';
 import { vec3 } from '@forgeax/engine-math';
-import { createRuntimePackPublication } from '@forgeax/engine-pack/runtime';
 import { AssetGuid, definePackageId } from '@forgeax/engine-pack/source';
 import { createRapier3DPhysicsWorld, loadRapier3D } from '@forgeax/engine-physics-rapier3d';
-import { ShaderRegistry } from '@forgeax/engine-shader';
 import { terrainHeightfield } from '@forgeax/engine-terrain';
 import { buildTerrainAssets } from '@forgeax/engine-terrain/cook';
 import {
@@ -13,6 +10,12 @@ import {
   type TerrainAsset,
 } from '@forgeax/engine-types';
 import { expect, it } from 'vitest';
+import { terrainSourceFixture } from '../../../assets-runtime/src/__tests__/fixtures/terrain-source';
+
+function sourceGuid(value: string | number): string {
+  if (typeof value !== 'string') throw new Error('expected source GUID');
+  return value;
+}
 
 function defined<T>(value: T | undefined): T {
   if (value === undefined) throw new Error('expected defined value');
@@ -48,71 +51,23 @@ it.each([
     ).unwrap();
   const oldOutputs = cook([0, 0, 0, 0, 1, 1]);
   const newOutputs = cook([0, 1, 1, 0, 1, 1]);
-  const registry = new AssetRegistry(new ShaderRegistry({ manifestUrl: undefined }));
-  const fetcher: typeof fetch = async () => new Response('', { status: 404 });
-  registry.setCatalogSource(createCatalogSource({ entries: [] }), fetcher);
-  registry.catalog(guid('layer'), layer).unwrap();
-  for (const [key, asset] of Object.entries(oldOutputs))
-    registry.catalog(guid(key), asset).unwrap();
-  const oldRoot = defined(registry.lookup<TerrainAsset>(guid('terrain')));
+  const source = terrainSourceFixture(guid);
+  const { assets: registry, fetcher } = source;
+  const accepted = source.publish({ layer, ...oldOutputs });
+  const handle = (await registry.load(guid('terrain'), 'terrain')).unwrap();
+  const runtimeRoot = registry.read(handle).unwrap();
+  const oldRoot = oldOutputs.terrain as TerrainAsset;
+  const fixed = registry.snapshot(handle).unwrap();
   const dependencies = new Map<string, { asset: Asset; row: CatalogEntry }>();
   for (const [key, asset] of Object.entries({ layer, ...oldOutputs })) {
     if (key === 'terrain') continue;
     dependencies.set(guid(key), {
       asset,
-      row: {
-        guid: guid(key),
-        kind: asset.kind,
-        packageUrl: 'https://terrain.invalid/accepted.pack.json',
-        sourcePath: 'terrain.pack.ts',
-        refs: [],
-      },
+      row: defined(accepted.rows.find((row) => row.guid === guid(key))),
     });
   }
-  const makePublication = (root: TerrainAsset, sourceRevision: string) => {
-    const refs = [
-      ...root.grids,
-      ...root.layers.map((layer) => layer.material),
-      ...root.sections.flatMap((section) => [
-        section.heightTexture,
-        section.weightTexture,
-        section.material,
-      ]),
-    ];
-    const packageUrl = 'https://terrain.invalid/candidate.pack.json';
-    const publication = createRuntimePackPublication({
-      scopeId: 'terrain-publication-regression',
-      sourcePath: 'terrain.pack.ts',
-      sourceRevision,
-      packageUrl,
-      pack: {
-        assets: [
-          {
-            guid: guid('terrain'),
-            kind: 'terrain',
-            refs,
-            artifacts: {},
-            payload: {
-              ...root,
-              heights: Array.from(root.heights),
-              weights: Array.from(root.weights),
-            },
-          },
-        ],
-      },
-    });
-    const rows: CatalogEntry[] = [
-      {
-        guid: guid('terrain'),
-        kind: 'terrain',
-        refs,
-        packageUrl,
-        sourcePath: 'terrain.pack.ts',
-        publication: publication.publication,
-      },
-    ];
-    return { ...publication, rows };
-  };
+  const makePublication = (root: TerrainAsset, sourceRevision: string) =>
+    source.publication({ terrain: root }, sourceRevision);
 
   const entity = 1;
   const physics = createRapier3DPhysicsWorld(await loadRapier3D());
@@ -132,7 +87,7 @@ it.each([
       { type: 0, mass: 1, linearDamping: 0, angularDamping: 0, gravityScale: 0, ccdEnabled: 0 },
       undefined,
     );
-    const shape = terrainHeightfield(oldRoot);
+    const shape = terrainHeightfield(runtimeRoot);
     physics
       .admitDerivedShapeCandidate(
         physics
@@ -160,7 +115,7 @@ it.each([
     step();
     expect(ray()?.point[1]).toBeCloseTo(0.2, 5);
     const acceptedPhysics = physics.getDerivedPublication(entity);
-    expect(registry.terrainClosureCurrent(oldRoot)).toBe(true);
+    expect(fixed.matchesCurrent()).toBe(true);
 
     // Positive control goes through the actual Terrain domain loader and fixed dependency path.
     const valid = makePublication(oldRoot, 'unchanged');
@@ -174,7 +129,7 @@ it.each([
     const staged = (typeof read === 'function' ? await read() : read) as TerrainAsset;
     expect(staged.heights).toBeInstanceOf(Float32Array);
     expect(Array.from(staged.heights)).toEqual([0, 0, 0, 0, 1, 1]);
-    expect(registry.lookup(guid('terrain'))).toBe(oldRoot);
+    expect(registry.read(handle).unwrap()).toEqual(runtimeRoot);
 
     // This is a valid new author root, but its same-GUID retained height bytes describe the old surface.
     const invalid = makePublication(newOutputs.terrain as TerrainAsset, 'changed-author');
@@ -203,7 +158,7 @@ it.each([
     ).toMatchObject({ ok: false, error: { code: 'asset-parse-failed' } });
     expect(() => registry.commitPreparedPublication(invalidControls.pack)).toThrow();
     if (encoding.kind === 'ids') {
-      const materialGuid = defined(oldRoot.sections[1]).material;
+      const materialGuid = sourceGuid(defined(oldRoot.sections[1]).material);
       const retained = defined(dependencies.get(materialGuid));
       if (retained.asset.kind !== 'material' || retained.asset.parent !== undefined)
         throw new Error('expected root material');
@@ -214,11 +169,11 @@ it.each([
           ...retained.asset,
           values: {
             ...retained.asset.values,
-            terrainNormalHeightLayers: defined(retained.asset.values?.terrainColorLayers),
+            terrainLayerIndices: [0, 0, 0, 0],
           },
         },
       });
-      const aliasCandidate = makePublication(oldRoot, 'cross-channel-array-alias');
+      const aliasCandidate = makePublication(oldRoot, 'invalid-layer-indices');
       expect(
         await registry.preparePublication(aliasCandidate.rows, fetcher, undefined, {
           pack: aliasCandidate.pack,
@@ -227,16 +182,15 @@ it.each([
       ).toMatchObject({ ok: false, error: { code: 'asset-parse-failed' } });
       expect(() => registry.commitPreparedPublication(aliasCandidate.pack)).toThrow();
     }
-    expect(registry.lookup(guid('terrain'))).toBe(oldRoot);
-    expect(
-      (await registry.loadByGuid<TerrainAsset>(registry.parseGuid(guid('terrain')))).unwrap(),
-    ).toBe(oldRoot);
-    expect(registry.terrainClosureCurrent(oldRoot)).toBe(true);
+    expect(registry.read(handle).unwrap()).toEqual(runtimeRoot);
+    expect((await registry.load(guid('terrain'), 'terrain')).unwrap()).toBe(handle);
+    expect(fixed.matchesCurrent()).toBe(true);
     step();
     expect(physics.getDerivedPublication(entity)).toEqual(acceptedPhysics);
     expect(ray()?.point[1]).toBeCloseTo(0.2, 5);
   } finally {
     physics.dispose();
-    registry.clearCatalogSource();
+    fixed.dispose();
+    registry.dispose();
   }
 });

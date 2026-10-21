@@ -51,20 +51,27 @@ export interface PointsLinesAdmissionInput {
   readonly materialId?: string;
 }
 
-export interface PointsLinesAdmission {
-  readonly component: 'Points' | 'Lines';
-  readonly shape?: PointShape;
-  readonly sizePx?: number;
-  readonly width?: number;
-  readonly widthUnits?: LineWidthUnits;
-  readonly cap?: LineCap;
-  readonly dashSize?: number;
-  readonly gapSize?: number;
-  readonly dashOffset?: number;
+type AdmittedPointsLinesStyle =
+  | {
+      readonly component: 'Points';
+      readonly shape: PointShape;
+      readonly sizePx: number;
+    }
+  | {
+      readonly component: 'Lines';
+      readonly width: number;
+      readonly widthUnits: LineWidthUnits;
+      readonly cap: LineCap;
+      readonly dashSize: number;
+      readonly gapSize: number;
+      readonly dashOffset: number;
+    };
+
+export type PointsLinesAdmission = AdmittedPointsLinesStyle & {
   readonly pointCount: number;
   readonly segmentCount: number;
   readonly submeshes: readonly number[];
-}
+};
 
 export type PointsLinesAdmissionError =
   | PointsLinesInvalidStyleError
@@ -94,10 +101,7 @@ function topologyMismatch(
 
 function checkStyle(
   input: PointsLinesAdmissionInput,
-): Result<
-  Omit<PointsLinesAdmission, 'pointCount' | 'segmentCount' | 'submeshes'>,
-  PointsLinesAdmissionError
-> {
+): Result<AdmittedPointsLinesStyle, PointsLinesAdmissionError> {
   const hasPoints = input.points !== undefined;
   const hasLines = input.lines !== undefined;
   if (hasPoints && hasLines) {

@@ -32,7 +32,7 @@ import {
   TRANSPARENCY_SORTED,
   TRANSPARENCY_WEIGHTED_BLENDED,
 } from '@forgeax/engine-render';
-import { constructRendererHost } from '@forgeax/engine-render/internal/construct-renderer';
+import { constructRuntimeRendererHost } from '@forgeax/engine-runtime/internal/renderer-host';
 import { rhi } from '@forgeax/engine-rhi-webgpu';
 import { propagateTransforms, Transform } from '@forgeax/engine-scene';
 
@@ -177,8 +177,8 @@ function hash01(seed) {
  * +Y so neighbouring layers cross; with 64 layers every pixel sees ~64
  * transparent fragments and no object order is correct.
  */
-function spawnWorkload(world, layers) {
-  const backdrop = world.allocSharedRef('MeshAsset', createPlaneGeometry(60, 40).unwrap());
+function spawnWorkload(world, assets, layers) {
+  const backdrop = assets.create(createPlaneGeometry(60, 40).unwrap()).unwrap();
   world
     .spawn(
       { component: Transform, data: { pos: [0, 0, -12] } },
@@ -187,16 +187,13 @@ function spawnWorkload(world, layers) {
         component: MeshRenderer,
         data: {
           materials: [
-            world.allocSharedRef(
-              'MaterialAsset',
-              Materials.unlit([0.2, 0.2, 0.25, 1]),
-            ),
+            assets.create(Materials.unlit([0.2, 0.2, 0.25, 1])).unwrap(),
           ],
         },
       },
     )
     .unwrap();
-  const layer = world.allocSharedRef('MeshAsset', createPlaneGeometry(24, 14).unwrap());
+  const layer = assets.create(createPlaneGeometry(24, 14).unwrap()).unwrap();
   for (let index = 0; index < layers; index++) {
     const tilt = (index % 2 === 0 ? 1 : -1) * (0.1 + 0.5 * hash01(index + 1));
     const color = [hash01(index * 3 + 11), hash01(index * 3 + 12), hash01(index * 3 + 13)];
@@ -215,12 +212,9 @@ function spawnWorkload(world, layers) {
           component: MeshRenderer,
           data: {
             materials: [
-              world.allocSharedRef(
-                'MaterialAsset',
-                Materials.unlit([...color, alpha], {
+              assets.create(Materials.unlit([...color, alpha], {
                   renderState: { cullMode: 'none', blend: STRAIGHT_OVER },
-                }),
-              ),
+                })).unwrap(),
             ],
           },
         },
@@ -313,19 +307,19 @@ function summarize(samples, key) {
 async function runWorkload(workload, backend) {
   const devices = new Set();
   const textures = [];
-  const constructed = await constructRendererHost(
+  const constructed = await constructRuntimeRendererHost(
     canvas(devices, textures),
     { rhi, gpuPassTiming: { maxPassesPerFrame: 256, maxFramesInFlight: 2, retentionFrames: 8 } },
     { shaderManifestUrl: await manifestUrl() },
   );
-  const renderer = unwrap(constructed, 'construct renderer').renderer;
-  const world = new World();
+  const { renderer, assets } = unwrap(constructed, 'construct renderer');
+  const world = new World({ assets });
   const lease = unwrap(renderer.attach(world), 'attach');
   const errors = [];
   const unsubscribe = renderer.subscribe((event) => {
     if (event.kind === 'error') errors.push(String(event.error?.code ?? event.error));
   });
-  const camera = spawnWorkload(world, workload.layers);
+  const camera = spawnWorkload(world, assets, workload.layers);
   const setMode = (mode) =>
     world
       .set(camera, Camera, {
@@ -335,13 +329,18 @@ async function runWorkload(workload, backend) {
   const frame = async (includeColor) => {
     world.update(1 / 60).unwrap();
     propagateTransforms(world).unwrap();
-    if (includeColor) unwrap(renderer.requestObservation?.(['linear-hdr']), 'request observation');
-    const started = performance.now();
-    const drawn = unwrap(
-      renderer.draw({ leases: [lease], camera: { lease }, environment: { lease } }),
-      'draw',
-    );
-    const cpuMs = performance.now() - started;
+    const deadline = performance.now() + 30_000;
+    let started, drawn, cpuMs;
+    for (;;) {
+      if (includeColor) unwrap(renderer.requestObservation?.(['linear-hdr']), 'request observation');
+      started = performance.now();
+      drawn = unwrap(renderer.draw({ leases: [lease], camera: { lease }, environment: { lease } }), 'draw');
+      cpuMs = performance.now() - started;
+      if (drawn.presentation === 'ready') break;
+      unwrap(await drawn.completed, 'completion');
+      if (performance.now() >= deadline) throw new Error('Renderer preparation timed out');
+      await new Promise(resolve => setTimeout(resolve, 1));
+    }
     unwrap(await drawn.completed, 'completion');
     // Wall-clock draw-to-completion corroborates the timestamps; software
     // rasterizers may defer binned raster work outside a pass's timestamp pair.

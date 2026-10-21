@@ -1,5 +1,5 @@
-import { mipDimension } from '@forgeax/engine-types';
 import type { ReflectionProbeUpdateIntent } from '../components/reflection-probe';
+import { pmremExtent } from '../ibl/pmrem';
 
 export const REFLECTION_PROBE_BYTES_PER_TEXEL = 8;
 export const DEFAULT_REFLECTION_PROBE_LIMITS = Object.freeze({
@@ -114,15 +114,12 @@ export function estimateReflectionProbeBytes(
 ): number {
   const maxResolution = limits.maxResolution ?? DEFAULT_REFLECTION_PROBE_LIMITS.maxResolution;
   const clamped = Math.min(resolution, maxResolution);
-  let filteredTexels = 0;
-  for (let mip = 0; mip < 5; mip++) {
-    const size = mipDimension(clamped, mip);
-    filteredTexels += size * size;
-  }
-  // Raw cube + two alternating filtered cubes + their depth attachments.
+  const extent = pmremExtent(clamped);
+  // Raw capture with depth, two published/candidate atlases, and one scratch
+  // atlas retained while the bounded filter progresses across frames.
   return (
-    (clamped * clamped + 2 * filteredTexels) * 6 * REFLECTION_PROBE_BYTES_PER_TEXEL +
-    3 * clamped * clamped * 4
+    (clamped * clamped * 6 + extent.width * extent.height * 3) * REFLECTION_PROBE_BYTES_PER_TEXEL +
+    clamped * clamped * 4
   );
 }
 

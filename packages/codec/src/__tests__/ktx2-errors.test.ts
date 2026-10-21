@@ -237,3 +237,21 @@ describe('KTX2 error paths (w23)', () => {
     });
   });
 });
+
+it.each([
+  'dfd-size',
+  'descriptor-size',
+  'kv-size',
+] as const)('bounds %s by its declared section even with trailing pixel bytes', (field) => {
+  const bytes = buildMinimalHeader(0);
+  if (field === 'dfd-size') writeU32(bytes, 52, 4);
+  if (field === 'descriptor-size') writeU32(bytes, 112, (56 << 16) | 2);
+  if (field === 'kv-size') {
+    writeU32(bytes, 56, 148);
+    writeU32(bytes, 60, 8);
+    writeU32(bytes, 148, 12);
+  }
+  const result = parseKtx2(bytes);
+  expect(result.ok).toBe(false);
+  if (!result.ok) expect(result.error.code).toBe('ktx2-parse-failed');
+});

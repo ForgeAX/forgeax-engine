@@ -18,7 +18,7 @@
 
 LO §1.6 的核心论点是「在 CPU 端用 `glm::mat4` 各自构造 `model = glm::translate(... cubePositions[i])` + `view = glm::translate(..., glm::vec3(0,0,-3))` + `projection = glm::perspective(glm::radians(45.0f), w/h, 0.1f, 100.0f)`，然后把三个 mat4 作为独立 uniform 上传到 vertex shader」。forgeax 把同样的语义切成三层（charter P4 + AC-04）：
 
-1. **磁盘 GUID-寻址 cube + wood-container 纹理** — `assets/wood-container.meta.json` (`kind=external-asset-package`，`subAssets[0]={kind:'image', sourceIndex:0, guid:UUIDv7}`) + `forgeax-engine-assets/learn-opengl/meshes/cube-mesh.stub.meta.json` 把磁盘端的 GUID 映射到引擎内置 `HANDLE_CUBE` 程序化 cube；运行时通过 `loadByGuid<TextureAsset>` + `loadByGuid<MeshAsset>` + `loadByGuid<MaterialAsset>` 三入口寻址（charter P5 producer / consumer split + AC-15 (c)）
+1. **运行时几何与材质** — 纹理通过 `assets.load(textureGuid, 'texture')` 载入；`createBoxGeometry(1, 1, 1)` 的结果与材质声明分别交给 `assets.create`，实体直接引用返回的句柄。
 2. **10 个 textured cube entity + 1 个 camera entity** — `world.spawn({Transform, MeshFilter{cube}, MeshRenderer{material}})` 沿 LO `cubePositions[]` 数组逐 cube spawn，每个 cube 的 `pos + 四元数 quat` 各不相同（直接对应 LO 「model = translate ∘ rotate(angle * i, axis)」累乘）；camera entity 单独持有 `Transform` 表 view（LO `view = glm::translate(view, glm::vec3(0,0,-3))` ↔ camera `Transform.pos = [0,0,3]`）和 `Camera` 组件表 projection
 3. **`Camera.projection: CAMERA_PROJECTION_PERSPECTIVE` + `fov / aspect / near / far`** — forgeax 不暴露 `glm::perspective(...)` 这种 mat4 构造器；AI 用户只填 5 个标量字段，引擎 `RenderSystem` 在 `draw(world)` 内部根据 `cameraProjectionFromF32(camera.projection)` 切换 perspective / orthographic 投影矩阵 compose（OOS-1：`Camera.projection` 同时承担「模式 0/1 离散字面量」和「未来扩展坑」）
 
@@ -52,7 +52,7 @@ forgeax 的 default 与之相反——`@forgeax/engine-runtime` 的 `RenderSyste
 
 ```mermaid
 flowchart LR
-  Disk["assets/cube-mesh.stub.meta.json<br/>(GUID -> HANDLE_CUBE)"] --> RT["loadByGuid<MeshAsset>"]
+  Geometry["createBoxGeometry(1, 1, 1)"] --> RT["assets.create(mesh)"]
   RT --> Reg["AssetRegistry"]
   Reg --> Spawn10["world.spawn x10<br/>Transform[i] + MeshFilter + MeshRenderer"]
   Reg --> SpawnCam["world.spawn x1<br/>Transform(0,0,3) + Camera(perspective)"]
@@ -67,94 +67,28 @@ flowchart LR
 
 ## 引擎用法
 
+资产调用摘自 [src/index.ts](src/index.ts) 的启动流程；`assets` 和 `world` 来自已经创建的 App，`textureGuid` 是已校验的纹理 GUID，`materialEntry.payload` 是示例 Pack 中的材质声明。
+
 ```ts
-// 来自 src/index.ts 的关键片段（三段式注释 AC-06）。
-
-// 1. engine usage - 引擎公开符号集
-import { createApp } from '@forgeax/engine-app';
-import { AssetGuid } from '@forgeax/engine-pack/guid';
-import { EngineEnvironmentError } from '@forgeax/engine-runtime';
-import { Camera, MeshRenderer, MeshFilter } from '@forgeax/engine-render';
+import { createBoxGeometry } from '@forgeax/engine-geometry';
+import { MeshFilter, MeshRenderer } from '@forgeax/engine-render';
 import { Transform } from '@forgeax/engine-scene';
-import { HANDLE_CUBE } from '@forgeax/engine-assets-runtime';
-import type { MaterialAsset, MeshAsset, TextureAsset } from '@forgeax/engine-types';
-import materialPackJson from '../assets/material-wood.pack.json';
 
-// 2. example-specific glue - LO §1.6 cubePositions[] + perspective projection + container 纹理
-const WOOD_TEXTURE_GUID  = '019e3969-1d46-773e-988c-a10e305ff2a4';
-const CUBE_MESH_GUID     = '019e3968-6007-71ae-856e-1fd6c9728cfb';
-const CUBE_MATERIAL_GUID = '019e4906-23e9-771c-afd1-1896daeaa11e';
-const CAMERA_PROJECTION_PERSPECTIVE = 0;
-const CAMERA_FOV_RADIANS = Math.PI / 4;
-const CAMERA_NEAR = 0.1;
-const CAMERA_FAR  = 100;
-const CUBE_POSITIONS = [
-  [0.0, 0.0, 0.0], [2.0, 5.0, -15.0], [-1.5, -2.2, -2.5],
-  [-3.8, -2.0, -12.3], [2.4, -0.4, -3.5], [-1.7, 3.0, -7.5],
-  [1.3, -2.0, -2.5], [1.5, 2.0, -2.5], [1.5, 0.2, -1.5],
-  [-1.3, 1.0, -1.5],
-];
-
-// 3. bootstrap - createApp + loadByGuid + spawn x11 + start
-const appRes = await createApp(canvas, { clearColor: [0.2, 0.3, 0.3, 1.0] });
-if (!appRes.ok) { /* report + return */ }
-const app = appRes.value;
-const renderer = app.renderer;
-const world = app.world;
-
-const assets = renderer.assets;
 configureRuntimeAssetCatalog(assets, runtimeBinding);
-
-// pre-register cube + material via GUID; loadByGuid resolves on Map fast path
-const woodHandleRes = await assets.loadByGuid<TextureAsset>(woodGuid);
-assets.registerWithGuid<MeshAsset>(cubeGuid, cubeAsset.value);
-assets.registerWithGuid<MaterialAsset>(matGuid, {
-  kind: 'material', shadingModel: 'unlit',
-  baseColor: [1.0, 1.0, 1.0, 1.0],
-  baseColorTexture: woodHandleRes.value,
-});
-
-const cubeHandleRes = await assets.loadByGuid<MeshAsset>(cubeGuid);
-const matHandleRes  = await assets.loadByGuid<MaterialAsset>(matGuid);
-
-// spawn 10 textured cubes (LO 1.6 cubePositions[] + glm::rotate(model, 20deg * i, axis))
-for (let i = 0; i < CUBE_POSITIONS.length; i++) {
-  const [px, py, pz] = CUBE_POSITIONS[i];
-  const halfAngle = i * (20 * Math.PI / 180) * 0.5;
-  const sinH = Math.sin(halfAngle), cosH = Math.cos(halfAngle);
-  // axis = normalise(1, 0.3, 0.5) -> (0.879, 0.264, 0.440)
-  world.spawn(
-    { component: Transform, data: {
-      pos: [px, py, pz],
-      quat: [0.879 * sinH, 0.264 * sinH, 0.440 * sinH, cosH],
-      scale: [1, 1, 1],
-    } },
-    { component: MeshFilter, data: { assetHandle: cubeHandleRes.value } },
-    { component: MeshRenderer, data: { material: matHandleRes.value } },
-  );
-}
-
-// spawn 1 perspective camera at (0, 0, 3) (LO view = translate(view, vec3(0,0,-3)))
+const texture = (await assets.load(textureGuid, 'texture')).unwrap();
+const cube = assets.create(createBoxGeometry(1, 1, 1).unwrap()).unwrap();
+const material = assets.create({
+  ...materialEntry.payload,
+  values: { ...materialEntry.payload.values, baseColorTexture: texture },
+}).unwrap();
 world.spawn(
-  { component: Transform, data: {
-    pos: [0, 0, 3],
-    quat: [0, 0, 0, 1],
-    scale: [1, 1, 1],
-  } },
-  { component: Camera, data: {
-    fov: CAMERA_FOV_RADIANS, aspect: canvas.width / canvas.height,
-    near: CAMERA_NEAR, far: CAMERA_FAR,
-    projection: CAMERA_PROJECTION_PERSPECTIVE,
-    left: -1, right: 1, bottom: -1, top: 1,
-  } },
-);
-
-// createApp 拥有 rAF + Time resource + auto input attach；启动后引擎 RenderSystem
-// 内部读 Transform + Camera 的 SoA 列、各自 compose 成 model / view / projection 三 mat4
-app.start();
+  { component: Transform, data: { pos: [0, 0, 0] } },
+  { component: MeshFilter, data: { assetHandle: cube } },
+  { component: MeshRenderer, data: { materials: [material] } },
+).unwrap();
 ```
 
-`assets/cube-mesh.stub.meta.json` 是一个空文件 `cube-mesh.stub` 的同名 sidecar（同 §1.4 / §1.5 同型 procedural 形态）；`subAssets[0].guid` 由 `forgeax asset import` 一次性铸造（reimport byte-identical）。runtime 阶段 `loadByGuid` 不感知物理路径——它只认 GUID，pack-index 把 GUID 翻译成 URL 或回落到 `registerWithGuid` 的内存表。
+纹理通过 Catalog 的 GUID 加载；几何与材质直接由 `assets.create` 建立运行时身份。相机和 Update 系统保持在示例自己的 ECS 装配中，最后由 `app.start()` 驱动帧循环。运行时修改材质使用 `assets.update(material, { values: { baseColor: [1, 0.5, 0.2, 1] } }).unwrap()`，版本和渲染更新由资产 owner 维护。
 
 ## 与 LO 原版的差异
 
@@ -175,7 +109,6 @@ app.start();
 | 文件 | 行数 | 角色 |
 |:--|---:|:--|
 | `src/index.ts` | ~370 | 三段式（引擎使用 + 示例胶水 + 启动）+ 10 cube spawn + perspective camera spawn + capture hook |
-| `assets/cube-mesh.stub.meta.json` | ~15 | cube 别名 sidecar（GUID 映射到引擎内置 HANDLE_CUBE） |
 | `src/__tests__/coordinate-systems.browser.test.ts` | ~155 | vitest browser e2e（AC-04 + AC-05 + AC-06 + AC-22 三段断言：3-section markers / cube-mesh.stub.meta.json schema / Engine WebGPU path + 10-cube + perspective Camera grep） |
 | `scripts/bench-screenshot.mjs` | ~180 | playwright + chrome-beta 录制 round-6-coordinate-systems.png 入 forgeax-engine-assets/ submodule |
 

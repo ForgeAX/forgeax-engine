@@ -1,3 +1,4 @@
+import { AssetRegistry } from '@forgeax/engine/assets-runtime';
 import type { EntityHandle } from '@forgeax/engine/ecs';
 import { packInterleavedVertexAttributes } from '@forgeax/engine/geometry';
 import { quat } from '@forgeax/engine/math';
@@ -66,13 +67,17 @@ export default defineFeature({
   expect:
     'ON: three cyan ribbons bend smoothly sideways at mid-height because the upper joint is rotated 1.2 rad about Z. OFF: the joint is at identity and the ribbons stand straight.',
   setup({ world, hud }) {
+    const sceneAssets = world.assets;
+    if (!(sceneAssets instanceof AssetRegistry))
+      throw new Error('Scene requires its runtime asset owner');
+
     spawnStage(world, { eye: [0, 1.2, 5], target: [0, 1, 0] });
     const asset = ribbon();
     if (asset === undefined) {
       hud.status('ribbon mesh failed to pack');
       return {};
     }
-    const mesh = world.allocSharedRef<'MeshAsset', MeshAsset>('MeshAsset', asset);
+    const mesh = sceneAssets.create(asset).unwrap();
     const skinMaterial = material(world, {
       kind: 'material',
       passes: [
@@ -92,7 +97,7 @@ export default defineFeature({
         0, 1,
       ]),
     };
-    const skeletonHandle = world.allocSharedRef('SkeletonAsset', skeleton);
+    const skeletonHandle = sceneAssets.create(skeleton).unwrap();
     const uppers: EntityHandle[] = [];
     for (let i = 0; i < 3; i++) {
       const root = world

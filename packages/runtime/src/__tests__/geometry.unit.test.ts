@@ -1,4 +1,3 @@
-// @ts-nocheck — merged file: cross-source type narrowing failures from blocks originally outside src/ rootDir
 // Consolidated by feat-20260609-test-pool-startup-reduction-merge-tiny-test-files
 // biome-ignore-all lint/complexity/noUselessLoneBlockStatements: block-scope isolation between merged source files (consolidation paradigm)
 //
@@ -24,15 +23,25 @@
 
 import type { AssetRuntimeError } from '@forgeax/engine-assets-runtime';
 import { AssetRegistry } from '@forgeax/engine-assets-runtime';
+import { runtimeAssets } from '@forgeax/engine-assets-runtime/internal';
 import type { World as WorldType } from '@forgeax/engine-ecs';
 import { World } from '@forgeax/engine-ecs';
-import { AssetGuid } from '@forgeax/engine-pack/guid';
-import type { RenderError, Renderer as RendererType, SkinError } from '@forgeax/engine-render';
+import type { RenderError, Renderer as RendererType } from '@forgeax/engine-render';
 import type { PipelineLayout, RenderPipeline, RhiDevice, ShaderModule } from '@forgeax/engine-rhi';
+import { rhi as nullRhi } from '@forgeax/engine-rhi-null';
 import { Transform } from '@forgeax/engine-scene';
-import type { AssetErrorDetail, Handle, MaterialAsset, MeshAsset } from '@forgeax/engine-types';
-import { ASSET_ERROR_HINTS, AssetError, unwrapHandle } from '@forgeax/engine-types';
+import type { SkinError } from '@forgeax/engine-skinning';
+import type {
+  AssetErrorDetail,
+  AssetHandle,
+  MaterialAsset,
+  MeshAsset,
+} from '@forgeax/engine-types';
+import { ASSET_ERROR_HINTS, AssetError, ok } from '@forgeax/engine-types';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { worldRenderResources } from '../../../render/src/publication/resource-scope';
+import { installDefaultAssetDecoders } from '../asset-contributions';
+import { testAssets } from './helpers/runtime-assets';
 import { mockRenderBundles } from './mock-render-bundles';
 
 // feat-20260704-runtime-tier1-decomposition M2 / w12: reconstitute the
@@ -41,9 +50,12 @@ import { mockRenderBundles } from './mock-render-bundles';
 // (AC-09). Equal to RenderError | AssetRuntimeError | SkinError.
 type RuntimeLayerError = RenderError | AssetRuntimeError | SkinError;
 
-import { resolveAssetHandle } from '@forgeax/engine-assets-runtime';
 import { propagateTransforms } from '@forgeax/engine-scene';
-import { buildMeshAttributeMapForUvSets } from '../../../geometry/src/vertex-attribute-layout';
+import {
+  buildMeshAttributeMapForUvSets,
+  deriveVertexLayoutProjection,
+  unpackInterleavedVertexAttributes,
+} from '../../../geometry/src/vertex-attribute-layout';
 import { createMeshSsboGrowController } from '../../../render/src/assembly/factory';
 import { Camera } from '../../../render/src/components/camera';
 import { Instances } from '../../../render/src/components/instances';
@@ -68,6 +80,21 @@ import { extractFrame } from '../../../render/src/render-system-extract-tail';
 import { makeMockShaderRegistry } from './helpers/mock-shader-registry';
 import { standardMaterialShaderVariants } from './helpers/standard-material-manifest';
 import { drawWithOwners } from './renderer-test-utils';
+
+function meshAttributes(vertices: Float32Array) {
+  const attributes = unpackInterleavedVertexAttributes(
+    vertices,
+    deriveVertexLayoutProjection(buildMeshAttributeMapForUvSets(1)),
+  );
+  if (attributes === undefined) throw new Error('invalid fixture vertex rows');
+  return attributes;
+}
+
+function geometryAssets(): AssetRegistry {
+  const assets = new AssetRegistry({ shaderRegistry: makeMockShaderRegistry() });
+  installDefaultAssetDecoders(assets);
+  return assets;
+}
 
 type RendererErrorObservation = {
   readonly code: string;
@@ -322,22 +349,7 @@ function drawPublished(renderer: RendererType, world: WorldType) {
 
   // ── helpers ──────────────────────────────────────────────────────────────
 
-  function translateTransform(
-    x: number,
-    y: number,
-    z: number,
-  ): {
-    posX: number;
-    posY: number;
-    posZ: number;
-    quatX: number;
-    quatY: number;
-    quatZ: number;
-    quatW: number;
-    scaleX: number;
-    scaleY: number;
-    scaleZ: number;
-  } {
+  function translateTransform(x: number, y: number, z: number) {
     return {
       pos: [x, y, z],
       quat: [0, 0, 0, 1],
@@ -364,46 +376,36 @@ function drawPublished(renderer: RendererType, world: WorldType) {
     return { fov, aspect, near, far, projection: 0, left: -1, right: 1, bottom: -1, top: 1 };
   }
 
-  function registerMesh(
-    world: World,
-    assets: AssetRegistry,
-    aabb: Float32Array,
-  ): Handle<'MeshAsset', 'shared'> {
+  function registerMesh(assets: AssetRegistry, aabb: Float32Array): AssetHandle<'mesh'> {
     // Minimal mesh: 1 triangle at origin with AABB
     const vertices = new Float32Array([
       0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 1, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 1, 0,
       1, 0, 0, 0, 0,
     ]);
-    const positions = new Float32Array([0, 0, 0, 1, 0, 0, 0, 1, 0]);
-    // catalog recomputes the AABB from positions (withMeshAabb), matching the
-    // prior register() behavior; mint the augmented payload on the world so
-    // the extract-stage frustum cull (via resolveAssetHandle) reads .aabb.
-    const result = assets.catalog<MeshAsset>(AssetGuid.format(AssetGuid.random()), {
+    // The asset owner derives bounds from positions and preserves the authored envelope.
+    const result = assets.create({
       kind: 'mesh',
       vertices,
       indices: new Uint16Array([0, 1, 2]),
-      attributes: { ...buildMeshAttributeMapForUvSets(1), position: positions },
+      attributes: meshAttributes(vertices),
       aabb,
       materialSlots: [{ slotName: 'Default' }],
       submeshes: [
         {
           indexOffset: 0,
           indexCount: 3,
-          vertexCount: vertices.length,
+          vertexCount: vertices.length / 12,
           materialSlot: 0,
           topology: 'triangle-list',
         },
       ],
     });
-    if (!result.ok) throw new Error('catalog failed');
-    return world.allocSharedRef('MeshAsset', result.value);
+    if (!result.ok) throw result.error;
+    return result.value;
   }
 
-  function registerUnlitMaterial(
-    world: World,
-    assets: AssetRegistry,
-  ): Handle<'MaterialAsset', 'shared'> {
-    const result = assets.catalog<MaterialAsset>(AssetGuid.format(AssetGuid.random()), {
+  function registerUnlitMaterial(assets: AssetRegistry): AssetHandle<'material'> {
+    const result = assets.create({
       kind: 'material',
       passes: [
         {
@@ -414,31 +416,32 @@ function drawPublished(renderer: RendererType, world: WorldType) {
       ],
       values: { baseColor: [1, 1, 1] },
     });
-    if (!result.ok) throw new Error('catalog failed');
-    return world.allocSharedRef('MaterialAsset', result.value);
+    if (!result.ok) throw result.error;
+    return result.value;
   }
 
   function makeWorldWithAssets(): {
     world: World;
     assets: AssetRegistry;
-    meshHandle: Handle<'MeshAsset', 'shared'>;
-    matHandle: Handle<'MaterialAsset', 'shared'>;
+    meshHandle: AssetHandle<'mesh'>;
+    matHandle: AssetHandle<'material'>;
   } {
     const world = new World();
-    const assets = new AssetRegistry(makeMockShaderRegistry());
+    const assets = geometryAssets();
+    world.bindAssets(assets).unwrap();
 
     // AABB: unit cube [-1,1] in each axis
     const aabb = new Float32Array([-1, -1, -1, 1, 1, 1]);
-    const meshHandle = registerMesh(world, assets, aabb);
-    const matHandle = registerUnlitMaterial(world, assets);
+    const meshHandle = registerMesh(assets, aabb);
+    const matHandle = registerUnlitMaterial(assets);
     return { world, assets, meshHandle, matHandle };
   }
 
   /** Spawn a renderable entity at (x,y,z). */
   function spawnEntity(
     world: World,
-    meshHandle: Handle<'MeshAsset', 'shared'>,
-    matHandle: Handle<'MaterialAsset', 'shared'>,
+    meshHandle: AssetHandle<'mesh'>,
+    matHandle: AssetHandle<'material'>,
     x = 0,
     y = 0,
     z = 0,
@@ -517,35 +520,31 @@ function drawPublished(renderer: RendererType, world: WorldType) {
       expect(frame.renderables).toHaveLength(1);
     });
 
-    it('(4) entity with no position attribute (AABB is inverted-infinity) is always visible', () => {
+    it('(4) a mesh without positions has finite zero bounds and is culled outside the camera', () => {
       const world = new World();
-      const assets = new AssetRegistry(makeMockShaderRegistry());
+      const assets = geometryAssets();
+      world.bindAssets(assets).unwrap();
 
-      // Catalog a mesh with NO position attribute -> computeAABB returns empty box.
-      // The entity should be always-visible even far away from camera.
-      const vertices = new Float32Array([
-        0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 1, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 1, 0,
-        1, 0, 0, 0, 0,
-      ]);
-      const meshResult = assets.catalog<MeshAsset>(AssetGuid.format(AssetGuid.random()), {
+      // Missing positions keep a finite zero envelope, so normal camera culling applies.
+      const meshResult = assets.create({
         kind: 'mesh',
-        vertices,
+        vertices: new Float32Array(3 * 3),
         indices: new Uint16Array([0, 1, 2]),
-        attributes: {},
+        attributes: { normal: new Float32Array(3 * 3) },
         materialSlots: [{ slotName: 'Default' }],
         submeshes: [
           {
             indexOffset: 0,
             indexCount: 3,
-            vertexCount: vertices.length,
+            vertexCount: 3,
             materialSlot: 0,
             topology: 'triangle-list',
           },
         ],
       });
-      if (!meshResult.ok) throw new Error('catalog failed');
-      const meshHandle = world.allocSharedRef('MeshAsset', meshResult.value);
-      const matHandle = registerUnlitMaterial(world, assets);
+      if (!meshResult.ok) throw meshResult.error;
+      const meshHandle = meshResult.value;
+      const matHandle = registerUnlitMaterial(assets);
 
       spawnCameraAt(world, 0, 0, 5);
       world
@@ -559,35 +558,32 @@ function drawPublished(renderer: RendererType, world: WorldType) {
       propagateTransforms(world);
 
       const frame: ExtractedFrame = extractFrame(world, prepareExtractContext(world, { assets }));
-      expect(frame.renderables).toHaveLength(1);
+      expect(frame.renderables).toHaveLength(0);
+      expect(assets.read(meshHandle).unwrap().aabb).toEqual(new Float32Array(6));
     });
 
-    it('(4b) entity with inverted-infinity AABB (no position attribute) is always visible', () => {
+    it('(4b) a mesh without positions preserves its finite authored envelope for culling', () => {
       const { world, assets, matHandle } = makeWorldWithAssets();
-      // Catalog a mesh with NO position attribute -> computeAABB returns
-      // inverted-infinity empty box, which the culling path treats as always-visible.
-      const vertices = new Float32Array([
-        0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 1, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 1, 0,
-        1, 0, 0, 0, 0,
-      ]);
-      const meshResult = assets.catalog<MeshAsset>(AssetGuid.format(AssetGuid.random()), {
+      // An authored envelope can cover shader-generated positions.
+      const meshResult = assets.create({
         kind: 'mesh',
-        vertices,
+        vertices: new Float32Array(3 * 3),
         indices: new Uint16Array([0, 1, 2]),
-        attributes: {},
+        attributes: { normal: new Float32Array(3 * 3) },
+        aabb: new Float32Array([-101, -101, -101, 101, 101, 101]),
         materialSlots: [{ slotName: 'Default' }],
         submeshes: [
           {
             indexOffset: 0,
             indexCount: 3,
-            vertexCount: vertices.length,
+            vertexCount: 3,
             materialSlot: 0,
             topology: 'triangle-list',
           },
         ],
       });
-      if (!meshResult.ok) throw new Error('catalog failed');
-      const meshHandle = world.allocSharedRef('MeshAsset', meshResult.value);
+      if (!meshResult.ok) throw meshResult.error;
+      const meshHandle = meshResult.value;
 
       spawnCameraAt(world, 0, 0, 5);
       spawnEntity(world, meshHandle, matHandle, 100, 100, 100);
@@ -723,8 +719,8 @@ function drawPublished(renderer: RendererType, world: WorldType) {
       expect(Object.keys(Instances.fields).length).toBe(1);
       expect(Instances.fields.transforms?.type).toBe('array<f32>');
       // Legacy fields retired in M3.
-      expect(Instances.fields.buffer).toBeUndefined();
-      expect(Instances.fields.count).toBeUndefined();
+      expect(Object.hasOwn(Instances.fields, 'buffer')).toBe(false);
+      expect(Object.hasOwn(Instances.fields, 'count')).toBe(false);
     });
 
     it('Instances component carries no per-component stride option (decision §2.3 migration)', () => {
@@ -796,6 +792,8 @@ function drawPublished(renderer: RendererType, world: WorldType) {
   const mockCaps = {
     backendKind: 'webgpu' as const,
     compute: true,
+    rayQuery: { supported: false as const, reason: 'backend-has-no-ray-query' as const },
+    maxColorAttachments: 8,
     timestampQuery: false,
     timestampPeriodNanoseconds: null,
     indirectDrawing: false,
@@ -822,8 +820,10 @@ function drawPublished(renderer: RendererType, world: WorldType) {
 
   // biome-ignore lint/suspicious/noExplicitAny: opaque mock device surface
   function makeMockDevice(probe: BufferProbe): any {
-    const okShim = <T>(v: T) => ({ ok: true as const, value: v });
+    const okShim = ok;
     return {
+      limits: { maxTextureDimension2D: 16384, maxTextureArrayLayers: 2048 },
+      createSampler: () => ok({}),
       // biome-ignore lint/suspicious/noExplicitAny: descriptor shim
       createBuffer: (desc: any) => {
         probe.createdLabels.push(String(desc.label ?? ''));
@@ -841,12 +841,14 @@ function drawPublished(renderer: RendererType, world: WorldType) {
       kind: 'mesh',
       vertices,
       indices: new Uint16Array([0, 1, 2, 0, 2, 3]),
-      attributes: buildMeshAttributeMapForUvSets(1),
+      attributes: meshAttributes(vertices),
+      materialSlots: [{ slotName: 'Default' }],
       submeshes: [
         {
+          materialSlot: 0,
           indexOffset: 0,
           indexCount: 6,
-          vertexCount: vertices.length,
+          vertexCount: vertices.length / 12,
           topology: 'triangle-list',
         },
       ],
@@ -858,12 +860,14 @@ function drawPublished(renderer: RendererType, world: WorldType) {
     return {
       kind: 'mesh',
       vertices,
-      attributes: buildMeshAttributeMapForUvSets(1),
+      attributes: meshAttributes(vertices),
+      materialSlots: [{ slotName: 'Default' }],
       submeshes: [
         {
+          materialSlot: 0,
           indexOffset: 0,
           indexCount: 0,
-          vertexCount: vertices.length,
+          vertexCount: vertices.length / 12,
           topology: 'line-list',
         },
       ],
@@ -877,6 +881,9 @@ function drawPublished(renderer: RendererType, world: WorldType) {
       // passes a stub GpuBuffer-shaped object (the test only inspects
       // .indexed / .indexBuffer / .vertexCount, not the wrapper internals).
       const vertexOnly: MeshGpuHandles = {
+        contentEpoch: 0,
+        layoutProjection: deriveVertexLayoutProjection(makeVertexOnlyMesh().attributes),
+        uvSetCount: 1,
         vertexBuffer: {} as unknown as GpuBuffer,
         indexBuffer: null,
         vboBytes: 0,
@@ -886,7 +893,9 @@ function drawPublished(renderer: RendererType, world: WorldType) {
         vertexCount: 2,
         indexed: false,
         topology: 'line-list',
-        submeshes: [{ indexOffset: 0, indexCount: 0, vertexCount: 2, topology: 'line-list' }],
+        submeshes: [
+          { indexOffset: 0, indexCount: 0, vertexCount: 2, topology: 'line-list', materialSlot: 0 },
+        ],
       };
       expect(vertexOnly.indexed).toBe(false);
       expect(vertexOnly.indexBuffer).toBeNull();
@@ -898,19 +907,11 @@ function drawPublished(renderer: RendererType, world: WorldType) {
       const device = makeMockDevice(probe);
       const world = new World();
       const store = new GpuResidencyCache();
-      store.configureGpuDevice(
-        device,
-        undefined,
-        (() => {
-          throw new Error('cube relay not used in mesh upload');
-          // biome-ignore lint/suspicious/noExplicitAny: relay shim
-        }) as any,
-        mockCaps,
-      );
+      store.configureGpuDevice(device, undefined, mockCaps);
       // Mint a handle from a valid indexed mesh (register-time index validation
       // relaxation is M5 / w13); feed a vertex-only POD to ensureResident to
       // exercise the M2 upload chain in isolation.
-      const handle = world.allocSharedRef('MeshAsset', makeIndexedMesh());
+      const handle = testAssets(world).create(makeIndexedMesh()).unwrap();
       const res = store.ensureResident(handle, makeVertexOnlyMesh());
       expect(res.ok).toBe(true);
       if (!res.ok) return;
@@ -929,16 +930,8 @@ function drawPublished(renderer: RendererType, world: WorldType) {
       const device = makeMockDevice(probe);
       const world = new World();
       const store = new GpuResidencyCache();
-      store.configureGpuDevice(
-        device,
-        undefined,
-        (() => {
-          throw new Error('cube relay not used in mesh upload');
-          // biome-ignore lint/suspicious/noExplicitAny: relay shim
-        }) as any,
-        mockCaps,
-      );
-      const handle = world.allocSharedRef('MeshAsset', makeIndexedMesh());
+      store.configureGpuDevice(device, undefined, mockCaps);
+      const handle = testAssets(world).create(makeIndexedMesh()).unwrap();
       const res = store.ensureResident(handle, makeIndexedMesh());
       expect(res.ok).toBe(true);
       if (!res.ok) return;
@@ -1679,25 +1672,8 @@ function drawPublished(renderer: RendererType, world: WorldType) {
 
 {
   // --- from mesh-update-no-leak.test.ts ---
-  // mesh-update-no-leak.test - updateMesh in-place re-upload + expansion unit test
-  // (feat-20260531-world-space-msdf-text-rendering M3 / w12).
-  //
-  // Coverage:
-  //   (a) No-leak falsification: register a mesh, call updateMesh 50 times
-  //       with same-size data, assert assets Map size + meshGpuHandles size
-  //       is constant (AC-08: if every frame registers new mesh, Map size
-  //       monotonically grows — this assertion can falsify that).
-  //   (b) Expansion: register a small mesh (4 verts), updateMesh with 8-vert
-  //       data (exceeds capacity), assert meshGpuHandles entry vertexBuffer
-  //       changed but handle id unchanged + indexCount updated.
-  //   (c) updateMesh on non-existent handle is a silent no-op (guards check
-  //       meshGpuHandles.has + device existence).
-
-  // feat-20260601-device/gpu-residency-extraction M1: updateMesh moved to the GPU
-  // store. The no-leak invariant is now structural-by-construction (the store
-  // holds no registry reference, D-2), but the test still asserts that driving
-  // updateMesh never grows the registry. Without a wired device the store
-  // updateMesh no-ops, matching the pre-extraction no-device behavior.
+  // Exercise ordinary asset edits followed by accepted GPU residency, including
+  // 50 updates and expansion. Asset counts and physical resources remain bounded.
 
   function makeQuadMesh(): MeshAsset {
     // 4 vertices x 12 floats = 48 entries, 2 triangles (6 indices)
@@ -1707,13 +1683,15 @@ function drawPublished(renderer: RendererType, world: WorldType) {
       kind: 'mesh',
       vertices,
       indices,
-      attributes: buildMeshAttributeMapForUvSets(1),
+      attributes: meshAttributes(vertices),
       aabb: new Float32Array(6),
+      materialSlots: [{ slotName: 'Default' }],
       submeshes: [
         {
+          materialSlot: 0,
           indexOffset: 0,
           indexCount: indices.length,
-          vertexCount: vertices.length,
+          vertexCount: vertices.length / 12,
           topology: 'triangle-list',
         },
       ],
@@ -1728,75 +1706,114 @@ function drawPublished(renderer: RendererType, world: WorldType) {
       kind: 'mesh',
       vertices,
       indices,
-      attributes: {},
+      attributes: meshAttributes(vertices),
       aabb: new Float32Array(6),
+      materialSlots: [{ slotName: 'Default' }],
       submeshes: [
         {
+          materialSlot: 0,
           indexOffset: 0,
           indexCount: indices.length,
-          vertexCount: vertices.length,
+          vertexCount: vertices.length / 12,
           topology: 'triangle-list',
         },
       ],
     };
   }
 
-  describe('w12 - updateMesh no-leak + expansion unit', () => {
-    it('(a) 50-frame same-size updateMesh does not grow sharedRefs/meshGpuHandles size', () => {
-      const world = new World();
-      const mesh = makeQuadMesh();
-      const handle = world.allocSharedRef('MeshAsset', mesh);
-      const store = new GpuResidencyCache();
-      void unwrapHandle(handle);
+  async function managedMeshFixture() {
+    const world = new World();
+    const assets = testAssets(world);
+    const handle = assets.create(makeQuadMesh()).unwrap();
+    const device = (await (await nullRhi.requestAdapter()).unwrap().requestDevice()).unwrap();
+    const store = new GpuResidencyCache();
+    store.configureGpuDevice(device, undefined, device.caps);
+    const scope = worldRenderResources(world);
+    const publish = () => {
+      const revision = scope.assetRevision(handle);
+      if (revision === undefined) throw new Error('mesh revision missing');
+      const prepared = store
+        .prepareMeshResidency(handle, assets.read(handle).unwrap(), revision, scope)
+        .unwrap();
+      expect(prepared.commit()).toBe(true);
+      prepared.lease.release(false);
+      return prepared.entry;
+    };
+    const entry = publish();
+    return { assets, handle, device, store, scope, publish, entry };
+  }
 
-      // Save the initial live shared-ref slot count.
-      const initialAssetsSize = world.sharedRefs._liveCount();
-      // meshGpuHandles is only populated after configureGpuDevice.
-      // Without a device, updateMeshById is a no-op (guards check device).
-      // This test verifies the structural invariant: calling updateMesh does
-      // NOT mint a new shared ref (which would grow the live slot count).
-      // The live slot count is the structural indicator of the AC-08
-      // falsification — if every frame minted a handle, it would grow.
-      if (!(mesh.indices instanceof Uint16Array)) return;
-      for (let frame = 0; frame < 50; frame++) {
-        store.updateMesh(handle, mesh.vertices, mesh.indices);
+  describe('managed Mesh updates keep asset identity and bounded residency', () => {
+    it('(a) 50 same-size updates do not grow owner content or GPU residency', async () => {
+      const f = await managedMeshFixture();
+      try {
+        // Settle the first edit's derived-field removal before measuring steady state.
+        f.assets.update(f.handle, { vertices: makeQuadMesh().vertices }).unwrap();
+        f.publish();
+        const initial = runtimeAssets(f.assets).inspect();
+        for (let frame = 0; frame < 50; frame++) {
+          const vertices = makeQuadMesh().vertices;
+          vertices[0] = frame + 1;
+          f.assets.update(f.handle, { vertices }).unwrap();
+          const entry = f.publish();
+          expect(entry.vertexCount).toBe(4);
+          expect(f.store.recoveryResourceCount()).toBe(1);
+          expect(runtimeAssets(f.assets).inspect().assets).toBe(initial.assets);
+          expect(runtimeAssets(f.assets).inspect().bytes).toBe(initial.bytes);
+          const position = f.assets.read(f.handle).unwrap().attributes.position;
+          if (!(position instanceof Float32Array)) throw new Error('position channel missing');
+          expect(position[0]).toBe(frame + 1);
+        }
+      } finally {
+        f.store.destroyAll();
+        f.assets.dispose();
       }
-      const finalAssetsSize = world.sharedRefs._liveCount();
-      expect(finalAssetsSize).toBe(initialAssetsSize);
     });
 
-    it('(b) updateMesh on a minted handle does not mint a new shared ref', () => {
-      const world = new World();
-      const mesh = makeQuadMesh();
-      const handle = world.allocSharedRef('MeshAsset', mesh);
-      const store = new GpuResidencyCache();
-
-      const before = world.sharedRefs._liveCount();
-      if (!(mesh.indices instanceof Uint16Array)) return;
-      store.updateMesh(handle, mesh.vertices, mesh.indices);
-      const after = world.sharedRefs._liveCount();
-      expect(after).toBe(before);
+    it('(b) a committed mesh edit reuses its handle and does not allocate another asset', async () => {
+      const f = await managedMeshFixture();
+      try {
+        const before = runtimeAssets(f.assets).inspect().assets;
+        const vertices = makeQuadMesh().vertices;
+        vertices[0] = 2;
+        f.assets.update(f.handle, { vertices }).unwrap();
+        const next = f.publish();
+        expect(runtimeAssets(f.assets).inspect().assets).toBe(before);
+        expect(f.assets.read(f.handle).unwrap().vertices[0]).toBe(2);
+        expect(f.store.getMeshGpuHandles(f.handle, f.scope)).toBe(next);
+        expect(f.entry.vertexBuffer.isDestroyed).toBe(true);
+      } finally {
+        f.store.destroyAll();
+        f.assets.dispose();
+      }
     });
 
-    it('(c) expansion path preserves mesh handle id', () => {
-      const world = new World();
-      const mesh = makeQuadMesh();
-      const handle = world.allocSharedRef('MeshAsset', mesh);
-      const store = new GpuResidencyCache();
-      const id = unwrapHandle(handle);
-
-      // updateMesh with larger data (expansion path)
-      const bigger = makeOctMesh();
-      if (!(bigger.indices instanceof Uint16Array)) return;
-      store.updateMesh(handle, bigger.vertices, bigger.indices);
-      // The id should still be the same — no new mint was performed.
-      const result = resolveAssetHandle<MeshAsset>(world, handle);
-      expect(result.ok).toBe(true);
-      if (!result.ok) return;
-      // The payload behind the handle is unchanged (updateMesh only touches the
-      // GPU side); the handle's numeric id is the same.
-      const lookupId = unwrapHandle(handle);
-      expect(lookupId).toBe(id);
+    it('(c) expansion replaces concrete buffers while preserving mesh identity', async () => {
+      const f = await managedMeshFixture();
+      try {
+        const id = Number(f.handle);
+        const bigger = makeOctMesh();
+        if (bigger.indices === undefined) throw new Error('expansion indices missing');
+        f.assets
+          .update(f.handle, {
+            vertices: bigger.vertices,
+            indices: bigger.indices,
+            submeshes: bigger.submeshes,
+          })
+          .unwrap();
+        const next = f.publish();
+        expect(Number(f.handle)).toBe(id);
+        expect(next.vertexBuffer).not.toBe(f.entry.vertexBuffer);
+        expect(next.vertexCount).toBe(8);
+        expect(next.indexCount).toBe(12);
+        expect(f.entry.vertexBuffer.isDestroyed).toBe(true);
+        expect(f.assets.read(f.handle).unwrap().vertices.length).toBe(8 * 12);
+        expect(f.store.recoveryResourceCount()).toBe(1);
+        expect(runtimeAssets(f.assets).inspect().assets).toBe(1);
+      } finally {
+        f.store.destroyAll();
+        f.assets.dispose();
+      }
     });
   });
 }
@@ -1805,7 +1822,7 @@ function drawPublished(renderer: RendererType, world: WorldType) {
   // --- from validate-mesh-topology.test.ts ---
   // validate-mesh-topology.test - feat-20260604-mesh-topology-debug-draw M5 / w12 (TDD red).
   //
-  // Coverage (AssetRegistry.catalog -> validateMeshPayload topology rules, AC-10):
+  // Coverage (AssetRegistry.create -> validateMeshPayload topology rules, AC-10):
   //   (a) strip topology (line-strip / triangle-strip) with NO indices ->
   //       Result.err code='asset-invalid-value', detail.field='topology' +
   //       detail.value=<topology>, .hint non-empty (strip needs indices to
@@ -1823,67 +1840,40 @@ function drawPublished(renderer: RendererType, world: WorldType) {
   //          research Finding 10 (validateMeshPayload :565-601) + Finding 5 (asset-invalid-value precedent).
 
   function reg(): AssetRegistry {
-    return new AssetRegistry(makeMockShaderRegistry());
+    return geometryAssets();
   }
 
   describe('validateMeshPayload topology rules (M5 w12 - AC-10)', () => {
-    it('(a1) line-strip with no indices -> asset-invalid-value + detail.field=topology + non-empty hint', () => {
-      const result = reg().catalog(AssetGuid.format(AssetGuid.random()), {
-        kind: 'mesh',
-        vertices: new Float32Array(2 * 12),
-        attributes: {},
-        materialSlots: [{ slotName: 'Default' }],
-        submeshes: [
-          {
-            indexOffset: 0,
-            indexCount: 0,
-            vertexCount: 0,
-            materialSlot: 0,
-            topology: 'line-strip',
-          },
-        ],
-      } as MeshAsset);
-      expect(result.ok).toBe(false);
-      if (!result.ok) {
-        expect(result.error.code).toBe('asset-invalid-value');
-        const d = result.error.detail as { field: string; value: string };
-        expect(d.field).toBe('submeshes[0].topology');
-        expect(d.value).toBe('line-strip');
-        expect(result.error.hint.length).toBeGreaterThan(0);
-      }
-    });
-
-    it('(a2) triangle-strip with no indices -> asset-invalid-value + detail.value=triangle-strip', () => {
-      const result = reg().catalog(AssetGuid.format(AssetGuid.random()), {
-        kind: 'mesh',
-        vertices: new Float32Array(3 * 12),
-        attributes: {},
-        materialSlots: [{ slotName: 'Default' }],
-        submeshes: [
-          {
-            indexOffset: 0,
-            indexCount: 0,
-            vertexCount: 0,
-            materialSlot: 0,
-            topology: 'triangle-strip',
-          },
-        ],
-      } as MeshAsset);
-      expect(result.ok).toBe(false);
-      if (!result.ok) {
-        expect(result.error.code).toBe('asset-invalid-value');
-        const d = result.error.detail as { field: string; value: string };
-        expect(d.field).toBe('submeshes[0].topology');
-        expect(d.value).toBe('triangle-strip');
-        expect(result.error.hint.length).toBeGreaterThan(0);
+    it.each([
+      ['line-strip', 2],
+      ['triangle-strip', 3],
+    ] as const)('admits non-indexed %s with its explicit vertex range', (topology, vertexCount) => {
+      const assets = reg();
+      const vertices = new Float32Array(vertexCount * 12);
+      try {
+        const handle = assets
+          .create({
+            kind: 'mesh',
+            vertices,
+            attributes: meshAttributes(vertices),
+            materialSlots: [{ slotName: 'Default' }],
+            submeshes: [{ indexOffset: 0, indexCount: 0, vertexCount, materialSlot: 0, topology }],
+          })
+          .unwrap();
+        const mesh = assets.read(handle).unwrap();
+        expect(mesh.indices).toBeUndefined();
+        expect(mesh.submeshes[0]).toMatchObject({ topology, vertexCount, indexCount: 0 });
+        expect(mesh.vertices).toEqual(vertices);
+      } finally {
+        assets.dispose();
       }
     });
 
     it('(b) empty geometry with non-default topology -> asset-invalid-value', () => {
-      const result = reg().catalog(AssetGuid.format(AssetGuid.random()), {
+      const result = reg().create({
         kind: 'mesh',
         vertices: new Float32Array(0),
-        attributes: {},
+        attributes: meshAttributes(new Float32Array(0)),
         materialSlots: [{ slotName: 'Default' }],
         submeshes: [
           {
@@ -1906,10 +1896,10 @@ function drawPublished(renderer: RendererType, world: WorldType) {
     });
 
     it('(b-legal) empty geometry with default/omitted topology stays legal (Result.ok)', () => {
-      const result = reg().catalog(AssetGuid.format(AssetGuid.random()), {
+      const result = reg().create({
         kind: 'mesh',
         vertices: new Float32Array(0),
-        attributes: {},
+        attributes: meshAttributes(new Float32Array(0)),
         materialSlots: [{ slotName: 'Default' }],
         submeshes: [
           {
@@ -1925,11 +1915,11 @@ function drawPublished(renderer: RendererType, world: WorldType) {
     });
 
     it('(c1) indexed point-list is legal (Result.ok)', () => {
-      const result = reg().catalog(AssetGuid.format(AssetGuid.random()), {
+      const result = reg().create({
         kind: 'mesh',
         vertices: new Float32Array(3 * 12),
         indices: new Uint16Array([0, 1, 2]),
-        attributes: {},
+        attributes: meshAttributes(new Float32Array(3 * 12)),
         materialSlots: [{ slotName: 'Default' }],
         submeshes: [
           {
@@ -1945,11 +1935,11 @@ function drawPublished(renderer: RendererType, world: WorldType) {
     });
 
     it('(c2) indexed line-list is legal (Result.ok)', () => {
-      const result = reg().catalog(AssetGuid.format(AssetGuid.random()), {
+      const result = reg().create({
         kind: 'mesh',
         vertices: new Float32Array(2 * 12),
         indices: new Uint16Array([0, 1]),
-        attributes: {},
+        attributes: meshAttributes(new Float32Array(2 * 12)),
         materialSlots: [{ slotName: 'Default' }],
         submeshes: [
           {
@@ -1965,10 +1955,10 @@ function drawPublished(renderer: RendererType, world: WorldType) {
     });
 
     it('(c3) vertex-only line-list (no indices) is legal (Result.ok)', () => {
-      const result = reg().catalog(AssetGuid.format(AssetGuid.random()), {
+      const result = reg().create({
         kind: 'mesh',
         vertices: new Float32Array(2 * 12),
-        attributes: {},
+        attributes: meshAttributes(new Float32Array(2 * 12)),
         materialSlots: [{ slotName: 'Default' }],
         submeshes: [
           {
@@ -1985,11 +1975,11 @@ function drawPublished(renderer: RendererType, world: WorldType) {
 
     it('(c4) triangle-strip WITH indices is legal (Result.ok)', () => {
       // 4 verts -> 2 triangles via strip; indices reference all 4 (maxIndex+1===vertexCount)
-      const result = reg().catalog(AssetGuid.format(AssetGuid.random()), {
+      const result = reg().create({
         kind: 'mesh',
         vertices: new Float32Array(4 * 12),
         indices: new Uint32Array([0, 1, 2, 3]),
-        attributes: {},
+        attributes: meshAttributes(new Float32Array(4 * 12)),
         materialSlots: [{ slotName: 'Default' }],
         submeshes: [
           {
@@ -2006,10 +1996,10 @@ function drawPublished(renderer: RendererType, world: WorldType) {
 
     it('(e) D-A4: vertex-only triangle-list (no indices) does NOT trip maxIndex invariant', () => {
       // 3 verts, no indices: the :588 maxIndex+1===vertexCount check must be skipped.
-      const result = reg().catalog(AssetGuid.format(AssetGuid.random()), {
+      const result = reg().create({
         kind: 'mesh',
         vertices: new Float32Array(3 * 12),
-        attributes: {},
+        attributes: meshAttributes(new Float32Array(3 * 12)),
         materialSlots: [{ slotName: 'Default' }],
         submeshes: [
           {
@@ -2176,27 +2166,15 @@ function drawPublished(renderer: RendererType, world: WorldType) {
     return (await import(ENGINE)) as never;
   }
 
-  async function importEcs(): Promise<{
-    World: new () => {
-      spawn: (...componentDatas: unknown[]) => unknown;
-      allocSharedRef: (target: string, payload: unknown) => number;
-    };
-  }> {
-    return (await import('@forgeax/engine-ecs')) as never;
+  async function importEcs() {
+    return await import('@forgeax/engine-ecs');
   }
 
-  async function importComponents(): Promise<{
-    Transform: unknown;
-    MeshFilter: unknown;
-    MeshRenderer: unknown;
-    Camera: unknown;
-    DirectionalLight: unknown;
-    Instances: unknown;
-  }> {
+  async function importComponents() {
     return {
       ...(await import('@forgeax/engine-render')),
       ...(await import('@forgeax/engine-scene')),
-    } as never;
+    };
   }
 
   function cameraTransform() {
@@ -2215,7 +2193,7 @@ function drawPublished(renderer: RendererType, world: WorldType) {
     };
   }
 
-  function unlitMaterial(color: readonly [number, number, number] = [1, 0, 0]) {
+  function unlitMaterial(color: readonly [number, number, number] = [1, 0, 0]): MaterialAsset {
     return {
       kind: 'material' as const,
       passes: [
@@ -2230,11 +2208,12 @@ function drawPublished(renderer: RendererType, world: WorldType) {
   }
 
   function twoSubmeshMesh(): MeshAsset {
+    const vertices = new Float32Array(6 * 12);
     return {
       kind: 'mesh',
-      vertices: new Float32Array(6 * 12),
+      vertices,
       indices: new Uint16Array([0, 1, 2, 3, 4, 5]),
-      attributes: buildMeshAttributeMapForUvSets(1),
+      attributes: meshAttributes(vertices),
       materialSlots: [{ slotName: 'First' }, { slotName: 'Second' }],
       submeshes: [
         {
@@ -2293,10 +2272,7 @@ function drawPublished(renderer: RendererType, world: WorldType) {
     const { World } = await importEcs();
     const C = await importComponents();
     const world = new World();
-    const meshHandle = world.allocSharedRef('MeshAsset', meshAsset) as Handle<
-      'MeshAsset',
-      'shared'
-    >;
+    const meshHandle = testAssets(world).create(meshAsset).unwrap() as AssetHandle<'mesh'>;
 
     // Mint N materials (one per submesh).
     const colors: Array<readonly [number, number, number]> = [
@@ -2304,13 +2280,10 @@ function drawPublished(renderer: RendererType, world: WorldType) {
       [0, 1, 0],
       [0, 0, 1],
     ];
-    const materialHandles: Handle<'MaterialAsset', 'shared'>[] = [];
+    const materialHandles: AssetHandle<'material'>[] = [];
     for (let i = 0; i < materialCount; i++) {
       materialHandles.push(
-        world.allocSharedRef('MaterialAsset', unlitMaterial(colors[i])) as Handle<
-          'MaterialAsset',
-          'shared'
-        >,
+        testAssets(world).create(unlitMaterial(colors[i])).unwrap() as AssetHandle<'material'>,
       );
     }
 
@@ -2414,18 +2387,12 @@ function drawPublished(renderer: RendererType, world: WorldType) {
       const { World } = await importEcs();
       const C = await importComponents();
       const world = new World();
-      const meshHandle = world.allocSharedRef('MeshAsset', twoSubmeshMesh()) as Handle<
-        'MeshAsset',
-        'shared'
-      >;
+      const meshHandle = testAssets(world).create(twoSubmeshMesh()).unwrap() as AssetHandle<'mesh'>;
 
-      const matHandles: Handle<'MaterialAsset', 'shared'>[] = [];
+      const matHandles: AssetHandle<'material'>[] = [];
       for (let i = 0; i < 2; i++) {
         matHandles.push(
-          world.allocSharedRef('MaterialAsset', unlitMaterial()) as Handle<
-            'MaterialAsset',
-            'shared'
-          >,
+          testAssets(world).create(unlitMaterial()).unwrap() as AssetHandle<'material'>,
         );
       }
 
@@ -2489,10 +2456,7 @@ function drawPublished(renderer: RendererType, world: WorldType) {
   // ── helpers ──────────────────────────────────────────────────────────────────
 
   function freshRegistry() {
-    return new AssetRegistry(
-      // biome-ignore lint/suspicious/noExplicitAny: mock ShaderRegistry
-      { materialArtifact: () => undefined, findMaterialArtifact: () => ({ ok: false }) } as any,
-    );
+    return testAssets(new World());
   }
 
   function makeMeshPayload(overrides: {
@@ -2518,8 +2482,7 @@ function drawPublished(renderer: RendererType, world: WorldType) {
       vertices: new Float32Array(4 * 12), // 4 verts x 12 floats
       indices,
       attributes: {
-        ...buildMeshAttributeMapForUvSets(1),
-        position: new Float32Array(4 * 3),
+        ...meshAttributes(new Float32Array(4 * 12)),
       },
       materialSlots: [{ slotName: 'Default' }],
       submeshes: submeshes.map((submesh) => ({ ...submesh, materialSlot: 0 })),
@@ -2533,7 +2496,7 @@ function drawPublished(renderer: RendererType, world: WorldType) {
       const registry = freshRegistry();
       const payload = makeMeshPayload({ submeshes: [] });
 
-      const result = registry.catalog(AssetGuid.format(AssetGuid.random()), payload as never);
+      const result = registry.create(payload as never);
       expect(result.ok).toBe(false);
       if (!result.ok) {
         expect(result.error).toBeInstanceOf(AssetError);
@@ -2564,7 +2527,7 @@ function drawPublished(renderer: RendererType, world: WorldType) {
         ],
       });
 
-      const result = registry.catalog(AssetGuid.format(AssetGuid.random()), payload as never);
+      const result = registry.create(payload as never);
       expect(result.ok).toBe(false);
       if (!result.ok) {
         expect(result.error).toBeInstanceOf(AssetError);
@@ -2601,7 +2564,7 @@ function drawPublished(renderer: RendererType, world: WorldType) {
         ],
       });
 
-      const result = registry.catalog(AssetGuid.format(AssetGuid.random()), payload as never);
+      const result = registry.create(payload as never);
       expect(result.ok).toBe(true);
     });
   });

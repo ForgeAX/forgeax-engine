@@ -30,13 +30,17 @@ import {
   type EntityHandle,
   type World,
 } from '@forgeax/engine-ecs';
-import { HANDLE_SPHERE } from '@forgeax/engine-assets-runtime';
+
 import { Transform } from '@forgeax/engine-scene';
 import { Camera, DirectionalLight, MeshFilter, MeshRenderer } from '@forgeax/engine-render';
 import { perspective } from '@forgeax/engine-render';
 import { Materials } from '@forgeax/engine-render';
-import type { MaterialAsset } from '@forgeax/engine-runtime';
+
 import { quat } from '@forgeax/engine-math';
+import { AssetRegistry } from '@forgeax/engine-assets-runtime';
+
+import { createPrimitiveMesh } from '@forgeax/engine-geometry';
+
 
 /**
  * Newtonian constant scaled for a FAST, watchable clump — tuned so the ring
@@ -76,14 +80,13 @@ export const Body = defineComponent('Body', {
  * a camera looking down at the ring.
  */
 export function buildIterCombinationsWorld(world: World): void {
-  const bodyMat = world.allocSharedRef<'MaterialAsset', MaterialAsset>(
-    'MaterialAsset',
-    Materials.standard({ baseColor: [0.6, 0.7, 0.9, 1] }),
-  );
-  const starMat = world.allocSharedRef<'MaterialAsset', MaterialAsset>(
-    'MaterialAsset',
-    Materials.standard({ baseColor: [1.0, 0.4, 0.15, 1], emissive: [1.0, 0.3, 0.1] }),
-  );
+const sceneAssets = world.assets;
+if (!(sceneAssets instanceof AssetRegistry)) throw new Error('Scene requires its runtime asset owner');
+
+const primitiveSphere = sceneAssets.create(createPrimitiveMesh('sphere').unwrap()).unwrap();
+
+  const bodyMat = sceneAssets.create(Materials.standard({ baseColor: [0.6, 0.7, 0.9, 1] })).unwrap();
+  const starMat = sceneAssets.create(Materials.standard({ baseColor: [1.0, 0.4, 0.15, 1], emissive: [1.0, 0.3, 0.1] })).unwrap();
 
   // Ring of bodies, evenly spaced. Start lastPos == pos (zero initial velocity)
   // so the star's pull is what sets them in motion — a deterministic inward clump.
@@ -93,7 +96,7 @@ export function buildIterCombinationsWorld(world: World): void {
     const z = Math.sin(theta) * RING_RADIUS;
     world.spawn(
       { component: Transform, data: { pos: [x, 0, z], quat: [0, 0, 0, 1], scale: [0.5, 0.5, 0.5] } },
-      { component: MeshFilter, data: { assetHandle: HANDLE_SPHERE } },
+      { component: MeshFilter, data: { assetHandle: primitiveSphere } },
       { component: MeshRenderer, data: { materials: [bodyMat] } },
       { component: Body, data: { mass: BODY_MASS, acc: [0, 0, 0], lastPos: [x, 0, z] } },
     );
@@ -102,7 +105,7 @@ export function buildIterCombinationsWorld(world: World): void {
   // Central star (heavier Body) at the origin.
   world.spawn(
     { component: Transform, data: { pos: [0, 0, 0], quat: [0, 0, 0, 1], scale: [1.2, 1.2, 1.2] } },
-    { component: MeshFilter, data: { assetHandle: HANDLE_SPHERE } },
+    { component: MeshFilter, data: { assetHandle: primitiveSphere } },
     { component: MeshRenderer, data: { materials: [starMat] } },
     { component: Body, data: { mass: STAR_MASS, acc: [0, 0, 0], lastPos: [0, 0, 0] } },
   );

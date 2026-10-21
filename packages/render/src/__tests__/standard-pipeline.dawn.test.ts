@@ -20,7 +20,7 @@ import { STANDARD_CLUSTER_MEMBERSHIP_WGSL, standardPipeline } from '../pipeline/
 import { DEFAULT_STANDARD_PROFILE, STANDARD_PIPELINE_ID } from '../pipeline/standard-profile';
 import type { RenderPipelineFrame, RenderPipelineTopology } from '../render-pipeline';
 
-function topology(): RenderPipelineTopology {
+function topology(device: RhiDevice): RenderPipelineTopology {
   return {
     pipelineId: STANDARD_PIPELINE_ID,
     standardProfile: { ...DEFAULT_STANDARD_PROFILE, renderPath: 'deferred', lightCount: 256 },
@@ -43,7 +43,8 @@ function topology(): RenderPipelineTopology {
       compute: true,
       storageBuffer: true,
       multisample: false,
-      maxColorAttachments: 8,
+      maxColorAttachments: device.limits.maxColorAttachments,
+      maxColorAttachmentBytesPerSample: device.limits.maxColorAttachmentBytesPerSample,
     },
     featureTopologySignature: 'none',
     gpuDrivenTopologySignature: '',
@@ -95,7 +96,10 @@ describe('forgeax::standard graph on a real WebGPU device', () => {
   it('compiles the clustered profile with real texture and binding formats', async () => {
     const adapter = (await rhi.requestAdapter()).unwrap();
     const device: RhiDevice = (
-      await adapter.requestDevice({ requiredFeatures: ['depth32float-stencil8'] })
+      await adapter.requestDevice({
+        requiredFeatures: ['depth32float-stencil8'],
+        requiredLimits: { maxColorAttachmentBytesPerSample: 36 },
+      })
     ).unwrap();
     const graph = new RenderGraphBuilder<RenderPipelineFrame>();
     const built = standardPipeline.build(
@@ -105,7 +109,7 @@ describe('forgeax::standard graph on a real WebGPU device', () => {
         projectGpuDriven: () => ok(undefined),
         contributeFeatures: () => ok(undefined),
       },
-      topology(),
+      topology(device),
     );
     expect(built.ok).toBe(true);
     if (!built.ok) return;

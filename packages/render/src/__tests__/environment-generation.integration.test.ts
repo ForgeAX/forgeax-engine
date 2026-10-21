@@ -9,7 +9,6 @@ function frame(sourceKey: string): EnvironmentFrame {
     environments: [{ kind: 'image', entityKey: 1, sourceKey }],
     fogs: [],
     suns: [],
-    lane: 'direct',
   });
   if (!result.ok) throw result.error;
   return Object.freeze({
@@ -23,7 +22,6 @@ function emptyFrame(): EnvironmentFrame {
     environments: [],
     fogs: [],
     suns: [],
-    lane: 'direct',
   });
   if (!result.ok) throw result.error;
   return result.value;
@@ -48,20 +46,15 @@ describe('Environment generation candidate and LKG lifecycle (M2)', () => {
     expect(lifecycle.inspect()).toEqual(before);
   });
 
-  it('does not rebuild a stable signature and shares one generation across both lanes', async () => {
+  it('does not rebuild a stable signature', async () => {
     const lifecycle = new EnvironmentLifecycle(DeviceScope.create(1, 'environment'));
     const first = await lifecycle.ensure(frame('sky-a'));
     const stable = await lifecycle.ensure(frame('sky-a'));
-    const clustered = await lifecycle.ensure(frame('sky-a'), 'clustered');
 
     expect(first.ok).toBe(true);
     expect(stable.ok).toBe(true);
-    expect(clustered.ok).toBe(true);
-    if (!first.ok || !stable.ok || !clustered.ok) return;
+    if (!first.ok || !stable.ok) return;
     expect(stable.value).toBe(first.value);
-    expect(clustered.value.signature).toBe(first.value.signature);
-    expect(clustered.value.generation).toBe(first.value.generation);
-    expect(clustered.value.lane).toBe('clustered');
   });
 
   it('reuses the published active generation when the environment signature stays stable', async () => {

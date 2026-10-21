@@ -1,8 +1,10 @@
 import { MaterialArtifactRegistry, ShaderRegistry } from '@forgeax/engine-shader';
 import { describe, expect, it, vi } from 'vitest';
 import { AssetRegistry } from '../asset-registry';
+import { runtimeAssetReference } from '../internal';
 import { createMaterialLoader } from '../material/loader';
 import { materialPublicationFixture, materialRecordFixture } from './fixtures/material-publication';
+import { loadMaterialFixture } from './fixtures/runtime-material';
 
 const passes = [{ name: 'Forward', program: { module: `game::ready${'x'.repeat(512)}` } }];
 async function ready(index: number) {
@@ -20,7 +22,7 @@ async function ready(index: number) {
 describe('actual material-ready caller byte ownership work', () => {
   it('keeps duplicate registrations on distinct buffers through preflight and publication', async () => {
     const shaders = new ShaderRegistry({ manifestUrl: undefined }),
-      owner = new AssetRegistry(shaders);
+      owner = new AssetRegistry({ shaderRegistry: shaders });
     const original = MaterialArtifactRegistry.prototype.register;
     const stats = {
       registrations: 0,
@@ -50,8 +52,8 @@ describe('actual material-ready caller byte ownership work', () => {
     try {
       for (let index = 1; index <= 6; index++) {
         const loaded = await ready(index);
-        owner.recordMaterialReadiness(loaded.record.guid, loaded);
-        expect(owner.getMaterialProjection(loaded.record.guid)).toBeDefined();
+        const adopted = (await loadMaterialFixture(owner, loaded.record)).unwrap();
+        expect(adopted.projection).toBeDefined();
       }
       expect(stats).toMatchObject({
         registrations: 17,
@@ -67,9 +69,9 @@ describe('actual material-ready caller byte ownership work', () => {
 
   it('revalidates caller-mutated retained bytes after the shader preflight callback', async () => {
     const shaders = new ShaderRegistry({ manifestUrl: undefined }),
-      owner = new AssetRegistry(shaders);
+      owner = new AssetRegistry({ shaderRegistry: shaders });
     const first = await ready(1);
-    owner.recordMaterialReadiness(first.record.guid, first);
+    (await loadMaterialFixture(owner, first.record)).unwrap();
     const key = first.record.programs[0]?.specializationKey;
     if (key === undefined) throw Error('Missing program');
     const existing = owner.getMaterialArtifact(key);
@@ -83,7 +85,7 @@ describe('actual material-ready caller byte ownership work', () => {
     try {
       let thrown: unknown;
       try {
-        owner.recordMaterialReadiness(second.record.guid, second);
+        (await loadMaterialFixture(owner, second.record)).unwrap();
       } catch (error) {
         thrown = error;
       }
@@ -91,7 +93,7 @@ describe('actual material-ready caller byte ownership work', () => {
         code: 'material-artifact-conflict',
         detail: { dimension: 'bytes' },
       });
-      expect(owner.getMaterialReadiness(second.record.guid)).toBeUndefined();
+      expect(runtimeAssetReference(owner, second.record.guid)).toBeUndefined();
     } finally {
       spy.mockRestore();
     }

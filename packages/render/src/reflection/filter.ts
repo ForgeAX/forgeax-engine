@@ -1,3 +1,4 @@
+import { PMREM_FACES_PER_STEP } from '../ibl/pmrem';
 export interface ProbeFilterState {
   readonly probeIndex: number;
   readonly faceCount: number;
@@ -36,8 +37,11 @@ export function advanceProbeFilter(
 }
 
 export function commitProbeFilterStep(state: ProbeFilterState, success: boolean): ProbeFilterState {
-  if (!success) return state;
-  const nextCursor = state.cursor + 1;
+  if (!success || state.cursor >= state.faceCount * state.mipCount) return state;
+  const nextCursor = Math.min(
+    state.cursor + PMREM_FACES_PER_STEP,
+    state.faceCount * state.mipCount,
+  );
   const complete = nextCursor >= state.faceCount * state.mipCount;
   return {
     ...state,

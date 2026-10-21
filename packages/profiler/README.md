@@ -63,7 +63,7 @@ if (!comparison.ok) {
 
 ## Limits and allocation evidence
 
-Always set both `frameLimit` and `eventLimit` to positive safe integers. The recorder retains bounded scalar event storage during frames and materializes fixed records only when `finish()` builds the artifact, reports dropped events after overflow, and never presents an overflow artifact as complete. A host can pass `allocationReport` to `createProfiler` to count profiler-owned event object allocations; the deterministic D-6 gate requires zero allocations while the profiler is off.
+Always set both `frameLimit` and `eventLimit` to positive safe integers. The recorder samples the named limit properties once before validation, including prototype accessors, and owns frame counting, automatic completion and the replayable final receipt. It publishes that receipt before notifying the optional sink, so reentrant completion never writes twice. The recorder retains bounded scalar event storage during frames and materializes fixed records only when `finish()` builds the artifact, reports dropped events after overflow, and never presents an overflow artifact as complete. A host can pass `allocationReport` to `createProfiler` to count profiler-owned event object allocations; the deterministic D-6 gate requires zero allocations while the profiler is off.
 
 ```ts
 const allocationReport = { profilerEventObjectAllocations: 0 };
@@ -175,6 +175,10 @@ GPU timing capability is present.
 | `compareProfileCaptures(left, right)` | Projects two validated captures into side summaries and a deterministic phase union. |
 | `createProfileClock()` | Supplies the default monotonic microsecond clock. |
 
+Models and comparison sides expose capture completeness once, through
+`summary.completeness`. Frame/phase CLI queries project that value into their
+result envelope; the saved `ProfileCapture` schema remains version 1.0.
+
 The package root is the only supported import path for these entries. See `schema/profile-capture.schema.json` for the artifact contract and `scripts/bench/profiler-overhead.mjs` for the deterministic D-6 consumer gate. The gate alternates profiler-off/on windows, warms each new capture before sampling, keeps finalization outside the measured window, and uses $median(((p95_{on,i} - p95_{off,i}) / p95_{off,i}) \times 100)$ across paired groups. The owner-mode ceiling is 20%; allocation, overflow, and phase-catalog evidence remain hard-failing.
 
 ## Engine source profiler page
@@ -184,3 +188,10 @@ validates `ProfileCapture` and builds the existing `ProfileModel`; React receive
 and owns file selection and presentation. This package remains independent of View and React.
 The page displays measured frame durations, phase summaries and completeness, accepts saved
 JSON without a project and rejects invalid captures. It does not create another recorder.
+
+Comparison joins each complete phase identity into one row; a missing side
+remains absent and only rows present on both sides receive deltas.
+
+The capture schema generates both field types and the runtime validator. Public
+type names remain stable; the validated capture flows into semantic checks without
+redeclaring its shape or casting its records.

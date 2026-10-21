@@ -38,8 +38,6 @@ interface WireEdge {
 }
 
 interface SurfaceEdge {
-  readonly aWeldKey: string;
-  readonly bWeldKey: string;
   a: Endpoint;
   b: Endpoint;
   readonly normals: Vec3[];
@@ -101,7 +99,9 @@ function compareWireEdge(left: WireEdge, right: WireEdge): number {
 }
 
 function compareSurfaceEdge(left: SurfaceEdge, right: SurfaceEdge): number {
-  return compareText(left.aWeldKey, right.aWeldKey) || compareText(left.bWeldKey, right.bWeldKey);
+  return (
+    compareText(left.a.weldKey, right.a.weldKey) || compareText(left.b.weldKey, right.b.weldKey)
+  );
 }
 
 function readPosition(raw: Float32Array | ArrayBuffer): Float32Array {
@@ -402,8 +402,6 @@ function addSurfaceEdge(
   const current = edges.get(key);
   if (current === undefined) {
     edges.set(key, {
-      aWeldKey: a.weldKey,
-      bWeldKey: b.weldKey,
       a,
       b,
       normals: [normal],
@@ -488,5 +486,5 @@ export function createEdgesGeometry(
   const edges = collectSurfaceEdges(prepared.value.triangles).filter((edge) =>
     keepSurfaceEdge(edge, thresholdAngleDegrees),
   );
-  return lineMesh(edges.map(({ a, b }) => ({ a, b })));
+  return lineMesh(edges);
 }

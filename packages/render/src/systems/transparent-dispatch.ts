@@ -2,14 +2,19 @@ import { RenderQueue } from '@forgeax/engine-types';
 import type { FrameCacheCounters } from '../inspection-types';
 import type { RenderResourceScope } from '../publication/resource-scope';
 import type { CameraSnapshot } from '../render-contract';
-import type { DispatchEntry, RenderableSnapshot } from '../render-system-extract';
+import type { DispatchEntry, DispatchList, MaterialSnapshot } from '../render-system-extract';
+import type { FrameList } from '../scene/frame-list';
 import {
-  getTransparentSortConfig,
   TRANSPARENT_SORT_MODE_DISTANCE,
   TRANSPARENT_SORT_MODE_LAYER_Y,
   TRANSPARENT_SORT_MODE_LAYER_YZ,
   TRANSPARENT_SORT_MODE_LAYER_Z,
 } from './transparent-sort-config';
+
+export interface TransparentSortSource {
+  readonly transform: { readonly world: Float32Array };
+  readonly material?: MaterialSnapshot;
+}
 
 /**
  * Per-slot sort value. DISTANCE returns negated squared camera distance
@@ -17,12 +22,12 @@ import {
  */
 function transparentSortValue(
   entry: DispatchEntry,
-  renderables: readonly RenderableSnapshot[],
+  renderables: FrameList<TransparentSortSource>,
   mode: number,
   yzAlpha: number,
   camera: CameraSnapshot | undefined,
 ): number {
-  const renderable = renderables[entry.renderableIndex];
+  const renderable = renderables.at(entry.renderableIndex);
   const w = renderable?.transform.world;
   if (mode === TRANSPARENT_SORT_MODE_DISTANCE) {
     if (w === undefined || camera === undefined) return 0;
@@ -50,9 +55,9 @@ function transparentSortValue(
 }
 
 /**
- * Transparent-only ordering with a verified previous order.
+ * Transparent draw ordering with a verified previous order.
  *
- * The canonical order is the stable sort of the transparent slots by
+ * Queue-selected or blended slots are stably sorted by
  * (layer, value, materialHandle) for layer modes and by value for DISTANCE,
  * with ties kept in dispatch order. That order is unique, so the previous
  * permutation is reused exactly when every adjacent pair still satisfies it
@@ -65,7 +70,7 @@ function transparentSortValue(
 export class TransparentSortCache {
   private slots: number[] = [];
   private order: number[] = [];
-  private source: readonly DispatchEntry[] | undefined;
+  private source: DispatchList | undefined;
   private value: DispatchEntry[] | undefined;
   private keys = new Float64Array(0);
   private hits = 0;
@@ -76,16 +81,23 @@ export class TransparentSortCache {
   }
 
   sort(
-    dispatch: readonly DispatchEntry[],
+    dispatch: DispatchList,
     world: RenderResourceScope,
     cameras: readonly CameraSnapshot[],
-    renderables: readonly RenderableSnapshot[],
-  ): readonly DispatchEntry[] {
-    const cfg = getTransparentSortConfig(world);
+    renderables: FrameList<TransparentSortSource>,
+    sortAll = false,
+  ): DispatchList {
+    const cfg = world.transparentSort;
     const mode = cfg.mode;
     const slots: number[] = [];
     for (let i = 0; i < dispatch.length; i++) {
-      if (dispatch[i]?.queue === RenderQueue.Transparent) slots.push(i);
+      const entry = dispatch.at(i);
+      if (
+        sortAll ||
+        entry?.queue === RenderQueue.Transparent ||
+        entry?.renderState?.blend !== undefined
+      )
+        slots.push(i);
     }
     if (slots.length <= 1) return dispatch;
     const camera = cameras[0];
@@ -96,7 +108,7 @@ export class TransparentSortCache {
     let finite = true;
     for (const slot of slots) {
       const value = transparentSortValue(
-        dispatch[slot] as DispatchEntry,
+        dispatch.at(slot) as DispatchEntry,
         renderables,
         mode,
         cfg.yzAlpha,
@@ -107,8 +119,8 @@ export class TransparentSortCache {
     }
     const compare = (a: number, b: number): number => {
       if (mode !== TRANSPARENT_SORT_MODE_DISTANCE) {
-        const da = dispatch[a] as DispatchEntry;
-        const db = dispatch[b] as DispatchEntry;
+        const da = dispatch.at(a) as DispatchEntry;
+        const db = dispatch.at(b) as DispatchEntry;
         if (da.layer !== db.layer) return da.layer - db.layer;
         const va = keys[a] as number;
         const vb = keys[b] as number;
@@ -162,13 +174,13 @@ function sameSlots(left: readonly number[], right: readonly number[]): boolean {
 }
 
 function applyOrder(
-  dispatch: readonly DispatchEntry[],
+  dispatch: DispatchList,
   slots: readonly number[],
   order: readonly number[],
 ): DispatchEntry[] {
   const result = dispatch.slice();
   for (let k = 0; k < slots.length; k++) {
-    result[slots[k] as number] = dispatch[order[k] as number] as DispatchEntry;
+    result[slots[k] as number] = dispatch.at(order[k] as number) as DispatchEntry;
   }
   return result;
 }

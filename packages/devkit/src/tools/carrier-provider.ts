@@ -110,7 +110,7 @@ export async function createCarrierProviderService(
       }
       if (route === 'execute') {
         const snapshot = options.machine.snapshot();
-        if (snapshot.leaseId !== leaseId || snapshot.state !== 'started') {
+        if (snapshot.state !== 'started' || snapshot.leaseId !== leaseId) {
           reply(
             response,
             409,

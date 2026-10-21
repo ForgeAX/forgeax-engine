@@ -1,4 +1,4 @@
-import { err, ok, type Result } from '@forgeax/engine-types';
+import { type AssetHandle, err, ok, type Result } from '@forgeax/engine-types';
 import type {
   ParticleCodeSourceError,
   ParticleEmitterSourceBase,
@@ -52,7 +52,7 @@ export type ParticleRendererSemanticMap = Readonly<
 >;
 
 export interface ParticleRendererSourceV3Base {
-  readonly material: string;
+  readonly material: string | AssetHandle<'material'>;
   readonly enabled?: boolean;
   readonly capacity?: number;
   readonly overflow?: ParticleRendererOverflowPolicy;
@@ -75,7 +75,7 @@ export type ParticleRendererSourceV3 =
       readonly kind: 'mesh';
       readonly sorting?: ParticleRendererSortingV3;
       /** A cooked GUID, or the MeshFilter on this Player's entity. */
-      readonly mesh: string | { readonly source: 'player' };
+      readonly mesh: string | AssetHandle<'mesh'> | { readonly source: 'player' };
       readonly submesh?: number;
       readonly lighting?: 'unlit' | 'standard';
       readonly castShadows?: boolean;
@@ -256,7 +256,7 @@ function eventInvalid(
 }
 
 function finite(value: unknown): value is number {
-  return typeof value === 'number' && Number.isFinite(value);
+  return typeof value === 'number' && Number.isFinite(Math.fround(value));
 }
 
 function positiveInteger(value: unknown): value is number {
@@ -361,9 +361,15 @@ function validateRenderer(
   emitterIndex: number,
   index: number,
   id: string,
+  runtimeReferences = false,
 ): Result<ParticleRendererSourceV3, ParticleCodeSourceError> {
   const path = `emitters[${emitterIndex}].renderers[${index}]`;
-  if (!record(value) || typeof value.kind !== 'string' || typeof value.material !== 'string') {
+  if (
+    !record(value) ||
+    typeof value.kind !== 'string' ||
+    (typeof value.material !== 'string' &&
+      !(runtimeReferences && typeof value.material === 'number'))
+  ) {
     return fail(path, 'a Program v3 renderer object');
   }
   const unknown = unknownField(value, rendererAllowed(value.kind));
@@ -413,13 +419,18 @@ function validateRenderer(
   }
   const inputs = validateMaterialInputs(value.materialInputs, `${path}.materialInputs`);
   if (!inputs.ok) return inputs;
-  if (!text(value.material) || !text(value.kind))
+  if (
+    (!text(value.material) && !(runtimeReferences && typeof value.material === 'number')) ||
+    !text(value.kind)
+  )
     return invalid(path, 'a supported renderer object', id, 'vfx-source-renderer-invalid');
   if (value.kind === 'mesh') {
     const playerMesh =
       record(value.mesh) && value.mesh.source === 'player' && Object.keys(value.mesh).length === 1;
     if (
-      (!text(value.mesh) && !playerMesh) ||
+      (!text(value.mesh) &&
+        !playerMesh &&
+        !(runtimeReferences && typeof value.mesh === 'number')) ||
       (value.submesh !== undefined && !nonNegativeInteger(value.submesh))
     )
       return invalid(
@@ -579,6 +590,7 @@ function parseEmitter(
   value: unknown,
   index: number,
   ids: Set<string>,
+  runtimeReferences = false,
 ): Result<ParticleEmitterSourceV3, ParticleCodeSourceError> {
   const path = `emitters[${index}]`;
   if (!record(value)) return invalid(path, 'a Program v3 emitter object');
@@ -601,7 +613,11 @@ function parseEmitter(
   const id = value.id;
   ids.add(id);
   if (value.forceFields !== undefined) {
-    const fields = validateVfxForceFields(value.forceFields, `${path}.forceFields`);
+    const fields = validateVfxForceFields(
+      value.forceFields,
+      `${path}.forceFields`,
+      runtimeReferences,
+    );
     if (!fields.ok) return invalid(fields.error.detail.path, fields.error.expected, id);
   }
   if (!positiveInteger(value.capacity))
@@ -678,12 +694,16 @@ function parseEmitter(
   if (programExtra !== undefined) {
     return invalid(`${path}.program.${programExtra}`, 'a supported program field', id);
   }
-  if (!Array.isArray(value.renderers) || value.renderers.length === 0) {
-    return invalid(`${path}.renderers`, 'at least one renderer', id);
+  if (!Array.isArray(value.renderers)) {
+    return invalid(
+      `${path}.renderers`,
+      'an explicit renderer array (empty for simulation only)',
+      id,
+    );
   }
   const renderers: ParticleRendererSourceV3[] = [];
   for (const [rendererIndex, renderer] of value.renderers.entries()) {
-    const parsed = validateRenderer(renderer, index, rendererIndex, id);
+    const parsed = validateRenderer(renderer, index, rendererIndex, id, runtimeReferences);
     if (!parsed.ok) return parsed;
     renderers.push(parsed.value);
   }
@@ -795,6 +815,7 @@ function parseEmitter(
 /** Parse the single Program v3 source shape. Older source versions are rejected. */
 export function parseParticleEffectSourceV3(
   value: unknown,
+  runtimeReferences = false,
 ): Result<ParticleEffectSourceV3, ParticleCodeSourceError> {
   if (!record(value)) return fail('$', 'a Program v3 particle effect source object');
   if (value.schemaVersion !== 3) {
@@ -812,7 +833,7 @@ export function parseParticleEffectSourceV3(
   const ids = new Set<string>();
   const emitters: ParticleEmitterSourceV3[] = [];
   for (const [index, emitter] of value.emitters.entries()) {
-    const parsed = parseEmitter(emitter, index, ids);
+    const parsed = parseEmitter(emitter, index, ids, runtimeReferences);
     if (!parsed.ok) return parsed;
     emitters.push(parsed.value);
   }

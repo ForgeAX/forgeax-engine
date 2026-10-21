@@ -1,3 +1,4 @@
+import { uiAssetContribution } from '@forgeax/engine-ui';
 import type { Plugin } from '@forgeax/engine-plugin';
 import { createGameplaySession } from './gameplay-session';
 import { createGameplayTargetFeatures } from './gameplay-targets';
@@ -11,6 +12,12 @@ export const gameplay: Plugin = {
     const host = ctx.gameHost;
     if (host === undefined) throw new Error('Cordis activated game-default without its Host provider');
     if (!(host.canvas instanceof HTMLCanvasElement)) throw new Error('game-default requires a DOM presentation canvas');
+    const assets = ctx.assets;
+    if (assets === undefined) throw new Error('game-default requires assets');
+    ctx.effect(() => {
+      const lease = assets.installDecoder(uiAssetContribution.kind, uiAssetContribution.decoder);
+      return () => lease.dispose();
+    });
     const query = new URLSearchParams(window.location.search);
     const assetEvidenceMode = query.has('asset-evidence');
     const comparisonEvidenceMode = assetEvidenceMode || query.has('render-evidence');

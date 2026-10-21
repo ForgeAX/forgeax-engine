@@ -1,4 +1,4 @@
-import type { Handle } from '@forgeax/engine-types';
+import type { AssetHandle } from '@forgeax/engine-types';
 import { expect, it } from 'vitest';
 import { gpuDrivenMaterialResourceClass } from '../extract/gpu-driven';
 import { defaultMaterialSnapshot } from '../render-system-extract';
@@ -17,12 +17,12 @@ it('keeps absent and empty resource bindings in the same canonical batch class',
 });
 
 it('observes transitions out of and back into the empty class without retaining mutable resource facts', () => {
-  const textures = new Map<string, Handle<'TextureAsset', 'shared'>>([
-    ['normal', 12 as Handle<'TextureAsset', 'shared'>],
-    ['albedo', 4 as Handle<'TextureAsset', 'shared'>],
+  const textures = new Map<string, AssetHandle<'texture'>>([
+    ['normal', 12 as AssetHandle<'texture'>],
+    ['albedo', 4 as AssetHandle<'texture'>],
   ]);
-  const samplers = new Map<string, Handle<'SamplerAsset', 'shared'>>([
-    ['surfaceSampler', 9 as Handle<'SamplerAsset', 'shared'>],
+  const samplers = new Map<string, AssetHandle<'sampler'>>([
+    ['surfaceSampler', 9 as AssetHandle<'sampler'>],
   ]);
   const material = {
     ...defaultMaterialSnapshot(1),
@@ -49,7 +49,7 @@ it('observes transitions out of and back into the empty class without retaining 
   expect(gpuDrivenMaterialResourceClass(material)).toBe(
     JSON.stringify({ textures: [], samplers: [] }),
   );
-  textures.set('normal', 21 as Handle<'TextureAsset', 'shared'>);
+  textures.set('normal', 21 as AssetHandle<'texture'>);
   expect(gpuDrivenMaterialResourceClass(material)).toBe(
     JSON.stringify({
       textures: [['normal', 21]],

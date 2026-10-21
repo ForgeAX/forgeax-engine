@@ -117,7 +117,8 @@ const { World } = await import('@forgeax/engine-ecs');
 const { AnimationPlayer } = await import('@forgeax/engine-animation');
 const { Camera, DirectionalLight, MeshFilter, MeshRenderer } = await import('@forgeax/engine-render');
 const { ChildOf, Transform } = await import('@forgeax/engine-scene');
-const { createRenderer } = await import('@forgeax/engine-runtime');
+await import('@forgeax/engine-runtime');
+const { constructRuntimeRendererHost: createRenderer } = await import('@forgeax/engine-runtime/internal/renderer-host');
 const { Materials } = await import('@forgeax/engine-render');
 const { createCylinderGeometry, createPlaneGeometry, createSphereGeometry } = await import(
   '@forgeax/engine-geometry'
@@ -136,10 +137,11 @@ const MANIFEST_URL = URL.createObjectURL(new Blob([readFileSync(MANIFEST_PATH)],
 process.once('exit', () => URL.revokeObjectURL(MANIFEST_URL));
 
 let renderer;
+let assets;
 try {
   const created = await createRenderer(mockCanvas, {}, { shaderManifestUrl: MANIFEST_URL });
   if (!created.ok) throw created.error;
-  renderer = created.value;
+  ({renderer, assets} = created.value);
 } catch (err) {
   console.error(
     `[smoke] FAIL - createRenderer threw: ${err instanceof Error ? err.message : String(err)}`,
@@ -151,7 +153,7 @@ try {
 
 console.log(`[collectathon] backend=${renderer.inspect().capabilities.backendKind}`);
 
-const world = new World();
+const world = new World({assets});
 const worldAttachment1 = renderer.attach(world);
 if (!worldAttachment1.ok) throw worldAttachment1.error;
 
@@ -244,7 +246,7 @@ const playerParent = parentSpawn.value;
 // vertex layout can render without the Skin/palette contract.
 const placeholderMesh = createSphereGeometry(0.5, 8, 6);
 const meshHandle = placeholderMesh.ok
-  ? world.allocSharedRef('MeshAsset', placeholderMesh.value)
+  ? assets.create(placeholderMesh.value).unwrap()
   : 0;
 // The headless smoke deliberately instantiates a rigid placeholder rather than
 // the full scene Skin component (the production browser path covers that
@@ -252,12 +254,9 @@ const meshHandle = placeholderMesh.ok
 // pbr-skin shader requires the palette bind group.  Keep the imported material
 // catalogued for the parser assertion, but give the rigid placeholder the
 // ordinary Standard PBR contract it actually owns.
-const matHandle = world.allocSharedRef(
-  'MaterialAsset',
-  Materials.standard({ baseColor: [0.55, 0.6, 0.65, 1], roughness: 0.65 }),
-);
+const matHandle = assets.create(Materials.standard({ baseColor: [0.55, 0.6, 0.65, 1], roughness: 0.65 })).unwrap();
 const clipAsset = importedAssets.find((a) => a.kind === 'animation-clip');
-const clipHandle = clipAsset ? world.allocSharedRef('AnimationClip', clipAsset.payload) : 0;
+const clipHandle = clipAsset ? assets.create(clipAsset.payload).unwrap() : 0;
 const childSpawn = world.spawn(
   { component: Transform, data: { pos: [0, -0.8, 0], scale: [1 / 90, 1 / 90, 1 / 90]} },
   { component: MeshFilter, data: { assetHandle: meshHandle } },
@@ -298,11 +297,8 @@ const m3Entities = [];
 // Ground: plane + thin cuboid collider.
 {
   const planeRes = createPlaneGeometry(LEVEL_HALF * 2, LEVEL_HALF * 2);
-  const groundMesh = planeRes.ok ? world.allocSharedRef('MeshAsset', planeRes.value) : 0;
-  const groundMat = world.allocSharedRef(
-    'MaterialAsset',
-    Materials.standard({ baseColor: [0.28, 0.3, 0.34, 1] }),
-  );
+  const groundMesh = planeRes.ok ? assets.create(planeRes.value).unwrap() : 0;
+  const groundMat = assets.create(Materials.standard({ baseColor: [0.28, 0.3, 0.34, 1] })).unwrap();
   // Mirror spawn-level.ts: visible plane rotated -90deg about X (createPlaneGeometry
   // is an XY plane facing +Z; without the rotation the ground stands as a vertical
   // wall that occludes the scene). Structural replica keeps the plane + collider on
@@ -343,11 +339,8 @@ let coresSpawned = 0;
 let emissiveCoreOk = false;
 for (let i = 0; i < CORE_COUNT; i++) {
   const sphereRes = createSphereGeometry(0.3, 16, 12);
-  const coreMesh = sphereRes.ok ? world.allocSharedRef('MeshAsset', sphereRes.value) : 0;
-  const coreMat = world.allocSharedRef(
-    'MaterialAsset',
-    Materials.standard({ baseColor: [1, 0.8, 0.3, 1], emissive: [1, 0.7, 0.3], emissiveIntensity: 2 }),
-  );
+  const coreMesh = sphereRes.ok ? assets.create(sphereRes.value).unwrap() : 0;
+  const coreMat = assets.create(Materials.standard({ baseColor: [1, 0.8, 0.3, 1], emissive: [1, 0.7, 0.3], emissiveIntensity: 2 })).unwrap();
   const c = world.spawn(
     { component: Transform, data: { pos: [(i - 6) * 2, 1, 0]} },
     { component: MeshFilter, data: { assetHandle: coreMesh } },
@@ -366,11 +359,8 @@ for (let i = 0; i < CORE_COUNT; i++) {
 let portalSpawned = false;
 {
   const cylRes = createCylinderGeometry(1.2, 1.2, 3, 24, 1);
-  const portalMesh = cylRes.ok ? world.allocSharedRef('MeshAsset', cylRes.value) : 0;
-  const portalMat = world.allocSharedRef(
-    'MaterialAsset',
-    Materials.standard({ baseColor: [0.2, 0.25, 0.35, 1], emissive: [0.05, 0.08, 0.12], emissiveIntensity: 0.3 }),
-  );
+  const portalMesh = cylRes.ok ? assets.create(cylRes.value).unwrap() : 0;
+  const portalMat = assets.create(Materials.standard({ baseColor: [0.2, 0.25, 0.35, 1], emissive: [0.05, 0.08, 0.12], emissiveIntensity: 0.3 })).unwrap();
   const p = world.spawn(
     { component: Transform, data: { pos: [0, 1.5, -13]} },
     { component: MeshFilter, data: { assetHandle: portalMesh } },
@@ -403,11 +393,8 @@ let guardianBodies = 0;
 let guardianSensors = 0;
 for (let i = 0; i < GUARDIAN_COUNT; i++) {
   const cylRes = createCylinderGeometry(0.4, 0.4, (0.4 + 0.8) * 2, 16, 1);
-  const bodyMesh = cylRes.ok ? world.allocSharedRef('MeshAsset', cylRes.value) : 0;
-  const bodyMat = world.allocSharedRef(
-    'MaterialAsset',
-    Materials.standard({ baseColor: [0.55, 0.08, 0.08, 1], emissive: [0.15, 0, 0], emissiveIntensity: 0.6 }),
-  );
+  const bodyMesh = cylRes.ok ? assets.create(cylRes.value).unwrap() : 0;
+  const bodyMat = assets.create(Materials.standard({ baseColor: [0.55, 0.08, 0.08, 1], emissive: [0.15, 0, 0], emissiveIntensity: 0.6 })).unwrap();
   const body = world.spawn(
     { component: Transform, data: { pos: [(i - 1) * 5, 1.2, -3]} },
     { component: MeshFilter, data: { assetHandle: bodyMesh } },
@@ -452,13 +439,7 @@ const unsubscribe = renderer.subscribe((event) => {
 let framesObserved = 0;
 for (let i = 0; i < SMOKE_MIN_FRAMES; i++) {
   world.update().unwrap();
-  const r = renderer.draw({
-    leases: [worldAttachment1.value],
-    camera: { lease: worldAttachment1.value },
-    environment: { lease: worldAttachment1.value },
-  });
-  // Track draw errors via onError — do not fail on individual frames.
-  void r;
+  await drawSmokeFrame(renderer, world);
   framesObserved++;
   // Keep this heavy structural scene paced like a real rAF loop. Without a
   // bounded drain, lavapipe retains every shadow/material command until the

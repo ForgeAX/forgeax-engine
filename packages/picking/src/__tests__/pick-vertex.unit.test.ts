@@ -13,10 +13,9 @@
 // TDD red phase (w7): pickVertex full-scene tests covering AC-02 (three-state
 // return) + R-2 (AABB coarse cull multi-entity) + limit > available vertices.
 
-import { AssetRegistry, resolveAssetHandle } from '@forgeax/engine-assets-runtime';
+import { AssetRegistry } from '@forgeax/engine-assets-runtime';
 import { type EntityHandle, World } from '@forgeax/engine-ecs';
 import { mat4, ray, type Vec3Like, vec2, vec3 } from '@forgeax/engine-math';
-import { AssetGuid } from '@forgeax/engine-pack/guid';
 import {
   CAMERA_PROJECTION_PERSPECTIVE,
   Camera,
@@ -26,8 +25,7 @@ import {
 } from '@forgeax/engine-render';
 import { GlobalTransform, propagateTransforms, Transform } from '@forgeax/engine-scene';
 
-import type { Handle, MaterialAsset, MeshAsset, VertexAttributeMap } from '@forgeax/engine-types';
-import { toShared } from '@forgeax/engine-types';
+import type { AssetHandle, VertexAttributeMap } from '@forgeax/engine-types';
 import { describe, expect, it } from 'vitest';
 import { PickError } from '../pick-errors';
 import { pickVertex, pickVertexOnEntity, type VertexHit } from '../pick-vertex';
@@ -56,27 +54,26 @@ function translateTransform(x: number, y: number, z: number) {
 interface Scene {
   world: World;
   assets: AssetRegistry;
-  material: Handle<'MaterialAsset', 'shared'>;
+  material: AssetHandle<'material'>;
 }
 
 // The test meshes below intentionally keep their interleaved vertex buffers
 // padded to the canonical position/normal/uv/tangent stride.  Empty typed
 // arrays are the geometry layout SSOT's presence sentinels; retaining them in
 // the fixture makes the declared projection agree with the buffer stride.
-const EMPTY_ATTRIBUTE = new Float32Array(0);
 function interleavedAttributes(position: Float32Array | Uint16Array): VertexAttributeMap {
   return {
     position,
-    normal: EMPTY_ATTRIBUTE,
-    uv: EMPTY_ATTRIBUTE,
-    tangent: EMPTY_ATTRIBUTE,
+    normal: new Float32Array(position.length),
+    uv: new Float32Array((position.length / 3) * 2),
+    tangent: new Float32Array((position.length / 3) * 4),
   };
 }
 
 function makeScene(): Scene {
-  const world = new World();
-  const assets = new AssetRegistry(makeMockShaderRegistry());
-  const matResult = assets.catalog<MaterialAsset>(AssetGuid.format(AssetGuid.random()), {
+  const assets = new AssetRegistry({ shaderRegistry: makeMockShaderRegistry() });
+  const world = new World({ assets });
+  const matResult = assets.create({
     kind: 'material',
     passes: [
       {
@@ -88,7 +85,7 @@ function makeScene(): Scene {
     values: { baseColor: [1, 1, 1] },
   });
   if (!matResult.ok) throw new Error('material catalog failed');
-  const material = world.allocSharedRef('MaterialAsset', matResult.value);
+  const material = matResult.value;
   return { world, assets, material };
 }
 
@@ -118,7 +115,7 @@ function spawnPerspectiveCamera(world: World, z: number): EntityHandle {
  * Register a mesh with a single triangle for basic hit/miss testing.
  * Triangle vertices: (-0.5,-0.5,0), (0.5,-0.5,0), (0,0.5,0).
  */
-function registerTriangle(scene: Scene): Handle<'MeshAsset', 'shared'> {
+function registerTriangle(scene: Scene): AssetHandle<'mesh'> {
   const positions = new Float32Array([-0.5, -0.5, 0, 0.5, -0.5, 0, 0, 0.5, 0]);
   // 12 floats per vertex interleaved (non-skinned stride)
   const v = new Float32Array(36);
@@ -128,7 +125,7 @@ function registerTriangle(scene: Scene): Handle<'MeshAsset', 'shared'> {
     v[i * 12 + 1] = positions[i * 3 + 1] as number;
     v[i * 12 + 2] = positions[i * 3 + 2] as number;
   }
-  const result = scene.assets.catalog<MeshAsset>(AssetGuid.format(AssetGuid.random()), {
+  const result = scene.assets.create({
     kind: 'mesh',
     vertices: v,
     indices: new Uint16Array([0, 1, 2]),
@@ -140,14 +137,14 @@ function registerTriangle(scene: Scene): Handle<'MeshAsset', 'shared'> {
     materialSlots: [{ slotName: 'Default' }],
   });
   if (!result.ok) throw new Error(`triangle mesh catalog failed: ${result.error.message}`);
-  return scene.world.allocSharedRef('MeshAsset', result.value);
+  return result.value;
 }
 
 /**
  * Register a cube mesh with 8 vertices at (+-0.5, +-0.5, +-0.5), 12 triangles.
  * Used for vertexIndex / worldPos correctness (AC-03) and multi-candidate (AC-04).
  */
-function registerCube(scene: Scene): Handle<'MeshAsset', 'shared'> {
+function registerCube(scene: Scene): AssetHandle<'mesh'> {
   const positions = new Float32Array([
     -0.5,
     -0.5,
@@ -218,7 +215,7 @@ function registerCube(scene: Scene): Handle<'MeshAsset', 'shared'> {
     7,
     4, // left
   ]);
-  const result = scene.assets.catalog<MeshAsset>(AssetGuid.format(AssetGuid.random()), {
+  const result = scene.assets.create({
     kind: 'mesh',
     vertices: v,
     indices,
@@ -236,14 +233,14 @@ function registerCube(scene: Scene): Handle<'MeshAsset', 'shared'> {
     materialSlots: [{ slotName: 'Default' }],
   });
   if (!result.ok) throw new Error(`cube mesh catalog failed: ${result.error.message}`);
-  return scene.world.allocSharedRef('MeshAsset', result.value);
+  return result.value;
 }
 
 /**
  * Register a skinned single-triangle mesh (18-floats/vertex stride).
  * Attributes carry skinIndex + skinWeight → isSkinned = true → deformed = true.
  */
-function registerSkinnedTriangle(scene: Scene): Handle<'MeshAsset', 'shared'> {
+function registerSkinnedTriangle(scene: Scene): AssetHandle<'mesh'> {
   const positions = new Float32Array([-0.5, -0.5, 0, 0.5, -0.5, 0, 0, 0.5, 0]);
   const skinIndex = new Uint16Array(3 * 4); // 4 influences per vertex, all 0
   const skinWeight = new Float32Array(3 * 4);
@@ -266,7 +263,7 @@ function registerSkinnedTriangle(scene: Scene): Handle<'MeshAsset', 'shared'> {
     skinIndex,
     skinWeight,
   };
-  const result = scene.assets.catalog<MeshAsset>(AssetGuid.format(AssetGuid.random()), {
+  const result = scene.assets.create({
     kind: 'mesh',
     vertices: v,
     indices: new Uint16Array([0, 1, 2]),
@@ -278,12 +275,12 @@ function registerSkinnedTriangle(scene: Scene): Handle<'MeshAsset', 'shared'> {
     materialSlots: [{ slotName: 'Default' }],
   });
   if (!result.ok) throw new Error(`skinned mesh catalog failed: ${result.error.message}`);
-  return scene.world.allocSharedRef('MeshAsset', result.value);
+  return result.value;
 }
 
 function spawnMeshEntity(
   scene: Scene,
-  mesh: Handle<'MeshAsset', 'shared'>,
+  mesh: AssetHandle<'mesh'>,
   x: number,
   y: number,
   z: number,
@@ -425,7 +422,7 @@ describe('pickVertexOnEntity', () => {
     const camera = spawnPerspectiveCamera(scene.world, 5);
     const position = new Float32Array([-1, 0, 0, 1, -1, 0, 1, 1, 0]);
     const asset = scene.assets
-      .catalog<MeshAsset>(AssetGuid.format(AssetGuid.random()), {
+      .create({
         kind: 'mesh',
         vertices: position,
         attributes: { position },
@@ -442,7 +439,7 @@ describe('pickVertexOnEntity', () => {
         materialSlots: [{ slotName: 'Default' }],
       })
       .unwrap();
-    const mesh = scene.world.allocSharedRef('MeshAsset', asset);
+    const mesh = asset;
     const entity = spawnMeshEntity(scene, mesh, 0, 0, 0);
     propagateTransforms(scene.world);
     const projective = mat4.identity(mat4.create());
@@ -537,10 +534,7 @@ describe('pickVertexOnEntity', () => {
       const entity = spawnMeshEntity(scene, mesh, 0, 0, 0);
       propagateTransforms(scene.world);
 
-      const meshRes = resolveAssetHandle<MeshAsset>(
-        scene.world,
-        toShared<'MeshAsset'>(mesh as unknown as number),
-      );
+      const meshRes = scene.assets.read(mesh);
       if (!meshRes.ok) throw new Error('resolve failed');
       const position = meshRes.value.attributes.position as Float32Array;
       const wm = readWorldMatrix(scene.world, entity)!;
@@ -577,10 +571,7 @@ describe('pickVertexOnEntity', () => {
       const entity = spawnMeshEntity(scene, mesh, 0.1, 0.2, 0);
       propagateTransforms(scene.world);
 
-      const meshRes = resolveAssetHandle<MeshAsset>(
-        scene.world,
-        toShared<'MeshAsset'>(mesh as unknown as number),
-      );
+      const meshRes = scene.assets.read(mesh);
       if (!meshRes.ok) throw new Error('resolve failed');
       const position = meshRes.value.attributes.position as Float32Array;
       const wm = readWorldMatrix(scene.world, entity)!;
@@ -723,7 +714,6 @@ describe('pickVertexOnEntity', () => {
         VP,
         view as unknown as import('@forgeax/engine-math').Mat4Like,
         proj as unknown as import('@forgeax/engine-math').Mat4Like,
-        'perspective',
       );
       const ox = r[0] as number,
         oy = r[1] as number,
@@ -771,10 +761,7 @@ describe('pickVertexOnEntity', () => {
       propagateTransforms(scene.world);
 
       // Verify mesh is skinned
-      const meshRes = resolveAssetHandle<MeshAsset>(
-        scene.world,
-        toShared<'MeshAsset'>(mesh as unknown as number),
-      );
+      const meshRes = scene.assets.read(mesh);
       expect(meshRes.ok).toBe(true);
       if (!meshRes.ok) throw new Error('resolve failed');
       const attrs = meshRes.value.attributes;
@@ -870,10 +857,7 @@ describe('pickVertexOnEntity', () => {
       // propagate must be called before pickVertexOnEntity
       propagateTransforms(scene.world);
 
-      const meshRes = resolveAssetHandle<MeshAsset>(
-        scene.world,
-        toShared<'MeshAsset'>(mesh as unknown as number),
-      );
+      const meshRes = scene.assets.read(mesh);
       if (!meshRes.ok) throw new Error('resolve failed');
       const position = meshRes.value.attributes.position as Float32Array;
       const wm = readWorldMatrix(scene.world, entity)!;
@@ -1007,7 +991,7 @@ describe('w6: degradation input + builtin fallback', () => {
   // ── AC-09: triangle-strip submesh → skip ────────────────────────────
 
   describe('AC-09: triangle-strip submesh skipped', () => {
-    function registerStripMesh(scene: Scene): Handle<'MeshAsset', 'shared'> {
+    function registerStripMesh(scene: Scene): AssetHandle<'mesh'> {
       const positions = new Float32Array([-0.5, -0.5, 0, 0.5, -0.5, 0, 0, 0.5, 0, -0.3, 0.3, 0]);
       const v = new Float32Array(4 * 12);
       for (let i = 0; i < 4; i++) {
@@ -1015,7 +999,7 @@ describe('w6: degradation input + builtin fallback', () => {
         v[i * 12 + 1] = positions[i * 3 + 1] as number;
         v[i * 12 + 2] = positions[i * 3 + 2] as number;
       }
-      const result = scene.assets.catalog<MeshAsset>(AssetGuid.format(AssetGuid.random()), {
+      const result = scene.assets.create({
         kind: 'mesh',
         vertices: v,
         indices: new Uint16Array([0, 1, 2, 3]),
@@ -1033,7 +1017,7 @@ describe('w6: degradation input + builtin fallback', () => {
         materialSlots: [{ slotName: 'Default' }],
       });
       if (!result.ok) throw new Error(`strip mesh catalog failed: ${result.error.message}`);
-      return scene.world.allocSharedRef('MeshAsset', result.value);
+      return result.value;
     }
 
     it('strip submesh returns undefined (no crash, no approximate hit)', () => {
@@ -1061,81 +1045,42 @@ describe('w6: degradation input + builtin fallback', () => {
 
   // ── D-4: Uint16Array / undefined position → skip ────────────────────
 
-  describe('D-4: position three-branch narrow (Uint16Array / undefined)', () => {
-    function registerUint16Position(scene: Scene): Handle<'MeshAsset', 'shared'> {
-      const positions = new Uint16Array([0, 0, 0, 1, 0, 0, 0, 1, 0]);
-      const v = new Float32Array(3 * 12);
-      const result = scene.assets.catalog<MeshAsset>(AssetGuid.format(AssetGuid.random()), {
-        kind: 'mesh',
-        vertices: v,
-        indices: new Uint16Array([0, 1, 2]),
-        attributes: interleavedAttributes(positions),
-        submeshes: [
-          {
-            indexOffset: 0,
-            indexCount: 3,
-            vertexCount: 3,
-            topology: 'triangle-list',
-            materialSlot: 0,
-          },
-        ],
-
-        materialSlots: [{ slotName: 'Default' }],
+  describe('managed geometry admission', () => {
+    it.each([
+      new Uint16Array(9),
+      undefined,
+    ])('rejects unsupported position storage before binding', (position) => {
+      const { assets } = makeScene();
+      expect(
+        assets.create({
+          kind: 'mesh',
+          vertices: new Float32Array(9),
+          attributes: position === undefined ? {} : { position },
+          indices: new Uint16Array([0, 1, 2]),
+          submeshes: [
+            {
+              indexOffset: 0,
+              indexCount: 3,
+              vertexCount: 3,
+              topology: 'triangle-list',
+              materialSlot: 0,
+            },
+          ],
+          materialSlots: [{ slotName: 'Default' }],
+        }),
+      ).toMatchObject({
+        ok: false,
+        error: {
+          code: position === undefined ? 'mesh-vertex-stride-mismatch' : 'asset-invalid-value',
+        },
       });
-      if (!result.ok) throw new Error(`u16 mesh catalog failed: ${result.error.message}`);
-      return scene.world.allocSharedRef('MeshAsset', result.value);
-    }
-
-    function registerUndefinedPosition(scene: Scene): Handle<'MeshAsset', 'shared'> {
-      const v = new Float32Array(3 * 12);
-      const result = scene.assets.catalog<MeshAsset>(AssetGuid.format(AssetGuid.random()), {
-        kind: 'mesh',
-        vertices: v,
-        indices: new Uint16Array([0, 1, 2]),
-        attributes: {},
-        submeshes: [
-          {
-            indexOffset: 0,
-            indexCount: 3,
-            vertexCount: 3,
-            topology: 'triangle-list',
-            materialSlot: 0,
-          },
-        ],
-
-        materialSlots: [{ slotName: 'Default' }],
-      });
-      if (!result.ok) throw new Error(`no-position mesh catalog failed: ${result.error.message}`);
-      return scene.world.allocSharedRef('MeshAsset', result.value);
-    }
-
-    it('Uint16Array position returns undefined (skip, no crash)', () => {
-      const scene = makeScene();
-      const camera = spawnPerspectiveCamera(scene.world, 5);
-      const mesh = registerUint16Position(scene);
-      const entity = spawnMeshEntity(scene, mesh, 0, 0, 0);
-      const hit = runPickVertexOnEntity(scene.world, camera, VP / 2, VP / 2, VP, VP, entity) as
-        | VertexHit
-        | undefined;
-      expect(hit).toBeUndefined();
-    });
-
-    it('undefined position returns undefined (skip, no crash)', () => {
-      const scene = makeScene();
-      const camera = spawnPerspectiveCamera(scene.world, 5);
-      const mesh = registerUndefinedPosition(scene);
-      const entity = spawnMeshEntity(scene, mesh, 0, 0, 0);
-      const hit = runPickVertexOnEntity(scene.world, camera, VP / 2, VP / 2, VP, VP, entity) as
-        | VertexHit
-        | undefined;
-      expect(hit).toBeUndefined();
     });
   });
 
   // ── AC-09: no index buffer → non-indexed triangle sequence ───────
 
   describe('AC-09: no index buffer — non-indexed triangle sequence', () => {
-    function registerIndexlessTriangle(scene: Scene): Handle<'MeshAsset', 'shared'> {
+    function registerIndexlessTriangle(scene: Scene): AssetHandle<'mesh'> {
       const positions = new Float32Array([-0.5, -0.5, 0, 0.5, -0.5, 0, 0, 0.5, 0]);
       const v = new Float32Array(3 * 12);
       for (let i = 0; i < 3; i++) {
@@ -1143,7 +1088,7 @@ describe('w6: degradation input + builtin fallback', () => {
         v[i * 12 + 1] = positions[i * 3 + 1] as number;
         v[i * 12 + 2] = positions[i * 3 + 2] as number;
       }
-      const result = scene.assets.catalog<MeshAsset>(AssetGuid.format(AssetGuid.random()), {
+      const result = scene.assets.create({
         kind: 'mesh',
         vertices: v,
         attributes: interleavedAttributes(positions),
@@ -1160,7 +1105,7 @@ describe('w6: degradation input + builtin fallback', () => {
         materialSlots: [{ slotName: 'Default' }],
       });
       if (!result.ok) throw new Error(`indexless mesh catalog failed: ${result.error.message}`);
-      return scene.world.allocSharedRef('MeshAsset', result.value);
+      return result.value;
     }
 
     it('non-indexed mesh hits vertices (every consecutive 3 vertices = one face)', () => {
@@ -1183,10 +1128,10 @@ describe('w6: degradation input + builtin fallback', () => {
   // ── AC-09: empty mesh (0 vertices / 0 triangles) ──────────────────
 
   describe('AC-09: empty mesh', () => {
-    function registerEmptyMesh(scene: Scene): Handle<'MeshAsset', 'shared'> {
+    function registerEmptyMesh(scene: Scene): AssetHandle<'mesh'> {
       const positions = new Float32Array(0);
       const v = new Float32Array(0);
-      const result = scene.assets.catalog<MeshAsset>(AssetGuid.format(AssetGuid.random()), {
+      const result = scene.assets.create({
         kind: 'mesh',
         vertices: v,
         attributes: interleavedAttributes(positions),
@@ -1203,7 +1148,7 @@ describe('w6: degradation input + builtin fallback', () => {
         materialSlots: [{ slotName: 'Default' }],
       });
       if (!result.ok) throw new Error(`empty mesh catalog failed: ${result.error.message}`);
-      return scene.world.allocSharedRef('MeshAsset', result.value);
+      return result.value;
     }
 
     it('0 vertices returns undefined (no crash)', () => {
@@ -1231,101 +1176,41 @@ describe('w6: degradation input + builtin fallback', () => {
 
   // ── AC-09: NaN / Inf vertex coordinates → excluded ────────────────
 
-  describe('AC-09: NaN / Inf vertex coordinates excluded', () => {
-    function registerNanMesh(scene: Scene): Handle<'MeshAsset', 'shared'> {
-      const positions = new Float32Array([NaN, NaN, NaN, 0.5, -0.5, 0, 0, 0.5, 0]);
-      const v = new Float32Array(3 * 12);
-      for (let i = 0; i < 3; i++) {
-        v[i * 12 + 0] = positions[i * 3 + 0] as number;
-        v[i * 12 + 1] = positions[i * 3 + 1] as number;
-        v[i * 12 + 2] = positions[i * 3 + 2] as number;
-      }
-      const result = scene.assets.catalog<MeshAsset>(AssetGuid.format(AssetGuid.random()), {
-        kind: 'mesh',
-        vertices: v,
-        indices: new Uint16Array([0, 1, 2]),
-        attributes: interleavedAttributes(positions),
-        submeshes: [
-          {
-            indexOffset: 0,
-            indexCount: 3,
-            vertexCount: 3,
-            topology: 'triangle-list',
-            materialSlot: 0,
-          },
-        ],
-
-        materialSlots: [{ slotName: 'Default' }],
-      });
-      if (!result.ok) throw new Error(`NaN mesh catalog failed: ${result.error.message}`);
-      return scene.world.allocSharedRef('MeshAsset', result.value);
-    }
-
-    it('NaN vertex coordinates excluded, valid vertices still hit (no NaN propagation)', () => {
+  describe('managed non-finite geometry', () => {
+    it.each([
+      NaN,
+      Infinity,
+      -Infinity,
+    ])('rejects a non-finite write and preserves the current pick', (value) => {
       const scene = makeScene();
       const camera = spawnPerspectiveCamera(scene.world, 5);
-      const mesh = registerNanMesh(scene);
+      const mesh = registerTriangle(scene);
       const entity = spawnMeshEntity(scene, mesh, 0, 0, 0);
-      const hits = runPickVertexOnEntity(scene.world, camera, VP / 2, VP / 2, VP, VP, entity, {
-        limit: 3,
-      }) as VertexHit[];
-      for (const hit of hits) {
-        expect(hit.vertexIndex).not.toBe(0); // vertex 0 is NaN
-        expect(Number.isNaN(hit.worldPos[0])).toBe(false);
-        expect(Number.isNaN(hit.worldPos[1])).toBe(false);
-        expect(Number.isNaN(hit.worldPos[2])).toBe(false);
-        expect(Number.isNaN(hit.screenDist)).toBe(false);
-        expect(Number.isNaN(hit.worldDist)).toBe(false);
-      }
-    });
-
-    it('all-NaN positions returns undefined', () => {
-      const scene = makeScene();
-      const camera = spawnPerspectiveCamera(scene.world, 5);
-      const positions = new Float32Array([NaN, NaN, NaN, NaN, NaN, NaN, NaN, NaN, NaN]);
-      const v = new Float32Array(3 * 12);
-      for (let i = 0; i < 3; i++) {
-        v[i * 12 + 0] = positions[i * 3 + 0] as number;
-        v[i * 12 + 1] = positions[i * 3 + 1] as number;
-        v[i * 12 + 2] = positions[i * 3 + 2] as number;
-      }
-      const result = scene.assets.catalog<MeshAsset>(AssetGuid.format(AssetGuid.random()), {
-        kind: 'mesh',
-        vertices: v,
-        indices: new Uint16Array([0, 1, 2]),
-        attributes: interleavedAttributes(positions),
-        submeshes: [
-          {
-            indexOffset: 0,
-            indexCount: 3,
-            vertexCount: 3,
-            topology: 'triangle-list',
-            materialSlot: 0,
-          },
-        ],
-
-        materialSlots: [{ slotName: 'Default' }],
-      });
-      if (!result.ok) throw new Error('all-NaN mesh catalog failed');
-      const mesh = scene.world.allocSharedRef('MeshAsset', result.value);
-      const entity = spawnMeshEntity(scene, mesh, 0, 0, 0);
-      const hit = runPickVertexOnEntity(scene.world, camera, VP / 2, VP / 2, VP, VP, entity) as
-        | VertexHit
-        | undefined;
-      expect(hit).toBeUndefined();
+      const before = runPickVertexOnEntity(scene.world, camera, VP / 2, VP / 2, VP, VP, entity);
+      expect(before).toBeDefined();
+      expect(
+        scene.assets.writeRange(mesh, {
+          attribute: 'position',
+          first: 0,
+          values: new Float32Array([value, 0, 0]),
+        }),
+      ).toMatchObject({ ok: false, error: { code: 'asset-invalid-value' } });
+      expect(runPickVertexOnEntity(scene.world, camera, VP / 2, VP / 2, VP, VP, entity)).toEqual(
+        before,
+      );
     });
   });
 
   // ── AC-07: builtin mesh without AABB → walk-all-vertices fallback ──
 
-  describe('AC-07: builtin mesh without AABB — walk-all-vertices fallback', () => {
-    it('BUILTIN_TRIANGLE (no AABB) returns a valid hit via full vertex walk', () => {
+  describe('code-created geometry', () => {
+    it('created triangle returns a valid vertex hit', () => {
       const scene = makeScene();
       const camera = spawnPerspectiveCamera(scene.world, 5);
       const entity = scene.world
         .spawn(
           { component: Transform, data: translateTransform(0, 0, 0) },
-          { component: MeshFilter, data: { assetHandle: toShared<'MeshAsset'>(1) } },
+          { component: MeshFilter, data: { assetHandle: registerTriangle(scene) } },
           { component: MeshRenderer, data: { materials: [scene.material] } },
         )
         .unwrap();
@@ -1341,13 +1226,13 @@ describe('w6: degradation input + builtin fallback', () => {
       }
     });
 
-    it('BUILTIN_CUBE (no AABB) returns valid vertex hits', () => {
+    it('created cube returns valid vertex hits', () => {
       const scene = makeScene();
       const camera = spawnPerspectiveCamera(scene.world, 5);
       const entity = scene.world
         .spawn(
           { component: Transform, data: translateTransform(0, 0, 0) },
-          { component: MeshFilter, data: { assetHandle: toShared<'MeshAsset'>(2) } },
+          { component: MeshFilter, data: { assetHandle: registerCube(scene) } },
           { component: MeshRenderer, data: { materials: [scene.material] } },
         )
         .unwrap();
@@ -1512,7 +1397,7 @@ describe('w7: pickVertex full-scene', () => {
       scene: Scene,
       offsetX: number,
       offsetY: number,
-    ): Handle<'MeshAsset', 'shared'> {
+    ): AssetHandle<'mesh'> {
       const positions = new Float32Array([
         offsetX - 0.3,
         offsetY - 0.3,
@@ -1530,7 +1415,7 @@ describe('w7: pickVertex full-scene', () => {
         v[i * 12 + 1] = positions[i * 3 + 1] as number;
         v[i * 12 + 2] = positions[i * 3 + 2] as number;
       }
-      const result = scene.assets.catalog<MeshAsset>(AssetGuid.format(AssetGuid.random()), {
+      const result = scene.assets.create({
         kind: 'mesh',
         vertices: v,
         indices: new Uint16Array([0, 1, 2]),
@@ -1548,7 +1433,7 @@ describe('w7: pickVertex full-scene', () => {
         materialSlots: [{ slotName: 'Default' }],
       });
       if (!result.ok) throw new Error(`small triangle catalog failed: ${result.error.message}`);
-      return scene.world.allocSharedRef('MeshAsset', result.value);
+      return result.value;
     }
 
     it('entity far from ray is excluded by AABB coarse cull', () => {

@@ -174,10 +174,9 @@ export function resolveShadowMapSize(
 }
 
 /**
- * Resolve the per-layer size for the graph-owned spot shadow array when a frame has
- * no directional shadow map. The typed spot pass still needs a non-zero
- * viewport in a spot-only world; the directional resolver cannot provide
- * that because it intentionally follows only the directional shadow lane.
+ * Resolve the per-layer size for the graph-owned spot shadow array independently
+ * of directional maps. Both graph allocation and the raster viewport consume
+ * this value, including frames with differently sized directional shadows.
  */
 export function resolveSpotShadowMapSize(
   internals: RenderSystemInternals,

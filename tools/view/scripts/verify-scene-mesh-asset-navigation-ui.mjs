@@ -44,7 +44,7 @@ try {
   const edit = page.locator('[data-operation="scene-tree.asset.edit"]');
   await page.waitForFunction(() => !document.querySelector('[data-operation="scene-tree.asset.browse"]')?.disabled);
   assert.equal(await browse.textContent(), '浏览至资产');
-  assert.equal(await edit.textContent(), '编辑 cube');
+  assert.equal(await edit.textContent(), '打开资产查看器: cube');
   await page.screenshot({ path: resolve(output, 'mesh-context-menu.png') });
   await browse.click();
   await page.waitForFunction(() => document.querySelector('[data-cb-guid="cube-guid"]')?.getAttribute('aria-selected') === 'true');
@@ -159,6 +159,42 @@ try {
   await page.evaluate(() => { globalThis.sceneMeshAssetFixture.replaceTarget(); globalThis.sceneMeshAssetFixture.finishInspection(); });
   await page.waitForFunction(() => !document.querySelector('[data-operation="scene-tree.asset.edit"]'));
   assert.equal(await page.evaluate(() => globalThis.sceneMeshAssetFixture.calls.filter(call => call.operation === 'asset.open').length), beforeReplacement);
+
+  await page.evaluate(() => {
+    for (const element of document.body.children) {
+      if (element.id !== 'fixture-toolbar-tooltips' && element instanceof HTMLElement) element.style.display = 'none';
+    }
+    document.getElementById('fixture-toolbar-tooltips').hidden = false;
+  });
+  const previewAction = page.getByRole('button', { name: 'Preview action', exact: true });
+  await previewAction.focus();
+  await previewAction.hover();
+  await page.mouse.move(700, 700);
+  await previewAction.evaluate(element => element.blur());
+  await page.waitForTimeout(500);
+  assert.equal(await page.getByRole('tooltip').count(), 0, 'Focus plus hover must not leave an earlier timer running');
+  await previewAction.focus();
+  await page.getByRole('tooltip').getByText('Focus and hover share one opening timer.', { exact: true }).waitFor();
+  const previewOptions = page.getByRole('button', { name: 'Preview options', exact: true });
+  await previewOptions.hover();
+  await page.getByRole('tooltip').getByText('Choose a preview option.', { exact: true }).waitFor();
+  await previewOptions.click();
+  await page.getByRole('menuitem', { name: 'Choose preview', exact: true }).hover();
+  await page.getByRole('tooltip').waitFor({ state: 'detached' });
+  await page.getByRole('menuitem', { name: 'Choose preview', exact: true }).click();
+  assert.equal(await page.locator('#fixture-toolbar-tooltips').getAttribute('data-chosen'), 'true');
+  await page.mouse.move(700, 700);
+  await page.waitForTimeout(500);
+  assert.equal(await page.getByRole('tooltip').count(), 0, 'Portaled menu focus must not reopen the trigger tooltip');
+  await page.setViewportSize({ width: 320, height: 600 });
+  const disabledAction = page.getByRole('button', { name: 'Disabled preview action', exact: true });
+  assert.equal(await disabledAction.getAttribute('title'), '');
+  await disabledAction.hover();
+  await page.getByRole('tooltip').getByText('Disabled controls keep their descriptions.', { exact: true }).waitFor();
+  const tooltipBounds = await page.getByRole('tooltip').boundingBox();
+  assert.ok(tooltipBounds.x >= 0 && tooltipBounds.x + tooltipBounds.width <= 320
+    && tooltipBounds.y >= 0 && tooltipBounds.y + tooltipBounds.height <= 600);
+  await page.screenshot({ path: resolve(output, 'disabled-toolbar-tooltip.png') });
   assert.deepEqual(errors, []);
   process.stdout.write(JSON.stringify({ passed: true, screenshots: output }) + '\n');
 } finally {

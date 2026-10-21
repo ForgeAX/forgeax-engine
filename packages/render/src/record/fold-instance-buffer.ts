@@ -16,10 +16,10 @@ import type { _InternalRenderPipelineContext } from './render-context';
 export function resolveFoldInstanceBuffer(
   c: _InternalRenderPipelineContext,
   bucket: FoldBucket,
-  headIndex: number,
+  drawIndex: number,
 ): Buffer | null {
   const { runtime, frameState } = c;
-  const key = -1 - (((bucket.materialHandle & 0xffff) << 16) | (headIndex & 0xffff));
+  const key = -1 - drawIndex;
   const uniform = runtime.device.caps.storageBuffer === false;
   const payload = uniform ? bucket.transforms : packInstanceStorageBuffer(bucket.transforms);
   let resident = frameState.instanceBuffers.get(key);

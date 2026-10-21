@@ -1,6 +1,5 @@
 import {
   type ActionConfig,
-  type ActionState,
   attachBrowserInputBackend,
   type BrowserInputBackendOptions,
   deriveActionStates,
@@ -48,7 +47,6 @@ export function privateBackend(
     now: () => clock.now,
   });
   let previous: InputSnapshot | undefined;
-  let actions: ActionState[] | undefined;
   const handle: PrivateBackend = {
     win,
     canvas,
@@ -62,7 +60,14 @@ export function privateBackend(
     },
     step(inputMap) {
       const sample = detach.backend.sample();
-      actions = inputMap === undefined ? undefined : deriveActionStates(sample, inputMap, actions);
+      const actions =
+        inputMap === undefined
+          ? undefined
+          : deriveActionStates(
+              sample,
+              inputMap,
+              (action) => previous?.action(action).isPressed() ?? false,
+            );
       previous = snapshotFromSample(sample, actions, previous);
       return previous;
     },

@@ -23,9 +23,9 @@ import { preparePackProgram } from '@forgeax/engine-pack/runtime';
 import { definePackageId } from '@forgeax/engine-pack/source';
 import { startPluginAsset } from '@forgeax/engine-plugin';
 import type { Renderer } from '@forgeax/engine-render';
+import { ok } from '@forgeax/engine-types';
 import type { ViteDevServer } from 'vite';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { testPlatform } from '../../../app/src/__tests__/platform-fixture';
 
 const mocks = vi.hoisted(() => ({
   createViteConfig: vi.fn(async () => ({})),
@@ -371,9 +371,24 @@ describe('DevKit workspace provider', () => {
     world.insertResource('project-plugin-fibers', new Set<number>());
     const app = (
       await createApp({
-        platform: testPlatform(),
+        platform: {
+          now: () => ok(performance.now()),
+          requestFrame: () => ok(() => {}),
+          display: () =>
+            ok({
+              width: 64,
+              height: 64,
+              pixelRatio: 1,
+              drawingWidth: 64,
+              drawingHeight: 64,
+              safeArea: { x: 0, y: 0, width: 64, height: 64 },
+            }),
+          visible: () => true,
+          subscribe: () => ok(() => {}),
+          dispose() {},
+        },
         world,
-        assets: new AssetRegistry({} as never),
+        assets: new AssetRegistry({ shaderRegistry: {} as never }),
         assetCatalog: createCatalogSource({ entries: [] }),
         renderer: {
           ready: Promise.resolve({ ok: true, value: undefined }),

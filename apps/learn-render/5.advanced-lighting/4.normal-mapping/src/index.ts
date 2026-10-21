@@ -16,7 +16,7 @@
 import { configureRuntimeAssetCatalog, createRuntimeAssetImportTransport, runtimeBinding } from '@forgeax/apps-shared/asset-runtime-config';
 import { createApp } from '@forgeax/engine-app/browser';
 import { AssetGuid } from '@forgeax/engine-pack/guid';
-import { HANDLE_QUAD } from '@forgeax/engine-assets-runtime';
+
 import { Transform } from '@forgeax/engine-scene';
 
 import { Camera, Materials, MeshFilter, MeshRenderer } from '@forgeax/engine-render';
@@ -24,11 +24,13 @@ import { perspective } from '@forgeax/engine-render';
 
 import { PointLight } from '@forgeax/engine-render';
 
-import type { MaterialAsset, TextureAsset } from '@forgeax/engine-types';
-import { unwrapHandle } from '@forgeax/engine-types';
+
+
 import { forgeaxBundlerAdapter } from 'virtual:forgeax/bundler';
 import { addFirstPersonSystem } from '../../../../shared/src/learn-render-first-person';
 import { captureCanvasPixels } from '@forgeax/apps-shared/canvas-capture';
+import { createPrimitiveMesh } from '@forgeax/engine-geometry';
+
 
 // 2. example glue
 
@@ -79,7 +81,11 @@ async function bootstrap(target: HTMLCanvasElement): Promise<void> {
     return;
   }
   const app = appRes.value;
+if (app.assets === undefined) throw new Error('This scene requires the App asset owner');
+
   const world = app.world;
+const primitiveQuad = app.assets.create(createPrimitiveMesh('quad').unwrap()).unwrap();
+
   app.onError((error) => {
     console.error('[learn-render 5.4 normal-mapping] app.onError:', error.code, error.hint);
     const bus = (globalThis as unknown as { __learnRenderErrors?: Array<{ code: string; hint?: string }> }).__learnRenderErrors;
@@ -103,9 +109,9 @@ async function bootstrap(target: HTMLCanvasElement): Promise<void> {
   }
 
   // Load textures through the GUID asset pipeline.
-  const baseColorRes = await assets.loadByGuid<TextureAsset>(brickwallGuidRes.value);
-  const normalRes = await assets.loadByGuid<TextureAsset>(brickwallNormalGuidRes.value);
-  const heightRes = await assets.loadByGuid<TextureAsset>(brickwallHeightGuidRes.value);
+  const baseColorRes = await assets.load(brickwallGuidRes.value, 'texture');
+  const normalRes = await assets.load(brickwallNormalGuidRes.value, 'texture');
+  const heightRes = await assets.load(brickwallHeightGuidRes.value, 'texture');
   if (!baseColorRes.ok || !normalRes.ok || !heightRes.ok) {
     const bus = (globalThis as unknown as { __learnRenderErrors?: Array<{ code: string; hint?: string }> }).__learnRenderErrors;
     if (bus !== undefined) {
@@ -125,42 +131,36 @@ async function bootstrap(target: HTMLCanvasElement): Promise<void> {
   const normalTex = normalRes.value;
   const heightTex = heightRes.value;
 
-  const baseColorTexture = unwrapHandle(world.allocSharedRef('TextureAsset', baseColorTex));
-  const normalTexture = unwrapHandle(world.allocSharedRef('TextureAsset', normalTex));
-  const bumpTexture = unwrapHandle(world.allocSharedRef('TextureAsset', heightTex));
-  const normalMat = world.allocSharedRef<'MaterialAsset', MaterialAsset>(
-    'MaterialAsset',
-    Materials.standard({
+  const baseColorTexture = Number(baseColorTex);
+  const normalTexture = Number(normalTex);
+  const bumpTexture = Number(heightTex);
+  const normalMat = assets.create(Materials.standard({
       baseColor: [1.0, 1.0, 1.0, 1.0],
       metallic: 0.0,
       roughness: 0.8,
       baseColorTexture,
       normalTexture,
       normalScale: NORMAL_SCALE,
-    }),
-  );
-  const bumpMat = world.allocSharedRef<'MaterialAsset', MaterialAsset>(
-    'MaterialAsset',
-    Materials.standard({
+    })).unwrap();
+  const bumpMat = assets.create(Materials.standard({
       baseColor: [1.0, 1.0, 1.0, 1.0],
       metallic: 0.0,
       roughness: 0.8,
       baseColorTexture,
       bumpTexture,
       bumpScale: BUMP_SCALE,
-    }),
-  );
+    })).unwrap();
 
   // HANDLE_QUAD faces +Z. Equal geometry/albedo keeps the normal input
   // (left) and height-gradient input (right) as the only material difference.
   world.spawn(
     { component: Transform, data: { pos: [-0.68, 0, 0], scale: [1.2, 1.2, 1] } },
-    { component: MeshFilter, data: { assetHandle: HANDLE_QUAD } },
+    { component: MeshFilter, data: { assetHandle: primitiveQuad } },
     { component: MeshRenderer, data: { materials: [normalMat] } },
   ).unwrap();
   world.spawn(
     { component: Transform, data: { pos: [0.68, 0, 0], scale: [1.2, 1.2, 1] } },
-    { component: MeshFilter, data: { assetHandle: HANDLE_QUAD } },
+    { component: MeshFilter, data: { assetHandle: primitiveQuad } },
     { component: MeshRenderer, data: { materials: [bumpMat] } },
   ).unwrap();
 

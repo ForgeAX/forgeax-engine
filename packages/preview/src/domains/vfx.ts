@@ -2,10 +2,10 @@ import { evaluateVfxOracle, type VfxOracleInput } from '../evidence/oracle.js';
 import { canonicalPresentation, createCanonicalPreviewRecipe } from '../kit/canonical.js';
 import { isRecord } from '../request-schema.js';
 import {
-  loadResourceSubject,
   type ResourcePreviewArgs,
   type ResourcePreviewInput,
   type ResourceSubject,
+  readResourceSubject,
   subjectFailure,
 } from './subject.js';
 
@@ -262,7 +262,7 @@ export function inspectVfxSubject(input: ResourceSubject): InspectionResult {
 }
 
 export async function executeVfxPreview(args: ResourcePreviewArgs, input: ResourcePreviewInput) {
-  const loaded = await loadResourceSubject(args.guid, input, 'vfx');
+  const loaded = readResourceSubject(args.guid, input, 'vfx');
   if (!loaded.ok) return loaded;
   const inspected = inspectVfxSubject(loaded.value);
   if (!inspected.ok) return inspected;

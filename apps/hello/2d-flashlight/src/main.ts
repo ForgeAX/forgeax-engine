@@ -1,3 +1,4 @@
+import type { AssetHandle } from '@forgeax/engine-types';
 // apps/hello/2d-flashlight -- flat 2D sprite-lit demo
 // (tweak-20260701-sprite-lit-flat-default-drop-ndotl-for-2d M2 / m2-1).
 //
@@ -38,7 +39,7 @@
 import type { App, CanvasAppError } from '@forgeax/engine-app';
 import { createApp } from '@forgeax/engine-app/browser';
 import type { World } from '@forgeax/engine-ecs';
-import { HANDLE_QUAD } from '@forgeax/engine-assets-runtime';
+
 import { Transform } from '@forgeax/engine-scene';
 
 import { Camera, MeshFilter, MeshRenderer } from '@forgeax/engine-render';
@@ -47,8 +48,12 @@ import { EngineEnvironmentError } from '@forgeax/engine-runtime';
 import { SPRITE_PREMULTIPLIED_ALPHA_BLEND } from '@forgeax/engine-render/authoring';
 import { PointLight, SpotLight } from '@forgeax/engine-render';
 
-import type { Handle, MaterialAsset, TextureAsset } from '@forgeax/engine-types';
+import type { TextureAsset } from '@forgeax/engine-types';
 import { forgeaxBundlerAdapter } from 'virtual:forgeax/bundler';
+import { AssetRegistry } from '@forgeax/engine-assets-runtime';
+
+import { createPrimitiveMesh } from '@forgeax/engine-geometry';
+
 
 const SPRITE_LIT_PARAMETERS = [
   { name: 'colorTint', type: 'vec4' },
@@ -111,7 +116,7 @@ async function bootstrap(target: HTMLCanvasElement): Promise<void> {
 interface SceneCtx {
   mode: Mode;
   world: World;
-  textureHandle: Handle<'TextureAsset', 'shared'>;
+  textureHandle: AssetHandle<'texture'>;
 }
 
 // buildScene wires camera + lights + sprite geometry per mode. Each mode
@@ -273,7 +278,7 @@ function buildBothScene(ctx: SceneCtx): void {
 
 function spawnSprite(
   world: World,
-  texHandle: Handle<'TextureAsset', 'shared'>,
+  texHandle: AssetHandle<'texture'>,
   tint: readonly [number, number, number, number],
   x: number,
   y: number,
@@ -281,7 +286,12 @@ function spawnSprite(
   sx: number,
   sy: number,
 ): void {
-  const mat = world.allocSharedRef<'MaterialAsset', MaterialAsset>('MaterialAsset', {
+const sceneAssets = world.assets;
+if (!(sceneAssets instanceof AssetRegistry)) throw new Error('Scene requires its runtime asset owner');
+
+const primitiveQuad = sceneAssets.create(createPrimitiveMesh('quad').unwrap()).unwrap();
+
+  const mat = sceneAssets.create({
     kind: 'material',
     passes: [
       { name: 'Forward', program: { module: 'forgeax::sprite-lit' }, renderState: { ...{ blend: SPRITE_PREMULTIPLIED_ALPHA_BLEND }, tags: { LightMode: 'Forward' }, queue: 3000 } },
@@ -295,11 +305,11 @@ function spawnSprite(
       region: [0, 0, 1, 1],
       pivotAndSize: [0.5, 0.5, 1, 1],
     },
-  });
+  }).unwrap();
   world
     .spawn(
       { component: Transform, data: { pos: [x, y, z], quat: [0, 0, 0, 1], scale: [sx, sy, 1] } },
-      { component: MeshFilter, data: { assetHandle: HANDLE_QUAD } },
+      { component: MeshFilter, data: { assetHandle: primitiveQuad } },
       { component: MeshRenderer, data: { materials: [mat] } },
     )
     .unwrap();
@@ -311,7 +321,10 @@ function spawnSprite(
 // pre-multiplication drift.
 async function uploadCheckerboardTexture(
   world: World,
-): Promise<Handle<'TextureAsset', 'shared'>> {
+): Promise<AssetHandle<'texture'>> {
+const sceneAssets = world.assets;
+if (!(sceneAssets instanceof AssetRegistry)) throw new Error('Scene requires its runtime asset owner');
+
   const side = 8;
   const bytes = new Uint8Array(side * side * 4);
   for (let y = 0; y < side; y++) {
@@ -344,7 +357,7 @@ async function uploadCheckerboardTexture(
     colorSpace: 'srgb',
     mips: { kind: 'none' },
   };
-  const handle = world.allocSharedRef<'TextureAsset', TextureAsset>('TextureAsset', desc);
+  const handle = sceneAssets.create(desc).unwrap();
   return handle;
 }
 

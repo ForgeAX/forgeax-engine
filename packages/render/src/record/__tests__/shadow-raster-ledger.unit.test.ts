@@ -22,7 +22,15 @@ describe('ShadowRasterLedger', () => {
     expect(ledger.inspect()).toEqual({ passCount: 0, drawCount: 0, views: [] });
 
     ledger.begin();
-    const missSlot = ledger.evaluate(directional, 'view-changed');
+    const revision = { source: new WeakMap(), entity: 1, revision: 2 };
+    const missSlot = ledger.evaluate(
+      directional,
+      'view-changed',
+      undefined,
+      undefined,
+      undefined,
+      revision,
+    );
     const hitSlot = ledger.evaluate(spot, undefined);
     const pass = fakePass();
     ledger.encode(missSlot, pass, (counted) => {
@@ -63,6 +71,8 @@ describe('ShadowRasterLedger', () => {
       ],
     });
     expect(ledger.inspect()).toBe(first);
+    expect(structuredClone(first)).toEqual(first);
+    expect(ledger.hasRevision(directional, revision)).toBe(true);
     expect(Object.isFrozen(first.views)).toBe(true);
 
     ledger.begin();

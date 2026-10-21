@@ -1,12 +1,37 @@
 import { expect, test } from 'vitest';
-import { defineComponent } from '../component';
+import { componentId, defineComponent } from '../component';
 import { type EntityHandle, entityIndex } from '../entity-handle';
 import { createStateProjection } from '../projection/state-projection';
 import { World } from '../world';
+import { worldInternal } from '../world-internal';
 
 const Position = defineComponent('ProjectionPosition', { x: 'f32' });
 const Extra = defineComponent('ProjectionExtra', {});
 const Selected = defineComponent('ProjectionSelected', {}, { storage: 'sparse' });
+
+test('value-only acceptance preserves known membership without re-reading archetypes', () => {
+  const world = new World();
+  const entity = world.spawn({ component: Position, data: { x: 1 } }).unwrap();
+  const projection = createStateProjection(world, [Position]);
+  projection.read().accept();
+  world.set(entity, Position, { x: 2 }).unwrap();
+  const owner = world[worldInternal];
+  const getGraph = owner.getGraph;
+  Object.defineProperty(owner, 'getGraph', {
+    configurable: true,
+    value: () => {
+      throw new Error('value-only acceptance rediscovered membership');
+    },
+  });
+  try {
+    const batch = projection.read();
+    expect(batch.indices).toEqual([entityIndex(entity)]);
+    batch.accept();
+    expect(projection.read().indices).toEqual([]);
+  } finally {
+    Object.defineProperty(owner, 'getGraph', { configurable: true, value: getGraph });
+  }
+});
 
 test.each([
   32, 511, 512, 700,
@@ -19,7 +44,6 @@ test.each([
   projection.read().accept();
   const first = entities[0] as EntityHandle;
   const changed = entities[1] as EntityHandle;
-  const last = entities[count - 1] as EntityHandle;
   const appended = world.spawn({ component: Position, data: { x: count } }).unwrap();
   world.set(changed, Position, { x: -1 }).unwrap();
   expect(new Set(projection.read().indices)).toEqual(
@@ -31,9 +55,7 @@ test.each([
   projection.read().accept();
 
   world.addComponent(first, { component: Extra, data: {} }).unwrap();
-  expect(new Set(projection.read().indices)).toEqual(
-    new Set([entityIndex(first), entityIndex(last)]),
-  );
+  expect(new Set(projection.read().indices)).toEqual(new Set([entityIndex(first)]));
   projection.read().accept();
   world.removeComponent(first, Extra).unwrap();
   expect(projection.read().indices).toEqual([entityIndex(first)]);
@@ -69,7 +91,7 @@ test('tracked sparse membership remains visible with table-only candidate roots'
   expect(projection.read().indices).toEqual([entityIndex(entity)]);
 });
 
-test('sparse scalar changes inspect one block; failed candidates and consumers remain independent', () => {
+test('sparse scalar changes inspect one identity; failed candidates and consumers remain independent', () => {
   const world = new World();
   const entities = Array.from({ length: 1024 }, (_, x) =>
     world.spawn({ component: Position, data: { x } }).unwrap(),
@@ -84,7 +106,9 @@ test('sparse scalar changes inspect one block; failed candidates and consumers r
   world.set(changedEntity, Position, { x: 9 }).unwrap();
   const failed = first.read();
   expect(failed.indices).toEqual([entityIndex(changedEntity)]);
-  expect(failed.scannedRows).toBe(256);
+  expect(failed.scannedRows).toBe(1);
+  expect(failed.checkedBlocks).toBe(0);
+  expect(failed.checkedIndexEntries).toBeLessThan(400);
   const retry = first.read();
   expect(retry.indices).toEqual([entityIndex(changedEntity)]);
   retry.accept();
@@ -223,4 +247,54 @@ test('source writes during candidate construction cannot be accepted', () => {
   expect(current.indices).toEqual([entityIndex(entity)]);
   current.accept();
   expect(projection.read().indices).toEqual([]);
+});
+
+test('a local write never enumerates the clean table directory', () => {
+  const world = new World();
+  const entities = Array.from({ length: 4096 }, () =>
+    world.spawn({ component: Position, data: {} }).unwrap(),
+  );
+  const projection = createStateProjection(world, [Position]);
+  projection.read().accept();
+  const directory = world[worldInternal]
+    .getGraph()
+    .activeTablesByComponent.get(componentId(Position));
+  if (directory === undefined) throw new Error('missing table directory');
+  Object.defineProperty(directory, Symbol.iterator, {
+    configurable: true,
+    value() {
+      throw new Error('clean table directory visited');
+    },
+  });
+  world.set(entities[2000] as EntityHandle, Position, { x: 1 }).unwrap();
+  const candidate = projection.read();
+  expect(candidate.indices).toEqual([entityIndex(entities[2000] as EntityHandle)]);
+  expect(candidate.checkedBlocks).toBe(0);
+  candidate.accept();
+});
+
+test('changed span reads do not consult clean block summaries', () => {
+  const world = new World();
+  const entities = Array.from({ length: 1024 }, () =>
+    world.spawn({ component: Position, data: {} }).unwrap(),
+  );
+  const query = world.query({ read: [Position], changed: [Position] }).unwrap();
+  for (const _span of query.spans().unwrap()) {
+    /* establish the cursor */
+  }
+  const entity = entities[511] as EntityHandle;
+  world.set(entity, Position, { x: 3 }).unwrap();
+  const graph = world[worldInternal].getGraph();
+  const archetype = world[worldInternal].getEntityArchetype(entity);
+  const storage = graph.tables[archetype?.tableId ?? -1]?.storage.get(componentId(Position));
+  if (storage === undefined) throw new Error('missing fixture storage');
+  Object.defineProperty(storage, 'epochs', {
+    get() {
+      throw new Error('obsolete row change evidence visited');
+    },
+  });
+  const found: number[] = [];
+  for (const span of query.spans().unwrap())
+    for (const current of span.entities) found.push(current);
+  expect(found).toEqual([entity]);
 });

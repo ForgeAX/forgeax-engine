@@ -12,7 +12,7 @@ const baselineEntry = {
 } as const satisfies CatalogEntry;
 
 function registry(): AssetRegistry {
-  return new AssetRegistry({} as never);
+  return new AssetRegistry({ shaderRegistry: {} as never });
 }
 
 describe('AssetRegistry.reconcileCatalog recovery integration', () => {
@@ -57,7 +57,6 @@ describe('AssetRegistry.reconcileCatalog recovery integration', () => {
         },
       ],
     });
-    const refreshCatalog = vi.spyOn(assets, 'refreshCatalog');
 
     const result: CatalogReconcileResult = await assets.reconcileCatalog();
 
@@ -67,7 +66,7 @@ describe('AssetRegistry.reconcileCatalog recovery integration', () => {
       diagnostics: [{ code: 'catalog-gap', severity: 'blocking' }],
       entries: [{ guid: baselineEntry.guid, revision: baselineEntry.revision }],
     });
-    expect(refreshCatalog).not.toHaveBeenCalled();
+    expect(enumerate).toHaveBeenCalledTimes(2);
     expect(writeMeta).not.toHaveBeenCalled();
     expect(writeSourceBytes).not.toHaveBeenCalled();
   });

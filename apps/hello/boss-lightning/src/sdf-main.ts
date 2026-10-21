@@ -5,7 +5,7 @@ import type { EntityHandle } from '@forgeax/engine-ecs';
 import { mat4, quat, vec3 } from '@forgeax/engine-math';
 import { Camera, MeshFilter, MeshRenderer, type FrameReceipt } from '@forgeax/engine-render';
 import { GlobalTransform, Transform, propagateTransforms, scenePlugin } from '@forgeax/engine-scene';
-import type { MaterialAsset, MeshAsset } from '@forgeax/engine-types';
+
 import { loadVfxGpuEffect, ParticleEffectPlayer, createParticleEffectInstance, createVfxEffectContract,
   VFX_GPU_RUNTIME_RESOURCE_KEY, type VfxGpuRuntime } from '@forgeax/engine-vfx';
 import { createVfxRuntimeHost } from '@forgeax/engine-vfx-render';
@@ -63,10 +63,10 @@ cameraEntity = world.spawn(
   { component: Camera, data: { fov: Math.PI / 3, aspect: canvas.width / canvas.height,
     near: 0.1, far: 50, clearColor: [0.01, 0.02, 0.04, 1], tonemap: 0 } },
 ).unwrap();
-const mesh = (await assets.loadByGuid<MeshAsset>(assets.parseGuid(sdfGuid(`mesh/${scenario.mesh}`)))).unwrap();
-const material = (await assets.loadByGuid<MaterialAsset>(assets.parseGuid(sdfGuid('material/obstacle')))).unwrap();
-const meshHandle = world.allocSharedRef('MeshAsset', mesh);
-const materialHandle = world.allocSharedRef('MaterialAsset', material);
+const mesh = (await assets.load(assets.parseGuid(sdfGuid(`mesh/${scenario.mesh}`)), 'mesh')).unwrap();
+const material = (await assets.load(assets.parseGuid(sdfGuid('material/obstacle')), 'material')).unwrap();
+const meshHandle = mesh;
+const materialHandle = material;
 const obstacles = scenario.obstacles.map(transform => world.spawn(
   { component: Transform, data: transform },
   { component: MeshFilter, data: { assetHandle: meshHandle } },
@@ -75,9 +75,9 @@ const obstacles = scenario.obstacles.map(transform => world.spawn(
 const loaded = await loadVfxGpuEffect(assets, sdfGuid(collision ? 'effect/collision' : 'effect/free'));
 if (!loaded.ok) throw loaded.error;
 const player = world.spawn({ component: ParticleEffectPlayer, data: {
-  effect: world.allocSharedRef('ParticleEffectAsset', loaded.value), playing: true, seed: 15, timeScale: 1,
+  effect: loaded.value, playing: true, seed: 15, timeScale: 1,
 } }).unwrap();
-const emitter = loaded.value.program.emitters[0];
+const emitter = assets.read(loaded.value).unwrap().program.emitters[0];
 if (emitter === undefined) throw new Error('Cooked SDF fixture has no emitter');
 world.getResource<VfxGpuRuntime>(VFX_GPU_RUNTIME_RESOURCE_KEY).attachInstance(player,
   createParticleEffectInstance(createVfxEffectContract(emitter.reflection.layout),

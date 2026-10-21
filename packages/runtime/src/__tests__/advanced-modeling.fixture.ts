@@ -26,6 +26,7 @@ import {
 import * as webgpu from '@forgeax/engine-rhi-webgpu';
 import { propagateTransforms, Transform } from '@forgeax/engine-scene';
 import { expect } from 'vitest';
+import { testAssets } from './helpers/runtime-assets';
 import { renderValue } from './standard-gbuffer-replay.fixture';
 
 export type ModelingSave = (name: string, bytes: Uint8Array) => void | Promise<void>;
@@ -60,15 +61,14 @@ export async function verifyAdvancedModeling(
   const unsubscribe = renderer.subscribe((event) => {
     if (event.kind === 'error') errors.push(event.error);
   });
-  const material = world.allocSharedRef(
-    'MaterialAsset',
-    Materials.standard({ baseColor: [0.08, 0.45, 0.8, 1], roughness: 0.32, metallic: 0.2 }),
-  );
+  const material = testAssets(world)
+    .create(Materials.standard({ baseColor: [0.08, 0.45, 0.8, 1], roughness: 0.32, metallic: 0.2 }))
+    .unwrap();
   const initial = createExtrusionGeometry(contour, 0.8, { holes: [hole] }).unwrap();
   const entity = world
     .spawn(
       { component: Transform, data: { pos: [0, 0, -6] } },
-      { component: MeshFilter, data: { assetHandle: world.allocSharedRef('MeshAsset', initial) } },
+      { component: MeshFilter, data: { assetHandle: testAssets(world).create(initial).unwrap() } },
       { component: MeshRenderer, data: { materials: [material] } },
     )
     .unwrap();
@@ -173,7 +173,7 @@ export async function verifyAdvancedModeling(
   try {
     for (const item of cases) {
       world
-        .set(entity, MeshFilter, { assetHandle: world.allocSharedRef('MeshAsset', item.mesh) })
+        .set(entity, MeshFilter, { assetHandle: testAssets(world).create(item.mesh).unwrap() })
         .unwrap();
       world
         .set(entity, Transform, {

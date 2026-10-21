@@ -1,3 +1,4 @@
+import { AssetRegistry } from '@forgeax/engine-assets-runtime';
 import { World } from '@forgeax/engine-ecs';
 import { createRenderReadLease } from '@forgeax/engine-ecs/projection';
 import { createBoxGeometry } from '@forgeax/engine-geometry';
@@ -9,8 +10,9 @@ import { type PersistentRenderCandidateRequest, PersistentRenderScene } from '..
 
 // Actual ECS -> retained-render projection, without GPU recording or FPS claims.
 describe('2000 descendant draws / unchanged parent Visibility', () => {
-  const world = new World();
-  const mesh = world.allocSharedRef('MeshAsset', createBoxGeometry(1, 1, 1).unwrap());
+  const assets = new AssetRegistry();
+  const world = new World({ assets });
+  const mesh = assets.create(createBoxGeometry(1, 1, 1).unwrap()).unwrap();
   const parent = world.spawn(
     { component: Transform, data: {} },
     { component: Visibility, data: { state: VisibilityStateValue.visible } },
@@ -29,9 +31,9 @@ describe('2000 descendant draws / unchanged parent Visibility', () => {
   const worlds = [world];
   const owners = { cameraOwner: 0, resourceOwner: 0 };
   const build = (request: PersistentRenderCandidateRequest) => extractFrames(
-    worlds, owners, undefined, undefined, undefined, { cull: 'none', renderables: request },
+    worlds, owners, assets, undefined, persistent.materialSnapshotCacheStore(), { cull: 'none', renderables: request },
   );
-  const draw = () => persistent.extractComposition(worlds, owners, 0, build, [lease]);
+  const draw = () => persistent.extractComposition(worlds, owners, assets, build, [lease]);
   draw();
   bench('same visibility preserves material and mesh projection', () => {
     world.set(parent, Visibility, { state: VisibilityStateValue.visible }).unwrap();

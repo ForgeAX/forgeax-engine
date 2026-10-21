@@ -1,8 +1,10 @@
+import { AssetRegistry } from '@forgeax/engine/assets-runtime';
 import { Update } from '@forgeax/engine/ecs';
+import { createPrimitiveMesh } from '@forgeax/engine/geometry';
 import { INPUT_SNAPSHOT_RESOURCE_KEY, type InputSnapshot } from '@forgeax/engine/input';
 import { MeshRenderer } from '@forgeax/engine/render';
 import { CheckList, defineFeature } from '../../lab/feature';
-import { MESH, spawnMesh, spawnStage, standard } from '../../lab/stage';
+import { spawnMesh, spawnStage, standard } from '../../lab/stage';
 
 export default defineFeature({
   title: 'Hold a key to recolor a cube',
@@ -12,10 +14,16 @@ export default defineFeature({
     'An Update system reads InputSnapshot.keyboard.down("k") every frame; while K is held the cube switches to a green material. Hold K yourself or use the toggle, which dispatches keydown/keyup on window.',
   expect: 'ON (K held): the cube is bright green. OFF (K released): the cube is red.',
   setup({ world, app, frames }) {
+    const primitiveAssets = world.assets;
+    if (!(primitiveAssets instanceof AssetRegistry))
+      throw new Error('Scene requires its runtime asset owner');
+
+    const stageCube = primitiveAssets.create(createPrimitiveMesh('cube').unwrap()).unwrap();
+
     spawnStage(world);
     const red = standard(world, { baseColor: [0.9, 0.1, 0.1, 1] });
     const green = standard(world, { baseColor: [0.1, 0.95, 0.2, 1] });
-    const cube = spawnMesh(world, MESH.cube, red, { pos: [0, 0.8, 0], scale: [1.6, 1.6, 1.6] });
+    const cube = spawnMesh(world, stageCube, red, { pos: [0, 0.8, 0], scale: [1.6, 1.6, 1.6] });
     let held = false;
     let shown = false;
     world.addSystem(Update, {

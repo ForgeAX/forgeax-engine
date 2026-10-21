@@ -133,7 +133,7 @@ async function createStandardRenderer(renderPath, label) {
       };
     },
   };
-  return createRenderer(
+  const hostResult = await constructRuntimeRendererHost(
     canvas,
     {
       rhi,
@@ -144,23 +144,23 @@ async function createStandardRenderer(renderPath, label) {
     },
     { shaderManifestUrl: MANIFEST_URL },
   );
+if (!hostResult.ok) throw hostResult.error;
+return hostResult.value;
 }
 
 // --- Engine bootstrap ---
 
 const { World } = await import('@forgeax/engine-ecs');
 const { Camera, DEFAULT_STANDARD_PROFILE, DirectionalLight, MeshFilter, MeshRenderer, perspective, Skylight } = await import('@forgeax/engine-render');
-const { createRenderer } = await import('@forgeax/engine-runtime');
+const { constructRuntimeRendererHost } = await import('@forgeax/engine-runtime/internal/renderer-host');
 const { rhi } = await import('@forgeax/engine-rhi-webgpu');
 const { Transform } = await import('@forgeax/engine-scene');
-const {
-  HANDLE_CUBE,
-} = await import('@forgeax/engine-assets-runtime');
+const { createPrimitiveMesh } = await import('@forgeax/engine-geometry');
 
 const MANIFEST_PATH = resolve(here, '..', 'dist', 'shaders', 'manifest.json');
 const MANIFEST_URL = `data:application/json,${encodeURIComponent(readFileSync(MANIFEST_PATH, 'utf8'))}`;
-const forwardRenderer = await createStandardRenderer('forward', 'standard-forward-0l');
-const deferredRenderer = await createStandardRenderer('deferred', 'standard-deferred-0l');
+const { renderer: forwardRenderer, assets: forwardAssets } = await createStandardRenderer('forward', 'standard-forward-0l');
+const { renderer: deferredRenderer, assets: deferredAssets } = await createStandardRenderer('deferred', 'standard-deferred-0l');
 
 // Build both Standard lighting lanes before proceeding.
 console.log(`[smoke-0l] Standard forward backend=${forwardRenderer.inspect().capabilities.backendKind}`);
@@ -168,7 +168,7 @@ console.log(`[smoke-0l] Standard deferred backend=${deferredRenderer.inspect().c
 
 // Setup both worlds with identical scene minus lights.
 function populateScene(world) {
-  const matHandle = world.allocSharedRef('MaterialAsset', {
+  const matHandle = world.assets.create({
     kind: 'material',
     passes: [
       {
@@ -182,11 +182,11 @@ function populateScene(world) {
       metallic: 0.0,
       roughness: 0.4,
     },
-  });
+  }).unwrap();
 
   world.spawn(
     { component: Transform, data: { pos: [0, 0, 0], quat: [0, 0, 0, 1]} },
-    { component: MeshFilter, data: { assetHandle: HANDLE_CUBE } },
+    { component: MeshFilter, data: { assetHandle: world.assets.create(createPrimitiveMesh('cube').unwrap()).unwrap() } },
     { component: MeshRenderer, data: { materials: [matHandle] } },
   ).unwrap();
 
@@ -208,8 +208,8 @@ function populateScene(world) {
   ).unwrap();
 }
 
-const forwardWorld = new World();
-const deferredWorld = new World();
+const forwardWorld = new World({ assets: forwardAssets });
+const deferredWorld = new World({ assets: deferredAssets });
 const forwardAttachment = forwardRenderer.attach(forwardWorld);
 const deferredAttachment = deferredRenderer.attach(deferredWorld);
 if (!forwardAttachment.ok || !deferredAttachment.ok) {

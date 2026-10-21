@@ -104,18 +104,12 @@ describe('default Standard PBR transmission manifest contract', () => {
         expect(variant?.composedWgsl).not.toMatch(/var\s*<\s*storage\b/);
       }
     }
-    // Extended-light evaluation needs cluster membership or atmosphere. Preserve
-    // every public choice above, but share code when that feature has no consumer.
+    // VSM reception uses the extended resource topology even without clustered
+    // lights or atmosphere. Preserve every public choice and its distinct code.
     const programsByEffectiveChoice = new Map<string, string>();
     const choicesByProgram = new Map<string, string>();
     for (const [key, defines] of expected) {
-      const effective: Record<string, boolean | undefined> = {
-        ...defines,
-        EXTENDED_LIGHTING_AVAILABLE:
-          defines.EXTENDED_LIGHTING_AVAILABLE &&
-          (defines.CLUSTER_FORWARD_AVAILABLE || defines.ATMOSPHERE_AVAILABLE),
-      };
-      const choice = axes.map((axis) => `${axis}=${effective[axis]}`).join('+');
+      const choice = axes.map((axis) => `${axis}=${defines[axis]}`).join('+');
       const code = actual.get(key)?.composedWgsl;
       if (code === undefined) throw new Error(`missing supported program ${key}`);
       for (const resource of ['iesProfileTexture', 'cookieTexture', 'ltcGgxTexture']) {
@@ -131,7 +125,7 @@ describe('default Standard PBR transmission manifest contract', () => {
       programsByEffectiveChoice.set(choice, code);
       choicesByProgram.set(code, choice);
     }
-    expect(programsByEffectiveChoice.size).toBe(2048);
+    expect(programsByEffectiveChoice.size).toBe(2304);
     expect(choicesByProgram.size).toBe(programsByEffectiveChoice.size);
     expect(standard.variants.every((variant) => 'TRANSMISSION_AVAILABLE' in variant.defines)).toBe(
       true,

@@ -106,14 +106,15 @@ export function createProfiler(options: ProfilerOptions = {}): Profiler {
         clock,
         phaseCatalog,
         options.allocationReport,
+        (capture) => {
+          latest = capture;
+          active = undefined;
+          return publishCapture(capture, sink);
+        },
       );
       if (!result.ok) return result;
-      const session = wrapSink(result.value, sink, limits.frameLimit, (capture) => {
-        latest = capture;
-        active = undefined;
-      });
-      active = session;
-      return { ok: true, value: session };
+      active = result.value;
+      return result;
     },
     activeCaptureId() {
       return active?.captureId;
@@ -130,63 +131,30 @@ export function createProfiler(options: ProfilerOptions = {}): Profiler {
   };
 }
 
-function wrapSink(
-  session: RecorderSession,
+function publishCapture(
+  capture: ProfileCapture,
   sink: ProfileSink | undefined,
-  frameLimit: number,
-  complete: (capture: ProfileCapture) => void,
-): RecorderSession {
-  let frameCount = 0;
-  let terminal: ProfilerResult<ProfileCapture> | undefined;
-
-  function finish(): ProfilerResult<ProfileCapture> {
-    if (terminal !== undefined) return terminal;
-    const result = session.finish();
-    if (!result.ok) return result;
-    complete(result.value);
-    if (sink === undefined) {
-      terminal = result;
-      return result;
-    }
-    let failureMessage: string | undefined;
-    try {
-      const sinkResult = sink.write(result.value);
-      if (sinkResult !== undefined && !sinkResult.ok)
-        failureMessage = sinkResult.error.detail?.message ?? 'sink rejected artifact';
-    } catch (caught) {
-      failureMessage = caught instanceof Error ? caught.message : 'sink threw a non-Error value';
-    }
-    terminal =
-      failureMessage === undefined
-        ? result
-        : {
-            ok: false,
-            error: {
-              code: 'profile-sink-failed',
-              expected: 'a sink that accepts a partial or complete artifact',
-              hint: 'Replace the sink or retain the returned partial artifact for offline retry.',
-              detail: { message: failureMessage },
-            },
-          };
-    return terminal;
+): ProfilerResult<ProfileCapture> {
+  if (sink === undefined) return { ok: true, value: capture };
+  let failureMessage: string | undefined;
+  try {
+    const sinkResult = sink.write(capture);
+    if (sinkResult !== undefined && !sinkResult.ok)
+      failureMessage = sinkResult.error.detail?.message ?? 'sink rejected artifact';
+  } catch (caught) {
+    failureMessage = caught instanceof Error ? caught.message : 'sink threw a non-Error value';
   }
-
-  return {
-    ...session,
-    beginFrame(frameId) {
-      const result = session.beginFrame(frameId);
-      if (result.ok) frameCount += 1;
-      return result;
-    },
-    endFrame() {
-      const result = session.endFrame();
-      if (result.ok && frameCount >= frameLimit) finish();
-      return result;
-    },
-    finish() {
-      return finish();
-    },
-  };
+  return failureMessage === undefined
+    ? { ok: true, value: capture }
+    : {
+        ok: false,
+        error: {
+          code: 'profile-sink-failed',
+          expected: 'a sink that accepts a partial or complete artifact',
+          hint: 'Replace the sink or retain the returned partial artifact for offline retry.',
+          detail: { message: failureMessage },
+        },
+      };
 }
 
 export type { ProfileCapture, ProfilerError };

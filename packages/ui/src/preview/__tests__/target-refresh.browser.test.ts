@@ -18,15 +18,13 @@ describe('preview target refresh', () => {
     const loader = createUiLoader();
     const roots = [document.createElement('div'), document.createElement('div')];
     const sources = [asset('target', 'one'), asset('other', 'stable')];
-    const invalidate = vi.fn();
+    const readAsset = vi.fn(async (guid: string) =>
+      loader.load(sources.find((entry) => entry.guid === guid) ?? asset(guid, 'new')),
+    );
     const makeSession = (index: number) =>
       createUiPreviewSession({
         guid: sources[index]?.guid ?? '',
-        assets: {
-          invalidate,
-          loadByGuid: async (guid) =>
-            loader.load(sources.find((entry) => entry.guid === guid) ?? asset(guid, 'new')),
-        },
+        readAsset,
         root: roots[index] as HTMLElement,
         rect: { width: 320, height: 180 },
       });
@@ -45,22 +43,19 @@ describe('preview target refresh', () => {
     expect(other.instance).toBe(otherInstance);
     expect(roots[0]?.childElementCount).toBe(1);
     expect(roots[1]?.childElementCount).toBe(1);
-    expect(invalidate).toHaveBeenCalledWith('target');
+    expect(readAsset.mock.calls.map(([guid]) => guid)).toEqual(['target', 'other', 'target']);
   });
 
   it('stops target subscription at dispose and accepts rapid latest-generation changes', async () => {
     const loader = createUiLoader();
     const root = document.createElement('div');
-    const invalidate = vi.fn();
+    const readAsset = vi.fn(async () => loader.load(asset('target', 'latest')));
     const listeners = new Set<
       (change: { guids: readonly string[]; sourcePath: string; revision: number }) => ChangeResult
     >();
     const session = createUiPreviewSession({
       guid: 'target',
-      assets: {
-        invalidate,
-        loadByGuid: async () => loader.load(asset('target', 'latest')),
-      },
+      readAsset,
       root,
       rect: { width: 320, height: 180 },
     });
@@ -74,12 +69,12 @@ describe('preview target refresh', () => {
     await Promise.all([...listeners].map((listener) => listener({ ...change, revision: 3 })));
     expect(session.state).toBe('mounted');
     expect(root.childElementCount).toBe(1);
-    const invalidationsBeforeDispose = invalidate.mock.calls.length;
+    const readsBeforeDispose = readAsset.mock.calls.length;
     unsubscribe();
     session.dispose();
     expect(listeners.size).toBe(0);
     for (const listener of listeners) listener({ ...change, revision: 4 });
-    expect(invalidate.mock.calls.length).toBe(invalidationsBeforeDispose);
+    expect(readAsset.mock.calls.length).toBe(readsBeforeDispose);
   });
 
   it('preserves source-located diagnostics when target refresh loads invalid authoring', async () => {
@@ -109,10 +104,7 @@ describe('preview target refresh', () => {
     };
     const session = createUiPreviewSession({
       guid: 'target',
-      assets: {
-        invalidate: vi.fn(),
-        loadByGuid: load,
-      },
+      readAsset: load,
       root,
       rect: { width: 320, height: 180 },
     });
@@ -167,10 +159,7 @@ describe('preview target refresh', () => {
     >();
     const session = createUiPreviewSession({
       guid: 'target',
-      assets: {
-        invalidate: vi.fn(),
-        loadByGuid: async () => ({ ok: false, error: invalidImport }),
-      },
+      readAsset: async () => ({ ok: false, error: invalidImport }),
       root,
       rect: { width: 320, height: 180 },
     });

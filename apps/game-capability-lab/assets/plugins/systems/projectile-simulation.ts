@@ -1,9 +1,10 @@
+import type { AssetHandle } from '@forgeax/engine-types';
 import { Collider, ColliderShapeValue, CollidingEntities, RigidBody, RigidBodyTypeValue } from '@forgeax/engine-physics';
 import { FixedTime, FixedUpdate, type CommandBuffer, type ComponentData, type EntityHandle, type World } from '@forgeax/engine-ecs';
 import { Transform } from '@forgeax/engine-scene';
 import { Layer, MeshFilter, MeshRenderer } from '@forgeax/engine-render';
 import { SpriteAnimation, SpriteRegionOverride, SpritePlayback } from '@forgeax/engine-render/authoring';
-import { quat, type Handle } from '@forgeax/engine-runtime';
+import { quat } from '@forgeax/engine-runtime';
 import type { InputSnapshot } from '@forgeax/engine-input';
 import { inState } from '@forgeax/engine-state';
 import type { CustomProjectileMesh } from '../custom-projectile-mesh';
@@ -38,8 +39,8 @@ export type SharedProjectileSpawn = {
   readonly presentationVariant?: number;
   readonly radius: number;
   readonly halfHeight: number;
-  readonly mesh: Handle<'MeshAsset', 'shared'>;
-  readonly material: Handle<'MaterialAsset', 'shared'>;
+  readonly mesh: AssetHandle<'mesh'>;
+  readonly material: AssetHandle<'material'>;
   readonly layer?: number;
   readonly presentation?: readonly ComponentData[];
 };
@@ -106,9 +107,9 @@ export type ProjectileSimulationSystemContext = {
   readonly getProjectileVisual: () => ProjectileVisual;
   readonly customProjectile: CustomProjectileMesh | undefined;
   readonly spriteAtlasLoop: SpriteAtlasLoop | undefined;
-  readonly projectileMesh: Handle<'MeshAsset', 'shared'>;
-  readonly projectileMaterial: Handle<'MaterialAsset', 'shared'>;
-  readonly handleQuad: Handle<'MeshAsset', 'shared'>;
+  readonly projectileMesh: AssetHandle<'mesh'>;
+  readonly projectileMaterial: AssetHandle<'material'>;
+  readonly handleQuad: AssetHandle<'mesh'>;
   readonly projectileEntities: () => readonly EntityHandle[];
   readonly rewardChoice: RewardChoiceHandle | undefined;
   readonly attackPresentation: AttackPresentationHandle | undefined;

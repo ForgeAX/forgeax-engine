@@ -17,7 +17,7 @@ import { ImporterRegistry } from '@forgeax/engine-import';
 import type { ImportContext, ImportedAsset, ImportSubAsset } from '@forgeax/engine-types';
 import { FontError } from '@forgeax/engine-types';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import { type BakeAtlas, bakeFont, type MsdfGenerator, realGeneratorFactory } from '../cli-font.js';
+import { type BakeAtlas, bakeFont, type MsdfGenerator } from '../cli-font.js';
 import { fontImporter, fontOutputSourceKeys, sourceKeyForFontOutput } from '../font-importer.js';
 
 let tmpRoot: string;
@@ -112,7 +112,7 @@ async function findRealTtf(): Promise<string | undefined> {
           dirname(fileURLToPath(import.meta.url)),
           '../../../../forgeax-engine-assets/dejavu-fonts/DejaVuSansMono.ttf',
         );
-        const result = await bakeFont(ttfPath, tmpRoot, realGeneratorFactory);
+        const result = await bakeFont(ttfPath, tmpRoot);
         const png = await readFile(result.atlasPath);
         const sidecar = JSON.parse(await readFile(result.sidecarPath, 'utf8')) as {
           common: { distanceRange: number; atlasWidth: number; atlasHeight: number };

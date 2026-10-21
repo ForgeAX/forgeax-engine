@@ -12,21 +12,17 @@ import {
   perspective,
 } from '@forgeax/engine-render';
 import { ChildOf, Name, propagateTransforms, Transform } from '@forgeax/engine-scene';
-import type { MaterialAsset, MeshAsset } from '@forgeax/engine-types';
+
+import { AssetRegistry } from '@forgeax/engine-assets-runtime';
+
 
 export function createGizmoScene(world: World, width: number, height: number) {
-  const mesh = world.allocSharedRef<'MeshAsset', MeshAsset>(
-    'MeshAsset',
-    createBoxGeometry(1, 1, 1).unwrap(),
-  );
-  const material = world.allocSharedRef<'MaterialAsset', MaterialAsset>(
-    'MaterialAsset',
-    Materials.standard({ baseColor: [0.08, 0.5, 0.57, 1], metallic: 0.1, roughness: 0.5 }),
-  );
-  const floorMat = world.allocSharedRef<'MaterialAsset', MaterialAsset>(
-    'MaterialAsset',
-    Materials.standard({ baseColor: [0.09, 0.12, 0.17, 1], roughness: 0.85 }),
-  );
+const sceneAssets = world.assets;
+if (!(sceneAssets instanceof AssetRegistry)) throw new Error('Scene requires its runtime asset owner');
+
+  const mesh = sceneAssets.create(createBoxGeometry(1, 1, 1).unwrap()).unwrap();
+  const material = sceneAssets.create(Materials.standard({ baseColor: [0.08, 0.5, 0.57, 1], metallic: 0.1, roughness: 0.5 })).unwrap();
+  const floorMat = sceneAssets.create(Materials.standard({ baseColor: [0.09, 0.12, 0.17, 1], roughness: 0.85 })).unwrap();
   world
     .spawn({
       component: DirectionalLight,

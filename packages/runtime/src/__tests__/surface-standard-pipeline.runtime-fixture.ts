@@ -1,5 +1,6 @@
 import { type App, createApp } from '@forgeax/engine-app';
-import type { AssetRegistry } from '@forgeax/engine-assets-runtime';
+import { AssetRegistry } from '@forgeax/engine-assets-runtime';
+import { runtimeAssets } from '@forgeax/engine-assets-runtime/internal';
 import { type EntityHandle, Time, Update, World } from '@forgeax/engine-ecs';
 import { createPlaneGeometry } from '@forgeax/engine-geometry';
 import { mat4 } from '@forgeax/engine-math';
@@ -24,7 +25,8 @@ import {
 } from '@forgeax/engine-render';
 import { type RhiDevice, RhiError } from '@forgeax/engine-rhi';
 import { GlobalTransform, propagateTransforms, Transform } from '@forgeax/engine-scene';
-import type { MaterialAsset } from '@forgeax/engine-types';
+import type { AssetHandle, MaterialAsset } from '@forgeax/engine-types';
+import { ok } from '@forgeax/engine-types';
 import {
   loadVfxGpuEffect,
   ParticleEffectPlayer,
@@ -40,6 +42,7 @@ import {
   type SurfaceOpticalParameters,
 } from '../../../../apps/preview/src/surface-optical-evidence';
 import { surfaceEvidenceGuid } from '../../../../apps/preview/src/surface-standard-evidence-identity';
+import { drawReadyFrame } from '../../../../scripts/test/ready-render-frame.mjs';
 import quality from '../../../../scripts/test/render-quality.json' with { type: 'json' };
 import {
   assetGuid,
@@ -49,6 +52,8 @@ import {
 import { testPlatform } from '../../../app/src/__tests__/platform-fixture';
 import type { RhiBackendInstrumentation } from '../../../render/src/assembly/backend-contract';
 import { extractCameraSnapshots } from '../../../render/src/render-system-extract';
+import { installDefaultAssetDecoders } from '../asset-contributions';
+import { testAssets } from './helpers/runtime-assets';
 import {
   compareSurfaceAppLifecycleRois,
   createSurfaceAppLifecycleCoverageMask,
@@ -345,28 +350,35 @@ export function populateSurfaceWorld(
   readonly cameraEntity: EntityHandle;
   readonly mediumMembers: readonly SurfaceDynamicInputMemberIdentity[];
   readonly probeDomains: readonly [
-    { readonly entity: number; readonly irradiance: Float32Array },
-    { readonly entity: number; readonly irradiance: Float32Array },
+    { readonly entity: EntityHandle; readonly irradiance: Float32Array },
+    { readonly entity: EntityHandle; readonly irradiance: Float32Array },
   ];
 } {
   const plane = createPlaneGeometry(SURFACE_PLANE_SIZE, SURFACE_PLANE_SIZE);
   if (!plane.ok) throw new Error(`surface-standard: plane geometry failed: ${plane.error.code}`);
-  const mesh = world.allocSharedRef('MeshAsset', plane.value);
+  const mesh = testAssets(world).create(plane.value).unwrap();
   const secondSubmesh = plane.value.submeshes[0];
   if (secondSubmesh === undefined) {
     throw new Error('surface-standard: plane submesh unavailable');
   }
-  const multiSubmeshMesh = world.allocSharedRef('MeshAsset', {
-    ...plane.value,
-    materialSlots: [
-      plane.value.materialSlots[0] ?? { slotName: 'Default' },
-      { slotName: 'WaterB' },
-    ],
-    submeshes: [secondSubmesh, { ...secondSubmesh, materialSlot: 1 }],
-  });
+  const multiSubmeshMesh = testAssets(world)
+    .create({
+      ...plane.value,
+      materialSlots: [
+        plane.value.materialSlots[0] ?? { slotName: 'Default' },
+        { slotName: 'WaterB' },
+      ],
+      submeshes: [secondSubmesh, { ...secondSubmesh, materialSlot: 1 }],
+    })
+    .unwrap();
   const mediumMembers: SurfaceDynamicInputMemberIdentity[] = [];
+  const materialHandles = new Map<MaterialAsset, AssetHandle<'material'>>();
   for (const [index, material] of materials.entries()) {
-    const handle = world.allocSharedRef('MaterialAsset', material);
+    let handle = materialHandles.get(material);
+    if (handle === undefined) {
+      handle = testAssets(world).create(material).unwrap();
+      materialHandles.set(material, handle);
+    }
     const center = (materials.length - 1) / 2;
     const isWaterB =
       material.surface?.model === 'single-layer-medium' && mediumMembers.length === 1;
@@ -460,7 +472,7 @@ export function createSurfaceDynamicInput(
   materials: readonly MaterialAsset[],
   members: readonly SurfaceDynamicInputMemberIdentity[],
   deviceGeneration: number,
-): Omit<SurfaceDynamicInputFrame, 'frameTime'> {
+) {
   const schema = materials.find((material) => material.surface?.model === 'single-layer-medium')
     ?.surface?.dynamicInput;
   if (schema === undefined) {
@@ -818,7 +830,6 @@ interface SurfaceAppLifecycleCameraDiagnostics {
  */
 export async function runSurfaceAppLifecycle(input: {
   readonly renderer: Renderer;
-  readonly materials: readonly MaterialAsset[];
   readonly assets: AssetRegistry;
   readonly vfxHost: VfxRuntimeHost;
   readonly hostLossSignals: readonly SurfaceHostLossSignal[];
@@ -828,8 +839,15 @@ export async function runSurfaceAppLifecycle(input: {
   /** Node/Dawn has no live host rAF; Browser must leave this omitted. */
   readonly hostFrameScheduler?: 'timer';
 }): Promise<SurfaceAppLifecycleEvidence> {
-  const { renderer, materials } = input;
+  const { renderer } = input;
+  const assets = surfaceAssets(input.assets);
+  const materials = await Promise.all(
+    SURFACE_CASES.map(async ({ guid }) =>
+      (await loadSurfaceMaterial(assets, parseSurfaceGuid(guid))).unwrap(),
+    ),
+  );
   const world = new World({
+    assets,
     time: { fixedDeltaSeconds: 1 / 60, maxStepsPerUpdate: 120, maxDeltaSeconds: 3 },
   });
   const { mediumMembers } = populateSurfaceWorld(world, materials);
@@ -844,19 +862,20 @@ export async function runSurfaceAppLifecycle(input: {
       .unwrap();
   }
 
-  const attachedVfx = await input.vfxHost.attachWorld({ world, assets: input.assets });
+  const attachedVfx = await input.vfxHost.attachWorld({ world, assets });
   if (!attachedVfx.ok) throw attachedVfx.error;
-  const loadedSplash = await loadVfxGpuEffect(input.assets, SURFACE_SPLASH_EFFECT_GUID);
+  const loadedSplash = await loadVfxGpuEffect(assets, SURFACE_SPLASH_EFFECT_GUID);
   if (!loadedSplash.ok) throw loadedSplash.error;
   const splashRendererKinds = Object.freeze(
-    loadedSplash.value.program.emitters.flatMap((emitter) =>
-      emitter.renderers.map((renderer) => renderer.kind),
-    ),
+    assets
+      .read(loadedSplash.value)
+      .unwrap()
+      .program.emitters.flatMap((emitter) => emitter.renderers.map((renderer) => renderer.kind)),
   );
   if (splashRendererKinds.length === 0) {
     throw new Error('surface-app-lifecycle: cooked splash effect has no renderer');
   }
-  const effect = world.allocSharedRef('ParticleEffectAsset', loadedSplash.value);
+  const effect = loadedSplash.value;
   const impactPositions = [
     [2.05, 0.08, 0],
     [2.3, -0.08, 0],
@@ -1949,6 +1968,7 @@ export async function runSurfaceAppLifecycle(input: {
     unsubscribeFrames();
     dynamicInput.page.release().unwrap();
     renderer.setSurfaceDynamicInput(undefined);
+    assets.dispose();
     if (input.hostFrameScheduler === 'timer') {
       for (const timer of timers.values()) clearTimeout(timer);
       timers.clear();
@@ -2068,9 +2088,9 @@ export function populateSurfaceOpticalWorld(
   }
   const waterPlane = createPlaneGeometry(OPTICAL_WATER_SIZE, OPTICAL_WATER_SIZE).unwrap();
   const targetPlane = createPlaneGeometry(OPTICAL_TARGET_SIZE, OPTICAL_TARGET_SIZE).unwrap();
-  const waterMesh = world.allocSharedRef('MeshAsset', waterPlane);
-  const targetMesh = world.allocSharedRef('MeshAsset', targetPlane);
-  const backgroundHandle = world.allocSharedRef('MaterialAsset', backgroundMaterial);
+  const waterMesh = testAssets(world).create(waterPlane).unwrap();
+  const targetMesh = testAssets(world).create(targetPlane).unwrap();
+  const backgroundHandle = testAssets(world).create(backgroundMaterial).unwrap();
 
   const control = surfaceOpticalGridPosition(0);
   world.spawn(
@@ -2082,7 +2102,9 @@ export function populateSurfaceOpticalWorld(
   const mediumMembers: SurfaceDynamicInputMemberIdentity[] = [];
   for (const [index, surfaceCase] of SURFACE_OPTICAL_CASES.entries()) {
     const position = surfaceOpticalGridPosition(index + 1);
-    const materialHandle = world.allocSharedRef('MaterialAsset', materials[index] as MaterialAsset);
+    const materialHandle = testAssets(world)
+      .create(materials[index] as MaterialAsset)
+      .unwrap();
     if (surfaceCase.halfSubmergedTarget === true) {
       world.spawn(
         {
@@ -2386,12 +2408,194 @@ export function evaluateSurfaceOpticalOracle(
   return Object.freeze(records);
 }
 
-interface SurfaceOpticalAssetLoader {
-  loadByGuid<T>(
-    guid: AssetGuid,
-  ): Promise<
-    { readonly ok: true; readonly value: T } | { readonly ok: false; readonly error: unknown }
-  >;
+function surfaceAssets(source: AssetRegistry): AssetRegistry {
+  const assets = new AssetRegistry({ shaderRegistry: source.shaderRegistry });
+  installDefaultAssetDecoders(assets);
+  if (source.catalogSource === undefined) throw new Error('Surface source Catalog is unavailable');
+  assets.setCatalogSource(source.catalogSource);
+  return assets;
+}
+
+/** Exercise shared Mesh defaults and last-probe retirement through both physical draw lanes. */
+export async function runSurfaceManagedMediumOracle(renderer: Renderer, source: AssetRegistry) {
+  const assets = surfaceAssets(source);
+  const ordinary = assets
+    .create(
+      Materials.standard({
+        baseColor: [1, 0.05, 0.05, 1],
+        emissive: [1, 0, 0],
+      }),
+    )
+    .unwrap();
+  const medium = (await assets.load(parseSurfaceGuid(SURFACE_CASES[4].guid), 'material')).unwrap();
+  const world = new World({ assets });
+  const geometry = createPlaneGeometry(4, 4).unwrap();
+  const slots = (material: AssetHandle<'material'>) => [
+    { slotName: 'surface', defaultMaterial: material },
+  ];
+  const mesh = assets.create({ ...geometry, materialSlots: slots(ordinary) }).unwrap();
+  const entity = world
+    .spawn(
+      { component: Transform, data: {} },
+      { component: MeshFilter, data: { assetHandle: mesh } },
+      { component: MeshRenderer, data: { materials: [] } },
+    )
+    .unwrap();
+  world
+    .spawn(
+      { component: Transform, data: { pos: [0, 0, 6] } },
+      {
+        component: Camera,
+        data: {
+          fov: Math.PI / 4,
+          aspect: SURFACE_WIDTH / SURFACE_HEIGHT,
+          near: 0.1,
+          far: 20,
+          antialias: 0,
+          bloom: 0,
+          clearColor: [0.05, 0.1, 0.15, 1],
+        },
+      },
+    )
+    .unwrap();
+  world
+    .spawn({
+      component: DirectionalLight,
+      data: {
+        direction: [0, 0, -1],
+        intensity: 1,
+        castShadow: false,
+      },
+    })
+    .unwrap();
+  propagateTransforms(world).unwrap();
+  const dynamicInput = createSurfaceOpticalDynamicInput(
+    [assets.read(medium).unwrap()],
+    [{ worldIdentity: world.identity, entityKey: entity, drawItemIndex: 0, instanceOrdinal: 0 }],
+    renderer.inspect().frame.deviceGeneration,
+  );
+  const attached = renderer.attach(world);
+  if (!attached.ok) throw attached.error;
+  const lease = attached.value;
+  const profile = renderer.inspect().profile;
+  let lastRenderError: unknown;
+  const stopErrors = renderer.subscribe((event) => {
+    if (event.kind === 'error') lastRenderError = event.error;
+  });
+  const evidence: {
+    renderPath: 'forward' | 'deferred';
+    geometryLane: 'direct' | 'automatic';
+    meshDefaultDelta: number;
+    localProbeDelta: number;
+    retirementError: number;
+    materialRestoreError: number;
+  }[] = [];
+  const distance = (left: readonly number[], right: readonly number[]) =>
+    Math.max(...left.map((value, index) => Math.abs(value - (right[index] ?? Number.NaN))));
+  try {
+    for (const renderPath of ['forward', 'deferred'] as const) {
+      const configured = renderer.setProfile({ ...profile, renderPath, ssao: false });
+      if (!configured.ok) throw configured.error;
+      for (const geometryLane of ['direct', 'automatic'] as const) {
+        const capture = async (isMedium: boolean) => {
+          renderer.setSurfaceDynamicInput(isMedium ? { ...dynamicInput, frameTime: 0 } : undefined);
+          world.update(1 / 60).unwrap();
+          propagateTransforms(world).unwrap();
+          const receipt = await drawReadyFrame(
+            renderer,
+            {
+              leases: [lease],
+              camera: { lease },
+              environment: { lease },
+              geometryLane,
+            },
+            ['linear-hdr'],
+          ).catch((cause) => {
+            throw new Error(
+              `managed-medium: ${String(cause)}; rendererError=${JSON.stringify(lastRenderError)}`,
+              { cause },
+            );
+          });
+          const observed = await renderer.observe(receipt, { include: ['linear-hdr'] });
+          if (!observed.ok) throw observed.error;
+          const image = observed.value.observations?.find(
+            (entry) => entry.domain === 'linear-hdr',
+          ) as SurfaceOpticalLinearHdrObservation | undefined;
+          if (image === undefined || image.metadata.frameId !== receipt.frameId)
+            throw new Error('managed-medium: current completed HDR observation unavailable');
+          if (isMedium) {
+            const submission = renderer.inspect().renderScene.submission;
+            const expectedLane = geometryLane === 'direct' ? 'direct' : 'gpu-driven';
+            if (submission?.frameId !== receipt.frameId || submission.actualLane !== expectedLane)
+              throw new Error(`managed-medium: expected actual ${expectedLane} medium submission`);
+          }
+          const samples: number[] = [];
+          const x = Math.floor(image.metadata.width / 2),
+            y = Math.floor(image.metadata.height / 2);
+          for (let dy = -2; dy <= 2; dy++)
+            for (let dx = -2; dx <= 2; dx++)
+              samples.push(...readLinearHdrPixel(image, x + dx, y + dy));
+          if (!samples.every(Number.isFinite)) throw new Error('managed-medium: non-finite pixels');
+          return samples;
+        };
+        const standard = await capture(false);
+        assets.update(mesh, { materialSlots: slots(medium) }).unwrap();
+        const baseline = await capture(true);
+        const irradiance = new Float32Array(27);
+        irradiance.set([256, 128, 64]);
+        const probe = world
+          .spawn(
+            { component: Transform, data: {} },
+            { component: LightProbe, data: { irradiance, radius: 20 } },
+          )
+          .unwrap();
+        const lit = await capture(true);
+        world.despawn(probe).unwrap();
+        const retired = await capture(true);
+        if ((renderer.inspect().renderScene.probeBlend?.records.length ?? 0) !== 0)
+          throw new Error('managed-medium: last-probe retirement retained object records');
+        assets.update(mesh, { materialSlots: slots(ordinary) }).unwrap();
+        const restored = await capture(false);
+        const result = {
+          renderPath,
+          geometryLane,
+          meshDefaultDelta: distance(standard, baseline),
+          localProbeDelta: distance(baseline, lit),
+          retirementError: distance(baseline, retired),
+          materialRestoreError: distance(standard, restored),
+        };
+        if (
+          result.meshDefaultDelta <= SURFACE_PIXEL_EPSILON ||
+          result.localProbeDelta <= SURFACE_PIXEL_EPSILON ||
+          result.retirementError > SURFACE_PIXEL_EPSILON ||
+          result.materialRestoreError > SURFACE_PIXEL_EPSILON
+        )
+          throw new Error(`managed-medium: pixel falsification failed ${JSON.stringify(result)}`);
+        if (
+          world.get(entity, MeshFilter).unwrap().assetHandle !== mesh ||
+          world.get(entity, MeshRenderer).unwrap().materials.length !== 0
+        )
+          throw new Error('managed-medium: asset adoption rewrote the consuming entity');
+        evidence.push(result);
+      }
+    }
+    const restoredProfile = renderer.setProfile(profile);
+    if (!restoredProfile.ok) throw restoredProfile.error;
+    return evidence;
+  } finally {
+    stopErrors();
+    renderer.setSurfaceDynamicInput(undefined);
+    lease.dispose();
+    dynamicInput.page.release().unwrap();
+    assets.dispose();
+  }
+}
+
+/** Source loads preserve each World's independent accepted program and dependency closure. */
+export async function loadSurfaceMaterial(assets: AssetRegistry, guid: AssetGuid) {
+  const loaded = await assets.load(guid, 'material');
+  if (!loaded.ok) return loaded;
+  return ok(runtimeAssets(assets).borrow<MaterialAsset>(loaded.value).unwrap());
 }
 
 export interface SurfaceOpticalRuntimeEvidence {
@@ -2428,9 +2632,11 @@ function centerActual(
 /** Execute the real Pack-loaded medium path and return its receipt-bound HDR proof. */
 export async function runSurfaceOpticalOracle(
   renderer: Renderer,
-  assets: SurfaceOpticalAssetLoader,
+  sourceAssets: AssetRegistry,
 ): Promise<SurfaceOpticalRuntimeEvidence> {
-  const backgroundLoaded = await assets.loadByGuid<MaterialAsset>(
+  const assets = surfaceAssets(sourceAssets);
+  const backgroundLoaded = await loadSurfaceMaterial(
+    assets,
     parseSurfaceGuid(SURFACE_OPTICAL_BACKGROUND_GUID),
   );
   if (!backgroundLoaded.ok) {
@@ -2438,14 +2644,14 @@ export async function runSurfaceOpticalOracle(
   }
   const materials: MaterialAsset[] = [];
   for (const surfaceCase of SURFACE_OPTICAL_CASES) {
-    const loaded = await assets.loadByGuid<MaterialAsset>(parseSurfaceGuid(surfaceCase.guid));
+    const loaded = await loadSurfaceMaterial(assets, parseSurfaceGuid(surfaceCase.guid));
     if (!loaded.ok) {
       throw new Error(`surface-optical: ${surfaceCase.id} load failed ${String(loaded.error)}`);
     }
     materials.push(assertSurfaceOpticalMaterialPayload(surfaceCase, loaded.value));
   }
 
-  const world = new World();
+  const world = new World({ assets });
   const { mediumMembers } = populateSurfaceOpticalWorld(world, backgroundLoaded.value, materials);
   const dynamicInput = createSurfaceOpticalDynamicInput(
     materials,
@@ -2584,6 +2790,7 @@ export async function runSurfaceOpticalOracle(
     unsubscribeErrors();
     attached.value.dispose();
     dynamicInput.page.release().unwrap();
+    assets.dispose();
   }
 }
 
@@ -2714,21 +2921,22 @@ function createSurfaceMsaaEdgeWorld(
   readonly mediumMembers: readonly SurfaceDynamicInputMemberIdentity[];
 } {
   const mesh = (width: number, height: number) =>
-    world.allocSharedRef('MeshAsset', createPlaneGeometry(width, height).unwrap());
-  const backgroundHandle = world.allocSharedRef('MaterialAsset', backgroundMaterial);
-  const foregroundHandle = world.allocSharedRef(
-    'MaterialAsset',
-    Materials.standard({
-      baseColor: [0, 0, 0, 1],
-      metallic: 0,
-      roughness: 1,
-      emissive: [0.04, 0.48, 0.92],
-      emissiveIntensity: 1,
-    }),
-  );
-  const mainWaterHandle = world.allocSharedRef('MaterialAsset', mainWaterMaterial);
-  const shorelineHandle = world.allocSharedRef('MaterialAsset', shorelineMaterial);
-  const roughWaterHandle = world.allocSharedRef('MaterialAsset', roughWaterMaterial);
+    testAssets(world).create(createPlaneGeometry(width, height).unwrap()).unwrap();
+  const backgroundHandle = testAssets(world).create(backgroundMaterial).unwrap();
+  const foregroundHandle = testAssets(world)
+    .create(
+      Materials.standard({
+        baseColor: [0, 0, 0, 1],
+        metallic: 0,
+        roughness: 1,
+        emissive: [0.04, 0.48, 0.92],
+        emissiveIntensity: 1,
+      }),
+    )
+    .unwrap();
+  const mainWaterHandle = testAssets(world).create(mainWaterMaterial).unwrap();
+  const shorelineHandle = testAssets(world).create(shorelineMaterial).unwrap();
+  const roughWaterHandle = testAssets(world).create(roughWaterMaterial).unwrap();
 
   const spawnPlane = (
     width: number,
@@ -3036,10 +3244,12 @@ function findSurfaceMsaaEdgeWitness(input: {
  */
 export async function runSurfaceMsaaEdgeOracle(
   renderer: Renderer,
-  assets: SurfaceOpticalAssetLoader,
+  sourceAssets: AssetRegistry,
   viewport: SurfaceEdgeViewport,
 ): Promise<SurfaceMsaaEdgeRuntimeEvidence> {
-  const backgroundLoaded = await assets.loadByGuid<MaterialAsset>(
+  const assets = sourceAssets;
+  const backgroundLoaded = await loadSurfaceMaterial(
+    assets,
     parseSurfaceGuid(SURFACE_OPTICAL_BACKGROUND_GUID),
   );
   const mainWaterCase = SURFACE_OPTICAL_CASES.find(
@@ -3057,15 +3267,9 @@ export async function runSurfaceMsaaEdgeOracle(
   ) {
     throw new Error('surface-msaa-edge: authored fixture identities unavailable');
   }
-  const mainWaterLoaded = await assets.loadByGuid<MaterialAsset>(
-    parseSurfaceGuid(mainWaterCase.guid),
-  );
-  const shorelineLoaded = await assets.loadByGuid<MaterialAsset>(
-    parseSurfaceGuid(shorelineCase.guid),
-  );
-  const roughWaterLoaded = await assets.loadByGuid<MaterialAsset>(
-    parseSurfaceGuid(roughWaterCase.guid),
-  );
+  const mainWaterLoaded = await loadSurfaceMaterial(assets, parseSurfaceGuid(mainWaterCase.guid));
+  const shorelineLoaded = await loadSurfaceMaterial(assets, parseSurfaceGuid(shorelineCase.guid));
+  const roughWaterLoaded = await loadSurfaceMaterial(assets, parseSurfaceGuid(roughWaterCase.guid));
   if (!mainWaterLoaded.ok || !shorelineLoaded.ok || !roughWaterLoaded.ok) {
     throw new Error('surface-msaa-edge: authored material load failed');
   }
@@ -3078,13 +3282,32 @@ export async function runSurfaceMsaaEdgeOracle(
     sampleCount: 1 | 4,
     offsets: readonly number[],
   ): Promise<readonly SurfaceMsaaEdgeCapture[]> => {
-    const world = new World();
+    const laneAssets = surfaceAssets(sourceAssets);
+    const laneMaterials = await Promise.all(
+      [
+        SURFACE_OPTICAL_BACKGROUND_GUID,
+        mainWaterCase.guid,
+        shorelineCase.guid,
+        roughWaterCase.guid,
+      ].map(async (guid) =>
+        (await loadSurfaceMaterial(laneAssets, parseSurfaceGuid(guid))).unwrap(),
+      ),
+    );
+    const [laneBackground, laneMainWater, laneShoreline, laneRoughWater] = laneMaterials;
+    if (
+      laneBackground === undefined ||
+      laneMainWater === undefined ||
+      laneShoreline === undefined ||
+      laneRoughWater === undefined
+    )
+      throw new Error('surface-msaa-edge: complete material closure required');
+    const world = new World({ assets: laneAssets });
     const { cameraEntity, mediumMembers } = createSurfaceMsaaEdgeWorld(
       world,
-      backgroundLoaded.value,
-      mainWater,
-      shoreline,
-      roughWater,
+      laneBackground,
+      laneMainWater,
+      laneShoreline,
+      laneRoughWater,
       sampleCount,
     );
     const dynamicInput = createSurfaceOpticalDynamicInput(
@@ -3116,6 +3339,7 @@ export async function runSurfaceMsaaEdgeOracle(
     } finally {
       attached.value.dispose();
       dynamicInput.page.release().unwrap();
+      laneAssets.dispose();
     }
   };
 

@@ -77,7 +77,6 @@ function displayQuery(
     mapping.height,
     camera.viewMatrix,
     camera.projectionMatrix,
-    camera.projection,
   );
   return screenRay === undefined ? undefined : { scene, screenRay, mapping };
 }

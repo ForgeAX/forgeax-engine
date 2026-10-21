@@ -397,7 +397,7 @@ export function createSkylightFallback(
     white,
   );
   const prefilterTexture = createFallback(
-    texelFallbackDescriptor('skylight-fallback-prefilter-cube', 'rgba16float', 'cube'),
+    texelFallbackDescriptor('skylight-fallback-prefilter', 'rgba16float'),
     white,
   );
   const brdfSize = {
@@ -443,9 +443,8 @@ export function createSkylightFallback(
   const irradianceView = irradianceViewResult.value;
 
   const prefilterViewResult = device.createTextureView(prefilterTexture, {
-    label: 'skylight-fallback-prefilter-cube-view',
-    dimension: 'cube',
-    arrayLayerCount: 6,
+    label: 'skylight-fallback-prefilter-view',
+    dimension: '2d',
   });
   if (!prefilterViewResult.ok) throw prefilterViewResult.error;
   const prefilterView = prefilterViewResult.value;

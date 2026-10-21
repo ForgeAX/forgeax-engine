@@ -1,6 +1,6 @@
 import { inflateSync } from 'node:zlib';
+import UPNG from 'upng-js';
 import { describe, expect, it } from 'vitest';
-import { loadUpng } from '../image-decoder-node';
 import { encodePng } from '../png-encoder';
 
 describe('PNG output', () => {
@@ -16,8 +16,7 @@ describe('PNG output', () => {
     expect(Array.from(raw)).toEqual([0, ...rgba.subarray(0, 8), 0, ...rgba.subarray(8)]);
   });
 
-  it('preserves offset RGBA views, transparent RGB and rows through an independent decoder', async () => {
-    const upng = await loadUpng();
+  it('preserves offset RGBA views, transparent RGB and rows through an independent decoder', () => {
     for (const [width, height] of [
       [1, 1],
       [2, 3],
@@ -30,14 +29,14 @@ describe('PNG output', () => {
       rgba[2] = 59;
       rgba[3] = 0;
       const png = encodePng(width, height, rgba);
-      const decoded = upng.decode(png.slice().buffer);
+      const decoded = UPNG.decode(png.slice().buffer);
       expect([decoded.width, decoded.height, decoded.depth, decoded.ctype]).toEqual([
         width,
         height,
         8,
         6,
       ]);
-      expect(upng.toRGBA8(decoded)).toEqual([rgba.slice().buffer]);
+      expect(UPNG.toRGBA8(decoded)).toEqual([rgba.slice().buffer]);
     }
   });
 });

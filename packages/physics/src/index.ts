@@ -44,6 +44,8 @@ export type {
 export type {
   ConvexCompoundShapeInput,
   DerivedBodyTypeCandidateInput,
+  DerivedPhysicsAdmissionGuard,
+  DerivedPhysicsAdmissionState,
   DerivedPhysicsCandidate,
   DerivedPhysicsCandidateInput,
   DerivedPhysicsCandidateState,
@@ -102,5 +104,5 @@ export type { PhysicsWorld, PhysicsWorld2D, RaycastHit, RaycastHit2D } from './p
 export type { PhysicsBackend } from './plugin-factory.js';
 export { physicsComponentsPlugin, physicsPlugin } from './plugin-factory.js';
 export { PhysicsSet } from './system-set.js';
-export { syncTerrainHeightfields } from './terrain-heightfield.js';
+export { createTerrainHeightfieldSync, type TerrainColliderOwner } from './terrain-heightfield.js';
 export type { PhysicsWasmHost } from './wasm-host.js';

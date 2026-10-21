@@ -1,8 +1,9 @@
-import { HANDLE_CUBE } from '@forgeax/engine-assets-runtime';
+import { createBoxGeometry } from '@forgeax/engine-geometry';
 import { type EntityHandle, FixedUpdate, Update } from '@forgeax/engine-ecs';
 import {
   Camera,
   DirectionalLight,
+  Materials,
   MeshFilter,
   MeshRenderer,
   perspective,
@@ -85,9 +86,13 @@ const entry: ExecutionBootstrapEntry = (data) => {
     plugins: [
       {
         name: 'publication-browser-fixture',
-        inject: ['world', 'executionBootstrapHost'],
+        inject: ['world', 'assets', 'executionBootstrapHost'],
         apply(ctx) {
+          const assets = ctx.assets;
+          if (assets === undefined) throw new Error('Missing runtime asset owner');
           const count = typeof data === 'number' ? data : 100;
+          const mesh = assets.create(createBoxGeometry(2, 2, 2).unwrap()).unwrap();
+          const material = assets.create(Materials.standard({ baseColor: [1, 1, 1, 1] })).unwrap();
           ctx.world
             .spawn(
               { component: Transform, data: { pos: [0, 0, 8] } },
@@ -121,8 +126,8 @@ const entry: ExecutionBootstrapEntry = (data) => {
                     scale: [0.2, 0.2, 0.2],
                   },
                 },
-                { component: MeshFilter, data: { assetHandle: HANDLE_CUBE } },
-                { component: MeshRenderer, data: {} },
+                { component: MeshFilter, data: { assetHandle: mesh } },
+                { component: MeshRenderer, data: { materials: [material] } },
               )
               .unwrap();
             if (i < 500) movers.push(entity);

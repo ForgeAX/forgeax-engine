@@ -1,6 +1,8 @@
+import { AssetRegistry } from '@forgeax/engine/assets-runtime';
+import { createPrimitiveMesh } from '@forgeax/engine/geometry';
 import { CameraView } from '@forgeax/engine/render';
 import { CheckList, defineFeature } from '../../lab/feature';
-import { MESH, spawnCamera, spawnMesh, spawnStage, standard } from '../../lab/stage';
+import { spawnCamera, spawnMesh, spawnStage, standard } from '../../lab/stage';
 
 export default defineFeature({
   title: 'Multi-camera CameraView composition',
@@ -11,11 +13,19 @@ export default defineFeature({
   expect:
     'ON: a picture-in-picture top-down view (floor, cube and sphere seen from above) sits in the top-right corner over the main view. OFF: the PiP view is disabled and only the main view fills the screen.',
   async setup({ app, world, canvas, frames }) {
+    const primitiveAssets = world.assets;
+    if (!(primitiveAssets instanceof AssetRegistry))
+      throw new Error('Scene requires its runtime asset owner');
+
+    const stageCube = primitiveAssets.create(createPrimitiveMesh('cube').unwrap()).unwrap();
+
+    const stageSphere = primitiveAssets.create(createPrimitiveMesh('sphere').unwrap()).unwrap();
+
     const { camera } = spawnStage(world);
-    spawnMesh(world, MESH.cube, standard(world, { baseColor: [0.2, 0.5, 1, 1] }), {
+    spawnMesh(world, stageCube, standard(world, { baseColor: [0.2, 0.5, 1, 1] }), {
       pos: [-0.8, 0.5, 0],
     });
-    spawnMesh(world, MESH.sphere, standard(world, { baseColor: [1, 0.3, 0.1, 1] }), {
+    spawnMesh(world, stageSphere, standard(world, { baseColor: [1, 0.3, 0.1, 1] }), {
       pos: [0.8, 0.6, 0],
     });
     world

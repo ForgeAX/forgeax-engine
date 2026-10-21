@@ -1,3 +1,4 @@
+import { constructRuntimeRendererHost } from '@forgeax/engine-runtime/internal/renderer-host';
 // apps/parity/forgeax/src/main.ts - right fixture full implementation
 // (M2 T-006; D-P5 case C unlit + D-P6 8-dimension lock).
 //
@@ -43,16 +44,20 @@
 // in parallel with the same evaluate() shape).
 
 import { World } from '@forgeax/engine-ecs';
-import { HANDLE_CUBE } from '@forgeax/engine-assets-runtime';
+
 import { Transform } from '@forgeax/engine-scene';
 
 import { Camera, MeshFilter, MeshRenderer } from '@forgeax/engine-render';
 import { perspective } from '@forgeax/engine-render';
-import { createRenderer, EngineEnvironmentError, quat } from '@forgeax/engine-runtime';
+import { EngineEnvironmentError, quat } from '@forgeax/engine-runtime';
 import { Materials } from '@forgeax/engine-render';
 
-import type { MaterialAsset } from '@forgeax/engine-types';
+
 import { forgeaxBundlerAdapter } from 'virtual:forgeax/bundler';
+
+
+import { createPrimitiveMesh } from '@forgeax/engine-geometry';
+
 
 const CANVAS_W = 512;
 const CANVAS_H = 512;
@@ -75,17 +80,6 @@ const QY = rotationQuat[1] as number;
 const QZ = rotationQuat[2] as number;
 const QW = rotationQuat[3] as number;
 
-const world = new World();
-// Camera entity: fov=Math.PI/4 (45 deg), aspect=1.0 (square 512x512),
-// z=3, near=0.1, far=100.
-world.spawn(
-  {
-    component: Transform,
-    data: { pos: [0, 0, 3]},
-  },
-  { component: Camera, data: perspective({ fov: Math.PI / 4, aspect: 1.0 }) },
-).unwrap();
-
 const canvas = document.querySelector<HTMLCanvasElement>('#app');
 if (!canvas) throw new Error('parity-forgeax: missing <canvas id="app">');
 canvas.width = CANVAS_W;
@@ -103,9 +97,24 @@ async function bootstrap(target: HTMLCanvasElement): Promise<void> {
   // `/shaders/manifest.json` carrying pbr/unlit entries (D-P5 case C unlit
   // path consumes the unlit entry). Default `shaderManifestUrl` resolves;
   // no inline data: URL is required.
-  const rendererResult = await createRenderer(target, {}, forgeaxBundlerAdapter());
+  const rendererResult = await constructRuntimeRendererHost(target, {}, forgeaxBundlerAdapter());
   if (!rendererResult.ok) throw rendererResult.error;
-  const renderer = rendererResult.value;
+  const { renderer, assets: sceneAssets } = rendererResult.value;
+const world = new World({ assets: sceneAssets });
+
+const primitiveCube = sceneAssets.create(createPrimitiveMesh('cube').unwrap()).unwrap();
+
+// Camera entity: fov=Math.PI/4 (45 deg), aspect=1.0 (square 512x512),
+// z=3, near=0.1, far=100.
+world.spawn(
+  {
+    component: Transform,
+    data: { pos: [0, 0, 3]},
+  },
+  { component: Camera, data: perspective({ fov: Math.PI / 4, aspect: 1.0 }) },
+).unwrap();
+
+
   const worldAttachment = renderer.attach(world);
   if (!worldAttachment.ok) throw worldAttachment.error;
   const lease = worldAttachment.value;
@@ -128,17 +137,14 @@ async function bootstrap(target: HTMLCanvasElement): Promise<void> {
   // @forgeax/engine-shader/src/unlit.wgsl). The material is registered
   // after createRenderer so the renderer exists; the world.spawn(...
   // MeshRenderer { material }) call binds the handle.
-  const cubeMaterial = world.allocSharedRef<'MaterialAsset', MaterialAsset>(
-    'MaterialAsset',
-    Materials.unlit([BASE_R, BASE_G, BASE_B, 1]),
-  );
+  const cubeMaterial = sceneAssets.create(Materials.unlit([BASE_R, BASE_G, BASE_B, 1])).unwrap();
   world.spawn(
     {
       component: Transform,
       data: {
         quat: [QX, QY, QZ, QW],},
     },
-    { component: MeshFilter, data: { assetHandle: HANDLE_CUBE } },
+    { component: MeshFilter, data: { assetHandle: primitiveCube } },
     {
       component: MeshRenderer,
       data: { materials: [cubeMaterial] },

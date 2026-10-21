@@ -1,7 +1,7 @@
 import { pickTriangle } from '@forgeax/engine/picking';
 import { Materials, MeshFilter, MeshRenderer } from '@forgeax/engine/render';
 import { propagateTransforms, Transform } from '@forgeax/engine/scene';
-import type { MaterialAsset, MeshAsset } from '@forgeax/engine/types';
+import type { MeshAsset } from '@forgeax/engine/types';
 import { defineFeature } from '../../lab/feature';
 import { makePickScene, VIEWPORT, worldFingerprint } from './_shared/pick-scene';
 
@@ -14,13 +14,11 @@ export default defineFeature({
   summary:
     'pickTriangle intersects world-space CPU triangles, returning the nearest hit with triangle index and barycentrics, or an explicit unavailable status.',
   expect:
-    'Center hits the near box front face at z=1.5 with barycentrics summing to 1; assetGuidOf is echoed; a skinned mesh yields unavailable/skinned-pose-unavailable.',
+    'Center hits the near box front face at z=1.5 with barycentrics summing to 1 and its runtime asset identity; a skinned mesh yields unavailable/skinned-pose-unavailable.',
   run(checks) {
     const scene = makePickScene();
     const before = worldFingerprint(scene.world);
-    const result = pickTriangle(scene.world, scene.camera, CENTER, CENTER, VIEWPORT, VIEWPORT, {
-      assetGuidOf: (asset) => (asset === scene.mesh ? 'lab-box-guid' : undefined),
-    });
+    const result = pickTriangle(scene.world, scene.camera, CENTER, CENTER, VIEWPORT, VIEWPORT);
     if (result.status !== 'hit') {
       checks.ok('center hits a triangle', false, result.status);
       return;
@@ -42,9 +40,9 @@ export default defineFeature({
       String(hit.triangleIndex),
     );
     checks.ok(
-      'assetGuidOf resolves the GUID',
-      hit.assetGuid === 'lab-box-guid',
-      String(hit.assetGuid),
+      'hit identifies the bound runtime Mesh',
+      hit.assetHandle === scene.meshHandle,
+      String(hit.assetHandle),
     );
     const miss = pickTriangle(scene.world, scene.camera, 5, 5, VIEWPORT, VIEWPORT);
     checks.ok('empty corner is a triangle-precision miss', miss.status === 'miss');
@@ -77,17 +75,12 @@ export default defineFeature({
         { component: Transform, data: { pos: [0, 0, 3], quat: [0, 0, 0, 1], scale: [1, 1, 1] } },
         {
           component: MeshFilter,
-          data: { assetHandle: world.allocSharedRef<'MeshAsset', MeshAsset>('MeshAsset', skinned) },
+          data: { assetHandle: skinnedScene.assets.create(skinned).unwrap() },
         },
         {
           component: MeshRenderer,
           data: {
-            materials: [
-              world.allocSharedRef<'MaterialAsset', MaterialAsset>(
-                'MaterialAsset',
-                Materials.unlit([1, 1, 1, 1]),
-              ),
-            ],
+            materials: [skinnedScene.assets.create(Materials.unlit([1, 1, 1, 1])).unwrap()],
           },
         },
       )

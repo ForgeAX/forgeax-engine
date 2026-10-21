@@ -31,7 +31,7 @@
 // (mirrors apps/parity/forgeax + apps/hello/triangle smoke pattern).
 
 import { World } from '@forgeax/engine-ecs';
-import { HANDLE_CUBE } from '@forgeax/engine-assets-runtime';
+
 import { Transform } from '@forgeax/engine-scene';
 
 import { Camera, DirectionalLight, MeshFilter, MeshRenderer } from '@forgeax/engine-render';
@@ -39,6 +39,10 @@ import { createRenderer, EngineEnvironmentError } from '@forgeax/engine-runtime'
 import { Instances } from '@forgeax/engine-render';
 
 import { forgeaxBundlerAdapter } from 'virtual:forgeax/bundler';
+import { AssetRegistry } from '@forgeax/engine-assets-runtime';
+
+import { createPrimitiveMesh } from '@forgeax/engine-geometry';
+
 
 const CANVAS_W = 1280;
 const CANVAS_H = 720;
@@ -137,6 +141,11 @@ async function bootstrap(target: HTMLCanvasElement): Promise<void> {
 
 
   const world = new World();
+const sceneAssets = world.assets;
+if (!(sceneAssets instanceof AssetRegistry)) throw new Error('Scene requires its runtime asset owner');
+
+const primitiveCube = sceneAssets.create(createPrimitiveMesh('cube').unwrap()).unwrap();
+
   const worldAttachment = renderer.attach(world);
   if (!worldAttachment.ok) throw worldAttachment.error;
   const lease = worldAttachment.value;
@@ -153,7 +162,7 @@ async function bootstrap(target: HTMLCanvasElement): Promise<void> {
       data: {
         pos: [0, 0, 0], quat: [0, 0, 0, 1], scale: [1, 1, 1],},
     },
-    { component: MeshFilter, data: { assetHandle: HANDLE_CUBE } },
+    { component: MeshFilter, data: { assetHandle: primitiveCube } },
     {
       component: MeshRenderer,
       data: {},

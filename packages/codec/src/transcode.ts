@@ -27,6 +27,42 @@
  * PVRTC are out of scope (OOS-5 / not exposed by WebGPU core).
  */
 
+import type { TranscodeCaps } from '@forgeax/engine-types';
+import type { TranscoderTextureFormatEnum } from './wasm/basis-types.js';
+
+interface TranscodeTargetSpec {
+  readonly basis: keyof TranscoderTextureFormatEnum;
+  /** RGBA32 decode is compacted by the codec before its bytes leave this owner. */
+  readonly channels?: 1 | 2;
+}
+
+/** @internal Supported GPU targets and their complete Basis byte projection. */
+export const TRANSCODE_TARGETS = {
+  'bc7-rgba-unorm': { basis: 'cTFBC7_RGBA' },
+  'bc7-rgba-unorm-srgb': { basis: 'cTFBC7_RGBA' },
+  'bc5-rg-unorm': { basis: 'cTFBC5_RG' },
+  'bc4-r-unorm': { basis: 'cTFBC4_R' },
+  'bc6h-rgb-ufloat': { basis: 'cTFBC6H' },
+  'etc2-rgba8unorm': { basis: 'cTFETC2_RGBA' },
+  'etc2-rgba8unorm-srgb': { basis: 'cTFETC2_RGBA' },
+  'eac-r11unorm': { basis: 'cTFETC2_EAC_R11' },
+  'eac-rg11unorm': { basis: 'cTFETC2_EAC_RG11' },
+  'astc-4x4-unorm': { basis: 'cTFASTC_4x4_RGBA' },
+  'astc-4x4-unorm-srgb': { basis: 'cTFASTC_4x4_RGBA' },
+  rgba16float: { basis: 'cTFRGBA_HALF' },
+  rgba8unorm: { basis: 'cTFRGBA32' },
+  'rgba8unorm-srgb': { basis: 'cTFRGBA32' },
+  rg8unorm: { basis: 'cTFRGBA32', channels: 2 },
+  r8unorm: { basis: 'cTFRGBA32', channels: 1 },
+} as const satisfies Partial<Record<GPUTextureFormat, TranscodeTargetSpec>>;
+
+export type TranscodeTargetFormat = keyof typeof TRANSCODE_TARGETS;
+
+/** @internal Broad caller formats are admitted through the same closed target inventory. */
+export const transcodeTargetSpecs: Readonly<
+  Partial<Record<GPUTextureFormat, TranscodeTargetSpec>>
+> = TRANSCODE_TARGETS;
+
 /** The DFD-derived source encoding of the Basis payload (D-3 delivery encodings). */
 export type TranscodeModel = 'etc1s' | 'uastc-ldr' | 'uastc-hdr';
 
@@ -41,17 +77,9 @@ export interface TranscodeSource {
   readonly channels: TranscodeChannels;
 }
 
-/**
- * Device compression capabilities (D-8 local structure -- codec must not depend
- * on the rhi package; the runtime side projects `RhiCaps` into this).
- */
-export interface TranscodeCaps {
-  readonly bc: boolean;
-  readonly etc2: boolean;
-  readonly astc: boolean;
-}
+export type { TranscodeCaps } from '@forgeax/engine-types';
 
-function selectRgba(srgb: boolean, caps: TranscodeCaps): GPUTextureFormat {
+function selectRgba(srgb: boolean, caps: TranscodeCaps): TranscodeTargetFormat {
   // D-4: BC wins whenever present (before ASTC), guarding the Mesa/ANV trap.
   if (caps.bc) return srgb ? 'bc7-rgba-unorm-srgb' : 'bc7-rgba-unorm';
   if (caps.astc) return srgb ? 'astc-4x4-unorm-srgb' : 'astc-4x4-unorm';
@@ -59,20 +87,20 @@ function selectRgba(srgb: boolean, caps: TranscodeCaps): GPUTextureFormat {
   return srgb ? 'rgba8unorm-srgb' : 'rgba8unorm';
 }
 
-function selectRg(caps: TranscodeCaps): GPUTextureFormat {
+function selectRg(caps: TranscodeCaps): TranscodeTargetFormat {
   // Data channels have no sRGB variant. ASTC is not in the RG chain.
   if (caps.bc) return 'bc5-rg-unorm';
   if (caps.etc2) return 'eac-rg11unorm';
   return 'rg8unorm';
 }
 
-function selectR(caps: TranscodeCaps): GPUTextureFormat {
+function selectR(caps: TranscodeCaps): TranscodeTargetFormat {
   if (caps.bc) return 'bc4-r-unorm';
   if (caps.etc2) return 'eac-r11unorm';
   return 'r8unorm';
 }
 
-function selectHdr(caps: TranscodeCaps): GPUTextureFormat {
+function selectHdr(caps: TranscodeCaps): TranscodeTargetFormat {
   // ASTC-HDR is OOS; only BC6H, else uncompressed half-float.
   if (caps.bc) return 'bc6h-rgb-ufloat';
   return 'rgba16float';
@@ -86,7 +114,7 @@ function selectHdr(caps: TranscodeCaps): GPUTextureFormat {
 export function selectTranscodeTarget(
   source: TranscodeSource,
   caps: TranscodeCaps,
-): GPUTextureFormat {
+): TranscodeTargetFormat {
   if (source.model === 'uastc-hdr') return selectHdr(caps);
   switch (source.channels) {
     case 'rgba':

@@ -38,6 +38,7 @@ import {
   inspectBasisSource,
   ktx2ColorSpace,
   parseKtx2,
+  type TranscodeModel,
 } from '@forgeax/engine-codec';
 import type {
   EquirectAsset,
@@ -123,16 +124,13 @@ function imageConversionFailure(
   });
 }
 
-function validateImageOutputTopology(
+function requireImageOutput(
   ctx: ImportContext,
   requiredKind: RequiredImageOutputKind,
-): ImportError | undefined {
-  if (
-    ctx.subAssets.length === 1 &&
-    ctx.subAssets[0]?.kind === requiredKind &&
-    ctx.subAssets[0]?.sourceIndex === 0
-  ) {
-    return undefined;
+): ImportContext['subAssets'][number] | ImportError {
+  const sub = ctx.subAssets[0];
+  if (ctx.subAssets.length === 1 && sub?.kind === requiredKind && sub?.sourceIndex === 0) {
+    return sub;
   }
 
   const expected = `exactly one subAssets[] entry with kind "${requiredKind}" and sourceIndex 0`;
@@ -169,8 +167,6 @@ function colorSpaceToFormat(colorSpace: ImageColorSpace): GPUTextureFormat {
   return colorSpace === 'srgb' ? 'rgba8unorm-srgb' : 'rgba8unorm';
 }
 
-type BasisProfile = 'etc1s' | 'uastc-ldr' | 'uastc-hdr';
-
 async function inspectKtx2Source(
   ctx: ImportContext,
   bytes: Uint8Array,
@@ -178,7 +174,7 @@ async function inspectKtx2Source(
 ): Promise<
   | {
       readonly colorSpace: ImageColorSpace;
-      readonly profile: BasisProfile;
+      readonly profile: TranscodeModel;
       readonly width: number;
       readonly height: number;
       readonly levelCount: number;
@@ -260,7 +256,7 @@ async function inspectKtx2Source(
           'repair or re-encode the KTX2 source before importing',
         );
       }
-      const profile: BasisProfile | undefined = file.isETC1S()
+      const profile: TranscodeModel | undefined = file.isETC1S()
         ? 'etc1s'
         : file.isHDR() || file.isHDR4x4()
           ? 'uastc-hdr'
@@ -312,8 +308,12 @@ async function inspectKtx2Source(
   }
 }
 
-async function importKtx2Source(ctx: ImportContext, bytes: Uint8Array): Promise<ImportResult> {
-  const sourceKey = ctx.subAssets[0]?.sourceKey;
+async function importKtx2Source(
+  ctx: ImportContext,
+  sub: ImportContext['subAssets'][number],
+  bytes: Uint8Array,
+): Promise<ImportResult> {
+  const sourceKey = sub.sourceKey;
   const metaColorSpace =
     sourceKey === undefined
       ? ctx.importSettings.colorSpace
@@ -324,46 +324,45 @@ async function importKtx2Source(ctx: ImportContext, bytes: Uint8Array): Promise<
     metaColorSpace === 'srgb' || metaColorSpace === 'linear' ? metaColorSpace : undefined,
   );
   if (inspection instanceof ImportError) return { ok: false, error: inspection };
-  const out: ImportedAsset[] = [];
-  for (const sub of ctx.subAssets) {
-    if (sub.kind !== 'texture' || sub.sourceIndex !== 0) continue;
-    out.push({
-      guid: sub.guid,
+  const asset: ImportedAsset = {
+    guid: sub.guid,
+    kind: 'texture',
+    payload: {
       kind: 'texture',
-      payload: {
-        kind: 'texture',
-        shape: {
-          viewDimension: '2d',
-          extent: { width: inspection.width, height: inspection.height },
-        },
-        format: colorSpaceToFormat(inspection.colorSpace),
-        data: bytes,
-        colorSpace: inspection.colorSpace,
-        mips:
-          inspection.levelCount > 1
-            ? { kind: 'packed', levelCount: inspection.levelCount }
-            : { kind: 'none' },
+      shape: {
+        viewDimension: '2d',
+        extent: { width: inspection.width, height: inspection.height },
       },
-      refs: [],
-      artifacts: {
-        body: {
-          mediaType: 'image/ktx2',
-          assetCodec: {
-            name: 'basis',
-            container: 'ktx2',
-            profile: inspection.profile,
-            version: '1',
-          },
-          bytes,
+      format: colorSpaceToFormat(inspection.colorSpace),
+      data: bytes,
+      colorSpace: inspection.colorSpace,
+      mips:
+        inspection.levelCount > 1
+          ? { kind: 'packed', levelCount: inspection.levelCount }
+          : { kind: 'none' },
+    },
+    refs: [],
+    artifacts: {
+      body: {
+        mediaType: 'image/ktx2',
+        assetCodec: {
+          name: 'basis',
+          container: 'ktx2',
+          profile: inspection.profile,
+          version: '1',
         },
+        bytes,
       },
-    });
-  }
-  return { ok: true, value: { assets: out, sourceDependencies: [] } };
+    },
+  };
+  return { ok: true, value: { assets: [asset], sourceDependencies: [] } };
 }
 
-function basisMetaColorSpace(ctx: ImportContext): ImageColorSpace | ImportError {
-  const sourceKey = ctx.subAssets[0]?.sourceKey;
+function basisMetaColorSpace(
+  ctx: ImportContext,
+  sub: ImportContext['subAssets'][number],
+): ImageColorSpace | ImportError {
+  const sourceKey = sub.sourceKey;
   const override = sourceKey === undefined ? undefined : ctx.sourceOverrides?.[sourceKey];
   const value = override?.colorSpace ?? ctx.importSettings.colorSpace;
   if (value !== 'srgb' && value !== 'linear') {
@@ -380,8 +379,12 @@ function basisMetaColorSpace(ctx: ImportContext): ImageColorSpace | ImportError 
   return value;
 }
 
-async function importBasisSource(ctx: ImportContext, bytes: Uint8Array): Promise<ImportResult> {
-  const colorSpace = basisMetaColorSpace(ctx);
+async function importBasisSource(
+  ctx: ImportContext,
+  sub: ImportContext['subAssets'][number],
+  bytes: Uint8Array,
+): Promise<ImportResult> {
+  const colorSpace = basisMetaColorSpace(ctx, sub);
   if (colorSpace instanceof ImportError) return { ok: false, error: colorSpace };
   const module = await initBasisTranscoder();
   if (module.BasisFile === undefined) {
@@ -404,7 +407,7 @@ async function importBasisSource(ctx: ImportContext, bytes: Uint8Array): Promise
       ),
     };
   }
-  let inspection: BasisSourceInspection | undefined;
+  let inspection: BasisSourceInspection;
   try {
     try {
       const format = file.getBasisTexFormat();
@@ -461,70 +464,52 @@ async function importBasisSource(ctx: ImportContext, bytes: Uint8Array): Promise
   } finally {
     file.close();
   }
-  if (inspection === undefined) {
+  if (inspection.imageCount !== 1) {
     return {
       ok: false,
       error: imageConversionFailure(
         ctx,
         'inspect',
-        'basis-inspection-failed',
-        ctx.source,
-        'raw Basis source metadata to be available after codec inspection',
-        'missing-inspection-result',
-        'repair the raw Basis source and retry the import',
+        'basis-image-shape-unsupported',
+        `${ctx.source}#Basis.images`,
+        'one raw Basis image at sourceIndex 0',
+        `imageCount=${inspection.imageCount},sourceIndex=${sub.sourceIndex}`,
+        're-encode the source as one raw Basis image',
       ),
     };
   }
-  const out: ImportedAsset[] = [];
-  for (const sub of ctx.subAssets) {
-    if (sub.kind !== 'texture') continue;
-    if (sub.sourceIndex !== 0 || inspection.imageCount !== 1) {
-      return {
-        ok: false,
-        error: imageConversionFailure(
-          ctx,
-          'inspect',
-          'basis-image-shape-unsupported',
-          `${ctx.source}#Basis.images`,
-          'one raw Basis image at sourceIndex 0',
-          `imageCount=${inspection.imageCount},sourceIndex=${sub.sourceIndex}`,
-          're-encode the source as one raw Basis image',
-        ),
-      };
-    }
-    out.push({
-      guid: sub.guid,
+  const asset: ImportedAsset = {
+    guid: sub.guid,
+    kind: 'texture',
+    payload: {
       kind: 'texture',
-      payload: {
-        kind: 'texture',
-        shape: {
-          viewDimension: '2d',
-          extent: { width: inspection.width, height: inspection.height },
-        },
-        format: colorSpaceToFormat(colorSpace),
-        data: bytes,
-        colorSpace,
-        mips:
-          inspection.levelCount > 1
-            ? { kind: 'packed', levelCount: inspection.levelCount }
-            : { kind: 'none' },
+      shape: {
+        viewDimension: '2d',
+        extent: { width: inspection.width, height: inspection.height },
       },
-      refs: [],
-      artifacts: {
-        body: {
-          mediaType: 'application/x-forgeax-basis',
-          assetCodec: {
-            name: 'basis',
-            container: 'basis',
-            profile: inspection.profile,
-            version: '1',
-          },
-          bytes,
+      format: colorSpaceToFormat(colorSpace),
+      data: bytes,
+      colorSpace,
+      mips:
+        inspection.levelCount > 1
+          ? { kind: 'packed', levelCount: inspection.levelCount }
+          : { kind: 'none' },
+    },
+    refs: [],
+    artifacts: {
+      body: {
+        mediaType: 'application/x-forgeax-basis',
+        assetCodec: {
+          name: 'basis',
+          container: 'basis',
+          profile: inspection.profile,
+          version: '1',
         },
+        bytes,
       },
-    });
-  }
-  return { ok: true, value: { assets: out, sourceDependencies: [] } };
+    },
+  };
+  return { ok: true, value: { assets: [asset], sourceDependencies: [] } };
 }
 
 /**
@@ -603,10 +588,13 @@ async function importImage(ctx: ImportContext): Promise<ImportResult> {
     return importCubeSource(ctx);
   }
   const requiredKind = requiredImageOutputKind(ctx.source);
-  if (requiredKind !== undefined) {
-    const topologyError = validateImageOutputTopology(ctx, requiredKind);
-    if (topologyError !== undefined) return { ok: false, error: topologyError };
+  if (requiredKind === undefined) {
+    throw new Error(
+      `imageImporter: unsupported source extension for "${ctx.source}" (expected .png / .jpg / .jpeg / .hdr / .ktx2 / .basis)`,
+    );
   }
+  const sub = requireImageOutput(ctx, requiredKind);
+  if (sub instanceof ImportError) return { ok: false, error: sub };
 
   const read = await ctx.readSource();
   if (!read.ok) {
@@ -626,10 +614,10 @@ async function importImage(ctx: ImportContext): Promise<ImportResult> {
   const mime = mimeFromSource(ctx.source);
 
   if (ctx.source.toLowerCase().endsWith('.basis')) {
-    return importBasisSource(ctx, read.value);
+    return importBasisSource(ctx, sub, read.value);
   }
   if (ctx.source.toLowerCase().endsWith('.ktx2')) {
-    return importKtx2Source(ctx, read.value);
+    return importKtx2Source(ctx, sub, read.value);
   }
 
   // --- HDR arm (D-6): .hdr equirect source is decoded via decodeHdr -> f16 ---
@@ -667,37 +655,28 @@ async function importImage(ctx: ImportContext): Promise<ImportResult> {
     // 'none' in import-texture.ts (compressionFor), so the two agree. A purely-
     // sampled HDR 2D texture (never folded by this arm) may still take the
     // UASTC-HDR path via the standard image arm below.
-    const out: ImportedAsset[] = [];
-    for (const sub of ctx.subAssets) {
-      // The .hdr arm folds equirect sub-assets only: a single 2D rgba16float
-      // image (the lat-long env map) with a disk identity. The cube-to-cube IBL
-      // projection is a GPU-side pass driven by the runtime record arm, not a
-      // build-time fold (feat-20260630 w5; orchestrator adjudication: equirect
-      // produces a build .bin, unlike the retired cube-texture).
-      if (sub.kind !== 'equirect') continue;
-      const payload: EquirectAsset = {
-        kind: 'equirect',
-        width: dec.width,
-        height: dec.height,
-        format: 'rgba16float',
-        data: f16Bytes,
-        colorSpace: 'linear',
-      };
-      out.push({
-        guid: sub.guid,
-        kind: 'equirect',
-        payload,
-        refs: [],
-        artifacts: {
-          body: {
-            mediaType: 'application/x-forgeax-rgba16f',
-            assetCodec: { name: 'rgba16float' },
-            bytes: f16Bytes,
-          },
+    const payload: EquirectAsset = {
+      kind: 'equirect',
+      width: dec.width,
+      height: dec.height,
+      format: 'rgba16float',
+      data: f16Bytes,
+      colorSpace: 'linear',
+    };
+    const asset: ImportedAsset = {
+      guid: sub.guid,
+      kind: 'equirect',
+      payload,
+      refs: [],
+      artifacts: {
+        body: {
+          mediaType: 'application/x-forgeax-rgba16f',
+          assetCodec: { name: 'rgba16float' },
+          bytes: f16Bytes,
         },
-      });
-    }
-    return { ok: true, value: { assets: out, sourceDependencies: [] } };
+      },
+    };
+    return { ok: true, value: { assets: [asset], sourceDependencies: [] } };
   }
 
   // --- Standard PNG/JPEG path ---
@@ -741,33 +720,27 @@ async function importImage(ctx: ImportContext): Promise<ImportResult> {
   }
   const { texture, encoded } = cooked.value;
 
-  const out: ImportedAsset[] = [];
-  for (const sub of ctx.subAssets) {
-    // Only flat 2D image sub-assets are folded here; cube-texture sub-assets
-    // ride the runtime IBL multi-face cook and are intentionally not produced.
-    if (sub.kind !== 'texture') continue;
-    out.push({
-      guid: sub.guid,
-      kind: 'texture',
-      payload: texture,
-      refs: [],
-      artifacts: {
-        body: {
-          mediaType: encoded === null ? 'application/x-forgeax-rgba8' : 'image/ktx2',
-          assetCodec:
-            encoded === null
-              ? { name: 'rgba8', version: '1' }
-              : {
-                  name: 'basis',
-                  container: 'ktx2',
-                  profile: encoded.mode,
-                },
-          bytes: texture.data,
-        },
+  const asset: ImportedAsset = {
+    guid: sub.guid,
+    kind: 'texture',
+    payload: texture,
+    refs: [],
+    artifacts: {
+      body: {
+        mediaType: encoded === null ? 'application/x-forgeax-rgba8' : 'image/ktx2',
+        assetCodec:
+          encoded === null
+            ? { name: 'rgba8', version: '1' }
+            : {
+                name: 'basis',
+                container: 'ktx2',
+                profile: encoded.mode,
+              },
+        bytes: texture.data,
       },
-    });
-  }
-  return { ok: true, value: { assets: out, sourceDependencies: [] } };
+    },
+  };
+  return { ok: true, value: { assets: [asset], sourceDependencies: [] } };
 }
 
 /** Bind the image producer to the generic importer runner's decode seam. */

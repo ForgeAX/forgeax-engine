@@ -135,7 +135,7 @@ describe('ProbeBlendRecord renderer lane', () => {
     expect(extended.map((entry) => entry.binding)).toEqual(
       expect.arrayContaining([9, 11, 12, 13, 14, 15]),
     );
-    expect(extended).toHaveLength(16);
+    expect(extended).toHaveLength(17);
   });
 
   it('keeps no-probe instances at binding(0) and adds binding(1) only for probe variants', () => {
@@ -782,7 +782,10 @@ describe('ProbeBlendRecord renderer lane', () => {
     const writes: { readonly device: string; readonly offset: number }[] = [];
     const createDevice = (identity: string) => ({
       caps: { storageBuffer: true },
-      createBuffer: () => ({ ok: true, value: { id: ++nextBuffer, identity } }),
+      createBuffer: ({ size }: { size: number }) => ({
+        ok: true,
+        value: { id: ++nextBuffer, identity, size },
+      }),
       destroyBuffer: () => ({ ok: true }),
       queue: {
         onSubmittedWorkDone: async () => undefined,
@@ -863,5 +866,26 @@ describe('ProbeBlendRecord renderer lane', () => {
     ensureProbeBlendRecordBuffer(deviceB as never, frameState, aba);
     expect(writes.filter((write) => write.device === 'b')).toHaveLength(2);
     expect(frameState.probeBlendRecordProjection?.device).toBe(deviceB);
+
+    // Removing the last probe must retire every stale local row, even when
+    // object slots and generations stay the same and cooked draws keep the ABI.
+    const previousBuffer = frameState.probeBlendRecordBuffer;
+    const empty: ProbeBlendBufferProjection = Object.freeze({
+      sourceIdentity,
+      revision: 4,
+      baseRevision: 3,
+      capacity: 1,
+      records: Object.freeze([]),
+      dirtyRecords: Object.freeze([]),
+      removedCacheKeys: Object.freeze([1, 4]),
+    });
+    const sentinel = ensureProbeBlendRecordBuffer(deviceB as never, frameState, empty);
+    expect(frameState.probeBlendRecordBuffer).not.toBe(previousBuffer);
+    expect(sentinel).toMatchObject({ size: PROBE_BLEND_RECORD_STRIDE });
+    expect(frameState.probeBlendBuffers.size).toBe(0);
+    expect(writes).toHaveLength(6);
+    expect(ensureProbeBlendRecordBuffer(deviceB as never, frameState, empty)).toBe(sentinel);
+    expect(ensureProbeBlendRecordBuffer(deviceB as never, frameState, undefined)).toBe(sentinel);
+    expect(frameState.probeBlendRecordProjection?.projection).toBe(empty);
   });
 });

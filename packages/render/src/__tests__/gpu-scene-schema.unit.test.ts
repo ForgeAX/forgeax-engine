@@ -37,6 +37,12 @@ describe('GPU Scene schema derivation', () => {
     expect(GPU_SCENE_WGSL).toContain('currentWorld: mat4x4<f32>');
     expect(GPU_SCENE_WGSL).toContain('struct GpuSceneMaterial');
     expect(GPU_SCENE_WGSL).toContain('baseVertex: i32');
+    expect(gpuSceneFieldOffset(GPU_SCENE_LAYOUTS.primitive, 'instanceStart')).toBe(16);
+    expect(gpuSceneFieldOffset(GPU_SCENE_LAYOUTS.primitive, 'instanceCount')).toBe(20);
+    expect(gpuSceneFieldOffset(GPU_SCENE_LAYOUTS.primitive, 'sourceIndex')).toBe(24);
+    expect(GPU_SCENE_LAYOUTS.primitive.fields.map((field) => field.name)).not.toContain(
+      'drawTemplateIndex',
+    );
   });
 
   it('pins the shader-side scene-index structs to the derived table layouts', () => {

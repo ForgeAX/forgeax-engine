@@ -2,6 +2,7 @@ import { mkdirSync, writeFileSync } from 'node:fs';
 import { createMaterialLoader } from '@forgeax/engine-assets-runtime';
 import { World } from '@forgeax/engine-ecs';
 import { validateCookedMaterialRecord } from '@forgeax/engine-pack';
+import { AssetGuid } from '@forgeax/engine-pack/guid';
 import {
   Camera,
   DirectionalLight,
@@ -21,16 +22,19 @@ import {
 } from '@forgeax/engine-rhi-debug';
 import * as webgpu from '@forgeax/engine-rhi-webgpu';
 import { propagateTransforms, Transform } from '@forgeax/engine-scene';
+import type { Asset, AssetHandle } from '@forgeax/engine-types';
 import { type MaterialAsset, ok } from '@forgeax/engine-types';
 import { buildEngineShaderManifest } from '@forgeax/engine-vite-plugin-shader';
 import { assert, expect, it } from 'vitest';
 import { drawReadyFrame } from '../../../../scripts/test/ready-render-frame.mjs';
+import { publishRuntimeAssets } from '../../../assets-runtime/src/__tests__/fixtures/runtime-publication';
 import {
   createProbeGlobalMesh,
   probeGlobalProfile,
 } from '../../../render/src/__tests__/raytracing/probe-global.fixture';
 import { createMaterialPackCooker } from '../../../shader-compiler/src/material/pack-cooker';
 import { constructRuntimeRendererHost } from '../renderer-host';
+import { testAssets } from './helpers/runtime-assets';
 import { shaderManifestUrl } from './shader-manifest-url.fixture';
 import { renderValue } from './standard-gbuffer-replay.fixture';
 
@@ -156,14 +160,18 @@ it.each([
   const unsubscribe = renderer.subscribe((event) => {
     if (event.kind === 'error') rendererErrors.push(event.error);
   });
-  const world = new World();
-  const mesh = world.allocSharedRef('MeshAsset', await createProbeGlobalMesh(2, 2, 2));
+  const world = new World({ assets: host.assets });
+  const mesh = testAssets(world)
+    .create(await createProbeGlobalMesh(2, 2, 2))
+    .unwrap();
   const materialAsset = Materials.standard({
     baseColor: [0.8, 0.4, 0.2, 1],
     roughness: 0.65,
     specular: 0,
   });
-  const publishMaterial = async (guid: string, source: MaterialAsset) => {
+  const publication: { guid: string; asset: Asset; refs?: readonly string[] }[] = [];
+  const publishMaterial = async (source: MaterialAsset) => {
+    const guid = AssetGuid.format(AssetGuid.random());
     const cooked = await createMaterialPackCooker().cook({ guid, source });
     const record = validateCookedMaterialRecord(
       (cooked.payload as { cooked: unknown }).cooked,
@@ -173,13 +181,15 @@ it.each([
       loadReference: async () => true,
     }).load({ guid, specializationKey: record.specializationKey ?? '' });
     assert(ready.status === 'Ready');
-    host.assets.catalog(guid, source).unwrap();
-    host.assets.recordMaterialReadiness(guid, ready);
-    return source;
+    publication.push({ guid, asset: cooked.payload as MaterialAsset, refs: cooked.refs });
+    publishRuntimeAssets(host.assets, publication);
+    return (await host.assets.load(guid, 'material')).unwrap();
   };
-  let offscreenMaterial: MaterialAsset | undefined;
+  let offscreenMaterial: AssetHandle<'material'> | undefined;
+  const material = nativeCards
+    ? await publishMaterial(materialAsset)
+    : host.assets.create(materialAsset).unwrap();
   if (nativeCards) {
-    await publishMaterial('probe-native-card-material', materialAsset);
     // A 64x64 checkerboard minifies into the 16x16 offscreen Cards. Its
     // generated levels must affect material RGB, independently of validity.
     const textureSize = coldTexture ? 64 : 4;
@@ -201,34 +211,41 @@ it.each([
             ? patternChannel
             : 0,
     );
-    host.assets
-      .catalog('probe-card-pattern', {
-        kind: 'texture',
-        shape: { viewDimension: '2d', extent: { width: textureSize, height: textureSize } },
-        format: 'rgba8unorm',
-        colorSpace: 'linear',
-        mips: { kind: 'generate' },
-        data: pixels,
-      })
-      .unwrap();
-    host.assets
-      .catalog('probe-card-nearest', {
-        kind: 'sampler',
-        minFilter: 'nearest',
-        magFilter: 'nearest',
-        mipmapFilter: 'nearest',
-      })
-      .unwrap();
+    const textureGuid = '019a0000-0000-7000-8000-000000000331';
+    const samplerGuid = '019a0000-0000-7000-8000-000000000332';
+    publication.push(
+      {
+        guid: textureGuid,
+        asset: {
+          kind: 'texture',
+          shape: { viewDimension: '2d', extent: { width: textureSize, height: textureSize } },
+          format: 'rgba8unorm',
+          colorSpace: 'linear',
+          mips: { kind: 'generate' },
+          data: pixels,
+        },
+      },
+      {
+        guid: samplerGuid,
+        asset: {
+          kind: 'sampler',
+          minFilter: 'nearest',
+          magFilter: 'nearest',
+          mipmapFilter: 'nearest',
+        },
+      },
+    );
+    publishRuntimeAssets(host.assets, publication);
+    (await host.assets.load(textureGuid, 'texture')).unwrap();
+    (await host.assets.load(samplerGuid, 'sampler')).unwrap();
     offscreenMaterial = await publishMaterial(
-      'probe-native-offscreen-card-material',
       Materials.standard({
         baseColor: [1, 1, 1, 1],
-        baseColorTexture: { texture: 'probe-card-pattern', sampler: 'probe-card-nearest' },
+        baseColorTexture: { texture: textureGuid, sampler: samplerGuid },
         roughness: 0.25,
       }),
     );
   }
-  const material = world.allocSharedRef('MaterialAsset', materialAsset);
   world
     .spawn(
       { component: Transform, data: { pos: [0, 0, -3] } },
@@ -609,7 +626,7 @@ it.each([
           { component: MeshFilter, data: { assetHandle: mesh } },
           {
             component: MeshRenderer,
-            data: { materials: [world.allocSharedRef('MaterialAsset', offscreenMaterial)] },
+            data: { materials: [offscreenMaterial] },
           },
         )
         .unwrap();
@@ -638,7 +655,14 @@ it.each([
     afterExtract = () => {
       world.spawn({ component: Transform, data: {} }).unwrap();
     };
-    await draw();
+    world.update(1 / 60).unwrap();
+    propagateTransforms(world).unwrap();
+    const submissionsBeforeStaleSource = submitCount;
+    const staleSource = submit();
+    expect(afterExtract).toBeUndefined();
+    expect(staleSource.ok).toBe(false);
+    if (!staleSource.ok) expect(staleSource.error.code).toBe('frame-submit-rejected');
+    expect(submitCount).toBe(submissionsBeforeStaleSource);
     expect(renderer.inspect().probePlacement?.submittedFrames).toBe(accepted);
     await draw();
     expect(renderer.inspect().probePlacement?.submittedFrames).toBe(accepted + 1);

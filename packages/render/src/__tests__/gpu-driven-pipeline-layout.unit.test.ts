@@ -32,8 +32,8 @@ async function raster(useFactory = false) {
   const colorShader = (await rhi.createShaderModule(device, { code: 'synthetic-color' })).unwrap();
   const viewLayout = device.createBindGroupLayout({ entries: [] }).unwrap();
   const inputs = standardPbrInputs(device, shader, viewLayout);
-  const pipelineState = inputs.standardPbrPipelineState;
-  const baseArtifact = inputs.standardPbrArtifact;
+  const pipelineState = inputs.materialPipelineState;
+  const baseArtifact = inputs.materialArtifact;
   if (pipelineState === undefined || baseArtifact === undefined) throw new Error('missing fixture');
   const artifact: MaterialShaderArtifact = useFactory
     ? {

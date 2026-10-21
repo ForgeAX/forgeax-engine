@@ -1,10 +1,13 @@
-import { HANDLE_CUBE } from '@forgeax/engine-assets-runtime';
+import { AssetRegistry } from '@forgeax/engine-assets-runtime';
 import { type App } from '@forgeax/engine-app';
-import { World } from '@forgeax/engine-ecs';
+import { type EntityHandle, World } from '@forgeax/engine-ecs';
+import type { AssetHandle } from '@forgeax/engine-types';
 import type { Context } from '@forgeax/engine-plugin';
 import { Materials, MeshFilter, MeshRenderer } from '@forgeax/engine-render';
 import { Transform } from '@forgeax/engine-scene';
-import type { MaterialAsset } from '@forgeax/engine-runtime';
+import { createPrimitiveMesh } from '@forgeax/engine-geometry';
+const BUILTIN_CUBE = createPrimitiveMesh('cube').unwrap();
+
 
 export interface MultiWorldOverlaySnapshot {
   readonly enabled: boolean;
@@ -23,26 +26,27 @@ export interface MultiWorldOverlay {
 
 function spawnBeacon(
   world: World,
+  assets: AssetRegistry,
+  mesh: AssetHandle<'mesh'>,
   position: readonly [number, number, number],
   color: readonly [number, number, number, number],
-): void {
-  const material = world.allocSharedRef<'MaterialAsset', MaterialAsset>(
-    'MaterialAsset',
-    Materials.standard({
+): EntityHandle {
+  const material = assets.create(Materials.standard({
       baseColor: color,
       metallic: 0,
       roughness: 0.35,
       emissive: [color[0], color[1], color[2]],
       emissiveIntensity: 0.15,
-    }),
-  );
-  world
+    })).unwrap();
+  const entity = world
     .spawn(
       { component: Transform, data: { pos: position, scale: [0.45, 0.45, 0.45] } },
-      { component: MeshFilter, data: { assetHandle: HANDLE_CUBE } },
+      { component: MeshFilter, data: { assetHandle: mesh } },
       { component: MeshRenderer, data: { materials: [material] } },
     )
     .unwrap();
+  assets.release(material).unwrap();
+  return entity;
 }
 
 /**
@@ -54,10 +58,15 @@ export function installMultiWorldOverlay(
   context: Context,
   app: App,
 ): MultiWorldOverlay {
-  const world = new World();
-  spawnBeacon(world, [-6, 0.45, -1], [0.1, 0.85, 1, 1]);
-  spawnBeacon(world, [-6, 1.35, -1], [1, 0.25, 0.65, 1]);
+  const assets = new AssetRegistry();
+  const world = new World({ assets });
+  const mesh = assets.create(BUILTIN_CUBE).unwrap();
+  const beacons = [
+    spawnBeacon(world, assets, mesh, [-6, 0.45, -1], [0.1, 0.85, 1, 1]),
+    spawnBeacon(world, assets, mesh, [-6, 1.35, -1], [1, 0.25, 0.65, 1]),
+  ];
 
+  assets.release(mesh).unwrap();
   let enabled = true;
   let disposed = false;
   const snapshot = (): MultiWorldOverlaySnapshot => ({
@@ -83,6 +92,8 @@ export function installMultiWorldOverlay(
     if (disposed) return;
     disposed = true;
     app.setDrawSource(undefined);
+    for (const entity of beacons) world.despawn(entity).unwrap();
+    assets.dispose();
   };
 
   applyRouting();

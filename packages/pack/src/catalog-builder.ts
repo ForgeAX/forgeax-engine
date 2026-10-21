@@ -1,10 +1,6 @@
 import { isAbsolute, relative } from 'node:path';
 import type { PackIndexEntry, ProviderProvenance } from '@forgeax/engine-types';
-import {
-  findReservedAssetKindConflict,
-  projectExternalCatalogEntries,
-  projectPackageCatalog,
-} from './catalog-projection.js';
+import { projectExternalCatalogEntries, projectPackageCatalog } from './catalog-projection.js';
 import { deriveAssetName } from './deriveAssetName.js';
 import type { PackError } from './errors.js';
 import { projectDirectPackJson } from './pack-authoring.js';
@@ -69,7 +65,6 @@ export interface CatalogImporterPolicy {
   readonly disposition: 'publish' | 'exclude' | 'missing';
   readonly expected: string;
   readonly hint: string;
-  readonly hostProvided: boolean;
 }
 
 export interface CatalogBuildProjectionOptions {
@@ -168,23 +163,6 @@ function projectMeta(
     ...(meta.sourceOverrides === undefined ? {} : { sourceOverrides: meta.sourceOverrides }),
     subAssets: meta.subAssets,
   };
-  if (policy.hostProvided) {
-    const conflict = findReservedAssetKindConflict(meta.subAssets);
-    if (conflict !== undefined) {
-      return {
-        entries: [],
-        error: {
-          code: 'catalog-host-kind-conflict',
-          path: rawPath,
-          message: `registered provider ${JSON.stringify(meta.importer)} declares reserved asset kind ${JSON.stringify(conflict.kind)}`,
-          expected: 'host provider kinds must not use engine-owned Pack kinds',
-          actual: conflict.kind,
-          hint: 'rename the provider kind to a provider-owned namespace before rebuilding',
-          subjects: [rawPath],
-        },
-      };
-    }
-  }
   return {
     declaration,
     entries: projectExternalCatalogEntries(meta, sourcePath, packageUrl, meta.subAssets, (output) =>

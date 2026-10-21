@@ -35,16 +35,18 @@ import { configureRuntimeAssetCatalog, createRuntimeAssetImportTransport, runtim
 import { createApp } from '@forgeax/engine-app/browser';
 import type { App } from '@forgeax/engine-app';
 import { AssetGuid } from '@forgeax/engine-pack/guid';
-import { HANDLE_CUBE } from '@forgeax/engine-assets-runtime';
+
 import { Transform } from '@forgeax/engine-scene';
 import { Camera, MeshFilter, MeshRenderer } from '@forgeax/engine-render';
 import { perspective } from '@forgeax/engine-render';
 
-import type { MaterialAsset, TextureAsset } from '@forgeax/engine-types';
-import { unwrapHandle } from '@forgeax/engine-types';
+
+
 import { captureCanvasPixels } from '@forgeax/apps-shared/canvas-capture';
 import { forgeaxBundlerAdapter } from 'virtual:forgeax/bundler';
 import { addFirstPersonSystem } from '../../../../shared/src/learn-render-first-person';
+import { createPrimitiveMesh } from '@forgeax/engine-geometry';
+
 
 // 2. example glue
 
@@ -81,7 +83,11 @@ async function bootstrap(target: HTMLCanvasElement): Promise<void> {
     return;
   }
   const app = appRes.value;
+if (app.assets === undefined) throw new Error('This scene requires the App asset owner');
+
   const world = app.world;
+const primitiveCube = app.assets.create(createPrimitiveMesh('cube').unwrap()).unwrap();
+
   app.onError((error) => {
     console.error('[learn-render 4.4 face-culling] app.onError:', error.code, error.hint);
     const bus = (globalThis as unknown as { __learnRenderErrors?: Array<{ code: string; hint?: string }> }).__learnRenderErrors;
@@ -104,14 +110,14 @@ async function bootstrap(target: HTMLCanvasElement): Promise<void> {
   }
 
   // Load marble texture through the GUID asset pipeline.
-  const marbleHandleRes = await assets.loadByGuid<TextureAsset>(marbleGuidRes.value);
+  const marbleHandleRes = await assets.load(marbleGuidRes.value, 'texture');
   if (!marbleHandleRes.ok) {
     console.error('[learn-render 4.4 face-culling] loadByGuid failed:', marbleHandleRes.error.code);
     const bus = (globalThis as unknown as { __learnRenderErrors?: Array<{ code: string; hint?: string }> }).__learnRenderErrors;
     if (bus !== undefined) bus.push({ code: marbleHandleRes.error.code, hint: marbleHandleRes.error.hint });
     return;
   }
-  const marbleTex = unwrapHandle(world.allocSharedRef('TextureAsset', marbleHandleRes.value));
+  const marbleTex = Number(marbleHandleRes.value);
 
   // Cube material: unlit marble.jpg texture (LO 4.4 renders the marble cube at
   // full texture brightness with no lighting -- the chapter teaches culling,
@@ -145,7 +151,7 @@ async function bootstrap(target: HTMLCanvasElement): Promise<void> {
   // AC-09 demonstration: switch cullMode to 'front' and the inner faces
   // (now CW-appearing and thus front-facing) are culled -- the camera
   // inside sees only clear-color, proving the culling semantics.
-  const cubeMat = world.allocSharedRef<'MaterialAsset', MaterialAsset>('MaterialAsset', {
+  const cubeMat = assets.create({
     kind: 'material',
     passes: [
       { name: 'Forward', program: { module: 'forgeax::default-unlit' }, renderState: { ...{
@@ -157,12 +163,12 @@ async function bootstrap(target: HTMLCanvasElement): Promise<void> {
       baseColor: [1.0, 1.0, 1.0, 1.0],
       baseColorTexture: marbleTex,
     },
-  });
+  }).unwrap();
 
   // Single marble cube at origin.
   world.spawn(
     { component: Transform, data: {} },
-    { component: MeshFilter, data: { assetHandle: HANDLE_CUBE } },
+    { component: MeshFilter, data: { assetHandle: primitiveCube } },
     { component: MeshRenderer, data: { materials: [cubeMat] } },
   ).unwrap();
 

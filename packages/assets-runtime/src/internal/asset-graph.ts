@@ -3,14 +3,14 @@ import { err, ok } from '@forgeax/engine-types';
 import { freezeRuntimePayload } from './immutable-payload.js';
 import { assetLoadCancelled as cancelled, waitForAsset } from './wait-for-asset.js';
 
-export interface AssetGraphOptions<
+interface AssetGraphOptions<
   P extends { readonly value: unknown; readonly refs: readonly string[] },
 > {
   readonly read: (guid: string, signal: AbortSignal) => Promise<Result<P, AssetLoadError>>;
   readonly maxConcurrentReads?: number;
 }
 
-export interface AssetGraphCounters {
+interface AssetGraphCounters {
   readonly loads: number;
   readonly cacheHits: number;
   readonly readErrors: number;
@@ -71,7 +71,7 @@ export class AssetGraph<P extends { readonly value: unknown; readonly refs: read
   private readonly limit: number;
   private readonly ready = new Map<string, P>();
   private readonly forward = new Map<string, Set<string>>();
-  private readonly reverse = new Map<string, Set<string>>();
+  private readonly generations = new Map<string, number>();
   private readonly reads = new Map<string, Promise<GraphResult<P>>>();
   private readonly requests = new Map<string, Promise<GraphResult<P>>>();
   private readonly listeners = new Set<GraphListener>();
@@ -108,7 +108,7 @@ export class AssetGraph<P extends { readonly value: unknown; readonly refs: read
     if (this.disposed) return Promise.resolve(err(disposed()));
     if (signal.aborted) return Promise.resolve(err(cancelled(canonicalGuid)));
     const cached = this.ready.get(canonicalGuid);
-    if (cached !== undefined) {
+    if (cached !== undefined && cached.refs.length === 0) {
       this.counters = {
         ...this.counters,
         cacheHits: this.counters.cacheHits + 1,
@@ -125,35 +125,44 @@ export class AssetGraph<P extends { readonly value: unknown; readonly refs: read
     this.counters = { ...this.counters, loads: this.counters.loads + 1 };
     const ticketEpoch = this.epoch;
     const current = () => this.requests.get(canonicalGuid) === request;
-    const request = this.loadClosure(
-      canonicalGuid,
-      this.lifetime.signal,
-      ticketEpoch,
-      current,
-    ).finally(() => {
-      if (this.requests.get(canonicalGuid) === request) this.requests.delete(canonicalGuid);
-      this.publish();
-    });
+    const request = Promise.resolve()
+      .then(() => this.loadClosure(canonicalGuid, this.lifetime.signal, ticketEpoch, current))
+      .finally(() => {
+        if (this.requests.get(canonicalGuid) === request) this.requests.delete(canonicalGuid);
+        this.publish();
+      });
     this.requests.set(canonicalGuid, request);
     this.publish();
     return waitForAsset(request, signal, canonicalGuid);
   }
 
+  /** A verified publication may prepare values before its Catalog notification. */
+  prepare(entries: ReadonlyMap<string, P>): void {
+    if (this.disposed) throw new TypeError('asset source is disposed');
+    this.drop(new Set(entries.keys()));
+    for (const [guid, entry] of entries) {
+      this.promote(guid, entry);
+      this.link(guid, entry.refs);
+    }
+    this.epoch += 1;
+    this.publish();
+  }
+
+  revision(guid: string): number {
+    return this.generations.get(guid.toLowerCase()) ?? 0;
+  }
+
   invalidate(guid: string): readonly string[] {
-    const affected = this.collectAffected([guid.toLowerCase()]);
+    const affected = new Set([guid.toLowerCase()]);
     this.drop(affected);
     this.epoch += 1;
     this.publish();
     return [...affected].sort();
   }
 
-  invalidateForCatalogChange(guids?: readonly string[]): void {
-    if (this.disposed) return;
-    const affected =
-      guids === undefined || guids.length === 0
-        ? new Set([...this.ready.keys(), ...this.requests.keys(), ...this.reads.keys()])
-        : this.collectAffected(guids.map((item) => item.toLowerCase()));
-    this.drop(affected);
+  invalidateForCatalogChange(guids: readonly string[]): void {
+    if (this.disposed || guids.length === 0) return;
+    this.drop(new Set(guids.map((guid) => guid.toLowerCase())));
     this.epoch += 1;
     this.publish();
   }
@@ -164,6 +173,7 @@ export class AssetGraph<P extends { readonly value: unknown; readonly refs: read
   }
 
   snapshot(): AssetGraphSnapshot {
+    if (this.currentSnapshot === undefined) this.recordScc();
     this.currentSnapshot ??= freezeSnapshot({
       epoch: this.epoch,
       ready: [...this.ready.keys()].sort(),
@@ -175,15 +185,12 @@ export class AssetGraph<P extends { readonly value: unknown; readonly refs: read
     return this.currentSnapshot;
   }
 
-  lookup(guid: string): P['value'] | undefined {
-    return this.ready.get(guid.toLowerCase())?.value;
+  entry(guid: string): P | undefined {
+    return this.ready.get(guid.toLowerCase());
   }
 
-  guidOf(value: P['value']): string | undefined {
-    for (const [guid, entry] of this.ready) {
-      if (entry.value === value) return guid;
-    }
-    return undefined;
+  lookup(guid: string): P['value'] | undefined {
+    return this.ready.get(guid.toLowerCase())?.value;
   }
 
   dispose(): void {
@@ -193,7 +200,7 @@ export class AssetGraph<P extends { readonly value: unknown; readonly refs: read
     this.epoch += 1;
     this.ready.clear();
     this.forward.clear();
-    this.reverse.clear();
+    this.generations.clear();
     this.reads.clear();
     this.requests.clear();
     const waiters = this.readWaiters;
@@ -209,42 +216,40 @@ export class AssetGraph<P extends { readonly value: unknown; readonly refs: read
     current: () => boolean,
   ): Promise<GraphResult<P>> {
     const values = new Map<string, P>();
-    const seen = new Set<string>();
+    const seen = new Map<string, number>();
     const result = await this.visit(root, signal, seen, values, ticketEpoch, current);
     if (this.disposed) return err(disposed());
     if (!current()) return err(superseded(root, ticketEpoch));
     if (!result.ok) return result;
     if (signal.aborted) return err(cancelled(root));
-    for (const [guid, value] of values) this.promote(guid, value);
-    this.recordScc();
+    for (const [guid, generation] of seen)
+      if ((this.generations.get(guid) ?? 0) !== generation)
+        return err(superseded(guid, generation));
+    for (const [guid, value] of values) {
+      this.promote(guid, value);
+      this.link(guid, value.refs);
+    }
     return ok(values.get(root) as P);
   }
 
   private async visit(
     guid: string,
     signal: AbortSignal,
-    seen: Set<string>,
+    seen: Map<string, number>,
     values: Map<string, P>,
     ticketEpoch: number,
     current: () => boolean,
   ): Promise<GraphResult<void>> {
     if (seen.has(guid)) return ok(undefined);
+    const generation = this.generations.get(guid) ?? 0;
+    seen.set(guid, generation);
     const cached = this.ready.get(guid);
-    if (cached !== undefined) {
-      values.set(guid, cached);
-      seen.add(guid);
-      return ok(undefined);
-    }
-    seen.add(guid);
-    const read = await this.readOnce(guid, signal);
-    if (!read.ok) {
-      seen.delete(guid);
-      return read;
-    }
+    const read = cached === undefined ? await this.readOnce(guid, signal) : ok(cached);
+    if (!read.ok) return read;
     if (this.disposed) return err(disposed());
-    if (!current()) return err(superseded(guid, ticketEpoch));
+    if (!current() || generation !== (this.generations.get(guid) ?? 0))
+      return err(superseded(guid, generation));
     values.set(guid, read.value);
-    this.link(guid, read.value.refs);
     const references = (read.value as P & { readonly references?: 'eager' | 'deferred' })
       .references;
     for (const ref of references === 'deferred' ? [] : read.value.refs) {
@@ -300,48 +305,22 @@ export class AssetGraph<P extends { readonly value: unknown; readonly refs: read
   }
 
   private link(guid: string, refs: readonly string[]): void {
-    const previous = this.forward.get(guid) ?? new Set<string>();
-    for (const ref of previous) this.reverse.get(ref)?.delete(guid);
-    const next = new Set(refs.map((ref) => ref.toLowerCase()));
-    this.forward.set(guid, next);
-    for (const ref of next) {
-      const dependents = this.reverse.get(ref) ?? new Set<string>();
-      dependents.add(guid);
-      this.reverse.set(ref, dependents);
-    }
-  }
-
-  private collectAffected(guids: readonly string[]): Set<string> {
-    const affected = new Set<string>();
-    const queue = [...guids];
-    while (queue.length > 0) {
-      const current = queue.shift();
-      if (current === undefined || affected.has(current)) continue;
-      affected.add(current);
-      for (const dependent of this.reverse.get(current) ?? []) queue.push(dependent);
-    }
-    return affected;
+    this.forward.set(guid, new Set(refs.map((ref) => ref.toLowerCase())));
   }
 
   private drop(affected: ReadonlySet<string>): void {
-    for (const item of affected) {
-      for (const ref of this.forward.get(item) ?? []) this.reverse.get(ref)?.delete(item);
-      for (const dependent of this.reverse.get(item) ?? []) {
-        this.forward.get(dependent)?.delete(item);
-      }
+    for (const guid of affected) {
+      this.generations.set(guid, (this.generations.get(guid) ?? 0) + 1);
+      this.ready.delete(guid);
+      this.requests.delete(guid);
+      this.reads.delete(guid);
+      this.forward.delete(guid);
     }
-    for (const item of affected) {
-      this.ready.delete(item);
-      this.requests.delete(item);
-      this.reads.delete(item);
-      this.forward.delete(item);
-      this.reverse.delete(item);
-    }
-    this.sccs.splice(0, this.sccs.length);
   }
 
   private promote(guid: string, value: P): void {
     if (value === undefined) return;
+    if (this.ready.get(guid) === value) return;
     this.ready.set(
       guid,
       Object.freeze({
@@ -368,6 +347,7 @@ export class AssetGraph<P extends { readonly value: unknown; readonly refs: read
       stack.push(vertex);
       for (const ref of this.forward.get(guid) ?? []) {
         const child = vertices.get(ref);
+        if (!this.forward.has(ref)) continue;
         if (child === undefined) {
           vertex.low = Math.min(vertex.low, visit(ref).low);
         } else if (child.onStack) {

@@ -7,6 +7,7 @@ import {
 import { derive, MAX_CLIPPING_PLANES } from '@forgeax/engine-types';
 import { describe, expect, it } from 'vitest';
 import { Materials } from '../../materials';
+import { worldRenderResources } from '../../publication/resource-scope';
 import { type MaterialSnapshot, materialParamSchemaForMaterial } from '../../render-system-extract';
 import { applyMaterialTextureUvScales, buildPbrMaterialUboPayload } from '../main-pass-material';
 
@@ -21,6 +22,7 @@ describe('Standard PBR UBO layout', () => {
       })),
     ];
     const material = {
+      passes: [{ name: 'forward', program: { module: 'forgeax::default-standard-pbr' } }],
       baseColor: vec3.create(0.8, 0.1, 0.1),
       metallic: 0,
       roughness: 0.5,
@@ -28,7 +30,7 @@ describe('Standard PBR UBO layout', () => {
       paramSnapshot: { clippingControl: [6, 1, 1, 0], clippingPlaneF: [0, 0, 1, -2] },
     } satisfies MaterialSnapshot;
     const bytes = buildPbrMaterialUboPayload(material);
-    expect(bytes.byteLength).toBe(1568);
+    expect(bytes.byteLength).toBe(1584);
     expect(Array.from(new Float32Array(bytes.buffer).slice(-4))).toEqual([0, 0, 1, -2]);
   });
 
@@ -39,22 +41,23 @@ describe('Standard PBR UBO layout', () => {
       derived.coordinateRecords.map((record) => [record.parameter, record.offset]),
     );
 
-    expect(derived.totalBytes).toBe(1456);
+    expect(derived.totalBytes).toBe(1472);
     expect(numeric.get('subsurfaceRadius')).toBe(32);
     expect(numeric.get('subsurfaceWeight')).toBe(44);
-    expect(numeric.get('normalScale')).toBe(112);
-    expect(numeric.get('transmission')).toBe(124);
-    expect(numeric.get('ior')).toBe(128);
-    expect(numeric.get('thickness')).toBe(132);
-    expect(numeric.get('attenuationColor')).toBe(144);
-    expect(numeric.get('attenuationDistance')).toBe(156);
-    expect(coordinates.get('baseColorTexture')).toBe(160);
-    expect(coordinates.get('transmissionTexture')).toBe(448);
-    expect(coordinates.get('thicknessTexture')).toBe(496);
+    expect(numeric.get('normalScale')).toBe(128);
+    expect(numeric.get('transmission')).toBe(140);
+    expect(numeric.get('ior')).toBe(144);
+    expect(numeric.get('thickness')).toBe(148);
+    expect(numeric.get('attenuationColor')).toBe(160);
+    expect(numeric.get('attenuationDistance')).toBe(172);
+    expect(coordinates.get('baseColorTexture')).toBe(176);
+    expect(coordinates.get('transmissionTexture')).toBe(464);
+    expect(coordinates.get('thicknessTexture')).toBe(512);
   });
 
   it('reserves the physical-layer tail required by the clearcoat shader ABI', () => {
     const material = {
+      passes: [{ name: 'forward', program: { module: 'forgeax::default-standard-pbr' } }],
       baseColor: vec3.create(0.7, 0.7, 0.7),
       metallic: 0,
       roughness: 0.4,
@@ -69,12 +72,13 @@ describe('Standard PBR UBO layout', () => {
     const payload = buildPbrMaterialUboPayload(material);
     const f32 = new Float32Array(payload.buffer);
 
-    expect(payload.byteLength).toBe(1456);
-    expect(f32.slice(160, 163)).toEqual(new Float32Array([0.8, 0.2, 0.75]));
+    expect(payload.byteLength).toBe(1472);
+    expect(f32.slice(164, 167)).toEqual(new Float32Array([0.8, 0.2, 0.75]));
   });
 
   it('writes transmission scalars and defaults at the reflected offsets', () => {
     const material = {
+      passes: [{ name: 'forward', program: { module: 'forgeax::default-standard-pbr' } }],
       baseColor: vec3.create(0.7, 0.7, 0.7),
       metallic: 0,
       roughness: 0.4,
@@ -91,13 +95,14 @@ describe('Standard PBR UBO layout', () => {
     } satisfies MaterialSnapshot;
     const f32 = new Float32Array(buildPbrMaterialUboPayload(material).buffer);
 
-    expect(f32.slice(28, 40)).toEqual(
+    expect(f32.slice(32, 44)).toEqual(
       new Float32Array([0.25, -0.75, 1, 0.75, 1.6, 0.2, 0, 0, 0.2, 0.4, 0.6, 3]),
     );
   });
 
   it('writes RGB diffusion and weight through the same reflected material payload', () => {
     const material = {
+      passes: [{ name: 'forward', program: { module: 'forgeax::default-standard-pbr' } }],
       baseColor: vec3.create(1, 0.5, 0.3),
       metallic: 0,
       roughness: 0.5,
@@ -131,6 +136,7 @@ describe('Standard PBR UBO layout', () => {
       custom.passes ?? [],
     );
     const material = {
+      passes: [{ name: 'forward', program: { module: 'forgeax::default-standard-pbr' } }],
       baseColor: vec3.create(1, 1, 1),
       metallic: 0,
       roughness: 0.5,
@@ -176,6 +182,7 @@ describe('Standard PBR UBO layout', () => {
 
   it('uses every user-region identity coordinate record in the no-snapshot fallback', () => {
     const material = {
+      passes: [{ name: 'forward', program: { module: 'forgeax::default-standard-pbr' } }],
       baseColor: vec3.create(0.7, 0.7, 0.7),
       metallic: 0,
       roughness: 0.4,
@@ -183,7 +190,7 @@ describe('Standard PBR UBO layout', () => {
     } satisfies MaterialSnapshot;
     const payload = buildPbrMaterialUboPayload(material);
 
-    applyMaterialTextureUvScales(payload, material, new World());
+    applyMaterialTextureUvScales(payload, material, worldRenderResources(new World()));
 
     const f32 = new Float32Array(payload.buffer);
     const coordinates = derive(STANDARD_PIPELINE_PARAM_SCHEMA).coordinateRecords;
@@ -197,6 +204,7 @@ describe('Standard PBR UBO layout', () => {
 
   it('keeps the physical tail intact when standard coordinates are projected', () => {
     const material = {
+      passes: [{ name: 'forward', program: { module: 'forgeax::default-standard-pbr' } }],
       baseColor: vec3.create(0.7, 0.7, 0.7),
       metallic: 0,
       roughness: 0.4,
@@ -210,10 +218,10 @@ describe('Standard PBR UBO layout', () => {
     } satisfies MaterialSnapshot;
     const payload = buildPbrMaterialUboPayload(material);
 
-    applyMaterialTextureUvScales(payload, material, new World());
+    applyMaterialTextureUvScales(payload, material, worldRenderResources(new World()));
 
     const f32 = new Float32Array(payload.buffer);
-    expect(f32.slice(160, 163)).toEqual(new Float32Array([1, 0.18, 0.75]));
-    expect(f32.slice(40, 48)).toEqual(new Float32Array([0, 0, 1, 1, 0, 0, 1, 1]));
+    expect(f32.slice(164, 167)).toEqual(new Float32Array([1, 0.18, 0.75]));
+    expect(f32.slice(44, 52)).toEqual(new Float32Array([0, 0, 1, 1, 0, 0, 1, 1]));
   });
 });

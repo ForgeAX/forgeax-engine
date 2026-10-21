@@ -308,26 +308,6 @@ const composedScratch = new Float32Array(16);
 /** Row/node box scratch: hierarchy writes copy out of it instead of allocating subarray views per row. */
 const boxScratch = new Float32Array(6);
 
-/** `includeBox` over 6 floats of `source` at `offset`, without a subarray view. */
-function includeBoxAt(
-  out: Float32Array,
-  source: Float32Array,
-  offset: number,
-  initialized: boolean,
-): boolean {
-  if (!initialized) {
-    for (let i = 0; i < 6; i += 1) out[i] = source[offset + i] as number;
-    return true;
-  }
-  for (let i = 0; i < 3; i += 1) {
-    const lo = source[offset + i] as number;
-    const hi = source[offset + 3 + i] as number;
-    if (lo < (out[i] as number)) out[i] = lo;
-    if (hi > (out[i + 3] as number)) out[i + 3] = hi;
-  }
-  return true;
-}
-
 /**
  * World-space AABBs of changed instance rows for one revision step: pairs of
  * `[old, new]` boxes (12 floats per changed row range). Downstream
@@ -342,41 +322,45 @@ export interface InstanceRowBoxChange {
 }
 
 /**
- * Per-collection 16-ary AABB hierarchy over world-space row boxes. Union by
- * min/max is order independent, so the root equals the linear
- * `deriveInstancesUnionBounds` fold while a dirty row refreshes only its
- * ancestor chain.
+ * The hierarchy stores affine coefficients independently of the mesh bounds.
+ * Editing a shared mesh evaluates one root interval; only changed instance
+ * transforms update leaves and ancestors. Coefficient intervals can be looser
+ * than the exact union, so actual GPU/triangle queries retain precise culling.
  */
 class InstanceRowBoundsHierarchy {
-  readonly rowBoxes: Float32Array;
+  private readonly coefficients: Float32Array;
   private readonly rowValid: Uint8Array;
   private invalidRows = 0;
-  /** levels[0] groups rows; the last level has exactly one node. */
-  private readonly levels: { readonly boxes: Float32Array; readonly filled: Uint8Array }[] = [];
+  private readonly levels: { readonly coefficients: Float32Array; readonly filled: Uint8Array }[] =
+    [];
 
   constructor(readonly rows: number) {
-    this.rowBoxes = new Float32Array(rows * 6);
+    this.coefficients = new Float32Array(rows * 12);
     this.rowValid = new Uint8Array(rows);
     let width = rows;
     do {
       width = Math.ceil(width / HIERARCHY_FANOUT);
-      this.levels.push({ boxes: new Float32Array(width * 6), filled: new Uint8Array(width) });
+      this.levels.push({
+        coefficients: new Float32Array(width * 24),
+        filled: new Uint8Array(width),
+      });
     } while (width > 1);
   }
 
-  /** Recompute one row box; returns whether it is finite. */
-  writeRow(
-    row: number,
-    meshAabb: ArrayLike<number>,
-    entityWorld: ArrayLike<number>,
-    transforms: ArrayLike<number>,
-  ): void {
+  writeRow(row: number, transforms: ArrayLike<number>): void {
     const offset = row * 16;
-    let valid = finiteMatrixAt(transforms, offset);
+    const valid =
+      finiteMatrixAt(transforms, offset) &&
+      transforms[offset + 3] === 0 &&
+      transforms[offset + 7] === 0 &&
+      transforms[offset + 11] === 0 &&
+      transforms[offset + 15] === 1;
     if (valid) {
-      multiplyMat4(composedScratch, entityWorld, transforms, offset);
-      valid = finiteMatrix(composedScratch) && transformAabb(boxScratch, meshAabb, composedScratch);
-      if (valid) this.rowBoxes.set(boxScratch, row * 6);
+      for (let column = 0; column < 4; column++)
+        for (let axis = 0; axis < 3; axis++)
+          this.coefficients[row * 12 + column * 3 + axis] = transforms[
+            offset + column * 4 + axis
+          ] as number;
     }
     const was = this.rowValid[row] === 1;
     if (was !== valid) this.invalidRows += valid ? -1 : 1;
@@ -388,22 +372,30 @@ class InstanceRowBoundsHierarchy {
     this.rowValid.fill(0);
   }
 
-  /** Refresh one node from its children; returns the child visits. */
   private refreshNode(level: number, node: number): number {
     const target = this.levels[level] as (typeof this.levels)[number];
-    const childBoxes =
-      level === 0 ? this.rowBoxes : (this.levels[level - 1]?.boxes as Float32Array);
-    const childFilled =
-      level === 0 ? this.rowValid : (this.levels[level - 1]?.filled as Uint8Array);
-    const childCount = childFilled.length;
+    const previous = this.levels[level - 1] as (typeof this.levels)[number];
+    const source = level === 0 ? this.coefficients : previous.coefficients;
+    const filled = level === 0 ? this.rowValid : previous.filled;
+    const stride = level === 0 ? 12 : 24;
     const first = node * HIERARCHY_FANOUT;
-    const last = Math.min(first + HIERARCHY_FANOUT, childCount);
+    const last = Math.min(first + HIERARCHY_FANOUT, filled.length);
     let initialized = false;
-    for (let child = first; child < last; child += 1) {
-      if (childFilled[child] !== 1) continue;
-      initialized = includeBoxAt(boxScratch, childBoxes, child * 6, initialized);
+    for (let child = first; child < last; child++) {
+      if (filled[child] !== 1) continue;
+      for (let field = 0; field < 12; field++) {
+        const lo = source[child * stride + field] as number;
+        const hi = level === 0 ? lo : (source[child * stride + field + 12] as number);
+        const offset = node * 24 + field;
+        target.coefficients[offset] = initialized
+          ? Math.min(target.coefficients[offset] as number, lo)
+          : lo;
+        target.coefficients[offset + 12] = initialized
+          ? Math.max(target.coefficients[offset + 12] as number, hi)
+          : hi;
+      }
+      initialized = true;
     }
-    if (initialized) target.boxes.set(boxScratch, node * 6);
     target.filled[node] = initialized ? 1 : 0;
     return last - first;
   }
@@ -441,22 +433,57 @@ class InstanceRowBoundsHierarchy {
     return visits;
   }
 
-  union(): Float32Array | undefined {
-    if (this.invalidRows > 0) return undefined;
+  union(mesh: ArrayLike<number> | undefined, world: ArrayLike<number>): Float32Array | undefined {
+    if (
+      this.invalidRows > 0 ||
+      mesh === undefined ||
+      !isFiniteBounds3(mesh) ||
+      !finiteMatrix(world)
+    )
+      return undefined;
     const root = this.levels[this.levels.length - 1] as (typeof this.levels)[number];
     if (root.filled[0] !== 1) return undefined;
-    const union = root.boxes.slice(0, 6);
-    return isFiniteBounds3(union) ? union : undefined;
+    const values = root.coefficients;
+    for (let axis = 0; axis < 3; axis++) {
+      let lo = values[9 + axis] as number;
+      let hi = values[21 + axis] as number;
+      for (let input = 0; input < 3; input++) {
+        const a = values[input * 3 + axis] as number;
+        const b = values[input * 3 + axis + 12] as number;
+        const x = mesh[input] as number;
+        const y = mesh[input + 3] as number;
+        lo += Math.min(a * x, a * y, b * x, b * y);
+        hi += Math.max(a * x, a * y, b * x, b * y);
+      }
+      boxScratch[axis] = lo;
+      boxScratch[axis + 3] = hi;
+    }
+    const result = new Float32Array(6);
+    return transformAabb(result, boxScratch, world) ? result : undefined;
+  }
+
+  rowBounds(
+    out: Float32Array,
+    first: number,
+    last: number,
+    mesh: ArrayLike<number>,
+    world: ArrayLike<number>,
+  ): void {
+    let initialized = false;
+    for (let row = first; row < last; row++) {
+      for (let column = 0; column < 4; column++)
+        for (let axis = 0; axis < 3; axis++)
+          rowMatrixScratch[column * 4 + axis] = this.coefficients[
+            row * 12 + column * 3 + axis
+          ] as number;
+      multiplyMat4(composedScratch, world, rowMatrixScratch);
+      transformAabb(boxScratch, mesh, composedScratch);
+      initialized = includeBox(out, boxScratch, initialized);
+    }
   }
 }
 
-/** Merge `boxes[first..last)` (6 floats each) into `out`. */
-function unionRowBoxes(out: Float32Array, boxes: Float32Array, first: number, last: number): void {
-  let initialized = false;
-  for (let row = first; row < last; row += 1) {
-    initialized = includeBox(out, boxes.subarray(row * 6, row * 6 + 6), initialized);
-  }
-}
+const rowMatrixScratch = new Float32Array([1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1]);
 
 interface InstanceBoundsCacheEntry extends InstanceBoundsCacheKey {
   readonly bounds: Float32Array | undefined;
@@ -521,6 +548,22 @@ export class InstanceBoundsCache {
       return previous.bounds;
     }
     this.misses += 1;
+    if (
+      previous?.hierarchy !== undefined &&
+      previous.matrixGeneration === input.matrixGeneration &&
+      previous.collectionId === input.collectionId &&
+      input.transforms?.length === previous.hierarchy.rows * 16
+    ) {
+      const { rowChange: _stale, ...retained } = previous;
+      const adopted = {
+        ...retained,
+        meshGeneration: input.meshGeneration,
+        transformGeneration: input.transformGeneration,
+        bounds: previous.hierarchy.union(input.meshAabb, input.entityWorld),
+      };
+      this.entries.set(key, adopted);
+      return adopted.bounds;
+    }
     const updated = this.updateRows(previous, input);
     if (updated !== undefined) {
       this.rowUpdates += 1;
@@ -554,18 +597,8 @@ export class InstanceBoundsCache {
       matrixGeneration: input.matrixGeneration,
     };
     const { meshAabb, entityWorld, transforms } = input;
-    if (
-      input.collectionId === undefined ||
-      input.revision === undefined ||
-      !isFiniteBounds3(meshAabb) ||
-      !finiteMatrix(entityWorld) ||
-      transforms === undefined ||
-      transforms.length === 0 ||
-      transforms.length % 16 !== 0
-    ) {
-      const bounds = deriveInstancesUnionBounds(input);
-      if (transforms !== undefined) this.nodeVisits += Math.floor(transforms.length / 16);
-      return { ...base, bounds };
+    if (transforms === undefined || transforms.length === 0 || transforms.length % 16 !== 0) {
+      return { ...base, bounds: undefined };
     }
     // A full re-derive of a same-size collection (a moving collection without
     // dirty-row proof) rewrites the previous hierarchy in place: every row and
@@ -577,14 +610,14 @@ export class InstanceBoundsCache {
         : new InstanceRowBoundsHierarchy(transforms.length / 16);
     hierarchy.markAllRowsUnset();
     for (let row = 0; row < hierarchy.rows; row += 1) {
-      hierarchy.writeRow(row, meshAabb, entityWorld, transforms);
+      hierarchy.writeRow(row, transforms);
     }
     this.nodeVisits += hierarchy.rows + hierarchy.refreshAll();
     return {
       ...base,
-      bounds: hierarchy.union(),
-      collectionId: input.collectionId,
-      revision: input.revision,
+      bounds: hierarchy.union(meshAabb, entityWorld),
+      ...(input.collectionId === undefined ? {} : { collectionId: input.collectionId }),
+      ...(input.revision === undefined ? {} : { revision: input.revision }),
       hierarchy,
     };
   }
@@ -622,35 +655,37 @@ export class InstanceBoundsCache {
       const range = dirtyRows[index] as { readonly start: number; readonly end: number };
       const entry = collapse ? 0 : index;
       if (!collapse || index === 0) {
-        unionRowBoxes(
+        hierarchy.rowBounds(
           boxes.subarray(entry * 12, entry * 12 + 6),
-          hierarchy.rowBoxes,
           range.start,
           range.end,
+          meshAabb,
+          entityWorld,
         );
       } else {
-        unionRowBoxes(scratchBox, hierarchy.rowBoxes, range.start, range.end);
+        hierarchy.rowBounds(scratchBox, range.start, range.end, meshAabb, entityWorld);
         includeBox(boxes.subarray(0, 6), scratchBox, true);
       }
       for (let row = range.start; row < range.end; row += 1) {
-        hierarchy.writeRow(row, meshAabb, entityWorld, transforms);
+        hierarchy.writeRow(row, transforms);
       }
       rowsVisited += range.end - range.start;
       if (!collapse || index === 0) {
-        unionRowBoxes(
+        hierarchy.rowBounds(
           boxes.subarray(entry * 12 + 6, entry * 12 + 12),
-          hierarchy.rowBoxes,
           range.start,
           range.end,
+          meshAabb,
+          entityWorld,
         );
       } else {
-        unionRowBoxes(scratchBox, hierarchy.rowBoxes, range.start, range.end);
+        hierarchy.rowBounds(scratchBox, range.start, range.end, meshAabb, entityWorld);
         includeBox(boxes.subarray(6, 12), scratchBox, true);
       }
     }
     this.nodeVisits += rowsVisited + hierarchy.refreshRows(dirtyRows);
     const { rowChange: _stale, ...retained } = previous;
-    const bounds = hierarchy.union();
+    const bounds = hierarchy.union(meshAabb, entityWorld);
     // Row boxes are only meaningful while every row (before and after) was
     // finite; otherwise consumers fall back to whole-collection bounds.
     return {

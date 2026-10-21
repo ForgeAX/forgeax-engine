@@ -41,6 +41,7 @@ describe('stock frame graph identity', () => {
     expect(key(next, false)).not.toBe(key(topology, false));
     expect(key({ ...next, output: { ...next.output, colorLut: false } })).not.toBe(key(next));
     expect(key({ ...next, output: { ...next.output, temperature: 7000 } })).not.toBe(key(next));
+    expect(key({ ...next, output: { ...next.output, lutSize: 32 } })).not.toBe(key(next));
     expect(key({ ...next, output: { ...next.output, lutSourceKey: 'replacement' } })).not.toBe(
       key(next),
     );

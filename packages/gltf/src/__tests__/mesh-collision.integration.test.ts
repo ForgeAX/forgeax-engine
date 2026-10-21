@@ -1,6 +1,7 @@
 import { decodeMeshBinary } from '@forgeax/engine-geometry';
 import { ImporterRegistry, runImport } from '@forgeax/engine-import';
 import { expect, test } from 'vitest';
+import { importedMesh } from '../../../import/src/__tests__/fixtures/runtime-import';
 import { gltfImporter } from '../gltf-importer';
 
 async function produce(setting: unknown) {
@@ -56,6 +57,8 @@ test('G28 glTF source Meta cooks collision on the same GUID and portable body', 
   const mesh = decodeMeshBinary(asset.artifacts.body.bytes, []);
   expect(mesh?.collision?.positions.length).toBe(9);
   expect(mesh?.collision?.indices.length).toBe(3);
-  expect(disabled.pack.assets[0]?.payload.collision).toBeUndefined();
+  const withoutCollision = disabled.pack.assets[0];
+  if (!withoutCollision) throw new Error('missing Mesh');
+  expect(importedMesh(withoutCollision).collision).toBeUndefined();
   expect((await produce('guess')).ok).toBe(false);
 });

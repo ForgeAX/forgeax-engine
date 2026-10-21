@@ -1,4 +1,4 @@
-import type { AssetGuid, Handle } from '@forgeax/engine-types';
+import type { AssetGuid, AssetHandle } from '@forgeax/engine-types';
 import { describe, expect, it } from 'vitest';
 import { toMaterialAsset } from '../bridge.js';
 import type { GltfMaterialIr } from '../parse-gltf.js';
@@ -69,7 +69,7 @@ describe('glTF material bridge values', () => {
       {
         textureHandles: new Map([[0, 100]]) as unknown as ReadonlyMap<
           number,
-          Handle<'TextureAsset', 'shared'>
+          AssetHandle<'texture'>
         >,
       },
     );
@@ -100,14 +100,14 @@ describe('glTF material bridge values', () => {
           [2, 102],
           [3, 103],
           [4, 104],
-        ]) as unknown as ReadonlyMap<number, Handle<'TextureAsset', 'shared'>>,
+        ]) as unknown as ReadonlyMap<number, AssetHandle<'texture'>>,
         samplerHandles: new Map([
           [10, 200],
           [11, 201],
           [12, 202],
           [13, 203],
           [14, 204],
-        ]) as unknown as ReadonlyMap<number, Handle<'SamplerAsset', 'shared'>>,
+        ]) as unknown as ReadonlyMap<number, AssetHandle<'sampler'>>,
       },
     );
 
@@ -142,7 +142,7 @@ describe('glTF material bridge values', () => {
       {
         textureHandles: new Map([[0, 100]]) as unknown as ReadonlyMap<
           number,
-          Handle<'TextureAsset', 'shared'>
+          AssetHandle<'texture'>
         >,
         samplerHandles: new Map(),
       },
@@ -175,11 +175,11 @@ describe('glTF material bridge values', () => {
         textureHandles: new Map([
           [5, 105],
           [6, 106],
-        ]) as unknown as ReadonlyMap<number, Handle<'TextureAsset', 'shared'>>,
+        ]) as unknown as ReadonlyMap<number, AssetHandle<'texture'>>,
         samplerHandles: new Map([
           [15, 205],
           [16, 206],
-        ]) as unknown as ReadonlyMap<number, Handle<'SamplerAsset', 'shared'>>,
+        ]) as unknown as ReadonlyMap<number, AssetHandle<'sampler'>>,
       },
     );
 
@@ -231,7 +231,7 @@ describe('glTF material bridge values', () => {
           [2, 102],
           [3, 103],
           [4, 104],
-        ]) as unknown as ReadonlyMap<number, Handle<'TextureAsset', 'shared'>>,
+        ]) as unknown as ReadonlyMap<number, AssetHandle<'texture'>>,
       },
     );
 

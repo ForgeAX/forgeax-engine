@@ -1,6 +1,8 @@
+import { AssetRegistry } from '@forgeax/engine/assets-runtime';
+import { createPrimitiveMesh } from '@forgeax/engine/geometry';
 import { Transform } from '@forgeax/engine/scene';
 import { CheckList, defineFeature } from '../../lab/feature';
-import { MESH, spawnMesh, spawnStage, standard } from '../../lab/stage';
+import { spawnMesh, spawnStage, standard } from '../../lab/stage';
 
 export default defineFeature({
   title: 'Persistent Render Scene',
@@ -11,9 +13,17 @@ export default defineFeature({
   expect:
     'All checks pass: idle frames increase noChangeFrames, moving one cube increases deltaFrames while keeping the same record count, spawning adds exactly one record, and fullRebuilds does not grow.',
   async setup({ app, world, frames }) {
+    const primitiveAssets = world.assets;
+    if (!(primitiveAssets instanceof AssetRegistry))
+      throw new Error('Scene requires its runtime asset owner');
+
+    const stageCube = primitiveAssets.create(createPrimitiveMesh('cube').unwrap()).unwrap();
+
+    const stageSphere = primitiveAssets.create(createPrimitiveMesh('sphere').unwrap()).unwrap();
+
     spawnStage(world);
     const mat = standard(world, { baseColor: [0.3, 0.7, 1, 1] });
-    const cube = spawnMesh(world, MESH.cube, mat, { pos: [0, 0.5, 0] });
+    const cube = spawnMesh(world, stageCube, mat, { pos: [0, 0.5, 0] });
     await frames(4);
     return {
       async checks() {
@@ -48,7 +58,7 @@ export default defineFeature({
             moved.projectionRecords,
             afterIdle.projectionRecords,
           );
-        spawnMesh(world, MESH.sphere, mat, { pos: [1.2, 0.5, 0] });
+        spawnMesh(world, stageSphere, mat, { pos: [1.2, 0.5, 0] });
         await frames(3);
         const spawned = scene();
         checks

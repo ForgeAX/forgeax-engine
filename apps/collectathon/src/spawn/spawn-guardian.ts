@@ -22,6 +22,7 @@
 // main.ts spawns 1-3 Guardians at GUARDIAN_SPAWNS positions (clear of Cores and
 // the Portal path) and marks both entities state-scoped (despawnOnExit Play).
 
+import { AssetRegistry } from '@forgeax/engine-assets-runtime';
 import type { EntityHandle, World } from '@forgeax/engine-ecs';
 import { createCylinderGeometry } from '@forgeax/engine-geometry';
 import {
@@ -34,7 +35,6 @@ import {
 import { Materials, MeshFilter, MeshRenderer } from '@forgeax/engine-render';
 import { ChildOf, Transform } from '@forgeax/engine-scene';
 import type { MaterialAsset } from '@forgeax/engine-types';
-
 import { GUARDIAN_BODY_GROUPS, GUARDIAN_GROUPS } from '../collision-groups';
 import { Guardian, GuardianAttack, GuardianModeValue } from '../components';
 
@@ -100,6 +100,10 @@ export function spawnGuardian(
   world: World,
   position: { readonly x: number; readonly z: number },
 ): GuardianHandles {
+  const sceneAssets = world.assets;
+  if (!(sceneAssets instanceof AssetRegistry))
+    throw new Error('Scene requires its runtime asset owner');
+
   const cylRes = createCylinderGeometry(
     GUARDIAN_RADIUS,
     GUARDIAN_RADIUS,
@@ -110,11 +114,8 @@ export function spawnGuardian(
   if (!cylRes.ok) {
     throw new Error(`collectathon: createCylinderGeometry (guardian) failed: ${cylRes.error.code}`);
   }
-  const bodyMesh = world.allocSharedRef('MeshAsset', cylRes.value);
-  const bodyMat = world.allocSharedRef<'MaterialAsset', MaterialAsset>(
-    'MaterialAsset',
-    guardianMaterial(),
-  );
+  const bodyMesh = sceneAssets.create(cylRes.value).unwrap();
+  const bodyMat = sceneAssets.create(guardianMaterial()).unwrap();
 
   const body = world
     .spawn(

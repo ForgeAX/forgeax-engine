@@ -5,6 +5,8 @@ export {
 } from './harness.js';
 export {
   type AdmissionThresholds,
+  BENCHMARK_MODES,
+  BENCHMARK_PHASES,
   type BenchmarkAdmissionReport,
   type BenchmarkModeReport,
   type BenchmarkRecipe,

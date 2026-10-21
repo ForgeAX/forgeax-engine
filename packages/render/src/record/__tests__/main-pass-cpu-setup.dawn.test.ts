@@ -76,15 +76,15 @@ it('preserves native pixels through sparse claims, CPU fallback and replacement 
       return bytes;
     };
     try {
-      const claims = [...f.claims];
+      const claims = [...f.selectedDraws];
       let distinct = 0;
       for (let frame = 0; frame < 60; frame++) {
         // Fallback must create buffers for the formerly GPU-only entries;
         // restoring claims must stop their CPU work again.
         const allCpu = frame >= 20 && frame < 40;
-        f.claims.clear();
-        if (!allCpu) for (const claim of claims) f.claims.add(claim);
-        const ownership = f.validateClaims();
+        f.selectedDraws.clear();
+        if (!allCpu) for (const claim of claims) f.selectedDraws.add(claim);
+        const ownership = f.prepareSelection();
         // Dispatch ordering changes after validation; GPU ownership follows
         // each source, while the recorder keeps the current physical slot index.
         if (frame === 5 || frame === 45) f.entries.reverse();
@@ -126,10 +126,13 @@ it('restores native geometry after Points/Lines without relying on GPU-only CPU 
   const last = f.add({ entity: 4, submeshes: 1 });
   Object.assign(last, { mesh: first.mesh });
   Object.assign(last.source, { instances: first.source.instances });
-  Object.assign(points.source, { pointsLines: {}, transform: { world: new Float32Array(16) } });
+  Object.assign(points.source, { pointsLines: {} });
   // Move the last draw into an otherwise empty region: omitting or inheriting
   // Points/Lines state must visibly differ from the explicit draw oracle.
-  device.queue.writeBuffer(f.meshUniformBuffer, 3 * 256, Float32Array.of(0.55, 0, 0, 0)).unwrap();
+  const moved = new Float32Array(last.source.transform.world);
+  moved[12] = 0.55;
+  Object.assign(last.source, { transform: { world: moved } });
+  device.queue.writeBuffer(f.meshUniformBuffer, 3 * 256, moved).unwrap();
   const viewBuffer = device.createBuffer({ size: 2048, usage: 64 | 8 }).unwrap();
   const viewLayout = device
     .createBindGroupLayout({

@@ -11,6 +11,7 @@ import * as webgpu from '@forgeax/engine-rhi-webgpu';
 import { ok } from '@forgeax/engine-types';
 import { buildEngineShaderManifest } from '@forgeax/engine-vite-plugin-shader';
 import { assert, expect, it } from 'vitest';
+import { publishRuntimeAssets } from '../../../assets-runtime/src/__tests__/fixtures/runtime-publication';
 import {
   createIrradianceFieldHarness,
   irradianceFieldGi,
@@ -205,6 +206,12 @@ it('maps Global SDF hits to Card materials, recaptures in place on a material ed
     },
   });
   const result: Record<string, unknown> = {};
+  let stage = 'initial capture';
+  const inspectField = () => {
+    const gi = h.inspection();
+    assert('gather' in gi && gi.gather === 'irradiance-field');
+    return gi;
+  };
   try {
     await h.draw();
     const device = h.native();
@@ -212,12 +219,12 @@ it('maps Global SDF hits to Card materials, recaptures in place on a material ed
     const field = trackFieldResources(device);
     const surface = (baseColor: [number, number, number, number], extra = {}) =>
       Materials.standard({ baseColor, roughness: 1, specular: 0, ...extra });
-    const red = await h.publish('coverage-red', surface([1, 0, 0, 1]));
+    const red = await h.publish(surface([1, 0, 0, 1]));
     // A 1 m box in front of the wall: its front face is at z = -1, the wall's at -2.875.
     const box = h.spawn(await h.slab(1, 1, 1), h.white, [0, 0, -1.5]);
     h.setGi(irradianceFieldGi({ environment: [0.25, 0.25, 0.25] }));
     await h.settle(2);
-    const prepared = h.inspection();
+    const prepared = inspectField();
     assert(prepared.gather === 'irradiance-field' && prepared.cards);
     expect(prepared.cards.captured).toBe(prepared.cards.tiles);
 
@@ -245,8 +252,9 @@ it('maps Global SDF hits to Card materials, recaptures in place on a material ed
     const generation = prepared.generation;
     h.world.set(box, MeshRenderer, { materials: [red] }).unwrap();
     let tape: Awaited<ReturnType<typeof recorder.captureFrame>> | undefined;
+    let lastEditFrame: Awaited<ReturnType<typeof recorder.captureFrame>> | undefined;
     for (let frame = 0; frame < 400; frame++) {
-      const gi = h.inspection();
+      const gi = inspectField();
       expect(gi.state).not.toBe('failed');
       if (tape === undefined) {
         const pending = recorder.captureFrame();
@@ -254,25 +262,34 @@ it('maps Global SDF hits to Card materials, recaptures in place on a material ed
         await h.draw();
         (await recorder.frameBoundary()).unwrap();
         const recorded = await pending;
-        if ((h.inspection().edits?.rematerializedInstances ?? 0) > 0) tape = recorded;
+        lastEditFrame = recorded;
+        if ((inspectField().edits?.rematerializedInstances ?? 0) > 0) tape = recorded;
         continue;
       }
       if (gi.edits?.pendingTiles === 0) break;
       await h.draw();
     }
+    if (tape === undefined && lastEditFrame?.ok)
+      writeFileSync(`${directory}/coverage-edit-pending.rhitape`, lastEditFrame.value.bytes);
     assert(tape, 'a frame after the edit recaptured Cards');
     const encoded = tape.unwrap();
+    writeFileSync(`${directory}/coverage-edit.rhitape`, encoded.bytes);
     const model = buildFrameModel(decodeTape(encoded.bytes).unwrap());
     // Capture pipelines keep their labels in the tape: draw -> instance, indices, material.
     const captures = model.works.flatMap((work) => {
-      const label = work.pipeline.descriptor?.desc.label;
+      const descriptor = work.pipeline.descriptor;
+      const desc =
+        descriptor && typeof descriptor === 'object' && 'desc' in descriptor
+          ? descriptor.desc
+          : undefined;
+      const label = desc && typeof desc === 'object' && 'label' in desc ? desc.label : undefined;
       const match =
-        label === undefined
+        typeof label !== 'string'
           ? null
           : /^cards\.capture\.instance-(\d+)\.indices-(\d+)-(\d+)\.material-(\d+)$/.exec(label);
       return match ? [{ workIndex: work.workIndex, instanceId: Number(match[1]) }] : [];
     });
-    const edited = h.inspection();
+    const edited = inspectField();
     assert(edited.gather === 'irradiance-field' && edited.cards);
     expect(edited.generation).toBe(generation);
     expect(edited.edits).toMatchObject({ rematerializedInstances: 1, pendingTiles: 0 });
@@ -297,24 +314,157 @@ it('maps Global SDF hits to Card materials, recaptures in place on a material ed
       tape: { digest: encoded.digest, works: model.works.length },
     };
 
+    // Editing the asset itself uses the accepted material frame without touching
+    // MeshRenderer. It recaptures the same six tiles and keeps the SDF intact.
+    stage = 'material value update';
+    const redAtlas = await field.readAtlas('cards.albedoRoughness');
+    const beforeAssetEdit = inspectField().edits;
+    assert(beforeAssetEdit);
+    h.assets.update(red, { values: { baseColor: [0, 1, 0, 1] } }).unwrap();
+    await h.settle(1);
+    const assetEdited = inspectField();
+    expect(assetEdited.generation).toBe(generation);
+    expect(assetEdited.edits).toMatchObject({
+      rematerializedInstances: beforeAssetEdit.rematerializedInstances,
+      projectedSources: beforeAssetEdit.projectedSources,
+      materialRootUpdates: beforeAssetEdit.materialRootUpdates + 1,
+      materialDrawVisits: beforeAssetEdit.materialDrawVisits + 6,
+      materialUniformUploads: beforeAssetEdit.materialUniformUploads + 1,
+      pendingTiles: 0,
+    });
+    expect(await field.readBuffer('probe-global.voxels')).toEqual(voxels);
+    const assetChangedTiles = changedTiles(
+      redAtlas,
+      await field.readAtlas('cards.albedoRoughness'),
+    );
+    expect(assetChangedTiles).toBeGreaterThan(0);
+    expect(assetChangedTiles).toBeLessThanOrEqual(6);
+    const [greenHit, unchangedWall] = await field.classify(rays);
+    assert(greenHit && unchangedWall);
+    expect(greenHit.lookup).toBe(CardLookupStatus.mapped);
+    expect(greenHit.albedo[0]).toBeLessThan(0.05);
+    expect(greenHit.albedo[1]).toBeGreaterThan(0.9);
+    expect(unchangedWall.albedo[0]).toBeGreaterThan(0.9);
+    result.assetEdit = {
+      generation: assetEdited.generation,
+      changedTiles: assetChangedTiles,
+      edits: assetEdited.edits,
+    };
+
+    // Resource edits keep their handles. Only the dependency's physical Card work
+    // refreshes native bindings; unrelated Cards and the Global SDF stay intact.
+    const textureGuid = '019a0000-0000-7000-8000-000000000731';
+    const samplerGuid = '019a0000-0000-7000-8000-000000000732';
+    const pattern = Uint8Array.from({ length: 4 * 4 * 4 }, (_, i) =>
+      i % 4 === 3 ? 255 : i % 4 === (Math.floor(i / 4) % 4 < 2 ? 0 : 2) ? 255 : 0,
+    );
+    const dependencies: Parameters<typeof publishRuntimeAssets>[1] = [
+      {
+        guid: textureGuid,
+        asset: {
+          kind: 'texture',
+          shape: { viewDimension: '2d', extent: { width: 4, height: 4 } },
+          format: 'rgba8unorm',
+          colorSpace: 'linear',
+          mips: { kind: 'generate' },
+          data: pattern,
+        },
+      },
+      {
+        guid: samplerGuid,
+        asset: {
+          kind: 'sampler',
+          minFilter: 'nearest',
+          magFilter: 'nearest',
+          mipmapFilter: 'nearest',
+        },
+      },
+    ];
+    stage = 'resource publication';
+    publishRuntimeAssets(h.assets, dependencies);
+    const textureHandle = (await h.assets.load(textureGuid, 'texture')).unwrap();
+    const samplerHandle = (await h.assets.load(samplerGuid, 'sampler')).unwrap();
+    stage = 'textured material publication';
+    const textured = await h.publish(
+      surface([1, 1, 1, 1], {
+        baseColorTexture: { texture: textureGuid, sampler: samplerGuid },
+      }),
+      dependencies,
+    );
+    stage = 'textured material capture';
+    h.world.set(box, MeshRenderer, { materials: [textured] }).unwrap();
+    await h.settle(1);
+    const resources: unknown[] = [];
+    for (const kind of ['sampler', 'texture'] as const) {
+      stage = `${kind} value update`;
+      const before = inspectField();
+      const edits = before.edits;
+      assert(edits);
+      const atlas = await field.readAtlas('cards.albedoRoughness');
+      if (kind === 'sampler')
+        h.assets.update(samplerHandle, { minFilter: 'linear', magFilter: 'linear' }).unwrap();
+      else
+        h.assets
+          .update(textureHandle, {
+            data: Uint8Array.from({ length: 4 * 4 * 4 }, (_, i) =>
+              i % 4 === 1 || i % 4 === 3 ? 255 : 0,
+            ),
+          })
+          .unwrap();
+      if (kind === 'texture') {
+        h.rejectNextSubmit();
+        expect(h.submit().ok).toBe(false);
+        const rejected = inspectField();
+        expect(rejected.submittedFrames).toBe(before.submittedFrames);
+        expect(rejected.edits?.pendingTiles).toBe(6);
+        expect(await field.readAtlas('cards.albedoRoughness')).toEqual(atlas);
+        h.errors.length = 0;
+      }
+      await h.settle(1);
+      const after = inspectField();
+      expect(after.generation).toBe(before.generation);
+      expect(after.edits).toMatchObject({
+        projectedSources: edits.projectedSources,
+        rematerializedInstances: edits.rematerializedInstances,
+        assetRootUpdates: edits.assetRootUpdates + 1,
+        materialBindingRefreshes: edits.materialBindingRefreshes + 1,
+        materialDrawVisits: edits.materialDrawVisits + (kind === 'texture' ? 12 : 6),
+        materialUniformUploads: edits.materialUniformUploads,
+        pendingTiles: 0,
+      });
+      expect(await field.readBuffer('probe-global.voxels')).toEqual(voxels);
+      const changed = changedTiles(atlas, await field.readAtlas('cards.albedoRoughness'));
+      expect(changed).toBeGreaterThan(0);
+      expect(changed).toBeLessThanOrEqual(6);
+      const [hit, wall] = await field.classify(rays);
+      assert(hit && wall);
+      if (kind === 'texture') {
+        expect(hit.albedo[0]).toBeLessThan(0.05);
+        expect(hit.albedo[1]).toBeGreaterThan(0.9);
+      }
+      expect(wall.albedo[0]).toBeGreaterThan(0.9);
+      resources.push({ kind, changedTiles: changed, edits: after.edits });
+    }
+    result.resourceEdits = resources;
+
+    stage = 'masked material publication';
     // MASK is admitted through its conservative proxy; the field stays ready.
-    const mask = await h.publish('coverage-mask', surface([1, 1, 1, 0.3], { alphaCutoff: 0.5 }));
+    const mask = await h.publish(surface([1, 1, 1, 0.3], { alphaCutoff: 0.5 }));
     h.world.set(box, MeshRenderer, { materials: [mask] }).unwrap();
     await h.settle(1);
-    expect(h.inspection().state).toBe('ready');
+    expect(inspectField().state).toBe('ready');
 
     // Unsupported materials fail the whole field with a structured cause, never a hole.
-    const rejection = async (guid: string, source: ReturnType<typeof surface>) => {
-      h.world.set(box, MeshRenderer, { materials: [await h.publish(guid, source)] }).unwrap();
+    const rejection = async (source: ReturnType<typeof surface>) => {
+      h.world.set(box, MeshRenderer, { materials: [await h.publish(source)] }).unwrap();
       for (let frame = 0; frame < 120; frame++) {
         await h.draw();
-        const gi = h.inspection();
+        const gi = inspectField();
         if (gi.state === 'failed') return gi.error;
       }
       return undefined;
     };
     const blend = await rejection(
-      'coverage-blend',
       surface([1, 1, 1, 0.5], { renderState: { blend: ALPHA_BLEND, depthWriteEnabled: false } }),
     );
     // The Renderer error carries the field's preparation failure as its detail.
@@ -326,11 +476,14 @@ it('maps Global SDF hits to Card materials, recaptures in place on a material ed
         },
       },
     });
+    const failedGeneration = inspectField().generation;
+    const failedErrors = h.errors.length;
+    for (let frame = 0; frame < 3; frame++) await h.draw();
+    expect(inspectField().generation).toBe(failedGeneration);
+    expect(inspectField().error).toEqual(blend);
+    expect(h.errors).toHaveLength(failedErrors);
     h.errors.length = 0;
-    const twoSided = await rejection(
-      'coverage-two-sided',
-      surface([1, 1, 1, 1], { renderState: { cullMode: 'none' } }),
-    );
+    const twoSided = await rejection(surface([1, 1, 1, 1], { renderState: { cullMode: 'none' } }));
     expect(twoSided).toMatchObject({
       detail: {
         error: {
@@ -344,7 +497,31 @@ it('maps Global SDF hits to Card materials, recaptures in place on a material ed
     });
     h.errors.length = 0;
     result.rejections = { blend, twoSided };
+
+    // A corrected source recovers without toggling GI or replacing the Renderer.
+    h.world.set(box, MeshRenderer, { materials: [h.white] }).unwrap();
+    await h.settle(2);
+    const recovered = inspectField();
+    assert(recovered.gather === 'irradiance-field' && recovered.cards);
+    expect(recovered.state).toBe('ready');
+    expect(recovered.generation).toBeGreaterThan(failedGeneration);
+    expect(recovered.cards.captured).toBe(recovered.cards.tiles);
+    expect(recovered.error).toBeUndefined();
+    for (const record of await field.classify(rays)) {
+      expect(record.status).toBe(GlobalSdfQueryStatus.hit);
+      expect(record.lookup).toBe(CardLookupStatus.mapped);
+      for (const channel of record.albedo) expect(channel).toBeGreaterThan(0.9);
+    }
+    expect(h.errors).toEqual([]);
+    result.recovered = { generation: recovered.generation, cards: recovered.cards };
     writeFileSync(`${directory}/coverage.json`, JSON.stringify(result, null, 2));
+  } catch (cause) {
+    writeFileSync(
+      `${directory}/coverage-failed.json`,
+      JSON.stringify({ stage, ...result }, null, 2),
+    );
+    if (cause instanceof Error) throw cause;
+    throw new Error(`${stage}: ${JSON.stringify(cause)}`);
   } finally {
     await h.dispose();
     (await recorder.dispose()).unwrap();

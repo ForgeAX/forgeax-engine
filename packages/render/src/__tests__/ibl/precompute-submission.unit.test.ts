@@ -37,9 +37,7 @@ async function fixture() {
   const options: RunIblPrecomputeOptions = {
     scope,
     device,
-    equirectGpuTex: texture,
     equirectView: view,
-    cubeGpuTex: texture,
     cubeView: view,
     cubeFaceViews: Array.from({ length: 6 }, (_, face) =>
       unwrap(
@@ -77,8 +75,8 @@ describe('IBL precompute completion boundaries', () => {
     const result = await runIblPrecompute(options);
 
     expect(result.unwrap().prefilterTexture).toBeDefined();
-    expect(device.framePassNames).toHaveLength(43);
-    expect(device.totalDrawCount).toBe(43);
+    expect(device.framePassNames).toHaveLength(73);
+    expect(device.totalDrawCount).toBe(73);
     expect([cache.irradianceBakeCount, cache.prefilterBakeCount, cache.brdfLutBakeCount]).toEqual([
       1, 1, 1,
     ]);
@@ -119,13 +117,13 @@ describe('IBL precompute completion boundaries', () => {
     try {
       await vi.waitFor(() => expect(passes.at(-1)).toEqual(['ibl-brdf-lut']));
       expect(passes.filter((batch) => batch.includes('ibl-prefilter'))).toEqual(
-        Array.from({ length: 30 }, () => ['ibl-prefilter']),
+        Array.from({ length: 60 }, () => ['ibl-prefilter']),
       );
       expect(settled).toBe(false);
-      expect(passes).toHaveLength(38);
-      expect(renderOpportunities).toEqual([1, 7, 13, 19, 25, 31, 37]);
+      expect(passes).toHaveLength(68);
+      expect(renderOpportunities).toEqual([1, 7, 13, 19, 25, 31, 37, 43, 49, 55, 61, 67]);
       expect(fences).toBe(1);
-      expect(device.totalDrawCount).toBe(43);
+      expect(device.totalDrawCount).toBe(73);
     } finally {
       release();
     }
@@ -149,9 +147,9 @@ describe('IBL precompute completion boundaries', () => {
     });
     const result = await runIblPrecompute(options);
     expect(result).toMatchObject({ ok: false, error: { code: 'ibl-precompute-not-dispatched' } });
-    expect(device.framePassNames.filter((name) => name === 'ibl-prefilter')).toHaveLength(30);
+    expect(device.framePassNames.filter((name) => name === 'ibl-prefilter')).toHaveLength(60);
     expect(device.framePassNames).toContain('ibl-brdf-lut');
-    expect(device.totalDrawCount).toBe(43);
+    expect(device.totalDrawCount).toBe(73);
     expect([cache.irradianceBakeCount, cache.prefilterBakeCount, cache.brdfLutBakeCount]).toEqual([
       0, 0, 0,
     ]);
@@ -222,7 +220,7 @@ describe('IBL precompute completion boundaries', () => {
     });
     try {
       await vi.waitFor(() => expect(fence).toHaveBeenCalledTimes(1));
-      expect(device.totalDrawCount).toBe(43);
+      expect(device.totalDrawCount).toBe(73);
       expect(settled).toBe(false);
       scope.abandon();
     } finally {

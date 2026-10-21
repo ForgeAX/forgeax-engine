@@ -1,5 +1,7 @@
-import { createDefaultLoaderRegistry } from '@forgeax/engine/assets-runtime';
+import { defaultAssetDecoderContributions } from '@forgeax/engine';
+import { videoContribution } from '@forgeax/engine/graphics-extras';
 import { SCRIPTABLE_PACK_ASSET_KINDS } from '@forgeax/engine/pack/source';
+import type { VideoAsset } from '@forgeax/engine/types';
 import { defineFeature } from '../../lab/feature';
 
 const CATALOG_KINDS = [
@@ -22,16 +24,15 @@ const CATALOG_KINDS = [
 ] as const;
 
 export default defineFeature({
-  title: 'Asset kind/runtime loader matrix',
-  catalog: 'Asset kind/runtime loader matrix',
+  title: 'Asset kind/runtime decoder matrix',
+  catalog: 'Asset kind/runtime decoder matrix',
   kind: 'headless',
   summary:
-    'createDefaultLoaderRegistry() wires one runtime loader per ordinary Asset kind; video is a URL descriptor.',
+    'The runtime assembles one domain decoder per ordinary Asset kind; Video remains a URL descriptor.',
   expect:
-    'Every catalog kind has a loader and a ScriptablePack output kind; video loads from a URL payload without artifacts.',
-  run(checks) {
-    const loaders = createDefaultLoaderRegistry();
-    const wired = new Set(loaders.registeredKinds());
+    'Every catalog kind has a decoder and a ScriptablePack output kind; video loads from a URL payload without artifacts.',
+  async run(checks) {
+    const wired = new Set(defaultAssetDecoderContributions.map((value) => value.kind.kind));
     const missing = CATALOG_KINDS.filter((kind) => !wired.has(kind));
     checks.equal('every catalog kind has a runtime loader', missing, []);
     const authorable = new Set<string>(SCRIPTABLE_PACK_ASSET_KINDS);
@@ -46,19 +47,32 @@ export default defineFeature({
       `beyond catalog: ${[...wired].filter((kind) => !CATALOG_KINDS.includes(kind as never)).join(', ')}`,
     );
 
-    const video = loaders.get('video') as { load(payload: unknown): unknown } | undefined;
-    const loaded = video?.load({ url: 'https://feature-lab.invalid/clip.mp4' }) as
-      | { kind?: string; url?: string }
-      | undefined;
-    checks.equal('video loader returns a URL descriptor', loaded, {
+    const decode = (payload: unknown) =>
+      videoContribution.decoder.decode({
+        envelope: {
+          guid: 'fixture',
+          kind: 'video',
+          payload: payload as VideoAsset,
+          refs: [],
+          artifacts: {},
+        },
+        artifacts: {
+          read: async () => {
+            throw new Error('Video owns no artifact');
+          },
+        },
+        signal: new AbortController().signal,
+      });
+    const loaded = await decode({ kind: 'video', url: 'https://feature-lab.invalid/clip.mp4' });
+    checks.equal('video decoder returns a URL descriptor', loaded.unwrap(), {
       kind: 'video',
       url: 'https://feature-lab.invalid/clip.mp4',
     });
-    checks.equal('video loader rejects a non-URL payload', video?.load({ url: 42 }), undefined);
     checks.equal(
-      'unknown kinds are not silently wired',
-      loaders.get('lab-unknown-kind'),
-      undefined,
+      'video decoder rejects a non-URL payload',
+      (await decode({ kind: 'video', url: 42 })).ok,
+      false,
     );
+    checks.equal('unknown kinds are not silently installed', wired.has('lab-unknown-kind'), false);
   },
 });

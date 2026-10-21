@@ -21,6 +21,7 @@ import {
 } from '../../../../scripts/dev-verify/wave1-rendering/recipe';
 import { drawReadyFrame } from '../../../../scripts/test/ready-render-frame.mjs';
 import { createRenderer } from '../createRenderer';
+import { testAssets } from './helpers/runtime-assets';
 
 interface ScreenshotPixels {
   readonly width: number;
@@ -286,27 +287,29 @@ it('proves emissive intensity and color pattern with every scene light off', asy
   const renderer = rendererResult.value;
   const world = new World();
   const scene = await createWorldContext(world, [scenePlugin()]);
-  const recipe = createWave1RenderingRecipe(world, { aspect: 1 });
-  const lowIntensity = world.allocSharedRef(
-    'MaterialAsset',
-    Materials.standard({
-      baseColor: [0, 0, 0, 1],
-      metallic: 0,
-      roughness: 0.5,
-      emissive: [1, 0.1, 0.01],
-      emissiveIntensity: 0.45,
-    }),
-  );
-  const highIntensity = world.allocSharedRef(
-    'MaterialAsset',
-    Materials.standard({
-      baseColor: [0, 0, 0, 1],
-      metallic: 0,
-      roughness: 0.5,
-      emissive: [1, 0.1, 0.01],
-      emissiveIntensity: 2.5,
-    }),
-  );
+  const recipe = createWave1RenderingRecipe(world, testAssets(world), { aspect: 1 });
+  const lowIntensity = testAssets(world)
+    .create(
+      Materials.standard({
+        baseColor: [0, 0, 0, 1],
+        metallic: 0,
+        roughness: 0.5,
+        emissive: [1, 0.1, 0.01],
+        emissiveIntensity: 0.45,
+      }),
+    )
+    .unwrap();
+  const highIntensity = testAssets(world)
+    .create(
+      Materials.standard({
+        baseColor: [0, 0, 0, 1],
+        metallic: 0,
+        roughness: 0.5,
+        emissive: [1, 0.1, 0.01],
+        emissiveIntensity: 2.5,
+      }),
+    )
+    .unwrap();
   const errors: string[] = [];
   const unsubscribe = renderer.subscribe((event) => {
     if (event.kind === 'error') errors.push(event.error.code);
@@ -386,8 +389,8 @@ it('proves emissive intensity and color pattern with every scene light off', asy
   } finally {
     unsubscribe();
     await renderer.dispose();
-    world.sharedRefs.release(lowIntensity).unwrap();
-    world.sharedRefs.release(highIntensity).unwrap();
+    testAssets(world).release(lowIntensity).unwrap();
+    testAssets(world).release(highIntensity).unwrap();
     recipe.dispose();
     await scene.fiber.dispose();
     canvas.remove();
@@ -405,19 +408,20 @@ it('matches a canonical box without color to the same box with white vertex colo
   const renderer = rendererResult.value;
   const world = new World();
   const scene = await createWorldContext(world, [scenePlugin()]);
-  const recipe = createWave1RenderingRecipe(world, { aspect: 1 });
-  const material = world.allocSharedRef(
-    'MaterialAsset',
-    Materials.standard({
-      baseColor: [0, 0, 0, 1],
-      metallic: 0,
-      roughness: 0.5,
-      emissive: [0.08, 0.55, 1],
-      emissiveIntensity: 2,
-    }),
-  );
-  const noColorMesh = world.allocSharedRef('MeshAsset', createCanonicalBox(false));
-  const whiteColorMesh = world.allocSharedRef('MeshAsset', createCanonicalBox(true));
+  const recipe = createWave1RenderingRecipe(world, testAssets(world), { aspect: 1 });
+  const material = testAssets(world)
+    .create(
+      Materials.standard({
+        baseColor: [0, 0, 0, 1],
+        metallic: 0,
+        roughness: 0.5,
+        emissive: [0.08, 0.55, 1],
+        emissiveIntensity: 2,
+      }),
+    )
+    .unwrap();
+  const noColorMesh = testAssets(world).create(createCanonicalBox(false)).unwrap();
+  const whiteColorMesh = testAssets(world).create(createCanonicalBox(true)).unwrap();
   const errors: string[] = [];
   const unsubscribe = renderer.subscribe((event) => {
     if (event.kind === 'error') errors.push(event.error.code);
@@ -465,9 +469,9 @@ it('matches a canonical box without color to the same box with white vertex colo
     world.despawn(entity).unwrap();
     unsubscribe();
     await renderer.dispose();
-    world.sharedRefs.release(material).unwrap();
-    world.sharedRefs.release(noColorMesh).unwrap();
-    world.sharedRefs.release(whiteColorMesh).unwrap();
+    testAssets(world).release(material).unwrap();
+    testAssets(world).release(noColorMesh).unwrap();
+    testAssets(world).release(whiteColorMesh).unwrap();
     recipe.dispose();
     await scene.fiber.dispose();
     canvas.remove();
@@ -485,11 +489,11 @@ it('runs the bounded VolumetricFog air layer independently from Atmosphere', asy
   const renderer = rendererResult.value;
   const world = new World();
   const scene = await createWorldContext(world, [scenePlugin()]);
-  const recipe = createWave1RenderingRecipe(world, {
+  const recipe = createWave1RenderingRecipe(world, testAssets(world), {
     aspect: 1,
     includeAtmosphere: true,
   });
-  const density = world.allocSharedRef('TextureAsset', createDensity());
+  const density = testAssets(world).create(createDensity()).unwrap();
   const fogEntity = world
     .spawn({
       component: VolumetricFog,
@@ -604,7 +608,7 @@ it('runs the bounded VolumetricFog air layer independently from Atmosphere', asy
     );
   } finally {
     if (fogPresent) world.despawn(fogEntity).unwrap();
-    world.sharedRefs.release(density).unwrap();
+    testAssets(world).release(density).unwrap();
     unsubscribe();
     await renderer.dispose();
     recipe.dispose();

@@ -4,9 +4,10 @@ import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { brotliCompressSync, brotliDecompressSync } from 'node:zlib';
 import { AssetRegistry, createCatalogSource } from '@forgeax/engine-assets-runtime';
+import { meshAssetContribution } from '@forgeax/engine-geometry';
 import { decodeCatalogWire } from '@forgeax/engine-pack';
 import { createWechatPackageFetcher } from '@forgeax/engine-platform-wechat';
-import type { MeshAsset, PackIndexEntry, PackV2 } from '@forgeax/engine-types';
+import type { PackIndexEntry, PackV2 } from '@forgeax/engine-types';
 import { expect, it } from 'vitest';
 import { createPluginPackInternal } from '../../../../vite-plugin-pack/src/plugin-pack.js';
 import type { ProjectFacts } from '../../types.js';
@@ -119,11 +120,18 @@ export default {
       },
       { root: 'payload', baseUrl: 'https://published.invalid/', encoding: 'br' },
     );
-    const registry = new AssetRegistry({} as never);
+    const registry = new AssetRegistry({ shaderRegistry: {} as never });
+    registry.installDecoder(meshAssetContribution.kind, meshAssetContribution.decoder);
     registry.setCatalogSource(createCatalogSource({ fetch: fetcher, entries: catalog }));
     try {
-      const load = async (key: string) =>
-        (await registry.loadByGuid<MeshAsset>(registry.parseGuid(entryFor(key).guid))).unwrap();
+      const load = async (key: string) => {
+        const handle = (await registry.load(entryFor(key).guid, 'mesh')).unwrap();
+        try {
+          return registry.read(handle).unwrap();
+        } finally {
+          registry.release(handle).unwrap();
+        }
+      };
       const a = await load('first');
       for (const key of ['second', 'another']) {
         expect(a.attributes.position).toEqual((await load(key)).attributes.position);
@@ -132,23 +140,24 @@ export default {
       expect(reads).toContain(`payload/assets/${first.path}.br`);
       expect(reads).toContain(`payload/assets/${different.path}.br`);
     } finally {
-      registry.clearCatalogSource();
+      registry.dispose();
     }
     const stored = join(out, `payload/assets/${first.path}.br`);
     const corrupt = brotliDecompressSync(await readFile(stored));
     corrupt[corrupt.length - 1] = (corrupt[corrupt.length - 1] ?? 0) ^ 1;
     await writeFile(stored, brotliCompressSync(corrupt));
-    const rejected = new AssetRegistry({} as never);
+    const rejected = new AssetRegistry({ shaderRegistry: {} as never });
+    rejected.installDecoder(meshAssetContribution.kind, meshAssetContribution.decoder);
     rejected.setCatalogSource(createCatalogSource({ fetch: fetcher, entries: catalog }));
     try {
       for (const key of ['first', 'second', 'another']) {
-        expect(await rejected.loadByGuid(rejected.parseGuid(entryFor(key).guid))).toMatchObject({
+        expect(await rejected.load(entryFor(key).guid, 'mesh')).toMatchObject({
           ok: false,
-          error: { code: 'asset-artifact-integrity-mismatch' },
+          error: { code: 'asset-integrity-failed' },
         });
       }
     } finally {
-      rejected.clearCatalogSource();
+      rejected.dispose();
     }
   } finally {
     await rm(root, { recursive: true, force: true });

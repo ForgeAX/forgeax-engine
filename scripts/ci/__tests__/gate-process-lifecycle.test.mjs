@@ -97,18 +97,30 @@ test('shell smoke command has the same bounded group cleanup', {
   timeout: 6000,
 }, async () => {
   const directory = mkdtempSync(join(tmpdir(), 'forgeax-gate-process-'));
-  const script = join(directory, 'smoke.cjs');
-  writeFileSync(script, fixture({ exitLeader: false }));
+  const script = join(directory, 'smoke.sh');
+  // Exercise a real shell descendant without two Node cold starts before the
+  // cleanup deadline. Install TERM resistance before publishing its ready PID.
+  writeFileSync(
+    script,
+    `/bin/sh -c '
+    trap "" TERM
+    printf "descendant=%s\\n" "$$"
+    exec sleep 60 >/dev/null 2>&1
+  ' &
+  wait
+`,
+  );
   const quote = (value) => `'${value.replaceAll("'", "'\\''")}'`;
   let pid;
   try {
-    const result = await runBrowserCommand(`${quote(process.execPath)} ${quote(script)}`, {
+    const result = await runBrowserCommand(`/bin/sh ${quote(script)}`, {
       timeoutMs: 1500,
       timeoutGraceMs: 100,
       label: 'smoke-shell-contract',
     });
     pid = Number(result.output.match(/descendant=(\d+)/)?.[1]);
     assert.ok(pid > 1);
+    assert.notEqual(pid, result.pid);
     await assertGone(pid);
     assert.equal(result.status, 124);
     assert.equal(result.cleanup.kind, 'sigkill');

@@ -1,10 +1,10 @@
 /// <reference types="node" />
 import { brotliCompressSync, brotliDecompressSync } from 'node:zlib';
 import { AssetRegistry, createCatalogSource } from '@forgeax/engine-assets-runtime';
-import { createBoxGeometry } from '@forgeax/engine-geometry';
+import { runtimeAssetReference } from '@forgeax/engine-assets-runtime/internal';
+import { createBoxGeometry, meshAssetContribution } from '@forgeax/engine-geometry';
 import { meshAssetOutputProducer, normaliseForPack } from '@forgeax/engine-import';
 import { createRuntimePackPublication } from '@forgeax/engine-pack/runtime';
-import type { MeshAsset } from '@forgeax/engine-types';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { createWechatPackageFetcher, type WechatPackageSource } from '../package-fetch.js';
 
@@ -60,7 +60,7 @@ describe('native package transport', () => {
     const hash = await crypto.subtle.digest('SHA-256', new Uint8Array(body.bytes));
     const digest = `sha256:${Array.from(new Uint8Array(hash), (byte) => byte.toString(16).padStart(2, '0')).join('')}`;
     const packageUrl = `${baseUrl}mesh/pack.json`;
-    const { pack } = createRuntimePackPublication({
+    const { pack, publication } = createRuntimePackPublication({
       scopeId: 'native-game',
       sourcePath: 'mesh',
       sourceRevision: 'fixed',
@@ -76,6 +76,7 @@ describe('native package transport', () => {
               body: {
                 path: 'mesh.bin',
                 mediaType: body.mediaType,
+                contentEncoding: 'identity',
                 assetCodec: body.assetCodec,
                 byteLength: body.bytes.byteLength,
                 integrity: { algorithm: 'sha256', digest },
@@ -106,28 +107,31 @@ describe('native package transport', () => {
     });
     for (const name of ['fetch', 'Request', 'Response', 'Headers', 'crypto'])
       vi.stubGlobal(name, undefined);
-    const registry = new AssetRegistry({} as never);
+    const registry = new AssetRegistry({ scopeId: 'native-game' });
+    registry.installDecoder(meshAssetContribution.kind, meshAssetContribution.decoder);
     registry.setCatalogSource(
       createCatalogSource({
         fetch: fetcher,
-        entries: [{ guid, kind: 'mesh', packageUrl, sourcePath: 'mesh', sourceKey: 'box' }],
+        entries: [
+          { guid, kind: 'mesh', packageUrl, sourcePath: 'mesh', sourceKey: 'box', publication },
+        ],
       }),
     );
     try {
-      let result = await registry.loadByGuid<MeshAsset>(registry.parseGuid(guid));
+      let result = await registry.load(guid, 'mesh');
       if (failure) {
         expect(result).toMatchObject({
           ok: false,
-          error: { code: 'asset-artifact-integrity-mismatch' },
+          error: { code: 'asset-integrity-failed' },
         });
-        expect(registry.lookup(guid)).toBeUndefined();
+        expect(runtimeAssetReference(registry, guid)).toBeUndefined();
         published.set(
           `graphics/mesh/mesh.bin${compressed ? '.br' : ''}`,
           compressed ? brotliCompressSync(body.bytes) : new Uint8Array(body.bytes),
         );
-        result = await registry.loadByGuid<MeshAsset>(registry.parseGuid(guid));
+        result = await registry.load(guid, 'mesh');
       }
-      const loaded = result.unwrap();
+      const loaded = registry.read(result.unwrap()).unwrap();
       expect(loaded.attributes.position).toEqual(mesh.attributes.position);
       expect(loaded.indices).toEqual(mesh.indices);
       expect(loaded.aabb).toEqual(mesh.aabb);

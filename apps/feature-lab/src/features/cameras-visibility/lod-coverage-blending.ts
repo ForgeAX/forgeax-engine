@@ -1,3 +1,4 @@
+import { AssetRegistry } from '@forgeax/engine/assets-runtime';
 import { createMeshBuilder, createPlaneGeometry } from '@forgeax/engine/geometry';
 import { Materials, MeshFilter } from '@forgeax/engine/render';
 import type { MeshAsset } from '@forgeax/engine/types';
@@ -31,6 +32,10 @@ export default defineFeature({
   expect:
     'ON: the plane sits inside the 0.1 transition band, so red (LOD0) and green (LOD1) pixels interleave as a dither. OFF: lodHysteresis is 0, the switch is hard and the plane is solid green.',
   setup({ app, world, frames }) {
+    const sceneAssets = world.assets;
+    if (!(sceneAssets instanceof AssetRegistry))
+      throw new Error('Scene requires its runtime asset owner');
+
     const assets = app.assets;
     if (assets === undefined)
       return {
@@ -39,15 +44,16 @@ export default defineFeature({
           return new CheckList().ok('app.assets available', false).items;
         },
       };
-    const lowerGuid = assets.parseGuid('019a0000-0000-7000-8000-0000000fe125');
-    assets.catalog(lowerGuid, level(true)).unwrap();
+    const lower = assets.create(level(true)).unwrap();
     const root = level(false);
     const mesh = (width: number) =>
-      world.allocSharedRef('MeshAsset', {
-        ...root,
-        lods: [{ mesh: lowerGuid, screenCoverage: 0.5 }],
-        lodHysteresis: width,
-      });
+      sceneAssets
+        .create({
+          ...root,
+          lods: [{ mesh: lower, screenCoverage: 0.5 }],
+          lodHysteresis: width,
+        })
+        .unwrap();
     const blended = mesh(0.1);
     const hard = mesh(0);
     const white = material(

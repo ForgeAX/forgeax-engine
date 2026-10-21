@@ -24,9 +24,11 @@ import { Camera, MeshFilter, MeshRenderer } from '@forgeax/engine-render';
 import { perspective } from '@forgeax/engine-render';
 import { Materials } from '@forgeax/engine-render';
 import { PointLight } from '@forgeax/engine-render';
-import type { AssetError, MaterialAsset } from '@forgeax/engine-runtime';
+import type { AssetError } from '@forgeax/engine-runtime';
 import type { MeshAsset, Result } from '@forgeax/engine-types';
 import { quat } from '@forgeax/engine-math';
+import { AssetRegistry } from '@forgeax/engine-assets-runtime';
+
 
 // A row of 7 primitives. The capsule is index 3 (center) so it renders at x=0.
 // Each entry: label + a factory call returning Result<MeshAsset, AssetError> +
@@ -59,14 +61,14 @@ const SPACING = 2.0;
  * result is a hard error — this is a demo of the factories working).
  */
 export function buildShapesWorld(world: World): number {
+const sceneAssets = world.assets;
+if (!(sceneAssets instanceof AssetRegistry)) throw new Error('Scene requires its runtime asset owner');
+
   // Ground plane (flat-scaled cube), light gray PBR.
-  const groundMat = world.allocSharedRef<'MaterialAsset', MaterialAsset>(
-    'MaterialAsset',
-    Materials.standard({ baseColor: [0.6, 0.6, 0.62, 1] }),
-  );
+  const groundMat = sceneAssets.create(Materials.standard({ baseColor: [0.6, 0.6, 0.62, 1] })).unwrap();
   const groundMesh = createBoxGeometry(1, 1, 1);
   if (!groundMesh.ok) throw new Error(`3d-shapes: ground box failed: ${groundMesh.error.code}`);
-  const groundHandle = world.allocSharedRef<'MeshAsset', MeshAsset>('MeshAsset', groundMesh.value);
+  const groundHandle = sceneAssets.create(groundMesh.value).unwrap();
   world.spawn(
     { component: Transform, data: { pos: [0, -0.75, 0], quat: [0, 0, 0, 1], scale: [18, 0.1, 6] } },
     { component: MeshFilter, data: { assetHandle: groundHandle } },
@@ -81,11 +83,8 @@ export function buildShapesWorld(world: World): number {
     if (spec === undefined) continue;
     const res = spec.mesh();
     if (!res.ok) throw new Error(`3d-shapes: ${spec.label} failed: ${res.error.code}`);
-    const meshHandle = world.allocSharedRef<'MeshAsset', MeshAsset>('MeshAsset', res.value);
-    const mat = world.allocSharedRef<'MaterialAsset', MaterialAsset>(
-      'MaterialAsset',
-      Materials.standard({ baseColor: [spec.color[0], spec.color[1], spec.color[2], 1] }),
-    );
+    const meshHandle = sceneAssets.create(res.value).unwrap();
+    const mat = sceneAssets.create(Materials.standard({ baseColor: [spec.color[0], spec.color[1], spec.color[2], 1] })).unwrap();
     world.spawn(
       { component: Transform, data: { pos: [x0 + i * SPACING, 0.1, 0], quat: [0, 0, 0, 1], scale: [1, 1, 1] } },
       { component: MeshFilter, data: { assetHandle: meshHandle } },

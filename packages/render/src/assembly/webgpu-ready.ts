@@ -2,21 +2,13 @@ import type { PipelineGroup2Contract } from '@forgeax/engine-shader';
 import { atmosphereAvailable } from '../environment/capability';
 import type { GpuDrivenPbrProgram } from '../gpu-driven/pbr-program';
 import { MESH_PER_ENTITY_STRIDE, MESH_UBO_FULL_ARRAY_BYTES } from '../record/mesh-ssbo';
+import { SHADOW_PARAMS_BYTES } from '../record/view-ubo';
 import { transmissionBackdropAvailable } from './device-feature-admission';
 import { buildClusterMembershipProducer } from './webgpu-cluster-ready';
 // WebGPU generation-scoped ready-state builder.
 // This owner performs one complete device-generation promotion; it receives
 // policy/adapters and returns a fully prepared PipelineState.
 
-import {
-  BuiltinAssetRegistry,
-  HANDLE_CUBE,
-  HANDLE_NINESLICE_QUAD,
-  HANDLE_QUAD,
-  HANDLE_SPHERE,
-  HANDLE_TRIANGLE,
-} from '@forgeax/engine-assets-runtime';
-import { deriveVertexCount, deriveVertexLayoutProjection } from '@forgeax/engine-geometry';
 import type {
   BindGroupLayout,
   Buffer,
@@ -30,12 +22,12 @@ import type {
 } from '@forgeax/engine-rhi';
 import { ok, RhiError } from '@forgeax/engine-rhi';
 import {
+  DEFAULT_UNLIT_PARAM_SCHEMA,
   findVariantByKey,
   materialShaderSourceEquals,
   type ShaderCatalog,
 } from '@forgeax/engine-shader';
 import type { ManifestEntry } from '@forgeax/engine-types';
-import { handleSlot } from '@forgeax/engine-types';
 import { prewarmDepthOfField } from '../features/depth-of-field/depth-of-field-assembly';
 import type { RhiBackendPack } from './backend-contract';
 import { selectCloudShadowCompatibleEntry } from './cloud-shadow-entry';
@@ -48,17 +40,14 @@ import {
 
 export type { MaterialShaderManifestEntry } from '@forgeax/engine-shader';
 
-import type { GpuResidencyCache, MeshGpuHandles } from '../device/gpu-residency';
+import type { GpuResidencyCache } from '../device/gpu-residency';
 import { postProcessShaderModuleLabel } from '../fullscreen-post-process-pass';
-import { GpuBuffer } from '../gpu-resource';
 import { GPU_SHADER_STAGE_FRAGMENT } from '../gpu-stage';
 import { GPU_TEXTURE_USAGE_RENDER_ATTACHMENT_AND_TEXTURE_BINDING } from '../gpu-texture-usage';
 import {
   GPU_BUFFER_USAGE_COPY_DST,
-  GPU_BUFFER_USAGE_INDEX,
   GPU_BUFFER_USAGE_STORAGE,
   GPU_BUFFER_USAGE_UNIFORM,
-  GPU_BUFFER_USAGE_VERTEX,
 } from '../gpu-usage';
 import { setIblComposedShaders } from '../ibl/IblPipelineCache';
 import {
@@ -73,6 +62,7 @@ import { assertStorageBufferCap } from '../light-buffer-layout';
 import { buildPbrPipelineLayouts, SKIN_MATERIAL_SHADER_ID } from '../pbr-pipeline';
 import { inspectStandardBloomGraph } from '../pipeline/standard-post';
 import {
+  buildBindGroupLayoutDescriptor,
   buildLinearLdrMaterialSpecTable,
   buildSpecConstTable,
   cacheKeyOf,
@@ -85,9 +75,9 @@ import {
 } from '../pipeline-spec';
 import { POINTS_LINES_MATERIAL_SHADER_ID } from '../points-lines/record';
 import { deriveExtendedLightingCapability } from '../prepare/extended-lighting/resources';
+import { createPointsLinesViewBuffer } from '../record/points-lines-view-buffer';
 import { type BloomPersistentBundle, MATERIAL_UNIFORM_BYTES } from '../record/render-context';
 import { SHADOW_CASTER_BUFFER_SIZE } from '../record/shadow-pass';
-import { POINTS_LINES_VIEW_BUFFER_SIZE } from '../record/view-ubo';
 import type {
   AtmosphereShaderSources,
   DepthPyramidShaderSources,
@@ -377,7 +367,6 @@ export async function buildReadyWebGPU(
     registerBuiltinTonemap('');
   }
   let pbrModule: ShaderModule | null = null;
-  let pbrSkinModule: ShaderModule | null = null;
   let gpuDrivenPbrPrograms: ReadonlyMap<string, GpuDrivenPbrProgram> = new Map();
   let unlitModule: ShaderModule | null = null;
   let spriteModule: ShaderModule | null = null;
@@ -854,8 +843,14 @@ export async function buildReadyWebGPU(
           );
           return variant.composedWgsl;
         };
-        const decals: { decalProject?: string; decalApply?: string; subsurface?: string } = {};
+        const decals: {
+          shadowVariance?: string;
+          decalProject?: string;
+          decalApply?: string;
+          subsurface?: string;
+        } = {};
         for (const [field, identifier] of [
+          ['shadowVariance', 'forgeax::engine-shadow-variance'],
           ['decalProject', 'forgeax::engine-decal-project'],
           ['decalApply', 'forgeax::engine-decal-apply'],
           ['subsurface', 'forgeax::engine-subsurface-diffusion'],
@@ -895,7 +890,21 @@ export async function buildReadyWebGPU(
       (label, source) => compileUtilityShader(label, source, 'Atmosphere'),
       seedShaderModule,
     );
-    if (atmosphereSources !== undefined) setAtmosphereShaderSources(atmosphereSources);
+    if (atmosphereSources !== undefined) {
+      const prefilter = manifestEntries.find((entry) => entry.wgsl.includes('fn prefilterEnv_fs('));
+      if (prefilter === undefined) {
+        throw new RhiError({
+          code: 'shader-compile-failed',
+          expected: 'Atmosphere uses the shared environment PMREM program',
+          hint: 'include ibl-prefilter in the Engine shader manifest',
+        });
+      }
+      seedShaderModule(
+        'ibl-prefilter',
+        await compileUtilityShader('ibl-prefilter', prefilter.wgsl, 'Atmosphere'),
+      );
+      setAtmosphereShaderSources({ ...atmosphereSources, prefilter: prefilter.wgsl });
+    }
     const pbrShaderResult = await runShimStep(
       () =>
         asyncCreateShaderModule
@@ -939,7 +948,6 @@ export async function buildReadyWebGPU(
       seedShaderModule,
       admitsVariant,
     });
-    pbrSkinModule = gpuDrivenModules.pbrSkinModule;
     gpuDrivenPbrPrograms = gpuDrivenModules.gpuDrivenPbrPrograms;
     const pbrVariant = pbrManifestEntry?.variants.find((variant) =>
       materialShaderSourceEquals(variant, pbrEntry.wgsl),
@@ -1541,6 +1549,40 @@ export async function buildReadyWebGPU(
   const instancesBglResult = ok(pbrLayouts.value.instancesBgl);
   const probeInstancesBglResult = ok(pbrLayouts.value.probeInstancesBgl);
   const pipelineLayoutResult = ok(pbrLayouts.value.pipelineLayout);
+  const unlitMaterialLayout = rhiDevice
+    .createBindGroupLayout(
+      buildBindGroupLayoutDescriptor(
+        {
+          shader: { id: 'forgeax::default-unlit', passKind: 'forward', variantSet: undefined },
+          attachments: { colorFormats: [], depthFormat: undefined, sampleCount: 1 },
+          geometry: { topology: 'triangle-list', vertexLayout: {} },
+          renderState: undefined,
+        },
+        {
+          kind: 'pbr-material-merged',
+          registry,
+          materialParamSchema: DEFAULT_UNLIT_PARAM_SCHEMA,
+          caps: {
+            storageBuffer: storageBufferCapable,
+            transmissionBackdrop: transmissionBackdropAvailable(
+              rhiDevice.limits.maxSampledTexturesPerShaderStage,
+            ),
+          },
+        },
+      ),
+    )
+    .unwrap();
+  const unlitPipelineLayout = rhiDevice
+    .createPipelineLayout({
+      label: 'unlit-pipeline-layout',
+      bindGroupLayouts: [
+        viewBglResult.value,
+        unlitMaterialLayout,
+        meshArrayBglResult.value,
+        instancesBglResult.value,
+      ],
+    })
+    .unwrap();
 
   // feat-20260609-hdrp-cluster-fragment-ggx M4.5 / w36 (D-10 option A):
   // boot-time build of the HDRP-variant PipelineLayout. The 4-BGL chain is
@@ -1657,176 +1699,7 @@ export async function buildReadyWebGPU(
     storageBufferCapable,
   );
 
-  // bug-20260519: the legacy `pbr-pipeline-unlit-builtin` (6F-stride + a
-  // 24-byte zero-fill dummy VBO that hard-coded uv=(0,0)) is gone. BUILTIN
-  // geometry now ships 12-floats per vertex (pos + normal + uv + tangent)
-  // identical to procedural meshes, so a single (`unlit-procedural` /
-  // `standard`) pipeline pair covers every renderable.
-
-  // ── Step 3: AssetRegistry builtin mesh GPU upload ─────────────────────────
-  // M5 / w22.7 (feat-20260518-pbr-direct-lighting-mvp): the hard-coded
-  // `[HANDLE_CUBE, HANDLE_TRIANGLE]` loop has moved to AssetRegistry —
-  // `configureGpuDevice` (already invoked above the buildReadyWebGPU call)
-  // replays every registered MeshAsset (incl. BUILTIN_CUBE / HANDLE_TRIANGLE
-  // seeded by the constructor). Step 3 here only seeds the legacy
-  // `pipelineState.meshes` Map for backward compat with existing fixtures
-  // (render-system-record-instances.browser.test.ts etc.); render-system-record
-  // queries `gpuStore.getMeshGpuHandles` first and falls back to this Map only
-  // for the builtins — which keeps user-mesh registrations flowing through the
-  // store's pull path (`ensureResident`) without a createRenderer rebuild
-  // (AGENTS.md "Demo failures route to engine fixes").
   const queue = rhiDevice.queue;
-  const meshHandles = new Map<number, MeshGpuHandles>();
-  // feat-20260520-2d-sprite-layer-mvp post-merge fix: HANDLE_QUAD joins the
-  // builtin upload loop so sprite materials referencing the unit-quad
-  // through MeshFilter.assetHandle resolve to GPU vertex/index buffers
-  // (record stage's `gpuStore.getMeshGpuHandles(handle)` returns the
-  // GPU pair instead of firing `asset-not-registered`). Builtins are seeded
-  // here (createRenderer step-3 direct upload), not via the store pull path
-  // (D-1), so the upload chain ends here. Same explicit-upload intent as the
-  // pre-existing HANDLE_CUBE / HANDLE_TRIANGLE pair (charter P5 consistent
-  // abstraction).
-  // feat-20260527-sprite-nineslice M2 / w12: HANDLE_NINESLICE_QUAD joins
-  // the explicit-upload list so the 16-vertex / 54-index 9-slice quad has
-  // GPU-resident vertex / index buffers when render-system-record routes
-  // sprite + non-zero-slices entities to it (D-2). Closes feat-20260527
-  // round-1 issue #2 dangling-slot root cause: the prior implement only
-  // added the skip-list entry without the upload, leaving a registered
-  // handle whose `pipelineState.meshes.get(id)` returned undefined.
-  for (const handle of [
-    HANDLE_CUBE,
-    HANDLE_TRIANGLE,
-    HANDLE_QUAD,
-    HANDLE_SPHERE,
-    HANDLE_NINESLICE_QUAD,
-  ]) {
-    const id = handleSlot(handle);
-    const gpu = gpuStore.getMeshGpuHandles(handle);
-    if (gpu !== undefined) {
-      meshHandles.set(id, gpu as MeshGpuHandles);
-      continue;
-    }
-    // Fallback: AssetRegistry was constructed without a wired device
-    // (e.g. test fixtures bypass `configureGpuDevice`); fall back to the
-    // legacy direct-upload path so the BUILTIN seed retains GPU buffers
-    // even on the unwired path.
-    // M5 / w19: HANDLE_CUBE / HANDLE_TRIANGLE are now
-    // `Handle<'MeshAsset','shared'>` (the unified SSOT brand from
-    // `@forgeax/engine-types` per feat-20260517-handle-type-unify) which
-    // matches AssetRegistry.get<MeshAsset>'s parameter type
-    // `Handle<'MeshAsset', 'shared'>` directly — no cross-brand cast.
-    // feat-20260614 M8 (D-15): the builtin seed handles are builtin-tier
-    // (slot < BUILTIN_BASE); resolve their PODs directly from the process-
-    // static BuiltinAssetRegistry (no World needed at boot).
-    const asset = BuiltinAssetRegistry.resolve(handle);
-    if (asset === null) continue;
-    if (asset.kind !== 'mesh') continue;
-    // Builtins always carry indices; the `?? 0` keeps typecheck happy now that
-    // MeshAsset.indices is optional, and supports a vertex-only fallback mesh
-    // if one is ever added here (indexBuffer: null path below).
-    const meshIndices = asset.indices;
-    const vertexBytes = asset.vertices.byteLength;
-    const indexBytesUnpadded = meshIndices?.byteLength ?? 0;
-    const indexBytes = ((indexBytesUnpadded + 3) >> 2) << 2; // round up to multiple of 4
-    const vboLabel =
-      handle === HANDLE_NINESLICE_QUAD
-        ? 'nineslice-quad-vbo'
-        : handle === HANDLE_SPHERE
-          ? 'sphere-vbo'
-          : handle === HANDLE_CUBE
-            ? 'cube-vbo'
-            : handle === HANDLE_QUAD
-              ? 'quad-vbo'
-              : 'triangle-vbo';
-    const iboLabel =
-      handle === HANDLE_NINESLICE_QUAD
-        ? 'nineslice-quad-ibo'
-        : handle === HANDLE_SPHERE
-          ? 'sphere-ibo'
-          : handle === HANDLE_CUBE
-            ? 'cube-ibo'
-            : handle === HANDLE_QUAD
-              ? 'quad-ibo'
-              : 'triangle-ibo';
-    const vboResult = runShimSyncStep(
-      () =>
-        createPersistentBuffer({
-          label: vboLabel,
-          size: vertexBytes,
-          usage: GPU_BUFFER_USAGE_VERTEX | GPU_BUFFER_USAGE_COPY_DST,
-          mappedAtCreation: false,
-        }),
-      'webgpu-runtime-error',
-      'createBuffer (vbo) succeeded',
-      'check device.limits.maxBufferSize and remaining VRAM',
-    );
-    if (!vboResult.ok) throw vboResult.error;
-    const vboWrite = runShimSyncStep(
-      () => queue.writeBuffer(vboResult.value, 0, asset.vertices),
-      'queue-write-buffer-out-of-bounds',
-      'queue.writeBuffer (vbo) succeeded',
-      'verify offset alignment and bounds against buffer.size',
-    );
-    if (!vboWrite.ok) throw vboWrite.error;
-    // Vertex-only mesh: skip the index buffer (indexBuffer: null below). The
-    // indexed path is unchanged byte-for-byte when `meshIndices` is present.
-    let ibo: Buffer | null = null;
-    if (meshIndices !== undefined) {
-      const iboResult = runShimSyncStep(
-        () =>
-          createPersistentBuffer({
-            label: iboLabel,
-            size: indexBytes,
-            usage: GPU_BUFFER_USAGE_INDEX | GPU_BUFFER_USAGE_COPY_DST,
-            mappedAtCreation: false,
-          }),
-        'webgpu-runtime-error',
-        'createBuffer (ibo) succeeded',
-        'check device.limits.maxBufferSize and remaining VRAM',
-      );
-      if (!iboResult.ok) throw iboResult.error;
-      const indexBuffer = iboResult.value;
-      ibo = indexBuffer;
-      // Pad the source view up to indexBytes (multiple of 4) so writeBuffer's
-      // 4-byte alignment requirement is satisfied even when the index byte
-      // count itself is not a multiple of 4 (e.g. triangle = 6 bytes).
-      const indexSrc = new Uint8Array(indexBytes);
-      indexSrc.set(new Uint8Array(meshIndices.buffer, meshIndices.byteOffset, indexBytesUnpadded));
-      const iboWrite = runShimSyncStep(
-        () => queue.writeBuffer(indexBuffer, 0, indexSrc),
-        'queue-write-buffer-out-of-bounds',
-        'queue.writeBuffer (ibo) succeeded',
-        'verify offset alignment and bounds against buffer.size',
-      );
-      if (!iboWrite.ok) throw iboWrite.error;
-    }
-    // M-3 / w12: builtin direct-upload fallback path mirrors the gpuStore
-    // mesh entry shape -- raw RHI Buffer handles are wrapped in GpuBuffer so
-    // the dispose chain (M-5) can walk them via `.destroy()`.
-    const layoutProjection = deriveVertexLayoutProjection(asset.attributes);
-    const vertexCount = deriveVertexCount(asset.vertices, layoutProjection);
-    if (vertexCount === undefined) {
-      throw new Error(
-        `builtin mesh ${id} has vertex bytes that do not match its layout projection`,
-      );
-    }
-    meshHandles.set(id, {
-      vertexBuffer: new GpuBuffer(rhiDevice, vboResult.value),
-      indexBuffer: ibo === null ? null : new GpuBuffer(rhiDevice, ibo),
-      contentEpoch: 0,
-      vboBytes: vertexBytes,
-      iboBytes: meshIndices === undefined ? 0 : indexBytes,
-      indexCount: meshIndices?.length ?? 0,
-      indexFormat: meshIndices instanceof Uint32Array ? 'uint32' : 'uint16',
-      layoutProjection,
-      // BUILTIN_CUBE / BUILTIN_TRIANGLE are single-UV (set 0 only).
-      uvSetCount: 1,
-      vertexCount,
-      indexed: meshIndices !== undefined,
-      topology: asset.submeshes[0]?.topology ?? 'triangle-list',
-      submeshes: asset.submeshes,
-    });
-  }
 
   // ── Step 3.b: per-pipeline shared UBO / SSBO buffers ──────────────────────
   // The 3 BindGroups (view / material / mesh) the pbr.wgsl pipeline expects
@@ -1852,19 +1725,7 @@ export async function buildReadyWebGPU(
   );
   if (!viewUboResult.ok) throw viewUboResult.error;
 
-  const pointsLinesViewBufferResult = runShimSyncStep(
-    () =>
-      createPersistentBuffer({
-        label: 'points-lines-view-ubo',
-        size: POINTS_LINES_VIEW_BUFFER_SIZE,
-        usage: GPU_BUFFER_USAGE_UNIFORM | GPU_BUFFER_USAGE_COPY_DST,
-        mappedAtCreation: false,
-      }),
-    'webgpu-runtime-error',
-    'createBuffer (points-lines view ubo) succeeded',
-    'check device.limits.maxUniformBufferBindingSize',
-  );
-  if (!pointsLinesViewBufferResult.ok) throw pointsLinesViewBufferResult.error;
+  const pointsLinesView = createPointsLinesViewBuffer(rhiDevice, rendererScope);
 
   // feat-20260613-csm-cascaded-shadow-maps M5 / w28: per-pass cascade-index
   // UBO consumed by shadow_caster.wgsl. Stable singleton; the record stage
@@ -2058,7 +1919,7 @@ export async function buildReadyWebGPU(
         mipmapFilter: 'linear',
         addressModeU: 'clamp-to-edge',
         addressModeV: 'clamp-to-edge',
-        compare: 'greater',
+        compare: 'greater-equal',
       }),
     'webgpu-runtime-error',
     'createSampler (shadow) succeeded',
@@ -2319,7 +2180,6 @@ export async function buildReadyWebGPU(
   // are safe because the WGSL sample path is gated on
   // `PointLight.shadowAtlasLayer >= 0` -- a non-shadow-casting light
   // cannot read its lane.
-  const SHADOW_PARAMS_BYTES = 4 * 16;
   const shadowParamsBufferResult = runShimSyncStep(
     () =>
       createPersistentBuffer({
@@ -2330,11 +2190,11 @@ export async function buildReadyWebGPU(
       }),
     'webgpu-runtime-error',
     'createBuffer (shadow params UBO) succeeded',
-    'check device.limits.maxUniformBufferBindingSize (need >= 64)',
+    'check device.limits.maxUniformBufferBindingSize (need >= 256)',
   );
   if (!shadowParamsBufferResult.ok) throw shadowParamsBufferResult.error;
   // Zero-initialize the buffer so the no-shadow path reads deterministic
-  // zeros (writeBuffer with 64 B of zeros).
+  // zeros across every Point/Spot control lane.
   const SHADOW_PARAMS_ZEROES = new Uint8Array(SHADOW_PARAMS_BYTES);
   const shadowParamsZeroWriteRes = queue.writeBuffer(
     shadowParamsBufferResult.value,
@@ -2463,7 +2323,10 @@ export async function buildReadyWebGPU(
 
       // Layout: only fill if buildPipelineDescriptor did not already set it.
       if (d.layout === undefined) {
-        d.layout = pipelineLayoutResult.value;
+        d.layout =
+          (d.fragment as { module?: unknown } | undefined)?.module === unlitModule
+            ? unlitPipelineLayout
+            : pipelineLayoutResult.value;
       }
 
       // Sprite HDR uses fragment entry point 'fs_main_hdr'; all other
@@ -2530,8 +2393,22 @@ export async function buildReadyWebGPU(
   // (sprite LDR target — pre-feat sprite PSO targeted swapChainFormats.storage
   // directly so the alpha-blend pass writes the raw, non-srgb view of the
   // swap-chain texture; see pipeline-spec.ts SPRITE_ATTACHMENTS jsdoc).
-  const runtimeSpecConstTable = buildSpecConstTable(swapChainFormats.view);
-  const runtimeLinearLdrMaterialSpecTable = buildLinearLdrMaterialSpecTable(swapChainFormats.view);
+  // Boot pipelines consume the same reflected UV requirement as lazy material
+  // pipelines. Geometry owns aliasing absent sets onto the last supplied UV.
+  const withMaterialVertexInputs = (spec: Readonly<PipelineSpec>): Readonly<PipelineSpec> => {
+    const uvSetCount =
+      registry.materialArtifact(spec.shader.id)?.program.uvSetCount ??
+      registry.materialShaderManifestEntry(spec.shader.id)?.uvSetCount;
+    return uvSetCount === undefined
+      ? spec
+      : { ...spec, geometry: { ...spec.geometry, shaderUvSetCount: uvSetCount } };
+  };
+  const runtimeSpecConstTable = buildSpecConstTable(swapChainFormats.view).map(
+    withMaterialVertexInputs,
+  );
+  const runtimeLinearLdrMaterialSpecTable = buildLinearLdrMaterialSpecTable(
+    swapChainFormats.view,
+  ).map(withMaterialVertexInputs);
   const runtimeMaterialPrewarmTable = [
     ...runtimeSpecConstTable,
     ...runtimeLinearLdrMaterialSpecTable,
@@ -3786,8 +3663,6 @@ export async function buildReadyWebGPU(
     // null when the spec entry's module was not compiled (empty-manifest path).
     // (see definition near SPEC_CONST boot-time pre-warm block above)
     unlitPipeline: getCachedPipelineOrNull('forgeax::default-unlit', false, 1),
-    standardPbrShaderModule: pbrModule,
-    pbrSkinShaderModule: pbrSkinModule,
     standardPbrShaderUvSetCount,
     unlitPipelineMsaa: getCachedPipelineOrNull('forgeax::default-unlit', false, 4),
     // feat-20260625-refactor-sprite-as-transparent-mesh M3 / w14 (D-7):
@@ -3852,7 +3727,6 @@ export async function buildReadyWebGPU(
     // pipeline-layout build itself failed.
     skinPaletteAllocator:
       unlitModule !== null && pbrModule !== null ? skinPaletteAllocatorHandle : null,
-    meshes: meshHandles,
     format: swapChainFormats.storage,
     colorAttachmentFormat: swapChainFormats.view,
     surfaceProfile: surfaceViewFormats ? 'dual-view' : 'raw-only',
@@ -3874,7 +3748,10 @@ export async function buildReadyWebGPU(
     materialBindGroupLayout: materialBglResult.value,
     meshBindGroupLayout: meshArrayBglResult.value,
     viewUniformBuffer: viewUboResult.value,
-    pointsLinesViewBuffer: pointsLinesViewBufferResult.value,
+    get pointsLinesViewBuffer() {
+      return pointsLinesView.buffer;
+    },
+    ensurePointsLinesViewCapacity: pointsLinesView.ensureCapacity,
     shadowCasterCascadeBuffer: shadowCasterCascadeUboResult.value,
     // feat-20260608-mesh-ssbo-dynamic-grow-l1-lift-1024-entity-cap M2 /
     materialUniformBuffer: meshSsboState.material,

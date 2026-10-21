@@ -24,6 +24,7 @@ import type { Archetype } from './storage/archetype';
 import type { ArchetypeGraph } from './storage/archetype-graph';
 import type { ArrayRangesChange } from './storage/array-range-log';
 import type { ChangeTicks } from './storage/change-detection';
+import type { ChangeIndex } from './storage/change-index';
 import type { Table } from './storage/table';
 import type { ClockWriter } from './time';
 import type { ComponentData, EcsError, EntityRecord } from './world';
@@ -42,6 +43,9 @@ export const worldInternal: unique symbol = Symbol.for(
  */
 /** @internal Raw ECS owner seam; source-relative consumers only. */
 export interface WorldInternal {
+  readonly beginDerivedWrite: () => boolean;
+  readonly endDerivedWrite: () => void;
+  readonly isDerivedWriteActive: () => boolean;
   readonly allocatePendingEntity: () => EntityHandle;
   readonly cancelPendingEntity: (entity: EntityHandle) => void;
   readonly getArrayRangesChangedSince: (
@@ -61,6 +65,8 @@ export interface WorldInternal {
     entity: EntityHandle,
     componentId: number,
   ) => ChangeTicks | undefined;
+  readonly getComponentChangeIndex: (id: number) => ChangeIndex | undefined;
+  readonly getStructuralChangeIndex: () => ChangeIndex;
   readonly getComponentMutationEpochs: () => readonly number[];
   readonly getEntityArchetype: (entity: EntityHandle) => Archetype | undefined;
   readonly getFixedAccumulator: () => number;

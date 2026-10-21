@@ -1,5 +1,6 @@
-import { HANDLE_CUBE } from '@forgeax/engine-assets-runtime';
+import { runtimeAssets } from '@forgeax/engine-assets-runtime/internal';
 import { World } from '@forgeax/engine-ecs';
+import { createPrimitiveMesh } from '@forgeax/engine-geometry';
 import { Camera, MeshFilter, MeshRenderer } from '@forgeax/engine-render';
 import { Transform } from '@forgeax/engine-scene';
 import type { MaterialAsset } from '@forgeax/engine-types';
@@ -7,6 +8,7 @@ import { expect, it } from 'vitest';
 import { page } from 'vitest/browser';
 import { constructRuntimeRendererHost } from '../renderer-host';
 import { drawPublished } from './draw-published';
+import { testAssets } from './helpers/runtime-assets';
 
 it.each([
   'opaque',
@@ -78,11 +80,11 @@ it.each([
           : '/__material-programs/pack-index.json',
     );
     const material = (
-      await assets.loadByGuid<MaterialAsset>(
-        assets.parseGuid('8f50ae65-6e0a-40b4-8949-b47006edab90'),
-      )
+      await assets.load(assets.parseGuid('8f50ae65-6e0a-40b4-8949-b47006edab90'), 'material')
     ).unwrap();
-    const projection = assets.getMaterialProjectionForPayload(material);
+    const projection = assets.getMaterialProjectionForPayload(
+      runtimeAssets(assets).borrow<MaterialAsset>(material).unwrap(),
+    );
     if (projection === undefined) throw new Error('material projection is missing');
     const programs = projection.passes.flatMap((pass) => pass.programs);
     const capabilities = [...new Set(programs.map((program) => program.context.capability))];
@@ -110,8 +112,8 @@ it.each([
           ).size,
         ).toBe(2);
     }
-    const world = new World();
-    const handle = world.allocSharedRef<'MaterialAsset', MaterialAsset>('MaterialAsset', material);
+    const world = new World({ assets });
+    const handle = material;
     world
       .spawn(
         { component: Transform, data: { pos: [0, 0, 3], scale: [1, 1, 1], quat: [0, 0, 0, 1] } },
@@ -130,7 +132,12 @@ it.each([
     world
       .spawn(
         { component: Transform, data: { pos: [0, 0, 0], scale: [1, 1, 1], quat: [0, 0, 0, 1] } },
-        { component: MeshFilter, data: { assetHandle: HANDLE_CUBE } },
+        {
+          component: MeshFilter,
+          data: {
+            assetHandle: testAssets(world).create(createPrimitiveMesh('cube').unwrap()).unwrap(),
+          },
+        },
         { component: MeshRenderer, data: { materials: [handle] } },
       )
       .unwrap();

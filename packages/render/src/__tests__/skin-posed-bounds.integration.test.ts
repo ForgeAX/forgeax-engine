@@ -1,15 +1,15 @@
-import { AssetRegistry } from '@forgeax/engine-assets-runtime';
 import { World } from '@forgeax/engine-ecs';
 import { packInterleavedVertexAttributes } from '@forgeax/engine-geometry';
 import { box3, mat4 } from '@forgeax/engine-math';
 import { rhi } from '@forgeax/engine-rhi-null';
 import { MorphWeights, registerPropagateTransforms, Transform } from '@forgeax/engine-scene';
 import { Skin } from '@forgeax/engine-skinning';
-import type { MeshAsset, SkeletonAsset } from '@forgeax/engine-types';
+import type { MeshAsset } from '@forgeax/engine-types';
 import { describe, expect, it } from 'vitest';
 import { createSkinPaletteOwner } from '../assembly/skin-palette-owner';
 import { MeshFilter, MeshRenderer } from '../components';
 import { extractFrames } from '../render-system-extract-tail';
+import { testAssets } from './helpers/runtime-assets';
 
 function triangle(firstX = 0): MeshAsset {
   const attributes = {
@@ -37,14 +37,16 @@ describe('current Skin pose bounds in extraction', () => {
   ])('updates current bounds and retained palette receipts (storage=%s)', async (storage) => {
     const world = new World();
     registerPropagateTransforms(world);
-    const mesh = world.allocSharedRef<'MeshAsset', MeshAsset>('MeshAsset', triangle());
-    const skeleton = world.allocSharedRef<'SkeletonAsset', SkeletonAsset>('SkeletonAsset', {
-      kind: 'skeleton',
-      jointCount: 1,
-      inverseBindMatrices: mat4.identity(mat4.create()),
-      // This old producer envelope deliberately does not contain the current pose.
-      bounds: new Float32Array([-2, -2, -2, 2, 2, 2]),
-    });
+    const mesh = testAssets(world).create(triangle()).unwrap();
+    const skeleton = testAssets(world)
+      .create({
+        kind: 'skeleton',
+        jointCount: 1,
+        inverseBindMatrices: mat4.identity(mat4.create()),
+        // This old producer envelope deliberately does not contain the current pose.
+        bounds: new Float32Array([-2, -2, -2, 2, 2, 2]),
+      })
+      .unwrap();
     const joint = world.spawn({ component: Transform, data: { pos: [9, 0, 0] } }).unwrap();
     const surface = world
       .spawn(
@@ -54,7 +56,7 @@ describe('current Skin pose bounds in extraction', () => {
         { component: Skin, data: { skeleton, joints: new Uint32Array([joint]) } },
       )
       .unwrap();
-    const assets = new AssetRegistry({} as never);
+    const assets = testAssets(world);
     const device = (await (await rhi.requestAdapter()).unwrap().requestDevice()).unwrap();
     const allocator = createSkinPaletteOwner(device, storage);
     const extract = () => {
@@ -81,7 +83,7 @@ describe('current Skin pose bounds in extraction', () => {
       expect(moved.skin?.bounds).toEqual(new Float32Array([17, 0, 0, 18, 1, 0]));
       expect(first.skin?.bounds).toEqual(new Float32Array([14, 0, 0, 15, 1, 0]));
       const replacement = triangle(-3);
-      const newMesh = world.allocSharedRef<'MeshAsset', MeshAsset>('MeshAsset', replacement);
+      const newMesh = testAssets(world).create(replacement).unwrap();
       world.set(surface, MeshFilter, { assetHandle: newMesh }).unwrap();
       const rebound = extract();
       expect(rebound.skin?.buffer).toBe(first.skin?.buffer);
@@ -98,18 +100,19 @@ describe('current Skin pose bounds in extraction', () => {
       // raw XYZ spans x=21..25 while raster positions span x=10.5..12.5.
       const projectiveBind = mat4.identity(mat4.create());
       projectiveBind[15] = 2;
-      const projectiveSkeleton = world.allocSharedRef<'SkeletonAsset', SkeletonAsset>(
-        'SkeletonAsset',
-        { kind: 'skeleton', jointCount: 1, inverseBindMatrices: projectiveBind },
-      );
+      const projectiveSkeleton = testAssets(world)
+        .create({ kind: 'skeleton', jointCount: 1, inverseBindMatrices: projectiveBind })
+        .unwrap();
       world.set(surface, Skin, { skeleton: projectiveSkeleton }).unwrap();
       expect(extract().skin?.bounds).toEqual(new Float32Array([15.5, 0, 0, 30, 1, 0]));
       // A held palette may reuse only its bounds. Morph admission is still
       // derived from current weights and a newly bound source mesh.
-      const morphMesh = world.allocSharedRef<'MeshAsset', MeshAsset>('MeshAsset', {
-        ...triangle(-3),
-        morphTargets: [{ position: new Float32Array(9) }],
-      });
+      const morphMesh = testAssets(world)
+        .create({
+          ...triangle(-3),
+          morphTargets: [{ position: new Float32Array(9) }],
+        })
+        .unwrap();
       world.set(surface, MeshFilter, { assetHandle: morphMesh }).unwrap();
       world.addComponent(surface, { component: MorphWeights, data: { weights: [0.5] } }).unwrap();
       const morphed = extract();
@@ -130,12 +133,14 @@ it('reads the public conservative MeshRenderer policy through source extraction'
   const world = new World();
   registerPropagateTransforms(world);
   const geometry = triangle();
-  const mesh = world.allocSharedRef<'MeshAsset', MeshAsset>('MeshAsset', geometry);
-  const skeleton = world.allocSharedRef<'SkeletonAsset', SkeletonAsset>('SkeletonAsset', {
-    kind: 'skeleton',
-    jointCount: 1,
-    inverseBindMatrices: mat4.identity(mat4.create()),
-  });
+  const mesh = testAssets(world).create(geometry).unwrap();
+  const skeleton = testAssets(world)
+    .create({
+      kind: 'skeleton',
+      jointCount: 1,
+      inverseBindMatrices: mat4.identity(mat4.create()),
+    })
+    .unwrap();
   const joint = world.spawn({ component: Transform, data: { pos: [10, 0, 0] } }).unwrap();
   const surface = world
     .spawn(
@@ -145,7 +150,7 @@ it('reads the public conservative MeshRenderer policy through source extraction'
       { component: Skin, data: { skeleton, joints: [joint] } },
     )
     .unwrap();
-  const assets = new AssetRegistry({} as never);
+  const assets = testAssets(world);
   const extract = () => {
     world.update(0).unwrap();
     const row = extractFrames([world], 0, assets).renderables.find(
@@ -161,7 +166,7 @@ it('reads the public conservative MeshRenderer policy through source extraction'
     world.set(surface, MeshRenderer, { conservativeSkinBounds: false }).unwrap();
     expect(extract()).toEqual(new Float32Array([10, 0, 0, 11, 1, 0]));
     world.set(surface, MeshRenderer, { conservativeSkinBounds: true }).unwrap();
-    (geometry.attributes.position as Float32Array)[0] = -100;
+    assets.replace(mesh, triangle(-100)).unwrap();
     expect(extract()[0]).toBeLessThan(-90);
     world.set(joint, Transform, { pos: [20, 0, 0] }).unwrap();
     const moved = extract();

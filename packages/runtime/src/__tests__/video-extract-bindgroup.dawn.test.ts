@@ -1,4 +1,10 @@
+import { createPrimitiveMesh } from '@forgeax/engine-geometry';
+import type { AssetHandle } from '@forgeax/engine-types';
+import { publishRuntimeAssets } from '../../../assets-runtime/src/__tests__/fixtures/runtime-publication';
+import { installDefaultAssetDecoders } from '../asset-contributions';
+import { testAssets } from './helpers/runtime-assets';
 import { shaderManifestUrl } from './shader-manifest-url.fixture';
+import { renderValue } from './standard-gbuffer-replay.fixture';
 // feat-20260623-world-space-video-asset M4 / w13 — AC-06: a VideoAsset GUID
 // embedded in a MaterialAsset.values texture field flows through the
 // extract layer and produces a bind group without blowing up.
@@ -28,18 +34,12 @@ import { shaderManifestUrl } from './shader-manifest-url.fixture';
 //      the per-frame upload itself lands in w16, here the field falls back to the
 //      default view until a frame is uploaded).
 
-import { AssetRegistry, HANDLE_CUBE, HANDLE_QUAD } from '@forgeax/engine-assets-runtime';
+import { AssetRegistry } from '@forgeax/engine-assets-runtime';
 import { World } from '@forgeax/engine-ecs';
 import { AssetGuid } from '@forgeax/engine-pack/guid';
 import { Camera, MeshFilter, MeshRenderer } from '@forgeax/engine-render';
 import { propagateTransforms, Transform } from '@forgeax/engine-scene';
-import type {
-  Handle,
-  MaterialAsset,
-  MaterialPass,
-  MeshAsset,
-  VideoAsset,
-} from '@forgeax/engine-types';
+import type { MaterialAsset, MaterialPass, MeshAsset, VideoAsset } from '@forgeax/engine-types';
 import { describe, expect, it } from 'vitest';
 import {
   Camera as SourceCamera,
@@ -85,21 +85,22 @@ function registerTestMesh(world: World) {
 
     materialSlots: [{ slotName: 'Default' }],
   };
-  return world.allocSharedRef<'MeshAsset', MeshAsset>('MeshAsset', mesh);
+  return testAssets(world).create(mesh).unwrap();
 }
 
 /**
  * Catalog a VideoAsset GUID + a standard-PBR material whose baseColorTexture
  * paramValue references it; return the material column handle to spawn with.
  */
-function catalogVideoMaterial(
+async function catalogVideoMaterial(
   world: World,
   assets: AssetRegistry,
-): { matHandle: Handle<'MaterialAsset', 'shared'>; videoGuid: AssetGuid } {
+): Promise<{ matHandle: AssetHandle<'material'>; videoGuid: AssetGuid }> {
   const videoGuid = AssetGuid.random();
   const videoGuidStr = AssetGuid.format(videoGuid);
   const video: VideoAsset = { kind: 'video', url: 'extract-bindgroup-clip.webm' };
-  assets.catalog(videoGuid, video);
+  publishRuntimeAssets(assets, [{ guid: videoGuidStr, asset: video }]);
+  (await assets.load(videoGuid, 'video')).unwrap();
 
   const material: MaterialAsset = {
     kind: 'material',
@@ -108,23 +109,24 @@ function catalogVideoMaterial(
     // shape a static texture would (D-5 reuse of the texture2d slot).
     values: { baseColor: [1, 1, 1], baseColorTexture: { texture: videoGuidStr as never } },
   } as MaterialAsset;
-  const matHandle = world.allocSharedRef<'MaterialAsset', MaterialAsset>('MaterialAsset', material);
+  const matHandle = testAssets(world).create(material).unwrap();
   return { matHandle, videoGuid };
 }
 
 describe('AC-06 / R-7 — video GUID in values is a recognised texture field (M4 / w13)', () => {
   it('R-7: baseColorTexture is in the standard-PBR shader textureFieldNames set', () => {
-    const assets = new AssetRegistry(makeMockShaderRegistry());
+    const assets = new AssetRegistry({ shaderRegistry: makeMockShaderRegistry() });
     const fields = assets.materialShaderTextureFieldNames(STANDARD_PBR_SHADER);
     expect(fields, 'standard-PBR shader must declare texture fields').toBeDefined();
     expect(fields?.has('baseColorTexture')).toBe(true);
   });
 
-  it('extract flags the video-sourced field and does NOT carry it as a static TextureAsset handle', () => {
-    const world = new World();
-    const assets = new AssetRegistry(makeMockShaderRegistry());
+  it('extract flags the video-sourced field and does NOT carry it as a static TextureAsset handle', async () => {
+    const assets = new AssetRegistry({ shaderRegistry: makeMockShaderRegistry() });
+    installDefaultAssetDecoders(assets);
+    const world = new World({ assets });
     const mesh = registerTestMesh(world);
-    const { matHandle } = catalogVideoMaterial(world, assets);
+    const { matHandle } = await catalogVideoMaterial(world, assets);
 
     world
       .spawn(
@@ -143,7 +145,7 @@ describe('AC-06 / R-7 — video GUID in values is a recognised texture field (M4
     propagateTransforms(world);
     const frame = extractFrame(world, prepareExtractContext(world, { assets, cull: 'none' }));
     expect(frame.renderables.length).toBe(1);
-    const mat = frame.renderables[0]?.material;
+    const mat = frame.renderables[0]?.material.snapshot;
     expect(mat).toBeDefined();
 
     // Desired post-w14 behavior (RED before w14):
@@ -255,10 +257,10 @@ describe('AC-06 — extract->record->bind group does not blow up on a video fiel
     const videoGuid = AssetGuid.random();
     const videoGuidStr = AssetGuid.format(videoGuid);
     const video: VideoAsset = { kind: 'video', url: 'extract-bindgroup-clip.webm' };
-    const videoCatalog = assets.catalog(videoGuid, video as never);
-    expect(videoCatalog.ok).toBe(true);
+    publishRuntimeAssets(assets, [{ guid: videoGuidStr, asset: video }]);
+    (await assets.load(videoGuid, 'video')).unwrap();
 
-    const materialPayload = {
+    const materialPayload: MaterialAsset = {
       kind: 'material' as const,
       passes: [FORWARD_PBR_PASS],
       values: {
@@ -278,12 +280,17 @@ describe('AC-06 — extract->record->bind group does not blow up on a video fiel
       });
     });
 
-    const world = new World();
-    const matHandle = world.allocSharedRef('MaterialAsset', materialPayload);
+    const world = new World({ assets });
+    const matHandle = testAssets(world).create(materialPayload).unwrap();
     world
       .spawn(
         { component: Transform, data: transformData(0, 0, 0) },
-        { component: MeshFilter, data: { assetHandle: HANDLE_CUBE } },
+        {
+          component: MeshFilter,
+          data: {
+            assetHandle: testAssets(world).create(createPrimitiveMesh('cube').unwrap()).unwrap(),
+          },
+        },
         { component: MeshRenderer, data: { materials: [matHandle] } },
       )
       .unwrap();
@@ -295,7 +302,7 @@ describe('AC-06 — extract->record->bind group does not blow up on a video fiel
       .unwrap();
 
     // This is an expected unsupported-resource submission, not a ready picture.
-    const lease = renderer.attach(world).unwrap();
+    const lease = renderValue(renderer.attach(world));
     world.update(1 / 60).unwrap();
     const drawn = renderer.draw({ leases: [lease], camera: { lease }, environment: { lease } });
     expect(drawn.ok).toBe(true);
@@ -331,7 +338,8 @@ describe('AC-06 — extract->record->bind group does not blow up on a video fiel
     const videoGuid = AssetGuid.random();
     const videoGuidStr = AssetGuid.format(videoGuid);
     const video: VideoAsset = { kind: 'video', url: 'double-miss-clip.webm' };
-    expect(assets.catalog(videoGuid, video as never).ok).toBe(true);
+    publishRuntimeAssets(assets, [{ guid: videoGuidStr, asset: video }]);
+    (await assets.load(videoGuid, 'video')).unwrap();
 
     // Mirror the demo recipe exactly: unlit shader + HANDLE_QUAD. The video
     // upload path (videoTextureView) is reached via the per-submesh user-region
@@ -339,7 +347,7 @@ describe('AC-06 — extract->record->bind group does not blow up on a video fiel
     // declares baseColorTexture there. (The earlier standard-PBR + HANDLE_CUBE
     // shape routes through a different builtin-cube pipeline branch that does not
     // hit the user-region video loop — not the production demo path.)
-    const materialPayload = {
+    const materialPayload: MaterialAsset = {
       kind: 'material' as const,
       passes: [
         {
@@ -366,15 +374,20 @@ describe('AC-06 — extract->record->bind group does not blow up on a video fiel
       });
     });
 
-    const world = new World();
+    const world = new World({ assets });
     // NB: NO VIDEO_SOURCE_PROVIDER_KEY resource inserted -> the production
     // upload path resolves element===undefined; high-perf path is absent on
     // dawn -> genuine AC-10 double-miss.
-    const matHandle = world.allocSharedRef('MaterialAsset', materialPayload);
+    const matHandle = testAssets(world).create(materialPayload).unwrap();
     world
       .spawn(
         { component: Transform, data: transformData(0, 0, 0) },
-        { component: MeshFilter, data: { assetHandle: HANDLE_QUAD } },
+        {
+          component: MeshFilter,
+          data: {
+            assetHandle: testAssets(world).create(createPrimitiveMesh('quad').unwrap()).unwrap(),
+          },
+        },
         { component: MeshRenderer, data: { materials: [matHandle] } },
       )
       .unwrap();
@@ -386,7 +399,7 @@ describe('AC-06 — extract->record->bind group does not blow up on a video fiel
       .unwrap();
 
     // This is an expected unsupported-resource submission, not a ready picture.
-    const lease = renderer.attach(world).unwrap();
+    const lease = renderValue(renderer.attach(world));
     world.update(1 / 60).unwrap();
     const drawn = renderer.draw({ leases: [lease], camera: { lease }, environment: { lease } });
     expect(drawn.ok).toBe(true);

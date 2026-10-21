@@ -1,3 +1,4 @@
+import { testAssets } from './helpers/runtime-assets';
 // @perf-budget-skip: intentional full mock-GPU render regression smoke gate.
 
 // feat-city-glb Bug 5 (per-submesh transparency) — structural regression test.
@@ -321,59 +322,70 @@ async function spawnMixedTransparentScene(): Promise<{
   const C = await importComponents();
   const world = new World();
 
-  const meshHandle = world.allocSharedRef('MeshAsset', twoSubmeshMesh()) as unknown as Handle<
-    'MeshAsset',
-    'shared'
-  >;
+  const meshHandle = testAssets(world as WorldType)
+    .create(twoSubmeshMesh())
+    .unwrap() as unknown as Handle<'MeshAsset', 'shared'>;
 
-  const opaqueTexHandle = world.allocSharedRef('TextureAsset', makeTex());
-  const blendTexHandle = world.allocSharedRef('TextureAsset', makeTex());
+  const opaqueTexHandle = testAssets(world as WorldType)
+    .create(makeTex())
+    .unwrap();
+  const blendTexHandle = testAssets(world as WorldType)
+    .create(makeTex())
+    .unwrap();
 
-  const opaqueMat = world.allocSharedRef('MaterialAsset', {
-    kind: 'material',
-    passes: [
-      {
-        name: 'Forward',
-        program: { module: 'forgeax::default-standard-pbr' },
-        renderState: { tags: { LightMode: 'Forward' }, queue: 2000 },
+  const opaqueMat = testAssets(world as WorldType)
+    .create({
+      kind: 'material',
+      passes: [
+        {
+          name: 'Forward',
+          program: { module: 'forgeax::default-standard-pbr' },
+          renderState: { tags: { LightMode: 'Forward' }, queue: 2000 },
+        },
+      ],
+      values: {
+        baseColor: [1, 1, 1],
+        metallic: 0,
+        roughness: 0.5,
+        baseColorTexture: opaqueTexHandle,
       },
-    ],
-    values: {
-      baseColor: [1, 1, 1],
-      metallic: 0,
-      roughness: 0.5,
-      baseColorTexture: opaqueTexHandle,
-    },
-  } as unknown as MaterialAsset) as unknown as Handle<'MaterialAsset', 'shared'>;
+    } as unknown as MaterialAsset)
+    .unwrap() as unknown as Handle<'MaterialAsset', 'shared'>;
 
   // Transparent material: renderState.blend present => extract derives
   // materials[1].transparent = true. depthWriteEnabled:false mirrors the bridge.
-  const blendMat = world.allocSharedRef('MaterialAsset', {
-    kind: 'material',
-    passes: [
-      {
-        name: 'Forward',
-        program: { module: 'forgeax::default-standard-pbr' },
-        renderState: {
-          ...{
-            depthWriteEnabled: false,
-            blend: {
-              color: { srcFactor: 'src-alpha', dstFactor: 'one-minus-src-alpha', operation: 'add' },
-              alpha: { srcFactor: 'one', dstFactor: 'one-minus-src-alpha', operation: 'add' },
+  const blendMat = testAssets(world as WorldType)
+    .create({
+      kind: 'material',
+      passes: [
+        {
+          name: 'Forward',
+          program: { module: 'forgeax::default-standard-pbr' },
+          renderState: {
+            ...{
+              depthWriteEnabled: false,
+              blend: {
+                color: {
+                  srcFactor: 'src-alpha',
+                  dstFactor: 'one-minus-src-alpha',
+                  operation: 'add',
+                },
+                alpha: { srcFactor: 'one', dstFactor: 'one-minus-src-alpha', operation: 'add' },
+              },
             },
+            tags: { LightMode: 'Forward' },
+            queue: 3000,
           },
-          tags: { LightMode: 'Forward' },
-          queue: 3000,
         },
+      ],
+      values: {
+        baseColor: [1, 1, 1],
+        metallic: 0,
+        roughness: 0.5,
+        baseColorTexture: blendTexHandle,
       },
-    ],
-    values: {
-      baseColor: [1, 1, 1],
-      metallic: 0,
-      roughness: 0.5,
-      baseColorTexture: blendTexHandle,
-    },
-  } as unknown as MaterialAsset) as unknown as Handle<'MaterialAsset', 'shared'>;
+    } as unknown as MaterialAsset)
+    .unwrap() as unknown as Handle<'MaterialAsset', 'shared'>;
 
   world.spawn(
     {

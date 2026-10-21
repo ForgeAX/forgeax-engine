@@ -31,7 +31,7 @@ try {
     return renderer?.ssr.status==='admitted' && renderer.ssr.history.state==='stable'
       && globalThis.__inspectSsrExecution().frame.completed>=128
       && (!usesTaa || (renderer.temporal.historyValid && renderer.temporal.frameIndex>=128));
-  },usesTaa,{timeout:180000});
+  },usesTaa,{timeout:selection.selectedBackend === 'swiftshader-vulkan' ? 600000 : 180000});
   await page.evaluate(()=>globalThis.__setSsrEvidencePaused(true));
   await page.waitForFunction(()=>globalThis.__inspectSsrExecution().frame.inFlight===0);
   const configuration = await page.evaluate(()=>globalThis.__inspectSsr());
@@ -42,7 +42,7 @@ try {
     assert.ok(configuration.dynamicResolution.extent.internalWidth<1024,'The combination must actually render below presentation resolution');
     const extent=configuration.dynamicResolution.extent;
     assert.equal(configuration.ssr.history.bytes,
-      Math.floor(extent.internalWidth/2)*Math.floor(extent.internalHeight/2)*2*(8+4),
+      extent.internalWidth*extent.internalHeight*2*(8+4),
       'SSR radiance and surface history must follow the submitted internal extent');
   }
   const step = async name => {

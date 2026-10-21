@@ -67,7 +67,6 @@ export function createWebSocketClientEndpoint(
     let socket: WebSocketLike;
     try {
       socket = new WebSocket(options.url);
-      socket.binaryType = 'arraybuffer';
     } catch (cause) {
       resolve(connectionFailed(options.url, cause));
       return;
@@ -75,7 +74,7 @@ export function createWebSocketClientEndpoint(
 
     const terminalEvents: EndpointEvent[] = [];
     let state: ClientState = 'connecting';
-    const closed = (): boolean => state === 'remote-closed' || state === 'locally-closed';
+    const closed = (): boolean => state !== 'connecting' && state !== 'open';
     let messageTail = Promise.resolve();
     let pendingMessages = 0;
     let pendingBytes = 0;
@@ -84,17 +83,30 @@ export function createWebSocketClientEndpoint(
       signal.removeEventListener('abort', abortPendingConnection);
     };
 
-    const abortPendingConnection = (): void => {
+    const releaseSocket = (): void => {
+      removeAbortListener();
+      socket.onopen = null;
+      socket.onmessage = null;
+      socket.onclose = null;
+      // Node ws can emit an asynchronous error while closing a connecting
+      // socket. Keep a capture-free sink after releasing endpoint callbacks.
+      socket.onerror = () => {};
+      if (socket.readyState !== socket.CLOSED && socket.readyState !== socket.CLOSING) {
+        try {
+          socket.close();
+        } catch {
+          /* Platform retirement is best effort. */
+        }
+      }
+    };
+
+    const failConnection = (cause: unknown): void => {
       if (state !== 'connecting') return;
       state = 'failed';
-      try {
-        socket.close();
-      } catch {
-        // Closing a partially opened platform socket is best effort.
-      }
-      removeAbortListener();
-      resolve(connectionFailed(options.url, 'WebSocket connection aborted.'));
+      releaseSocket();
+      resolve(connectionFailed(options.url, cause));
     };
+    const abortPendingConnection = (): void => failConnection('WebSocket connection aborted.');
 
     signal.addEventListener('abort', abortPendingConnection, { once: true });
     if (signal.aborted) {
@@ -102,12 +114,23 @@ export function createWebSocketClientEndpoint(
       return;
     }
 
-    const disconnect = (reason: string): void => {
+    const disconnect = (
+      reason: string,
+      terminal: 'remote-closed' | 'locally-closed' = 'remote-closed',
+    ): void => {
       if (closed()) return;
-      state = 'remote-closed';
+      state = terminal;
       queue.close(reason);
       terminalEvents.push({ kind: 'peer-disconnected', peerId: clientPeerId });
+      releaseSocket();
     };
+
+    try {
+      socket.binaryType = 'arraybuffer';
+    } catch (cause) {
+      failConnection(cause);
+      return;
+    }
 
     const endpoint: NetEndpoint = {
       poll: () => [...queue.drain(), ...terminalEvents.splice(0)],
@@ -146,14 +169,11 @@ export function createWebSocketClientEndpoint(
           );
         if (closed()) return connectionClosed(peerId);
         disconnect('Peer disconnect requested.');
-        socket.close();
         return ok(undefined);
       },
       close: () => {
         if (closed()) return alreadyClosed('The WebSocket endpoint is already closed.');
-        disconnect('Endpoint close requested.');
-        state = 'locally-closed';
-        socket.close();
+        disconnect('Endpoint close requested.', 'locally-closed');
         return ok(undefined);
       },
     };
@@ -178,7 +198,6 @@ export function createWebSocketClientEndpoint(
         pendingBytes + byteLength > queue.maxQueuedBytes
       ) {
         disconnect('Message conversion queue overflow.');
-        socket.close();
         return;
       }
       pendingMessages += 1;
@@ -191,7 +210,7 @@ export function createWebSocketClientEndpoint(
           const bytes = await options.toBytes(data);
           if (!bytes || closed()) return;
           if (!queue.enqueue({ kind: 'message', peerId: clientPeerId, data: bytes })) {
-            socket.close();
+            disconnect(queue.disconnectReason ?? 'Message queue overflow.');
           }
         })
         .catch(() => undefined)
@@ -202,20 +221,11 @@ export function createWebSocketClientEndpoint(
     };
     socket.onerror = (cause) => {
       if (state === 'open') disconnect(`WebSocket error: ${normalizeCause(cause)}`);
-      else if (state === 'connecting') {
-        state = 'failed';
-        removeAbortListener();
-        resolve(connectionFailed(options.url, cause));
-      }
+      else failConnection(cause);
     };
     socket.onclose = (cause) => {
-      if (state === 'connecting') {
-        state = 'failed';
-        removeAbortListener();
-        resolve(connectionFailed(options.url, cause));
-        return;
-      }
-      disconnect(`WebSocket closed: ${normalizeCause(cause)}`);
+      if (state === 'connecting') failConnection(cause);
+      else disconnect(`WebSocket closed: ${normalizeCause(cause)}`);
     };
   });
 }

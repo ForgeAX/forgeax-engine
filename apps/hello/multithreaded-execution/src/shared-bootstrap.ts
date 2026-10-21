@@ -1,7 +1,7 @@
 import type { ExecutionBootstrapEntry, ExecutionBootstrapValue } from '@forgeax/engine-app';
 import type { EntityHandle, World } from '@forgeax/engine-ecs';
+import { createPrimitiveMesh } from '@forgeax/engine-geometry';
 import { INPUT_SNAPSHOT_RESOURCE_KEY, type InputSnapshot } from '@forgeax/engine-input';
-import { HANDLE_CUBE } from '@forgeax/engine-assets-runtime';
 import { Camera, DirectionalLight, Materials, MeshFilter, MeshRenderer } from '@forgeax/engine-render';
 import { Transform } from '@forgeax/engine-scene';
 import { createExecutionKernel, ExecutionParticle } from './shared-kernel';
@@ -20,9 +20,12 @@ const bootstrap: ExecutionBootstrapEntry = (data) => ({
   plugins: [
     {
       name: 'multithreaded-execution',
-      inject: ['world', 'executionBootstrapHost'],
+      inject: ['world', 'assets', 'executionBootstrapHost'],
       apply(ctx): void {
         const world = ctx.world;
+        const sceneAssets = ctx.assets;
+        if (sceneAssets === undefined) throw new Error('Scene requires its runtime asset owner');
+
         const port = ctx.executionBootstrapHost.port;
         const telemetry = telemetryRequested(data) && port !== undefined;
         const faultRequested = shouldFault;
@@ -87,19 +90,19 @@ const bootstrap: ExecutionBootstrapEntry = (data) => ({
           for (const entity of spawned.reverse()) world.despawn(entity);
         }, 'demo/execution-world');
         if (telemetry) {
-          const material = world.allocSharedRef(
-            'MaterialAsset',
-            Materials.unlit([0.1, 0.7, 0.95, 1]),
-          );
+          const primitiveCube = sceneAssets.create(createPrimitiveMesh('cube').unwrap()).unwrap();
+          const material = sceneAssets.create(Materials.unlit([0.1, 0.7, 0.95, 1])).unwrap();
           spawned.push(
             world
               .spawn(
                 { component: Transform, data: { pos: [0, 0, 0], scale: [1, 1, 1] } },
-                { component: MeshFilter, data: { assetHandle: HANDLE_CUBE } },
+                { component: MeshFilter, data: { assetHandle: primitiveCube } },
                 { component: MeshRenderer, data: { materials: [material] } },
               )
               .unwrap(),
           );
+          sceneAssets.release(primitiveCube).unwrap();
+          sceneAssets.release(material).unwrap();
           spawned.push(
             world
               .spawn(

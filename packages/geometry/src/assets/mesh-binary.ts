@@ -10,16 +10,19 @@ import type {
 import { PROCEDURAL_FLOATS_PER_VERTEX } from '../box';
 import { admitsMeshCardLayout, validateMeshCardLayout } from '../mesh-card-artifact';
 import { validateMeshCollisionAttachment } from '../mesh-collision';
+import { prepareMeshData } from '../mesh-data';
 import { deriveVertexLayoutProjection } from '../vertex-attribute-layout';
 
-import { type UnpackedMeshBin, unpackMeshBin } from './mesh-bin';
+import { type UnpackedMeshBin, unpackMeshBin } from './unpack-mesh-bin';
 
 type PackedMaterialSlots = readonly (UnpackedMeshBin['materialSlots'][number] & {
   /** Direct Pack JSON keeps the authoring GUID until the producer boundary. */
   readonly defaultMaterial?: string;
 })[];
 
-function parseGuid(value: string): AssetGuid | undefined {
+function parseGuid(value: unknown): AssetGuid | undefined {
+  if (value instanceof Uint8Array && value.byteLength === 16) return value as AssetGuid;
+  if (typeof value !== 'string') return undefined;
   const compact = value.replaceAll('-', '');
   if (!/^[0-9a-f]{32}$/i.test(compact)) return undefined;
   const bytes = new Uint8Array(16);
@@ -80,22 +83,54 @@ function materialSlotsFor(
   raw: PackedMaterialSlots | undefined,
   submeshes: readonly Submesh[],
   refs: readonly string[],
-): readonly MeshMaterialSlot[] {
+): readonly MeshMaterialSlot[] | undefined {
   if (raw === undefined)
     return submeshes.map((_submesh, index) => ({ slotName: `LegacySlot_${index}` }));
-  return raw.map((slot, index) => {
+  const result: MeshMaterialSlot[] = [];
+  for (const [index, slot] of raw.entries()) {
+    if (slot === null || typeof slot !== 'object') return undefined;
     const reference =
       slot.defaultMaterialRef === undefined ? slot.defaultMaterial : refs[slot.defaultMaterialRef];
     const defaultMaterial = reference === undefined ? undefined : parseGuid(reference);
-    return {
+    if (
+      (slot.defaultMaterialRef !== undefined || slot.defaultMaterial !== undefined) &&
+      defaultMaterial === undefined
+    )
+      return undefined;
+    result.push({
       slotName:
         typeof slot.slotName === 'string' && slot.slotName.trim().length > 0
           ? slot.slotName
           : `LegacySlot_${index}`,
       ...(typeof slot.sourceKey === 'string' ? { sourceKey: slot.sourceKey } : {}),
       ...(defaultMaterial === undefined ? {} : { defaultMaterial }),
-    };
-  });
+    });
+  }
+  return result;
+}
+
+function meshLods(raw: unknown, refs: readonly string[]): MeshAsset['lods'] | false {
+  if (raw === undefined) return undefined;
+  if (!Array.isArray(raw) || raw.length > 7) return false;
+  let previousCoverage = 1;
+  const lods: NonNullable<MeshAsset['lods']>[number][] = [];
+  for (const row of raw) {
+    if (row === null || typeof row !== 'object') return false;
+    const reference = row.mesh ?? row.meshRef;
+    const mesh = parseGuid(typeof reference === 'number' ? refs[reference] : reference);
+    const screenCoverage = row.screenCoverage;
+    if (
+      mesh === undefined ||
+      typeof screenCoverage !== 'number' ||
+      !Number.isFinite(screenCoverage) ||
+      screenCoverage <= 0 ||
+      screenCoverage >= previousCoverage
+    )
+      return false;
+    lods.push({ mesh, screenCoverage });
+    previousCoverage = screenCoverage;
+  }
+  return lods;
 }
 
 function submeshesFor(
@@ -123,6 +158,7 @@ function submeshesFor(
 }
 
 function deriveAabb(vertices: Float32Array, stride: number): Float32Array | undefined {
+  if (vertices.length === 0) return new Float32Array(6);
   if (stride < 3 || vertices.length < 3 || vertices.length % stride !== 0) return undefined;
   let minX = Number.POSITIVE_INFINITY;
   let minY = Number.POSITIVE_INFINITY;
@@ -159,12 +195,21 @@ function meshFromParts(
     readonly morphWeights?: unknown;
     readonly floatsPerVertex?: number;
     readonly uvSetCount?: number;
+    readonly lods?: unknown;
+    readonly lodHysteresis?: unknown;
   },
   refs: readonly string[],
 ): MeshAsset | undefined {
   const vertices = floatArray(parts.vertices);
-  if (vertices === undefined || vertices.length === 0) return undefined;
+  if (vertices === undefined) return undefined;
   const indices = indexArray(parts.indices);
+  if (
+    parts.indices !== undefined &&
+    indices === undefined &&
+    !(Array.isArray(parts.indices) && parts.indices.length === 0) &&
+    !(ArrayBuffer.isView(parts.indices) && parts.indices.byteLength === 0)
+  )
+    return undefined;
   const sourceAttributes =
     parts.attributes !== null && typeof parts.attributes === 'object'
       ? (parts.attributes as Record<string, unknown>)
@@ -185,10 +230,16 @@ function meshFromParts(
     'color',
   ] as const) {
     const value = floatArray(sourceAttributes[key]);
+    if (sourceAttributes[key] !== undefined && value === undefined) return undefined;
     if (value !== undefined) attributes[key] = value;
   }
   const skinIndex = integerArray(sourceAttributes.skinIndex);
   const skinWeight = floatArray(sourceAttributes.skinWeight);
+  if (
+    (sourceAttributes.skinIndex !== undefined && skinIndex === undefined) ||
+    (sourceAttributes.skinWeight !== undefined && skinWeight === undefined)
+  )
+    return undefined;
   if (skinIndex !== undefined) attributes.skinIndex = skinIndex;
   if (skinWeight !== undefined) attributes.skinWeight = skinWeight;
   const stride = parts.floatsPerVertex ?? 0;
@@ -206,10 +257,27 @@ function meshFromParts(
   )
     return undefined;
   const materialSlots = materialSlotsFor(parts.materialSlots, submeshes, refs);
+  if (materialSlots === undefined) return undefined;
   const aabb = floatArray(parts.aabb) ?? deriveAabb(vertices, stride);
   if (aabb === undefined) return undefined;
   const morph = morphTargets(parts.morphTargets);
   const weights = floatArray(parts.morphWeights);
+  if (
+    (parts.morphTargets !== undefined && morph === undefined) ||
+    (parts.morphWeights !== undefined && weights === undefined)
+  )
+    return undefined;
+  const lods = meshLods(parts.lods, refs);
+  const lodHysteresis = parts.lodHysteresis;
+  if (
+    lods === false ||
+    (lodHysteresis !== undefined &&
+      (typeof lodHysteresis !== 'number' ||
+        !Number.isFinite(lodHysteresis) ||
+        lodHysteresis < 0 ||
+        lodHysteresis >= 1))
+  )
+    return undefined;
   if (morph !== undefined && weights !== undefined && morph.length !== weights.length)
     return undefined;
   const uvSetCount = parts.uvSetCount ?? 1;
@@ -246,7 +314,7 @@ function meshFromParts(
           parts.collision,
         );
   if (collision !== undefined && !collision.ok) return undefined;
-  return {
+  const mesh: MeshAsset = {
     kind: 'mesh',
     vertices,
     ...(indices === undefined ? {} : { indices }),
@@ -258,7 +326,10 @@ function meshFromParts(
     materialSlots,
     ...(morph === undefined ? {} : { morphTargets: morph }),
     ...(weights === undefined ? {} : { morphWeights: weights }),
+    ...(lods === undefined ? {} : { lods }),
+    ...(lodHysteresis === undefined ? {} : { lodHysteresis }),
   };
+  return prepareMeshData(mesh, 'mesh').ok ? mesh : undefined;
 }
 
 export function decodeMeshBinary(
@@ -312,6 +383,8 @@ export function normalizeMeshPayload(
       ...(source.morphTargets === undefined ? {} : { morphTargets: source.morphTargets }),
       ...(source.morphWeights === undefined ? {} : { morphWeights: source.morphWeights }),
       floatsPerVertex,
+      lods: source.lods,
+      lodHysteresis: source.lodHysteresis,
     },
     refs,
   );

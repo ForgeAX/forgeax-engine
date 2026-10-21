@@ -16,6 +16,7 @@ import { buildEngineShaderManifest } from '@forgeax/engine-vite-plugin-shader';
 import { expect, it } from 'vitest';
 import { constructRuntimeRendererHost } from '../renderer-host';
 import { offscreenCanvas } from './hdr-evidence.fixture';
+import { testAssets } from './helpers/runtime-assets';
 import { shaderManifestUrl } from './shader-manifest-url.fixture';
 import { RESPONSE_SIZE, renderWorldResponse, responsePanorama } from './skylight-response.fixture';
 import { unwrap } from './specular-aa.fixture';
@@ -27,15 +28,16 @@ const manifestUrl = shaderManifestUrl(await buildEngineShaderManifest());
 // redirect that broad lobe into the opposite side of the environment.
 function planeWorld(angle: number, source: 'studio' | 'panorama' | 'solid' = 'studio') {
   const world = new World();
-  const mesh = world.allocSharedRef('MeshAsset', createPlaneGeometry(20, 20).unwrap());
-  const material = world.allocSharedRef(
-    'MaterialAsset',
-    Materials.standard({
-      baseColor: [1, 1, 1, 1],
-      metallic: 1,
-      roughness: 1,
-    }),
-  );
+  const mesh = testAssets(world).create(createPlaneGeometry(20, 20).unwrap()).unwrap();
+  const material = testAssets(world)
+    .create(
+      Materials.standard({
+        baseColor: [1, 1, 1, 1],
+        metallic: 1,
+        roughness: 1,
+      }),
+    )
+    .unwrap();
   world
     .spawn(
       { component: Transform, data: { pos: [0, 0, -5] } },
@@ -50,12 +52,14 @@ function planeWorld(angle: number, source: 'studio' | 'panorama' | 'solid' = 'st
         ...(source === 'solid'
           ? {}
           : {
-              equirect: world.allocSharedRef('EquirectAsset', {
-                kind: 'equirect',
-                ...responsePanorama(source),
-                format: 'rgba16float',
-                colorSpace: 'linear',
-              }),
+              equirect: testAssets(world)
+                .create({
+                  kind: 'equirect',
+                  ...responsePanorama(source),
+                  format: 'rgba16float',
+                  colorSpace: 'linear',
+                })
+                .unwrap(),
             }),
       },
     })
@@ -144,8 +148,8 @@ for (const path of ['forward', 'deferred'] as const)
       ),
     );
     try {
-      // Each World allocates the source at the same numeric handle. Residency
-      // must include its resource scope, and solid must not retain an image.
+      // Switching managed source identities and resource scopes must replace
+      // image radiance; returning to solid must not retain a prior image.
       const white = center(
         await renderWorldResponse(host.renderer, planeWorld(0, 'panorama'), path),
       );
@@ -183,12 +187,14 @@ it('keeps independent skybox and Skylight images in the same frame', {
       .spawn({
         component: SkyboxBackground,
         data: {
-          equirect: world.allocSharedRef('EquirectAsset', {
-            kind: 'equirect',
-            ...responsePanorama('panorama'),
-            format: 'rgba16float',
-            colorSpace: 'linear',
-          }),
+          equirect: testAssets(world)
+            .create({
+              kind: 'equirect',
+              ...responsePanorama('panorama'),
+              format: 'rgba16float',
+              colorSpace: 'linear',
+            })
+            .unwrap(),
         },
       })
       .unwrap();

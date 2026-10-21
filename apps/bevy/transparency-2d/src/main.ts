@@ -1,5 +1,4 @@
 import { createApp } from '@forgeax/engine-app/browser';
-import { unwrapHandle } from '@forgeax/engine-types';
 import { EngineEnvironmentError } from '@forgeax/engine-runtime';
 import { forgeaxBundlerAdapter } from 'virtual:forgeax/bundler';
 import { buildTransparencyWorld, makeTransparencyPixels, TEXTURE_SIZE } from './transparency-2d.js';
@@ -16,6 +15,8 @@ async function bootstrap(target: HTMLCanvasElement): Promise<void> {
   const appResult = await createApp(target, {}, forgeaxBundlerAdapter());
   if (!appResult.ok) return console.error('[bevy-transparency-2d] createApp failed:', appResult.error);
   const app = appResult.value;
+  const assets = app.assets;
+  if (assets === undefined) throw new Error('App asset service is unavailable');
   const pixels = makeTransparencyPixels();
   const texture = {
     kind: 'texture' as const,
@@ -25,8 +26,8 @@ async function bootstrap(target: HTMLCanvasElement): Promise<void> {
     colorSpace: 'srgb' as const,
     mips: { kind: 'none' as const },
   };
-  const handle = app.world.allocSharedRef('TextureAsset', texture);
-  buildTransparencyWorld(app.world, unwrapHandle(handle));
+  const handle = assets.create(texture).unwrap();
+  buildTransparencyWorld(app.world, handle);
   const started = app.start();
   if (!started.ok) return console.error('[bevy-transparency-2d] app.start failed:', started.error);
   (globalThis as { __bevyTransparency2dReady?: boolean }).__bevyTransparency2dReady = true;

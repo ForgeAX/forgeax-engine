@@ -4,7 +4,7 @@ import '@forgeax/view-plugin-display/ui';
 
 import { mountContentBrowserPanel } from '@forgeax/view-plugin-content-browser/ui';
 import { mountInspectorPanel } from '@forgeax/view-plugin-inspector/ui';
-import { mountMaterialPanel, mountMaterialPreviewPanel, mountMaterialPropertiesPanel } from '@forgeax/view-plugin-material/ui';
+import { mountMaterialPanel, mountMaterialPreviewPanel, mountMaterialPropertiesPanel, mountMaterialStatsPanel } from '@forgeax/view-plugin-material/ui';
 import { mountMeshPreviewPanel, mountMeshPropertiesPanel } from '@forgeax/view-plugin-mesh/ui';
 import { mountTexturePreviewPanel, mountTexturePropertiesPanel } from '@forgeax/view-plugin-texture/ui';
 import { mountAssetPropertiesPanel } from '@forgeax/view-plugin-asset/ui';
@@ -18,6 +18,7 @@ export {
   mountMaterialPanel,
   mountMaterialPreviewPanel,
   mountMaterialPropertiesPanel,
+  mountMaterialStatsPanel,
   mountMeshPreviewPanel,
   mountMeshPropertiesPanel,
   mountTexturePreviewPanel,

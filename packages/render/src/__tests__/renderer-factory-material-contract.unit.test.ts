@@ -1,6 +1,5 @@
 import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
-import { AssetRegistry } from '@forgeax/engine-assets-runtime';
 import { ok, type RhiDevice, RhiError } from '@forgeax/engine-rhi';
 import {
   createMaterialProgramArtifactReceipt,
@@ -117,7 +116,6 @@ fn cloud_direct_solar_factorX() -> f32 {
       findMaterialArtifact: vi.fn(() => ({ ok: false })),
       installMaterialArtifact,
     } as unknown as ShaderCatalog;
-    const assets = { catalog: vi.fn(() => ({ ok: true, value: undefined })) } as never;
     const device = {
       caps: {
         backendKind: 'webgpu',
@@ -133,7 +131,7 @@ fn cloud_direct_solar_factorX() -> f32 {
       },
     } as unknown as RhiDevice;
 
-    await prepareMaterialShaders(device, () => registry, assets, new Map());
+    await prepareMaterialShaders(device, () => registry, new Map());
 
     expect(installMaterialArtifact).toHaveBeenCalledWith('forgeax::default-standard-pbr', {
       source: 'coverage-off',
@@ -166,7 +164,6 @@ fn cloud_direct_solar_factorX() -> f32 {
       findMaterialArtifact: vi.fn(() => ({ ok: false })),
       installMaterialArtifact,
     } as unknown as ShaderCatalog;
-    const assets = { catalog: vi.fn(() => ({ ok: true, value: undefined })) } as never;
     const device = {
       caps: {
         backendKind: 'wgpu-webgl2',
@@ -182,7 +179,7 @@ fn cloud_direct_solar_factorX() -> f32 {
       },
     } as unknown as RhiDevice;
 
-    await prepareMaterialShaders(device, () => registry, assets, new Map());
+    await prepareMaterialShaders(device, () => registry, new Map());
 
     expect(installMaterialArtifact).toHaveBeenCalledWith('hello-multi-uv::multi-uv-demo', {
       source: 'multi-uv=true storage=false',
@@ -253,8 +250,7 @@ fn cloud_direct_solar_factorX() -> f32 {
 
     try {
       const active = new ShaderRegistry({ device: registryDevice(), manifestUrl });
-      const activeAssets = new AssetRegistry(active);
-      await prepareMaterialShaders(device(false), () => active, activeAssets, new Map());
+      await prepareMaterialShaders(device(false), () => active, new Map());
       active.installMaterialArtifact('game::custom', {
         source: 'custom-variant',
         paramSchema: [],
@@ -268,9 +264,8 @@ fn cloud_direct_solar_factorX() -> f32 {
 
       URL.revokeObjectURL(manifestUrl);
       const candidate = active.forkForDevice(registryDevice());
-      const candidateAssets = new AssetRegistry(candidate);
       const uvSetCounts = new Map<string, number>();
-      await prepareMaterialShaders(device(true), () => candidate, candidateAssets, uvSetCounts);
+      await prepareMaterialShaders(device(true), () => candidate, uvSetCounts);
       const candidateArtifact = candidate.findMaterialArtifact('game::variant');
       expect(candidateArtifact.ok).toBe(true);
       if (!candidateArtifact.ok) return;
@@ -300,7 +295,7 @@ fn cloud_direct_solar_factorX() -> f32 {
       } as never),
     ).toEqual({
       requiredFeatures: ['depth32float-stencil8'],
-      requiredLimits: { maxSampledTexturesPerShaderStage: 31 },
+      requiredLimits: { maxSampledTexturesPerShaderStage: 32 },
     });
     expect(
       deviceOptionsForAdapter({
@@ -559,11 +554,11 @@ fn cloud_direct_solar_factorX() -> f32 {
         variants,
         'webgpu',
         true,
-        24,
+        25,
       ),
     ).toBe('');
     expect(
-      resolveMaterialShaderVariantSet(undefined, variants, 'webgpu', true, 24),
+      resolveMaterialShaderVariantSet(undefined, variants, 'webgpu', true, 25),
     ).toBeUndefined();
     expect(
       resolveMaterialShaderVariantSet(
@@ -571,7 +566,7 @@ fn cloud_direct_solar_factorX() -> f32 {
         variants,
         'webgpu',
         true,
-        24,
+        25,
       ),
     ).toBe('');
     expect(

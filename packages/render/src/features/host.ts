@@ -1,4 +1,5 @@
-import { resolveAssetHandle } from '@forgeax/engine-assets-runtime';
+import { runtimeAssets } from '@forgeax/engine-assets-runtime/internal';
+
 import type { EntityHandle } from '@forgeax/engine-ecs';
 import type { Buffer, RhiCaps, Sampler, TextureFormat, TextureView } from '@forgeax/engine-rhi';
 import { err, ok, type Result } from '@forgeax/engine-types';
@@ -1997,11 +1998,11 @@ export function runRenderFeatureFrame(
           getFeatureShaderSource: input.getFeatureShaderSource,
           resolveAsset:
             input.resolveAsset ??
-            ((index, handle) => {
+            ((index, handle, revision) => {
               const world = input.worlds[index];
               return world === undefined
                 ? err(new Error(`Missing feature asset source ${index}`))
-                : resolveAssetHandle(world, handle);
+                : runtimeAssets(world.assets).resolveAsset(handle, revision);
             }),
           caps: input.caps,
           ...(input.limits === undefined ? {} : { limits: input.limits }),

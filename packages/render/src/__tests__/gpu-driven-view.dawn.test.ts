@@ -1,13 +1,33 @@
 import { describe, expect, it } from 'vitest';
 import { shadowCameraCullDilation } from '../gpu-driven/shadow-views';
 import {
+  runGpuDrivenInactiveBatchEvidence,
   runGpuDrivenShadowCameraCullEvidence,
+  runGpuDrivenSkinVisibleAddressEvidence,
   runGpuDrivenViewGpuEvidence,
   runGpuDrivenViewLifecycleEvidence,
   runGpuDrivenViewOcclusionEvidence,
 } from './gpu-driven-view-gpu-evidence';
 
 describe('GPU-driven View Dawn', () => {
+  it('keeps skin palette addressing in the captured Instance row, independently of candidate index', async () => {
+    const result = await runGpuDrivenSkinVisibleAddressEvidence();
+    expect(result, `actual skin visible addresses ${JSON.stringify(result)}`).toEqual({
+      visibleInstance: 1,
+      candidateIndex: 2,
+      paletteBase: 17,
+    });
+  });
+
+  it('disables and restores a material batch without rewriting candidate ranges', async () => {
+    const frames = await runGpuDrivenInactiveBatchEvidence();
+    expect(frames.map((frame) => frame.instances)).toEqual([
+      [1, 1],
+      [0, 1],
+      [1, 1],
+    ]);
+    expect(frames.slice(1).map((frame) => frame.sharedInputUploadBytes)).toEqual([0, 0]);
+  });
   it('produces compact visible IDs and portable indirect args on the real GPU API', async () => {
     await expect(runGpuDrivenViewGpuEvidence()).resolves.toEqual({
       visibleInstance: 0,
@@ -94,12 +114,12 @@ describe('GPU-driven View Dawn', () => {
   // A 64-texel PCF3 map: one texel of filter radius plus the two-texel margin.
   const pcf3 = shadowCameraCullDilation(1, 0, 64)?.ndcDilation ?? Number.NaN;
 
-  // Windows Dawn exceeded Vitest's 30-second default on two consecutive cold runs.
+  // The first Windows Dawn camera-cull execution exceeded the prior 60-second limit.
   it('culls a shadow caster only when every receiver it can darken is hidden', async () => {
     await expect(
       runGpuDrivenShadowCameraCullEvidence({ light: 'camera', wall: 'left', ndcDilation: pcf3 }),
     ).resolves.toEqual({ visible: 2, cameraCulled: 1 });
-  }, 60_000);
+  }, 90_000);
 
   it('keeps a hidden caster whose receiver prism reaches visible ground', async () => {
     // The x = -1 caster is behind the wall (the camera-light case above culls

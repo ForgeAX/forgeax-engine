@@ -3,14 +3,14 @@
 > [!NOTE]
 > **对应 LO 原章节**：[LearnOpenGL §1.2 Hello Triangle](https://learnopengl.com/Getting-started/Hello-Triangle)
 >
-> **对应引擎能力**：feat-20260515-learn-render-getting-started — LO §1.2 在 forgeax 中映射为 `world.spawn(Transform + MeshFilter(HANDLE_TRIANGLE) + MeshRenderer)` + `world.spawn(Transform + Camera)`，再通过 `Engine.create({ canvas, clearColor })` + `renderer.draw(world)` 把第一个可见三角形画到 swap-chain 上。LO 1.2 是 unlit + 橙色，故不 spawn `DirectionalLight`；引擎 v1 的 fallback fragment shader 直接输出 `material.baseColor`，因此 `MeshRenderer.baseColor{R,G,B}` 就是屏幕像素颜色（charter F1 + P1 progressive disclosure）。
+> **对应引擎能力**：feat-20260515-learn-render-getting-started — LO §1.2 在 forgeax 中映射为 `world.spawn(Transform + MeshFilter { assetHandle: triangle } + MeshRenderer)` + `world.spawn(Transform + Camera)`，再通过 `Engine.create({ canvas, clearColor })` + `renderer.draw(world)` 把第一个可见三角形画到 swap-chain 上。LO 1.2 是 unlit + 橙色，故不 spawn `DirectionalLight`；材质 Pass 选择 unlit 程序，`values.baseColor` 提供颜色（charter F1 + P1 progressive disclosure）。
 
 ## 在 forgeax 里跟着 LO §1.2 走
 
 LO §1.2 的核心步骤 `glGenVertexArrays + glGenBuffers + glBufferData + glDrawArrays(GL_TRIANGLES, 0, 3)` 在 forgeax 中折叠成 **builtin mesh handle + ECS spawn** 两步：
 
-1. 顶点数据（3 个 clip-space 顶点）由引擎 builtin `HANDLE_TRIANGLE` 持有，AI 用户**不需要手写 VBO/VAO**——引擎 `AssetRegistry` 在 `await renderer.ready` 时把 builtin mesh upload 到 GPU，业务侧只引用 handle 常量。
-2. `world.spawn(Transform + MeshFilter(HANDLE_TRIANGLE) + MeshRenderer)` 等价于 LO §1.2 的「绑定 VAO + draw call」，引擎 RenderSystem 内部 walk World query graph（Extract / Prepare / Record 三阶段）每帧提交一个 GPU command buffer。
+1. Geometry 的 `createPrimitiveMesh('triangle')` 生成三角形数据；`assets.create(mesh).unwrap()` 返回受管理的句柄，绑定到 `MeshFilter.assetHandle`。Renderer 负责 GPU 资源上传。
+2. `world.spawn(Transform + MeshFilter { assetHandle: triangle } + MeshRenderer)` 等价于 LO §1.2 的「绑定 VAO + draw call」，引擎 RenderSystem 内部 walk World query graph（Extract / Prepare / Record 三阶段）每帧提交一个 GPU command buffer。
 
 完整三段式 mapping 见 [`src/index.ts`](src/index.ts)（按 AC-06 三段 marker `// 1. engine usage` / `// 2. example-specific glue` / `// 3. bootstrap` 排列）。
 

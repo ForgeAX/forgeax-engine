@@ -12,7 +12,7 @@ import {
   type FederationStatus,
 } from './protocol';
 
-interface WebRoute {
+export interface WebRoute {
   readonly kind: 'exact' | 'prefix';
   readonly path: string;
   readonly handler: (request: IncomingMessage, response: ServerResponse) => void | Promise<void>;

@@ -183,7 +183,9 @@ async function host(
           ok: true,
           value: {
             renderer,
-            assets: new AssetRegistry(new ShaderRegistry({ manifestUrl: undefined })),
+            assets: new AssetRegistry({
+              shaderRegistry: new ShaderRegistry({ manifestUrl: undefined }),
+            }),
             initialization: Promise.resolve({ ok: true }),
           },
         };

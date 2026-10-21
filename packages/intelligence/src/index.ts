@@ -1,6 +1,4 @@
 export {
-  INTELLIGENCE_ERROR_HINTS,
-  INTELLIGENCE_EXPECTED,
   IntelligenceError,
   type IntelligenceErrorCode,
   type IntelligenceErrorDetailFor,

@@ -14,8 +14,9 @@ import type {
   AudioState,
   BusName,
 } from './audio-backend';
-import { type AudioBus, validateAudioBuses } from './audio-buses';
+import { type AudioBus, prepareAudioBuses } from './audio-buses';
 import { validAudioStream } from './audio-stream';
+import { type AudioClipIdentity, audioClipKey, borrowAudioClip } from './clip-publication';
 import { type MusicCommand, musicFailure } from './music';
 
 export type AudioIntent =
@@ -23,7 +24,11 @@ export type AudioIntent =
   | {
       readonly kind: 'prepare-clips';
       readonly requestId: string;
-      readonly clips: readonly { readonly sourceKey: string; readonly bytes: Uint8Array }[];
+      readonly clips: readonly {
+        readonly asset: AudioClipIdentity;
+        readonly sourceKey: string;
+        readonly bytes: Uint8Array;
+      }[];
     }
   | { readonly kind: 'music'; readonly command: Exclude<MusicCommand, { kind: 'prepare' }> }
   | {
@@ -43,24 +48,9 @@ export type AudioIntent =
       readonly gain: number;
     }
   | {
-      readonly kind: 'set-acoustic-routes';
-      readonly entityId: number;
-      readonly routes: AcousticRoutes;
-    }
-  | {
-      readonly kind: 'set-acoustic-environment';
-      readonly environment: readonly AcousticEnvironment[];
-    }
-  | { readonly kind: 'set-bus-wet'; readonly bus: string; readonly wet: number }
-  | {
-      readonly kind: 'set-bus-send-gain';
-      readonly bus: string;
-      readonly target: string;
-      readonly gain: number;
-    }
-  | {
       readonly kind: 'play';
       readonly entityId: number;
+      readonly asset: AudioClipIdentity;
       readonly sourceKey: string;
       readonly bytes?: Uint8Array;
       readonly stream?: AudioClipAsset['stream'];
@@ -83,16 +73,9 @@ export type AudioIntent =
   | { readonly kind: 'set-listener-pose'; readonly pose: AudioListenerPose }
   | { readonly kind: 'destroy' };
 
-function sameBytes(left: Uint8Array, right: Uint8Array): boolean {
-  if (left.byteLength !== right.byteLength) return false;
-  for (let index = 0; index < left.byteLength; index += 1) {
-    if (left[index] !== right[index]) return false;
-  }
-  return true;
-}
-
 export interface AudioIntentBackendOptions {
-  readonly emit: (intent: AudioIntent) => void;
+  /** Local delivery returns a rejected publication; remote delivery feeds it back explicitly. */
+  readonly emit: (intent: AudioIntent) => void | AudioClipIdentity;
   readonly maxPublishedBytes?: number;
   readonly maxPublishedSources?: number;
   readonly state?: () => AudioState;
@@ -104,11 +87,12 @@ const DISCONNECTED_AUDIO_STATE: AudioState = {
   lastError: null,
 };
 
-export function createAudioIntentBackend(options: AudioIntentBackendOptions): AudioBackend {
-  const publishedSources = new Map<
-    string,
-    { data: Uint8Array | NonNullable<AudioClipAsset['stream']>; size: number }
-  >();
+export interface AudioIntentBackend extends AudioBackend {
+  rejectPublication(asset: AudioClipIdentity): void;
+}
+
+export function createAudioIntentBackend(options: AudioIntentBackendOptions): AudioIntentBackend {
+  const publishedSources = new Map<string, { revision: number; size: number }>();
   const maxBytes = options.maxPublishedBytes ?? 64 * 1024 * 1024;
   const maxSources = options.maxPublishedSources ?? 256;
   for (const limit of [maxBytes, maxSources]) {
@@ -120,8 +104,39 @@ export function createAudioIntentBackend(options: AudioIntentBackendOptions): Au
   let rejectedPreparation: AudioPreparationReceipt | undefined;
   let rejectedMusic: import('./music').MusicReceipt | undefined;
   let destroyed = false;
+  const rejectPublication = (asset: AudioClipIdentity): void => {
+    const key = audioClipKey(asset);
+    const publication = publishedSources.get(key);
+    if (publication?.revision !== asset.revision) return;
+    publishedSources.delete(key);
+    publishedBytes -= publication.size;
+  };
   const emit = (intent: AudioIntent): void => {
-    if (!destroyed || intent.kind === 'destroy') options.emit(intent);
+    if (!destroyed || intent.kind === 'destroy') {
+      try {
+        const rejected = options.emit(intent);
+        if (rejected) rejectPublication(rejected);
+      } catch (cause) {
+        if (!(cause instanceof AudioError)) throw cause;
+        lastError = cause;
+        if (intent.kind === 'play') rejectPublication(intent.asset);
+        if (intent.kind === 'prepare-clips')
+          rejectedPreparation = {
+            requestId: intent.requestId,
+            status: 'rejected',
+            sourceCount: 0,
+            failure: {
+              code: cause.code,
+              expected: cause.expected,
+              hint: cause.hint,
+              ...(cause.detail ? { detail: cause.detail } : {}),
+            },
+          };
+        // A rejected edge is not delivered. Let the caller retain its previous
+        // state and retry; preparations already expose an explicit receipt.
+        if (intent.kind !== 'prepare-clips' && intent.kind !== 'failure') throw cause;
+      }
+    }
   };
   const fail = (error: AudioError): void => {
     lastError = error;
@@ -135,22 +150,30 @@ export function createAudioIntentBackend(options: AudioIntentBackendOptions): Au
       },
     });
   };
-  const backend: AudioBackend = {
-    prepareClips(requestId, clips) {
+  const backend: AudioIntentBackend = {
+    rejectPublication,
+    prepareClips(requestId, assets, handles) {
       const noop = () => {};
       if (destroyed) return noop;
-      const buffered = clips.flatMap((clip) =>
-        clip.bytes ? [{ sourceKey: clip.sourceKey, bytes: clip.bytes }] : [],
+      let clips: ReturnType<typeof borrowAudioClip>[];
+      try {
+        clips = handles.map((handle) => borrowAudioClip(assets, handle));
+      } catch (cause) {
+        fail(cause as AudioError);
+        return noop;
+      }
+      const buffered = clips.flatMap(({ identity, clip }) =>
+        clip.bytes ? [{ asset: identity, sourceKey: clip.sourceKey, bytes: clip.bytes }] : [],
       );
       if (
         typeof requestId !== 'string' ||
         requestId.length < 1 ||
         requestId.length > 128 ||
         clips.length > maxSources ||
-        new Set(clips.map((clip) => clip.sourceKey)).size !== clips.length ||
+        new Set(handles).size !== clips.length ||
         buffered.length !== clips.length ||
         clips.some(
-          (clip) =>
+          ({ clip }) =>
             typeof clip.sourceKey !== 'string' ||
             clip.sourceKey.length < 1 ||
             clip.stream !== undefined,
@@ -180,12 +203,16 @@ export function createAudioIntentBackend(options: AudioIntentBackendOptions): Au
       rejectedPreparation = undefined;
       // Preparation does not claim ordinary play publication ownership. A
       // rejected/cancelled batch must never hide missing bytes on a later play.
-      emit({ kind: 'prepare-clips', requestId, clips: buffered });
+      emit({
+        kind: 'prepare-clips',
+        requestId,
+        clips: buffered.map((clip) => ({ ...clip, bytes: clip.bytes.slice() })),
+      });
       let cancelled = false;
       return () => {
         if (!cancelled) {
-          cancelled = true;
           emit({ kind: 'cancel-clip-preparation', requestId });
+          cancelled = true;
         }
       };
     },
@@ -221,31 +248,37 @@ export function createAudioIntentBackend(options: AudioIntentBackendOptions): Au
       if (!checked.ok) fail(checked.error);
       else emit({ kind: 'set-acoustic-environment', environment });
     },
-    play(entityId: number, clip: AudioClipAsset, playOptions: AudioPlayOptions): void {
-      if (clip.stream && !validAudioStream(clip.stream)) {
-        fail(
-          new AudioError({
-            code: 'stream-failed',
-            expected: 'a bounded PCM16 stream manifest',
-            hint: 'load the verified stream through the audio asset owner',
-            detail: {
-              code: 'stream-failed',
-              reason: 'unsupported-format',
-              message: 'invalid stream publication',
-            },
-          }),
-        );
+    play(entityId, assets, handle, playOptions): void {
+      if (destroyed) return;
+      let borrowed: ReturnType<typeof borrowAudioClip>;
+      try {
+        borrowed = borrowAudioClip(assets, handle);
+      } catch (cause) {
+        fail(cause as AudioError);
         return;
       }
-      const previous = publishedSources.get(clip.sourceKey);
-      const data = clip.stream ?? clip.bytes;
-      const size = clip.stream ? JSON.stringify(clip.stream).length * 2 : clip.bytes.byteLength;
-      const same =
-        previous &&
-        (data instanceof Uint8Array && previous.data instanceof Uint8Array
-          ? sameBytes(data, previous.data)
-          : JSON.stringify(data) === JSON.stringify(previous.data));
+      const { identity, clip } = borrowed;
+      const key = audioClipKey(identity);
+      const previous = publishedSources.get(key);
+      const same = previous?.revision === identity.revision;
+      // Validation and copying belong to publication, never to every play of an asset.
       if (!same) {
+        if (clip.stream && !validAudioStream(clip.stream)) {
+          fail(
+            new AudioError({
+              code: 'stream-failed',
+              expected: 'a bounded PCM16 stream manifest',
+              hint: 'load the verified stream through the audio asset owner',
+              detail: {
+                code: 'stream-failed',
+                reason: 'unsupported-format',
+                message: 'invalid stream publication',
+              },
+            }),
+          );
+          return;
+        }
+        const size = clip.stream ? JSON.stringify(clip.stream).length * 2 : clip.bytes.byteLength;
         if (
           (!previous && publishedSources.size >= maxSources) ||
           publishedBytes - (previous?.size ?? 0) + size > maxBytes
@@ -254,7 +287,7 @@ export function createAudioIntentBackend(options: AudioIntentBackendOptions): Au
             new AudioError({
               code: 'control-failed',
               expected: 'a bounded audio publication set',
-              hint: 'reuse source keys or reduce source bytes; streaming sources publish only their bounded index',
+              hint: 'reuse asset handles or reduce source bytes; streaming assets publish only their bounded index',
               detail: {
                 code: 'control-failed',
                 reason: 'audio Worker publication budget exceeded',
@@ -264,20 +297,25 @@ export function createAudioIntentBackend(options: AudioIntentBackendOptions): Au
           return;
         }
         publishedBytes += size - (previous?.size ?? 0);
-        publishedSources.set(clip.sourceKey, { data: structuredClone(data), size });
+        publishedSources.set(key, { revision: identity.revision, size });
       }
       emit({
         kind: 'play',
         entityId,
+        asset: identity,
         sourceKey: clip.sourceKey,
-        ...(!same ? (clip.stream ? { stream: clip.stream } : { bytes: clip.bytes }) : {}),
+        ...(!same
+          ? clip.stream
+            ? { stream: structuredClone(clip.stream) }
+            : { bytes: clip.bytes.slice() }
+          : {}),
         options: playOptions,
       });
     },
     configureBuses(buses) {
-      const checked = validateAudioBuses(buses);
+      const checked = prepareAudioBuses(buses);
       if (!checked.ok) fail(checked.error);
-      else emit({ kind: 'configure-buses', buses });
+      else emit({ kind: 'configure-buses', buses: checked.value });
     },
     setBus: (entityId, bus) => emit({ kind: 'set-bus', entityId, bus }),
     stop: (entityId) => emit({ kind: 'stop', entityId }),

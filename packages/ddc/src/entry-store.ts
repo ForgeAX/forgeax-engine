@@ -165,6 +165,31 @@ async function readJson<T>(path: string): Promise<T> {
   return JSON.parse(await readFile(path, 'utf8')) as T;
 }
 
+function captureEntry(entry: DdcEntry): {
+  readonly entry: DdcEntry;
+  readonly payloadJson: Uint8Array;
+} {
+  const { key, guid } = entry;
+  const artifacts = Object.fromEntries(
+    sortedArtifacts(entry).map(([name, artifact]) => [
+      name,
+      { mediaType: artifact.mediaType, bytes: new Uint8Array(artifact.bytes) },
+    ]),
+  );
+  const payloadJson = canonicalDdcJson(entry.payload);
+  return {
+    entry: {
+      key,
+      guid,
+      payload: JSON.parse(payloadJson) as unknown,
+      refs: JSON.parse(canonicalDdcJson(entry.refs)) as readonly string[],
+      receipt: JSON.parse(canonicalDdcJson(entry.receipt)) as DdcReceipt,
+      artifacts,
+    },
+    payloadJson: Buffer.from(payloadJson),
+  };
+}
+
 export class DdcEntryStore {
   private readonly entries: string;
   private readonly staging: string;
@@ -175,14 +200,25 @@ export class DdcEntryStore {
   }
 
   public async stage(entry: DdcEntry): Promise<StagedDdcEntry> {
+    // Capture once before yielding. Hash the same private JSON and artifact
+    // bytes that will be written, sharing the payload across all three hashes.
+    const captured = captureEntry(entry);
+    entry = captured.entry;
     validateKey(entry.key);
-    if (entry.receipt.key !== entry.key || entry.receipt.guid !== entry.guid) {
+    if (entry.receipt?.key !== entry.key || entry.receipt.guid !== entry.guid) {
       throw new DdcStoreError({
         code: 'ddc-entry-invalid',
         detail: 'receipt identity does not match entry',
       });
     }
-    if (entry.receipt.outputDigest !== ddcOutputDigest(entry)) {
+    const readback = await canonicalDdcReadbackDigests(
+      { payload: entry.payload, output: outputShape(entry), entry: entryShape(entry) },
+      captured.payloadJson,
+    );
+    if (
+      entry.receipt.outputDigest !== `sha256:${readback.output}` ||
+      readback.payload !== digest(captured.payloadJson)
+    ) {
       throw new DdcStoreError({
         code: 'ddc-entry-invalid',
         detail: 'receipt output digest does not match entry',
@@ -191,7 +227,7 @@ export class DdcEntryStore {
     const path = join(this.staging, `${entry.key}-${randomUUID()}`);
     try {
       await mkdir(join(path, 'artifacts'), { recursive: true });
-      await writeFile(join(path, 'payload.json'), canonicalDdcJson(entry.payload));
+      await writeFile(join(path, 'payload.json'), captured.payloadJson);
       await writeFile(join(path, 'refs.json'), canonicalDdcJson(entry.refs));
       await writeFile(join(path, 'receipt.json'), canonicalDdcJson(entry.receipt));
       const artifacts: Record<string, { mediaType: string; file: string }> = {};
@@ -201,7 +237,10 @@ export class DdcEntryStore {
         await writeFile(join(path, 'artifacts', `${file}.bin`), artifact.bytes);
       }
       await writeFile(join(path, 'artifacts.json'), canonicalDdcJson(artifacts));
-      await writeFile(join(path, 'integrity.json'), canonicalDdcJson(integrityFor(entry)));
+      await writeFile(
+        join(path, 'integrity.json'),
+        canonicalDdcJson(integrityFor(entry, readback)),
+      );
       return { key: entry.key, path };
     } catch (error) {
       await rm(path, { recursive: true, force: true }).catch(() => {});

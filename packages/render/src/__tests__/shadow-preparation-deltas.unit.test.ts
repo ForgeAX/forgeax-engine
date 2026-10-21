@@ -1,15 +1,32 @@
 import { describe, expect, it } from 'vitest';
 import {
+  buildBatchAlignedSubmission,
   buildSubmissionCandidateMembership,
   type GpuDrivenBatch,
   type SubmissionPlan,
 } from '../gpu-driven/batch-topology';
+import { fixedTaskPlan, hasFixedTaskHeaders } from '../gpu-driven/fixed-task-plan';
 import { changedPrimitives, type ShadowPreparationCounters } from '../gpu-driven/shadow-views';
 
 function batch(id: number, first: number, count: number, materialSlot = 0): GpuDrivenBatch {
   return Object.freeze({
     batchId: id,
-    key: Object.freeze({ materialSlot }),
+    generation: 1,
+    visibleBase: id * Math.ceil(count / 64) * 64,
+    visibleCapacity: count,
+    indirectOffset: id * 20,
+    contentEpoch: 0,
+    key: Object.freeze({
+      assetHandle: 0,
+      drawKind: 'indexed' as const,
+      first: 0,
+      count: 3,
+      baseVertex: 0,
+      materialSlot,
+      topology: 'triangle-list' as const,
+      pipelineClass: 'fixture',
+      materialResourceClass: 'fixture',
+    }),
     candidates: Object.freeze(
       Array.from({ length: count }, (_, offset) =>
         Object.freeze({
@@ -20,7 +37,7 @@ function batch(id: number, first: number, count: number, materialSlot = 0): GpuD
         }),
       ),
     ),
-  }) as GpuDrivenBatch;
+  });
 }
 
 function plan(batches: readonly GpuDrivenBatch[]): SubmissionPlan {
@@ -28,7 +45,10 @@ function plan(batches: readonly GpuDrivenBatch[]): SubmissionPlan {
     revision: 1,
     batches: Object.freeze([...batches]),
     candidateCount: batches.reduce((count, row) => count + row.candidates.length, 0),
-    visibleCapacity: 0,
+    visibleCapacity: batches.reduce(
+      (maximum, row) => Math.max(maximum, row.visibleBase + row.visibleCapacity),
+      0,
+    ),
   });
 }
 
@@ -47,13 +67,30 @@ function counters(): ShadowPreparationCounters {
 }
 
 describe('shadow preparation on retained topology', () => {
-  it('shares the submission membership and references its actual batch', () => {
+  it('reobserves mutable candidate values even when aligned headers are fixed', () => {
+    const row = batch(1, 0, 1);
+    const original = row.candidates.at(0);
+    if (original === undefined) throw new Error('Missing candidate');
+    const mutable = { ...original };
+    const source = buildBatchAlignedSubmission(
+      fixedTaskPlan(plan([row])),
+      new Map([[row.batchId, [mutable]]]),
+    );
+    expect(hasFixedTaskHeaders(source)).toBe(true);
+    expect(buildSubmissionCandidateMembership(source).byPrimitiveIndex.has(0)).toBe(true);
+    mutable.primitiveIndex = 7;
+    const current = buildSubmissionCandidateMembership(source);
+    expect(current.byPrimitiveIndex.has(0)).toBe(false);
+    expect(current.byPrimitiveIndex.get(7)?.[0]?.candidate).toBe(mutable);
+  });
+
+  it('builds submission membership from its actual batch values', () => {
     const row = batch(1, 0, 64),
       source = plan([row]);
     const membership = buildSubmissionCandidateMembership(source);
-    expect(buildSubmissionCandidateMembership(source)).toBe(membership);
+    expect(buildSubmissionCandidateMembership(source)).not.toBe(membership);
     expect(membership.byPrimitiveIndex.get(4)?.[0]?.batch).toBe(row);
-    expect(membership.byPrimitiveIndex.get(4)?.[0]?.candidate).toBe(row.candidates[4]);
+    expect(membership.byPrimitiveIndex.get(4)?.[0]?.candidate).toBe(row.candidates.at(4));
   });
 
   it('checks only candidates of the edited batch, retaining a large unchanged scene', () => {
@@ -83,8 +120,8 @@ describe('shadow preparation on retained topology', () => {
   it('detects equal-count slot generation changes and removed or added casters', () => {
     const first = batch(1, 0, 2),
       changed = new Set<number>();
-    const one = first.candidates[0],
-      two = first.candidates[1];
+    const one = first.candidates.at(0),
+      two = first.candidates.at(1);
     if (one === undefined || two === undefined) throw Error('Missing fixture candidates');
     const replacement = Object.freeze({
       ...first,

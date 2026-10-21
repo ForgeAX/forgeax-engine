@@ -69,12 +69,7 @@ export {
   createMaterialProgramArtifactReceipt,
   createStandardPbrArtifactReceipt,
   GPU_DRIVEN_MATERIAL_ROW_BYTES,
-  isMaterialShaderArtifact,
-  isMaterialShaderArtifactReceipt,
   type MaterialShaderArtifact,
-  type MaterialShaderArtifactReceipt,
-  type MaterialShaderResourceSlot,
-  type MaterialShaderVertexInput,
 } from './material/artifact-types.js';
 export {
   DEFAULT_MSDF_TEXT_PARAM_SCHEMA,
@@ -82,14 +77,12 @@ export {
   DEFAULT_STANDARD_PBR_PARAM_SCHEMA,
   DEFAULT_UNLIT_PARAM_SCHEMA,
   PARTICLE_MESH_SURFACE_PARAM_SCHEMA,
-  STANDARD_BASE_PARAM_SCHEMA,
   STANDARD_DIRECT_DFG_LUT_BINDING,
   STANDARD_OBJECT_SPACE_NORMAL_BIT,
   STANDARD_PBR_ALPHA_CUTOFF_DEFAULT,
   STANDARD_PBR_ARTIFACT_RECEIPT,
   STANDARD_PBR_SKIN_ARTIFACT_RECEIPT,
   STANDARD_PHYSICAL_BINDING_START,
-  STANDARD_PHYSICAL_LAYER_PARAM_SCHEMA,
   STANDARD_PHYSICAL_TEXTURE_FIELDS,
   STANDARD_PIPELINE_PARAM_SCHEMA,
   STANDARD_SAMPLE_REUSE,
@@ -106,9 +99,6 @@ export {
   standardSharedTransmissionDefines,
   standardTextureMask,
 } from './material-schemas.js';
-export { registerDefaultSpriteLit } from './register-default-sprite-lit.js';
-export { registerDefaultStandardPbrSkin } from './register-default-standard-pbr-skin.js';
-export const RECT_AREA_LTC_SHADER_MODULE = 'forgeax::lighting-rect-area' as const;
 export {
   DEPTH_PYRAMID_SHADER_MODULES,
   FORGEAX_RESERVED_PATH_PREFIX,
@@ -142,12 +132,6 @@ export const BUILTIN_MATERIAL_MODULES = {
  */
 export const DEFAULT_STANDARD_SURFACE_MODULE =
   'forgeax_material::default_standard_surface' as const;
-
-/** Stable build-time module id for the temporal-v1 accessor owner. */
-export const SCENE_DATA_TEMPORAL_V1_SHADER_MODULE = 'forgeax_scene_temporal' as const;
-
-/** Stable build-time module id for the single Standard output encoder. */
-export const STANDARD_OUTPUT_ENCODING_SHADER_MODULE = 'forgeax_view::output_encoding' as const;
 
 export { LIGHT_TEXTURE_RESAMPLE_WGSL } from './light-texture-resample.js';
 /**
@@ -352,6 +336,10 @@ fn auto_exposure_adapt(@builtin(local_invocation_index) localIndex: u32) {
  */
 export const ENGINE_MATERIAL_MODULES = [
   'forgeax::default-standard-pbr',
+  'forgeax::standard-terrain',
+  'forgeax::standard-terrain-ids',
+  'forgeax::standard-terrain-shadow',
+  'forgeax::standard-terrain-ids-shadow',
   'forgeax::single-layer-medium',
   'forgeax::pbr-skin',
   'forgeax::default-standard-pbr-skin',
@@ -365,12 +353,6 @@ export const ENGINE_MATERIAL_MODULES = [
   BUILTIN_MATERIAL_MODULES.sprite,
   'forgeax_material::sprite-lit',
 ] as const;
-
-/** Names of the zero-binding Standard reflection-probe shader helpers. */
-export const REFLECTION_PROBE_SHADER_HELPERS = Object.freeze([
-  'box_project',
-  'sampleReflectionProbeSpecular',
-] as const);
 
 export function isEngineMaterialModule(module: string): boolean {
   return (ENGINE_MATERIAL_MODULES as readonly string[]).includes(module);

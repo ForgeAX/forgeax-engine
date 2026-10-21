@@ -7,7 +7,7 @@ import {
   type EntityHandle,
   type World,
 } from '@forgeax/engine-ecs';
-import { HANDLE_CUBE } from '@forgeax/engine-assets-runtime';
+
 import { Transform } from '@forgeax/engine-scene';
 
 import { CAMERA_PROJECTION_ORTHOGRAPHIC, CAMERA_PROJECTION_PERSPECTIVE, orthographic, perspective } from '@forgeax/engine-render';
@@ -15,9 +15,13 @@ import { Materials } from '@forgeax/engine-render';
 import { PointLight } from '@forgeax/engine-render';
 import { Camera, MeshFilter, MeshRenderer } from '@forgeax/engine-render';
 
-import type { MaterialAsset } from '@forgeax/engine-runtime';
+
 import type { InputSnapshot } from '@forgeax/engine-input';
 import { quat } from '@forgeax/engine-math';
+import { AssetRegistry } from '@forgeax/engine-assets-runtime';
+
+import { createPrimitiveMesh } from '@forgeax/engine-geometry';
+
 
 export const ORTHOGRAPHIC_HALF_HEIGHT = 2.5;
 export const ORTHOGRAPHIC_MIN_HALF_HEIGHT = 0.5;
@@ -50,21 +54,29 @@ function firstCamera(world: World): EntityHandle | null {
 }
 
 function material(world: World, color: readonly [number, number, number, number]) {
-  return world.allocSharedRef<'MaterialAsset', MaterialAsset>('MaterialAsset', Materials.standard({ baseColor: color }));
+const sceneAssets = world.assets;
+if (!(sceneAssets instanceof AssetRegistry)) throw new Error('Scene requires its runtime asset owner');
+
+  return sceneAssets.create(Materials.standard({ baseColor: color })).unwrap();
 }
 
 /** Build Bevy's cube-on-plane scene with an initially orthographic camera. */
 export function buildCameraZoomWorld(world: World): void {
+const sceneAssets = world.assets;
+if (!(sceneAssets instanceof AssetRegistry)) throw new Error('Scene requires its runtime asset owner');
+
+const primitiveCube = sceneAssets.create(createPrimitiveMesh('cube').unwrap()).unwrap();
+
   const plane = material(world, [0.3, 0.5, 0.3, 1]);
   world.spawn(
     { component: Transform, data: { pos: [0, -0.5, 0], quat: [0, 0, 0, 1], scale: [5, 0.04, 5] } },
-    { component: MeshFilter, data: { assetHandle: HANDLE_CUBE } },
+    { component: MeshFilter, data: { assetHandle: primitiveCube } },
     { component: MeshRenderer, data: { materials: [plane] } },
   );
   const cube = material(world, [0.8, 0.7, 0.6, 1]);
   world.spawn(
     { component: Transform, data: { pos: [1.5, 0.5, 1.5], quat: [0, 0, 0, 1], scale: [1, 1, 1] } },
-    { component: MeshFilter, data: { assetHandle: HANDLE_CUBE } },
+    { component: MeshFilter, data: { assetHandle: primitiveCube } },
     { component: MeshRenderer, data: { materials: [cube] } },
   );
   world.spawn(

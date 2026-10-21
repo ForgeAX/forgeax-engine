@@ -17,12 +17,13 @@ import {
 import { attachRecorder, buildFrameModel, decodeTape, openReplay } from '@forgeax/engine-rhi-debug';
 import * as captureWebgpu from '@forgeax/engine-rhi-webgpu';
 import { propagateTransforms, Transform } from '@forgeax/engine-scene';
-import { createStandaloneRuntimeAssetBinding, type MaterialAsset } from '@forgeax/engine-types';
+import { type AssetHandle, createStandaloneRuntimeAssetBinding } from '@forgeax/engine-types';
 import { createServer, loadConfigFromFile } from 'vite';
 import { expect, it } from 'vitest';
 import { surfaceEvidenceGuid } from '../../../../apps/preview/src/surface-standard-evidence-identity';
 import { createDevImportTransport } from '../dev-import-transport';
 import { constructRuntimeRendererHost } from '../renderer-host';
+import { testAssets } from './helpers/runtime-assets';
 import { verifyPlanarMultiCamera } from './planar-multi-camera.fixture';
 
 const PLANAR_REFLECTION_WARMUP_FRAMES = 60;
@@ -97,33 +98,28 @@ it('captures offscreen geometry, clips the opposite half space and records the w
     });
     const assets = host.assets;
     assets.configureRuntimeBinding(liveBinding);
-    const deadline = Date.now() + 120_000;
-    while (!(await assets.refreshCatalog())) {
-      if (Date.now() > deadline) throw new Error('Planar catalog did not become ready');
-      await new Promise((done) => setTimeout(done, 50));
-    }
     const load = async (name: string) =>
       (
-        await assets.loadByGuid<MaterialAsset>(
-          assets.parseGuid(surfaceEvidenceGuid(`material/${name}`)),
-        )
+        await assets.load(assets.parseGuid(surfaceEvidenceGuid(`material/${name}`)), 'material')
       ).unwrap();
     const [red, green, water] = await Promise.all([
       load('planar-red'),
       load('planar-green'),
       load('water-optical-zero-extinction'),
     ]);
-    const world = new World();
+    const world = new World({ assets });
 
-    const box = world.allocSharedRef('MeshAsset', createBoxGeometry(1, 1, 1).unwrap());
-    const spawnBox = (material: MaterialAsset, pos: number[]) =>
+    const box = testAssets(world)
+      .create(createBoxGeometry(1, 1, 1).unwrap())
+      .unwrap();
+    const spawnBox = (material: AssetHandle<'material'>, pos: number[]) =>
       world
         .spawn(
           { component: Transform, data: { pos } },
           { component: MeshFilter, data: { assetHandle: box } },
           {
             component: MeshRenderer,
-            data: { materials: [world.allocSharedRef('MaterialAsset', material)] },
+            data: { materials: [material] },
           },
         )
         .unwrap();
@@ -138,12 +134,12 @@ it('captures offscreen geometry, clips the opposite half space and records the w
         {
           component: MeshFilter,
           data: {
-            assetHandle: world.allocSharedRef('MeshAsset', createPlaneGeometry(30, 30).unwrap()),
+            assetHandle: testAssets(world).create(createPlaneGeometry(30, 30).unwrap()).unwrap(),
           },
         },
         {
           component: MeshRenderer,
-          data: { materials: [world.allocSharedRef('MaterialAsset', water)] },
+          data: { materials: [water] },
         },
       )
       .unwrap();
@@ -186,7 +182,7 @@ it('captures offscreen geometry, clips the opposite half space and records the w
       .unwrap();
     const lease = renderer.attach(world);
     if (!lease.ok) throw lease.error;
-    const schema = water.surface?.dynamicInput;
+    const schema = assets.read(water).unwrap().surface?.dynamicInput;
     if (schema === undefined) throw new Error('Water dynamic input schema missing');
     const page = ReadonlyDynamicInputPage.create({
       sourceId: 'planar-test',
@@ -268,9 +264,6 @@ it('captures offscreen geometry, clips the opposite half space and records the w
     };
     const reflectedDisplay = await displayRed();
     const reflectedRedPixels = reflectedDisplay.count;
-    expect(reflectedRedPixels).toBeGreaterThan(10);
-    expect(errors).toEqual([]);
-    expect(nativeErrors).toEqual([]);
     const capturing = recorder.captureFrame();
     (await recorder.frameBoundary()).unwrap();
     await draw();
@@ -282,6 +275,9 @@ it('captures offscreen geometry, clips the opposite half space and records the w
     mkdirSync(artifactDir, { recursive: true });
     writeFileSync(resolve(artifactDir, 'water.rhitape'), captured.bytes);
     writeFileSync(resolve(artifactDir, 'frame.json'), JSON.stringify(model, null, 2));
+    expect(reflectedRedPixels).toBeGreaterThan(10);
+    expect(errors).toEqual([]);
+    expect(nativeErrors).toEqual([]);
     expect(
       renderer
         .inspect()
@@ -315,12 +311,14 @@ it('captures offscreen geometry, clips the opposite half space and records the w
     writeFileSync(resolve(artifactDir, 'capture.rgba'), baseline.bytes);
     expect(baselineColors.red).toBeGreaterThan(10);
     expect(baselineColors.green).toBe(0);
-    const waterWork = model.works.findLast((work) =>
-      work.pipeline.shaders.some(
-        (shader) =>
-          shader.stage === 'fragment' && shader.source?.includes('PlanarReflectionUniform'),
-      ),
-    );
+    const waterWork = [...model.works]
+      .reverse()
+      .find((work) =>
+        work.pipeline.shaders.some(
+          (shader) =>
+            shader.stage === 'fragment' && shader.source?.includes('PlanarReflectionUniform'),
+        ),
+      );
     if (waterWork === undefined) throw new Error('Water reflection consumer missing from RHI tape');
     const reflectionBinding = waterWork.bindings.find(
       (entry) => entry.groupIndex === 1 && entry.binding === 15,

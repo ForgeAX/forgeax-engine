@@ -1,32 +1,16 @@
 import { createHash } from 'node:crypto';
 import { describe, expect, it } from 'vitest';
-import { toAssetPack } from '@forgeax/engine-image';
-import { AssetRegistry } from '@forgeax/engine-assets-runtime';
-import {
-  inspectVolumetricFog,
-  validateVolumetricFog,
-} from '@forgeax/engine-render';
-import { parsePackV2 } from '@forgeax/engine-pack/runtime';
-import type { ImageMeta, TextureAsset } from '@forgeax/engine-types';
-import {
-  volumetricDensityLoader,
-  VOLUMETRIC_DENSITY_KIND,
-} from '../volumetric-density-importer';
+import { textureContribution } from '@forgeax/engine-image';
+import { AssetRegistry, createCatalogSource } from '@forgeax/engine-assets-runtime';
+import { World } from '@forgeax/engine-ecs';
+import { ImporterRegistry, runImport } from '@forgeax/engine-import';
+import { DirectionalLight, inspectVolumetricFog, validateVolumetricFog } from '@forgeax/engine-render';
+import { createRuntimePackPublication } from '@forgeax/engine-pack/runtime';
+import { volumetricDensityImporter } from '../volumetric-density-importer';
 
 const GUID = '019f0000-0000-7000-8000-0000000003f1';
 const SOURCE_KEY = 'volumetric-fog/density.raw';
 const GENERATION = 7;
-
-function texture(): TextureAsset {
-  return {
-    kind: 'texture',
-    shape: { viewDimension: '3d', extent: { width: 64, height: 64, depth: 64 } },
-    format: 'r8unorm',
-    colorSpace: 'linear',
-    mips: { kind: 'none' },
-    data: new Uint8Array(64 * 64 * 64).fill(19),
-  };
-}
 
 function digest(bytes: Uint8Array): string {
   return `sha256:${createHash('sha256').update(bytes).digest('hex')}`;
@@ -34,61 +18,39 @@ function digest(bytes: Uint8Array): string {
 
 describe('public volumetric fog MVD asset chain', () => {
   it('preserves one GUID, body digest, generation, shape and recovery evidence', async () => {
-    const payload = texture();
-    const bodyDigest = digest(payload.data);
-    const meta = {
-      guid: GUID,
-      sourceKey: SOURCE_KEY,
-      colorSpace: 'linear',
-      mipmap: false,
-      addressMode: 'clamp-to-edge',
-      filterMode: 'linear',
-    } as ImageMeta;
-
-    const authored = toAssetPack(meta);
-    expect(authored.subAssets[0]?.guid).toBe(GUID);
-    const pack = {
-      schemaVersion: '2.0.0',
-      kind: 'internal-text-package',
-      packageId: 'hello/volumetric-fog',
-      assets: [
-        {
-          guid: GUID,
-          kind: 'texture',
-          execution: 'cooked',
-          payload,
-          refs: [],
-          artifacts: {
-            body: {
-              path: SOURCE_KEY,
-              mediaType: 'application/x-forgeax-r8',
-              assetCodec: { name: 'r8unorm', version: '1' },
-              byteLength: payload.data.byteLength,
-              integrity: { algorithm: 'sha256', digest: bodyDigest },
-            },
-          },
-        },
-      ],
-    };
-    const parsed = parsePackV2(pack);
-    expect(parsed.ok).toBe(true);
-    if (!parsed.ok) return;
-
-    const registry = new AssetRegistry({} as never);
-    registry.loaders.register(volumetricDensityLoader());
-    expect(
-      registry.catalog(
-        GUID,
-        { ...payload, kind: VOLUMETRIC_DENSITY_KIND } as unknown as TextureAsset,
-      ).ok,
-    ).toBe(true);
-    const loaded = await registry.loadByGuid<TextureAsset>(registry.parseGuid(GUID));
-    expect(loaded.ok).toBe(true);
-    if (!loaded.ok) return;
-    expect(loaded.value.data).toEqual(payload.data);
-    expect(digest(loaded.value.data)).toBe(bodyDigest);
-
+    const importers = new ImporterRegistry();
+    importers.register(volumetricDensityImporter());
+    const imported = await runImport({
+      importer: 'volumetric-density', source: SOURCE_KEY,
+      subAssets: [{ guid: GUID, kind: 'texture', sourceIndex: 0, sourceKey: 'density' }],
+    }, importers, { readSource: async () => ({ ok: true, value: new TextEncoder().encode(JSON.stringify({ format: 'forgeax-volumetric-density', width: 64, height: 64, depth: 64, base: 19, gradient: 0 })) }) });
+    expect(imported.ok).toBe(true);
+    if (!imported.ok || 'skipped' in imported.value) throw new Error('Density source did not produce a publication');
+    const row = imported.value.pack.assets[0]!;
+    const body = row.artifacts.body;
+    const bodyBytes = body?.bytes;
+    if (bodyBytes === undefined) throw new Error('Density body artifact is absent');
+    const bodyDigest = digest(bodyBytes);
+    const packageUrl = 'https://density.invalid/density.pack.json';
+    const publication = createRuntimePackPublication({ scopeId: 'asset-runtime', sourcePath: SOURCE_KEY, sourceRevision: String(GENERATION), packageUrl, pack: { assets: [{...row, artifacts: {body: {path: 'body.bin', mediaType: body!.mediaType, assetCodec: body!.assetCodec, contentEncoding: 'identity', byteLength: bodyBytes.byteLength, integrity: {algorithm: 'sha256', digest: bodyDigest}}}}] } });
+    const packBytes = JSON.stringify(publication.pack, (_key, value) => ArrayBuffer.isView(value) ? Array.from(value as Uint8Array) : value);
+    const registry = new AssetRegistry();
+    registry.installDecoder(textureContribution.kind, textureContribution.decoder);
+    registry.setCatalogSource(createCatalogSource({
+      entries: [{ guid: GUID, kind: 'texture', sourcePath: SOURCE_KEY, packageUrl, publication: publication.publication }],
+      fetch: async input => String(input) === packageUrl ? new Response(packBytes) : new Response(bodyBytes.slice().buffer),
+    }));
+    const loaded = (await registry.load(GUID, 'texture')).unwrap();
+    const payload = registry.read(loaded).unwrap();
+    expect(payload.data).toEqual(new Uint8Array(64 * 64 * 64).fill(19));
+    expect(digest(payload.data)).toBe(bodyDigest);
+    expect(registry.source(loaded).unwrap()?.guid).toBe(GUID);
+    expect(row.guid).toBe(GUID);
+    if (payload.shape.viewDimension !== '3d') throw new Error('Density source is not 3D');
+    const world = new World({ assets: registry });
+    const light = world.spawn({component: DirectionalLight, data: { color: [1,1,1], intensity: 1 }}).unwrap();
     const validated = validateVolumetricFog({
+      light,
       density: {
         guid: GUID,
         generation: GENERATION,

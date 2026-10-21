@@ -1,3 +1,5 @@
+import { AssetRegistry } from '@forgeax/engine-assets-runtime';
+import { runtimeAssetRegistry } from '@forgeax/engine-assets-runtime/internal';
 import { World } from '@forgeax/engine-ecs';
 import { GlobalTransform, Transform } from '@forgeax/engine-scene';
 import { expect, test, vi } from 'vitest';
@@ -6,7 +8,7 @@ import { AnimatedBy, AnimationTargetId, AnimationTargets } from '../animation-ta
 import { advanceAnimationPlayer } from '../systems/advance-animation-player';
 
 function animationCase(unrelatedSpawns: number) {
-  const world = new World();
+  const world = new World({ assets: new AssetRegistry() });
   for (const component of [
     Transform,
     GlobalTransform,
@@ -17,22 +19,25 @@ function animationCase(unrelatedSpawns: number) {
   ]) {
     world.components.register(component).unwrap();
   }
-  const targetId = 'a95da0ec669189f98273e8f86d8ad9f2';
-  const clip = world.allocSharedRef('AnimationClip', {
-    kind: 'animation-clip',
-    duration: 1,
-    channels: [
-      {
-        targetId,
-        property: 'translation',
-        sampler: {
-          input: new Float32Array([0, 1]),
-          output: new Float32Array([0, 0, 0, 4, 8, 12]),
-          interpolation: 'LINEAR',
+  const targetId =
+    'a95da0ec669189f98273e8f86d8ad9f2' as import('@forgeax/engine-types').AnimationTargetIdValue;
+  const clip = runtimeAssetRegistry(world.assets)
+    .create({
+      kind: 'animation-clip',
+      duration: 1,
+      channels: [
+        {
+          targetId,
+          property: 'translation',
+          sampler: {
+            input: new Float32Array([0, 1]),
+            output: new Float32Array([0, 0, 0, 4, 8, 12]),
+            interpolation: 'LINEAR',
+          },
         },
-      },
-    ],
-  });
+      ],
+    })
+    .unwrap();
   const player = world
     .spawn({
       component: AnimationPlayer,

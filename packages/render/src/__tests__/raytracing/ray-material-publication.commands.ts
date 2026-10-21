@@ -5,6 +5,7 @@ import {
   selectMaterialPassProgram,
 } from '@forgeax/engine-assets-runtime';
 import { serializeCookedMaterialRecord, validateCookedMaterialRecord } from '@forgeax/engine-pack';
+import { AssetGuid, definePackageId } from '@forgeax/engine-pack/source';
 import { type RaySurfaceProgram, rayMaterialContract } from '@forgeax/engine-shader';
 import type { MaterialAsset } from '@forgeax/engine-types';
 import { normaliseForPack } from '../../../../import/src/import-runner';
@@ -26,7 +27,13 @@ export async function prepareRayMaterialPublication(
   asset: MaterialAsset,
   cooker: ReturnType<typeof createMaterialPackCooker>,
 ) {
-  const draft = await cooker.cook({ guid: id, source: asset });
+  const guid = AssetGuid.format(
+    AssetGuid.derive(
+      definePackageId('019fca53-7400-7000-8000-000000000a01'),
+      id.replace(/[A-Z]/g, (letter) => `-${letter.toLowerCase()}`),
+    ),
+  );
+  const draft = await cooker.cook({ guid, source: asset });
   // Exercise the publication transport and complete loader gate before the
   // existing GPU reference consumes the selected bytes. No fixture cook of
   // a second ray material stands in for the ordinary publication.
@@ -34,8 +41,8 @@ export async function prepareRayMaterialPublication(
     JSON.parse(JSON.stringify(normaliseForPack((draft.payload as { cooked: unknown }).cooked))),
   ).unwrap();
   const ready = await createMaterialLoader({
-    loadPublication: async () => ({ guid: id, record, artifacts: draft.artifacts }),
-  }).load({ guid: id, specializationKey: record.specializationKey ?? '' });
+    loadPublication: async () => ({ guid, record, artifacts: draft.artifacts }),
+  }).load({ guid, specializationKey: record.specializationKey ?? '' });
   if (ready.status !== 'Ready')
     throw new Error(`ray fixture publication failed: ${JSON.stringify(ready)}`);
   const selected = selectMaterialPassProgram(projectMaterialRecord(ready.record), 'forward', {
@@ -69,6 +76,7 @@ export async function prepareRayMaterialPublication(
   };
   return {
     name: id,
+    guid,
     asset: resolved,
     program,
     // Compiler artifacts are UTF-8 WGSL. JSON carries strings rather than

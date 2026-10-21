@@ -19,7 +19,7 @@ describe('Standard vertex displacement', () => {
   });
   it('publishes the height texture and signed scale/bias through the material contract', () => {
     const texture = {
-      texture: 19,
+      texture: 19 as import('@forgeax/engine-types').AssetHandle<'texture'>,
       coordinates: { set: 1 as const, transform: { scale: [2, 3] as const } },
     };
     const material = Materials.standard({

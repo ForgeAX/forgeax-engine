@@ -17,7 +17,7 @@
 // symbols (research Finding 7); this importer keeps that invariant. fontImporter
 // is a NODE-ONLY sub-export (`@forgeax/engine-font/font-importer`,
 // `default: null` under browser conditions); the generator is dynamically
-// imported (cli-font realGeneratorFactory) so even the build-time graph only
+// imported by the atlas generator so even the build-time graph only
 // pays the wasm load cost when a font is actually baked. The runtime fontLoader
 // (M1 w6) reads an already-baked atlas DDC and has no bake dependency.
 //
@@ -42,7 +42,7 @@ import type {
 } from '@forgeax/engine-types';
 import type { BakeAtlas, MsdfGenerator } from './atlas-font-data.js';
 import { atlasFontData } from './atlas-font-data.js';
-import { realGeneratorFactory } from './cli-font.js';
+import { generateFontAtlas } from './atlas-generator.js';
 
 /** Stable semantic identities for the three writable font outputs. */
 export function sourceKeyForFontOutput(kind: string): string | undefined {
@@ -89,16 +89,10 @@ async function importFont(ctx: ImportContext): Promise<ImportResult> {
     );
   }
 
-  const factory =
-    (ctx.importSettings.generatorFactory as (() => Promise<MsdfGenerator>) | undefined) ??
-    realGeneratorFactory;
-  const generator = await factory();
-  let atlas: BakeAtlas;
-  try {
-    atlas = await generator.generateAtlas(read.value);
-  } finally {
-    await generator.dispose().catch(() => undefined);
-  }
+  const atlas = await generateFontAtlas(
+    read.value,
+    ctx.importSettings.generatorFactory as (() => Promise<MsdfGenerator>) | undefined,
+  );
 
   const atlasSub = ctx.subAssets.find((s) => s.kind === 'texture');
   const samplerSub = ctx.subAssets.find((s) => s.kind === 'sampler');

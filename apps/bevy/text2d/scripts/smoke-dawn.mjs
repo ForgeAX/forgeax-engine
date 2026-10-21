@@ -78,11 +78,11 @@ const mockCanvas = {
 const { createApp } = await import('@forgeax/engine-app/browser');
 const { Update } = await import('@forgeax/engine-ecs');
 const { MeshFilter, MeshRenderer } = await import('@forgeax/engine-render');
+const { GlyphText } = await import('@forgeax/engine-render/authoring');
 const { Transform } = await import('@forgeax/engine-scene');
 const { AssetGuid } = await import('@forgeax/engine-pack/guid');
 const {
   Text2dMotion,
-  registerSharedSampler,
   buildText2dFontRecoveryWorld,
   buildText2dWorld,
   createText2dFontRecoveryController,
@@ -117,15 +117,15 @@ const attachment = app.renderer.attach(app.world);
 if (!attachment.ok) throw attachment.error;
 
 const assets = app.assets;
-if (assets === null) {
+if (assets === undefined) {
   console.error('[smoke] FAIL - AssetRegistry is null');
   process.exit(1);
 }
-registerSharedSampler(assets);
+
 const fontHandle = await registerBakedFont(app.world, assets);
 if (m34RecoveryMode) {
-  const fontPayload = app.world.sharedRefs.resolve(fontHandle).unwrap();
-  app.world.sharedRefs.release(fontHandle);
+  const fontPayload = assets.read(fontHandle).unwrap();
+  assets.release(fontHandle).unwrap();
   const recoveryScene = buildText2dFontRecoveryWorld(app.world, fontPayload);
   let m34Phase = 0;
   app.world.addSystem(Update, {
@@ -137,6 +137,7 @@ if (m34RecoveryMode) {
     },
   });
   await runM34Recovery(app, fontPayload, errors, artifactDir, recoveryScene);
+  await app.dispose();
   delete globalThis.navigator.gpu;
   process.exit(0);
 }
@@ -149,7 +150,7 @@ app.world.addSystem(Update, {
 });
 
 const attached = () => [scene.translation, scene.rotation, scene.scale, scene.multiline]
-  .filter((entity) => worldGet(entity, MeshFilter) && worldGet(entity, MeshRenderer)).length;
+  .filter((entity) => worldGet(entity, GlyphText) && !worldGet(entity, MeshFilter) && !worldGet(entity, MeshRenderer)).length;
 const worldGet = (entity, component) => app.world.get(entity, component).ok;
 let frames = 0;
 for (let i = 0; i < framesTarget; i++) {
@@ -170,10 +171,10 @@ writeFileSync(resolve(artifactDir, 'text2d.png'), encodePng(width, height, pixel
 const visiblePixels = countVisiblePixels(pixels);
 const motion = app.world.get(scene.translation, Text2dMotion);
 const motionPhase = motion.ok ? motion.value.phase : 0;
-const metrics = { backend: rendererBackend(app.renderer), frames, attachedGlyphMeshes: attached(), motionPhase, visiblePixels, rhiErrors: errors.length };
+const metrics = { backend: rendererBackend(app.renderer), frames, nativeGlyphLabels: attached(), motionPhase, visiblePixels, rhiErrors: errors.length };
 writeFileSync(resolve(artifactDir, 'metrics.json'), `${JSON.stringify(metrics, null, 2)}\n`);
 console.log(`[smoke] frames observed=${frames}`);
-console.log(`[smoke] GlyphText meshes attached=${metrics.attachedGlyphMeshes}/4`);
+console.log(`[smoke] native GlyphText labels=${metrics.nativeGlyphLabels}/4`);
 console.log(`[smoke] translation motion phase=${motionPhase.toFixed(3)}`);
 console.log(`[smoke] visible pixels=${visiblePixels}`);
 console.log(`[smoke] wrote PNG=${resolve(artifactDir, 'text2d.png')}`);
@@ -181,7 +182,7 @@ console.log(`[smoke] wrote PNG=${resolve(artifactDir, 'text2d.png')}`);
 const failures = [];
 if (rendererBackend(app.renderer) !== 'webgpu') failures.push(`backend=${rendererBackend(app.renderer)}`);
 if (frames < framesTarget) failures.push(`frames=${frames}<${framesTarget}`);
-if (metrics.attachedGlyphMeshes !== 4) failures.push(`GlyphText mesh attachment=${metrics.attachedGlyphMeshes}/4`);
+if (metrics.nativeGlyphLabels !== 4) failures.push(`native GlyphText labels=${metrics.nativeGlyphLabels}/4`);
 if (motionPhase <= 0) failures.push(`motionPhase=${motionPhase} did not advance`);
 if (visiblePixels < 150) failures.push(`visiblePixels=${visiblePixels}<150`);
 if (errors.length > 0) failures.push(`renderer errors=${JSON.stringify(errors.slice(0, 3))}`);
@@ -189,7 +190,8 @@ if (failures.length > 0) {
   console.error(`[smoke] FAIL - ${failures.join('; ')}`);
   process.exit(1);
 }
-console.log(`[smoke] PASS - ${frames} frames, 4 GlyphText meshes, ${visiblePixels} visible pixels, rhiErrors=0`);
+console.log(`[smoke] PASS - ${frames} frames, 4 native GlyphText labels, ${visiblePixels} visible pixels, rhiErrors=0`);
+await app.dispose();
 delete globalThis.navigator.gpu;
 
 async function registerBakedFont(world, assets) {
@@ -197,27 +199,20 @@ async function registerBakedFont(world, assets) {
   const fontDir = resolve(repoRoot, 'forgeax-engine-assets', 'dejavu-fonts');
   const atlasBytes = readFileSync(resolve(fontDir, 'DejaVuSansMono.atlas.png'));
   const pack = JSON.parse(readFileSync(resolve(fontDir, 'DejaVuSansMono.font.pack.json'), 'utf8'));
-  const { loadUpng } = await import('@forgeax/engine-image');
-  const decoded = (await loadUpng()).decode(atlasBytes, { useTArray: true, formatAsRGBA: true });
+  const { parseImage } = await import('@forgeax/engine-image/parse-image');
+  const result = parseImage(atlasBytes, 'image/png', { colorSpace: 'linear', mipmap: false });
+  if (!result.ok) throw result.error;
+  const decoded = result.value;
   const payload = pack.assets[0].payload;
-  const atlas = AssetGuid.parse(payload.atlasGuid);
-  const sampler = AssetGuid.parse(payload.samplerGuid);
-  if (!atlas.ok || !sampler.ok) throw new Error('font asset GUID parse failed');
-  assets.catalog(atlas.value, {
+  const atlas = assets.create({
     kind: 'texture',
     shape: { viewDimension: '2d', extent: { width: decoded.width, height: decoded.height } },
-    format: 'rgba8unorm',
-    data: decoded.data,
-    colorSpace: 'linear',
-    mips: { kind: 'none' },
-  });
-  return world.allocSharedRef('FontAsset', {
-    kind: 'font',
-    atlas: atlas.value,
-    sampler: sampler.value,
-    glyphs: payload.glyphs,
-    common: payload.common,
-  });
+    format: 'rgba8unorm', data: decoded.bytes, colorSpace: 'linear', mips: { kind: 'none' },
+  }).unwrap();
+  const samplerPayload = pack.assets.find((asset) => asset.kind === 'sampler')?.payload;
+  if (samplerPayload === undefined) throw new Error('Font Pack has no sampler');
+  const sampler = assets.create({ kind: 'sampler', ...samplerPayload }).unwrap();
+  return assets.create({ kind: 'font', atlas, sampler, glyphs: payload.glyphs, common: payload.common }).unwrap();
 }
 
 async function readback(device) {
@@ -278,53 +273,32 @@ async function runM34Recovery(app, font, errors, outputDir, providedScene) {
   };
 
   const baseline = await capture('baseline', controller.baseline());
-  const overflow = await capture('overflow', controller.overflow());
+  const edited = await capture('edited', controller.edit());
   const recovered = await capture('recovered', controller.recover());
   const cleanup = await capture('cleanup', controller.cleanup());
   const cleanupAgain = await controller.cleanup();
-  const evidence = { baseline, overflow, recovered, cleanup, cleanupAgain, errors };
+  const evidence = { baseline, edited, recovered, cleanup, cleanupAgain, errors };
   writeFileSync(resolve(outputDir, 'm34-recovery-evidence.json'), `${JSON.stringify(evidence, null, 2)}\n`);
 
   const failures = [];
-  if (rendererBackend(app.renderer) !== 'webgpu') failures.push(`backend=${rendererBackend(app.renderer)}`);
-  if (baseline.state.prefixAttached !== 8 || !baseline.state.targetAttached || baseline.state.errorCount !== 0) {
-    failures.push(`baseline=${JSON.stringify(baseline.state)}`);
+  for (const [name, capture] of [['baseline', baseline], ['edited', edited], ['recovered', recovered]]) {
+    if (capture.state.labels !== 9 || capture.state.generatedComponents !== 0 ||
+        capture.state.liveFonts !== 9 || capture.state.errorCount !== 0 ||
+        capture.state.targetFontHandle !== baseline.state.targetFontHandle) {
+      failures.push(`${name}=${JSON.stringify(capture.state)}`);
+    }
   }
-  const overflowError = overflow.state.lastError;
-  if (
-    overflow.state.prefixAttached !== 8 ||
-    overflow.state.targetAttached ||
-    overflow.state.errorCount !== 1 ||
-    overflow.state.liveRefs !== overflow.state.baselineLiveRefs - 2 ||
-    overflowError?.code !== 'font-concurrency-exceeded' ||
-    overflowError.expected !== '8' ||
-    JSON.stringify(overflowError.detail) !==
-      JSON.stringify({ active: 8, limit: 8, rejected: scene.fonts[8] })
-  ) {
-    failures.push(`overflow=${JSON.stringify(overflow.state)}`);
+  if (baseline.state.targetGlyphs === 0 || edited.state.targetGlyphs !== 0 ||
+      recovered.state.targetGlyphs !== baseline.state.targetGlyphs) {
+    failures.push('Font edit/restore did not preserve the reference and replace glyph content');
   }
-  if (
-    recovered.state.prefixAttached !== 8 ||
-    !recovered.state.targetAttached ||
-    recovered.state.errorCount !== 1 ||
-    recovered.state.liveRefs !== recovered.state.baselineLiveRefs ||
-    recovered.state.targetMeshHandle === baseline.state.targetMeshHandle ||
-    recovered.state.targetMaterialHandle === baseline.state.targetMaterialHandle
-  ) {
-    failures.push(`recovered=${JSON.stringify(recovered.state)}`);
-  }
-  if (
-    cleanup.state.prefixAttached !== 0 ||
-    cleanup.state.targetAttached ||
-    !cleanup.state.unrelatedPresent ||
-    cleanup.state.liveRefs !== cleanup.state.baselineLiveRefs - 27 ||
-    JSON.stringify(cleanupAgain) !== JSON.stringify(cleanup.state) ||
-    cleanup.state.errorCount !== 1
-  ) {
+  if (cleanup.state.labels !== 0 || cleanup.state.generatedComponents !== 0 ||
+      cleanup.state.liveFonts !== 0 || !cleanup.state.unrelatedPresent ||
+      cleanup.state.errorCount !== 0 || JSON.stringify(cleanupAgain) !== JSON.stringify(cleanup.state)) {
     failures.push(`cleanup=${JSON.stringify({ cleanup: cleanup.state, cleanupAgain })}`);
   }
-  if (overflow.visiblePixels >= baseline.visiblePixels) {
-    failures.push(`overflow pixels did not remove target: ${baseline.visiblePixels}->${overflow.visiblePixels}`);
+  if (edited.visiblePixels >= baseline.visiblePixels) {
+    failures.push(`edited pixels did not remove target: ${baseline.visiblePixels}->${edited.visiblePixels}`);
   }
   if (recovered.visiblePixels < baseline.visiblePixels * 0.8) {
     failures.push(`recovered pixels did not return: ${baseline.visiblePixels}->${recovered.visiblePixels}`);
@@ -332,14 +306,14 @@ async function runM34Recovery(app, font, errors, outputDir, providedScene) {
   if (cleanup.visiblePixels >= recovered.visiblePixels * 0.2) {
     failures.push(`cleanup pixels remained: ${cleanup.visiblePixels}`);
   }
-  if (errors.length !== 1) failures.push(`errors=${JSON.stringify(errors)}`);
+  if (errors.length !== 0) failures.push(`errors=${JSON.stringify(errors)}`);
   if (failures.length > 0) {
     console.error(`[m34] FAIL - ${failures.join('; ')}`);
     process.exit(1);
   }
   console.log(
-    `[m34] PASS baseline=${baseline.visiblePixels} overflow=${overflow.visiblePixels} ` +
+    `[m34] PASS baseline=${baseline.visiblePixels} edited=${edited.visiblePixels} ` +
       `recovered=${recovered.visiblePixels} cleanup=${cleanup.visiblePixels} ` +
-      `active=8 limit=8 rejected=${scene.fonts[8]}`,
+      `fonts=9 ownerReleased=${cleanup.state.liveFonts === 0}`,
   );
 }

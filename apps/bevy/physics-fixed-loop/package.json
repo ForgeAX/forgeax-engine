@@ -52,7 +52,8 @@
     "@forgeax/engine-scene": "workspace:*",
     "@forgeax/engine-render": "workspace:*",
     "@forgeax/engine-types": "workspace:*",
-    "@forgeax/engine-input": "workspace:*"
+    "@forgeax/engine-input": "workspace:*",
+    "@forgeax/engine-geometry": "workspace:*"
   },
   "devDependencies": {
     "@forgeax/engine-vite-plugin-shader": "workspace:*",

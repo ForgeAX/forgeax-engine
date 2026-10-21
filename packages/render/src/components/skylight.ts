@@ -23,7 +23,7 @@
 // still scales the IBL result, so both are live dynamic dials either way.
 //
 // feat-20260630-equirect-kind-internalized-ibl-declarative-skyligh M3 / w16:
-// the field is `equirect: shared<EquirectAsset>` (the retired
+// the field is `equirect: asset<equirect>` (the retired
 // `cubemap: shared<CubeTextureAsset>` is gone). AI users declare the equirect
 // source directly; the render-system record arm projects the cubemap + IBL
 // chain internally and lazily (no user upload call) -- there is no
@@ -57,7 +57,7 @@ import { defineComponent } from '@forgeax/engine-ecs';
  *   `color` * `intensity` then scale the IBL ambient.
  *
  * `equirect` is an OPTIONAL `Handle<EquirectAsset>` resolved from a vite
- * pack-index GUID via `engine.assets.loadByGuid<EquirectAsset>(guid)`. The
+ * pack-index GUID via `engine.assets.load(guid, 'equirect')`. The
  * cubemap projection is internal and idempotent: the same equirect source
  * always resolves to the same GPU cubemap (no user upload call).
  *
@@ -85,7 +85,7 @@ import { defineComponent } from '@forgeax/engine-ecs';
  *   const guidRes = AssetGuid.parse('019e4a26-3c29-7420-af5d-20f2724a16b0');
  *   if (!guidRes.ok) throw guidRes.error;
  *   // 2. load the HDR equirect via the GUID-addressed pack route
- *   const hdrRes = await engine.assets.loadByGuid<EquirectAsset>(guidRes.value);
+ *   const hdrRes = await engine.assets.load(guidRes.value, 'equirect');
  *   if (!hdrRes.ok) throw hdrRes.error;
  *   // 3. spawn the Skylight — the equirect handle activates the full IBL path;
  *   //    the cubemap + IBL precompute happen lazily inside the record arm.
@@ -98,7 +98,7 @@ export const Skylight = defineComponent('Skylight', {
   // The GPU equirect-to-cubemap projection is render-owned presentation
   // state. Record/restore preserves the portable lighting controls while the
   // render owner resolves this asset again on the target world.
-  equirect: { type: 'shared<EquirectAsset>', simulationTransient: true },
+  equirect: { type: 'asset<equirect>', simulationTransient: true },
   // color carries an explicit layer-2 default [1,1,1] (white); the array
   // layer-3 fallback is all-zero, so the default MUST be explicit (D-5).
   color: { type: 'array<f32, 3>', default: new Float32Array([1, 1, 1]) },

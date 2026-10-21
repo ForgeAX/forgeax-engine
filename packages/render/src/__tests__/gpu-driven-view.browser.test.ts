@@ -4,12 +4,25 @@ import {
   runGpuDrivenShadowCameraCullEvidence,
   runGpuDrivenViewGpuEvidence,
   runGpuDrivenViewLifecycleEvidence,
+  runSharedGeometryCullEvidence,
 } from './gpu-driven-view-gpu-evidence';
 
 const browserReady = typeof navigator !== 'undefined' && navigator.gpu !== undefined;
 const lifecycleFrames = 60;
 
 describe.skipIf(!browserReady)('GPU-driven View Browser WebGPU', () => {
+  it('culls edited geometry and displacement through fixed shared descriptors', async () => {
+    const evidence = await runSharedGeometryCullEvidence();
+    expect(evidence.geometryUpload).toBe(4 * 1024 + 28);
+    expect(evidence.frames.map((frame) => frame.visible)).toEqual([0, 1024, 0, 1024, 0]);
+    expect(evidence.frames[0]?.sharedInputUploadBytes).toBeGreaterThan(0);
+    expect(evidence.frames.slice(1).map((frame) => frame.sharedInputUploadBytes)).toEqual([
+      4 * 1024 + 28,
+      0,
+      4 * 1024 + 8,
+      0,
+    ]);
+  });
   it('produces compact visible IDs and portable indirect args on the real browser device', async () => {
     await expect(runGpuDrivenViewGpuEvidence()).resolves.toEqual({
       visibleInstance: 0,

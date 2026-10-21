@@ -42,15 +42,15 @@ const VARIANTS = [
 const results = [];
 for (const variant of VARIANTS) {
   const { renderer, assets, errors } = await gi.createGiRenderer({ width: SIZE, height: SIZE });
-  const world = new World();
+  const world = new World({ assets: assets });
   const { createWorldContext } = await import('@forgeax/engine-ecs');
   const { renderComponentsPlugin } = await import('@forgeax/engine-render');
   const { scenePlugin } = await import('@forgeax/engine-scene');
   await createWorldContext(world, [renderComponentsPlugin(), scenePlugin()]);
   const restore = gi.installDistCatalog(assets, SPONZA_DIST);
   try {
-    const asset = (await assets.loadByGuid(assets.parseGuid(SPONZA.sceneGuid))).unwrap();
-    assets.instantiate(world.allocSharedRef('SceneAsset', asset), world).unwrap();
+    const asset = (await assets.load(assets.parseGuid(SPONZA.sceneGuid), 'scene')).unwrap();
+    assets.instantiate(asset, world).unwrap();
   } finally {
     restore();
   }

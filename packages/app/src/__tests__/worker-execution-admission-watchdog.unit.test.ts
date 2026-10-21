@@ -2,11 +2,7 @@ import type { DisplayFacts, PlatformEvent } from '@forgeax/engine-platform';
 import { ok } from '@forgeax/engine-types';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { ExecutionDiagnosticEvent } from '../execution/diagnostic-events';
-import type {
-  EngineToHostMessage,
-  ExecutionFrameCompletion,
-  ExecutionFrameMessage,
-} from '../execution/protocol';
+import type { EngineToHostMessage, ExecutionFrameMessage } from '../execution/protocol';
 import { FrameCreditLedger } from '../execution/protocol';
 import { workerSelection } from './execution-fixtures';
 
@@ -172,6 +168,7 @@ async function createRunningApp(
   renderPipelineCapacity: 2 | 3 | 4 = 2,
   syncCanvas?: import('../execution/host-controller').CreateWorkerExecutionAppOptions['syncCanvas'],
   startupTimeoutMs: number | null = 2_000,
+  frameTimeoutMs?: number | null,
 ) {
   const { callbacks, raf } = makeRaf();
   vi.stubGlobal('requestAnimationFrame', raf);
@@ -183,6 +180,7 @@ async function createRunningApp(
       execution: {
         bootstrap: 'https://example.test/game.js',
         startupTimeoutMs,
+        frameTimeoutMs,
         diagnostics: { renderPipelineCapacity },
       },
     } as never,
@@ -215,7 +213,7 @@ function frames(): ExecutionFrameMessage[] {
     .filter((message) => message.kind === 'frame');
 }
 
-function completeMessage(frame: ExecutionFrameMessage): ExecutionFrameCompletion {
+function completeMessage(frame: ExecutionFrameMessage): EngineToHostMessage {
   return {
     kind: 'frame-complete',
     worldIdentity: frame.worldIdentity,
@@ -269,6 +267,31 @@ describe('Worker frame admission watchdog', () => {
     } finally {
       await app.dispose();
     }
+  });
+
+  it.each([
+    'engine-worker',
+    'render-worker',
+  ] as const)('retains a slow %s admission and accepts its late completion when the frame deadline is disabled', async (tier) => {
+    const { app, callbacks, frame } = await createRunningApp(tier, 2, undefined, 10_000, null);
+    try {
+      listener()(completeMessage(frame));
+      callbacks.at(-1)?.(16);
+      const pending = probes.sessionPost.mock.calls.at(-1)?.[0] as ExecutionFrameMessage;
+      const posted = probes.sessionPost.mock.calls.length;
+      await vi.advanceTimersByTimeAsync(120_001);
+      callbacks.at(-1)?.(120_017);
+      expect(app.lastError).toBeUndefined();
+      expect(app.execution.report().frame).toMatchObject({ completed: 1, inFlight: 1 });
+      expect(probes.sessionPost.mock.calls).toHaveLength(posted);
+      expect(probes.sessionDispose).not.toHaveBeenCalled();
+      listener()(completeMessage(pending));
+      expect(app.execution.report().frame.completed).toBe(2);
+      expect(app.lastError).toBeUndefined();
+    } finally {
+      await app.dispose();
+    }
+    expect(probes.sessionDispose).toHaveBeenCalledTimes(1);
   });
 
   it('still bounds a first frame that never completes by the configured startup budget', async () => {
@@ -1057,7 +1080,35 @@ describe('Worker frame admission watchdog', () => {
 
     expect(app.execution.report().fault?.code).toBe('app-execution-deadline-exceeded');
     expect(app.lastError?.code).toBe('app-system-update-failed');
+    expect(app.execution.report().world.identity).toBeNull();
     expect(probes.sessionDispose).toHaveBeenCalledTimes(1);
+  });
+
+  it('rejects reentrant and later inspection after terminal owner loss without posting work', async () => {
+    const { app } = await createRunningApp();
+    const remoteEval = app.remoteEval;
+    if (remoteEval === undefined) throw new Error('Worker App exposes remoteEval');
+    const requests: ReturnType<typeof remoteEval>[] = [];
+    const inspect = () => {
+      const request = remoteEval('return 1', 'worker-world');
+      void request.catch(() => undefined);
+      requests.push(request);
+    };
+    app.onError(inspect);
+    const posted = probes.sessionPost.mock.calls.length;
+    try {
+      await vi.advanceTimersByTimeAsync(2_001);
+      inspect();
+      expect(requests).toHaveLength(2);
+      expect(probes.sessionPost).toHaveBeenCalledTimes(posted);
+      for (const request of requests) {
+        await expect(request).rejects.toBe(app.lastError);
+        await expect(request.started).rejects.toBe(app.lastError);
+        await expect(request.cancel()).resolves.toBe(true);
+      }
+    } finally {
+      await app.dispose();
+    }
   });
 
   it('clears only admission on submit and waits for the real completion before the next frame', async () => {

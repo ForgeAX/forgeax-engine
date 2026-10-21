@@ -116,19 +116,46 @@ export function createSurfaceMaterialBindings(
     })),
   });
   if (!layout.ok) return failed(layout);
+  const group = createSurfaceMaterialGroup(
+    device,
+    paramSchema,
+    uniform.value,
+    layout.value,
+    resolveTexture,
+  );
+  if (!group.ok) return failed(group);
+  return ok({
+    uniform: uniform.value,
+    bytes: row.byteLength,
+    layout: layout.value,
+    ...group.value,
+  });
+}
+
+/** Refresh native resources while retaining the material root's uniform and layout. */
+export function createSurfaceMaterialGroup(
+  device: RhiDevice,
+  paramSchema: readonly ParamSchemaEntry[],
+  uniform: Buffer,
+  layout: BindGroupLayout,
+  resolveTexture?: (parameter: string) => ReturnType<ResolveSurfaceTexture>,
+): Result<
+  { readonly group: BindGroup; readonly textureViews: readonly TextureView[] },
+  RayReferenceError | RhiError
+> {
+  const derived = derive(paramSchema);
   const entries: BindGroupEntry[] = [];
   const binding = derived.bglEntries.find((e) => e.buffer?.type === 'uniform')?.binding;
   if (binding !== undefined)
-    entries.push({ binding, resource: { kind: 'buffer', value: { buffer: uniform.value } } });
+    entries.push({ binding, resource: { kind: 'buffer', value: { buffer: uniform } } });
   const textures = new Map<string, { view: TextureView; sampler: Sampler }>();
   for (const r of derived.resourceBindings) {
     const parameter = r.parameter ?? r.name;
     let texture = textures.get(parameter);
     if (!texture) {
-      if (!resolveTexture)
-        return failed(rayReferenceFailure(`missing texture binding ${parameter}`));
+      if (!resolveTexture) return rayReferenceFailure(`missing texture binding ${parameter}`);
       const result = resolveTexture(parameter);
-      if (!result.ok) return failed(result);
+      if (!result.ok) return result;
       texture = result.value;
       textures.set(parameter, texture);
     }
@@ -138,12 +165,9 @@ export function createSurfaceMaterialBindings(
         : { binding: r.binding, resource: { kind: 'textureView', value: texture.view } },
     );
   }
-  const group = device.createBindGroup({ layout: layout.value, entries });
-  if (!group.ok) return failed(group);
+  const group = device.createBindGroup({ layout, entries });
+  if (!group.ok) return group;
   return ok({
-    uniform: uniform.value,
-    bytes: row.byteLength,
-    layout: layout.value,
     group: group.value,
     textureViews: [...new Set([...textures.values()].map((texture) => texture.view))],
   });

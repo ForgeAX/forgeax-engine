@@ -27,7 +27,7 @@ export const DIRECT_DFG_LUT_DESCRIPTOR = {
   textureBindingViewDimension: undefined,
 } as const satisfies TextureDescriptor;
 
-export interface DirectDfgLut {
+interface DirectDfgLut {
   readonly texture: Texture;
   readonly view: TextureView;
   /** Compute transports have no IBL sampler; raster reuses its existing sampler. */

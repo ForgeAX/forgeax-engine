@@ -53,14 +53,6 @@ const policy = {
   },
 } satisfies Record<IntelligenceErrorCode, { readonly expected: string; readonly hint: string }>;
 
-export const INTELLIGENCE_EXPECTED = Object.fromEntries(
-  Object.entries(policy).map(([code, value]) => [code, value.expected]),
-) as Readonly<Record<IntelligenceErrorCode, string>>;
-
-export const INTELLIGENCE_ERROR_HINTS = Object.fromEntries(
-  Object.entries(policy).map(([code, value]) => [code, value.hint]),
-) as Readonly<Record<IntelligenceErrorCode, string>>;
-
 class IntelligenceErrorClass extends Error {
   readonly code: IntelligenceErrorCode;
   readonly expected: string;

@@ -1,5 +1,7 @@
+import { resourcePreviewRequestId } from '@forgeax/view-workspace-core/resource-open';
 import type { PreviewOwner, ViewPresentation as PreviewPresentation } from '@forgeax/view-workspace-core/engine-presentation';
-import { Button, EmptyState } from '@forgeax/view-components';
+import { EmptyState, IconButton, Toolbar, Tooltip } from '@forgeax/view-components';
+import { RotateCcw } from 'lucide-react';
 import { useEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react';
 import { bindWorkspacePreviewSurface } from '@forgeax/view-workspace-core/preview-surface';
 import {
@@ -99,6 +101,7 @@ function LivePreview({
     let removeInput: ((reason?: string) => void) | undefined;
     let controller: InputController | undefined;
     const bound = bindWorkspacePreviewSurface({
+      requestId: resourcePreviewRequestId(workspace, target.targetId),
       presentation,
       target,
       container,
@@ -112,6 +115,9 @@ function LivePreview({
       return undefined;
     }
     setFailure(undefined);
+    void bound.ready?.catch(error => {
+      if (!cancelled) setFailure({ hint: error instanceof Error ? error.message : String(error) });
+    });
     const document = container.ownerDocument;
     const pageActive = () => {
       const active = document?.documentElement?.dataset?.forgeaxViewActivePage;
@@ -196,20 +202,23 @@ function LivePreview({
   }
   return (
     <div className="fx-asset-viewer fx-asset-preview fx-material-preview fx-ui" data-testid="panel-material-preview">
-      <div className="fx-material-preview-toolbar">
-        <Button
-          size="compact"
-          variant="secondary"
-          data-testid="material-restore-view"
-          disabled={initialPose == null || restoring || Boolean(failure)}
-          onClick={restoreView}
-        >
-          {t('material.restoreView')}
-        </Button>
-        {restoreError ? (
-          <p className="fx-material-restore-error" role="alert">{restoreError}</p>
-        ) : null}
-      </div>
+      <Toolbar className="fx-toolbar--viewport fx-material-preview-toolbar" aria-label={t('material.previewTitle')}>
+        <Tooltip title={t('material.restoreView')} description={t('material.restoreViewDescription')} placement="bottom" portaled>
+          <IconButton
+            label={t('material.restoreView')}
+            title=""
+            icon={<RotateCcw className="fx-icon" />}
+            size="compact"
+            variant="secondary"
+            data-testid="material-restore-view"
+            disabled={initialPose == null || restoring || Boolean(failure)}
+            onClick={restoreView}
+          />
+        </Tooltip>
+      </Toolbar>
+      {restoreError ? (
+        <p className="fx-material-restore-error" role="alert">{restoreError}</p>
+      ) : null}
       <div
         ref={containerRef}
         className="fx-asset-preview-surface"

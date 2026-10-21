@@ -1,57 +1,68 @@
-import { HANDLE_CUBE, HANDLE_QUAD, resolveTilesetRuntime } from '@forgeax/engine-assets-runtime';
+import { AssetRegistry } from '@forgeax/engine-assets-runtime';
 import { type EntityHandle, World } from '@forgeax/engine-ecs';
 import { createRenderReadLease } from '@forgeax/engine-ecs/projection';
+import { createPrimitiveMesh } from '@forgeax/engine-geometry';
 import { ChildOf, registerPropagateTransforms, Transform } from '@forgeax/engine-scene';
+import { DEFAULT_UNLIT_PARAM_SCHEMA } from '@forgeax/engine-shader';
 import { Skin } from '@forgeax/engine-skinning';
-import { type TilesetAsset, toShared } from '@forgeax/engine-types';
+import type { TilesetAsset } from '@forgeax/engine-types';
 import { describe, expect, it } from 'vitest';
 import { Instances } from '../components/instances';
 import { MeshFilter } from '../components/mesh-filter';
 import { MeshRenderer } from '../components/mesh-renderer';
 import { SpriteInstances } from '../components/sprite-instances';
-import { TileLayer } from '../components/tile-layer';
 import { Tilemap } from '../components/tilemap';
 import { Visibility, VisibilityStateValue } from '../components/visibility';
 import { extractFrames } from '../render-system-extract-tail';
 import { PersistentRenderScene } from '../scene/render-scene';
 import { classifySceneDataCoverage } from '../temporal/coverage';
-import { tilemapChunkExtractSystem } from '../tilemap-chunk-extract-system';
+
+const BUILTIN_CUBE = createPrimitiveMesh('cube').unwrap();
+const BUILTIN_QUAD = createPrimitiveMesh('quad').unwrap();
 
 const IDENTITY = new Float32Array([1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1]);
 
 type ProducerCase = {
   readonly name: string;
-  readonly setup: (world: World) => EntityHandle;
+  readonly setup: (world: World, assets: AssetRegistry) => EntityHandle;
 };
 
-function staticMesh(world: World): EntityHandle {
+function staticMesh(world: World, assets: AssetRegistry): EntityHandle {
   return world
     .spawn(
       { component: Transform, data: {} },
-      { component: MeshFilter, data: { assetHandle: HANDLE_CUBE } },
+      { component: MeshFilter, data: { assetHandle: assets.create(BUILTIN_CUBE).unwrap() } },
       { component: MeshRenderer, data: {} },
       { component: Visibility, data: { state: VisibilityStateValue.hidden } },
     )
     .unwrap();
 }
 
-function skinnedMesh(world: World): EntityHandle {
+function skinnedMesh(world: World, assets: AssetRegistry): EntityHandle {
   return world
     .spawn(
       { component: Transform, data: {} },
-      { component: MeshFilter, data: { assetHandle: HANDLE_CUBE } },
+      { component: MeshFilter, data: { assetHandle: assets.create(BUILTIN_CUBE).unwrap() } },
       { component: MeshRenderer, data: {} },
-      { component: Skin, data: { skeleton: toShared<'SkeletonAsset'>(999), joints: [] } },
+      {
+        component: Skin,
+        data: {
+          skeleton: assets
+            .create({ kind: 'skeleton', jointCount: 0, inverseBindMatrices: new Float32Array(0) })
+            .unwrap(),
+          joints: [],
+        },
+      },
       { component: Visibility, data: { state: VisibilityStateValue.hidden } },
     )
     .unwrap();
 }
 
-function spriteMesh(world: World): EntityHandle {
+function spriteMesh(world: World, assets: AssetRegistry): EntityHandle {
   return world
     .spawn(
       { component: Transform, data: {} },
-      { component: MeshFilter, data: { assetHandle: HANDLE_QUAD } },
+      { component: MeshFilter, data: { assetHandle: assets.create(BUILTIN_QUAD).unwrap() } },
       { component: MeshRenderer, data: {} },
       {
         component: SpriteInstances,
@@ -62,11 +73,11 @@ function spriteMesh(world: World): EntityHandle {
     .unwrap();
 }
 
-function autoFoldInstances(world: World): EntityHandle {
+function autoFoldInstances(world: World, assets: AssetRegistry): EntityHandle {
   return world
     .spawn(
       { component: Transform, data: {} },
-      { component: MeshFilter, data: { assetHandle: HANDLE_CUBE } },
+      { component: MeshFilter, data: { assetHandle: assets.create(BUILTIN_CUBE).unwrap() } },
       { component: MeshRenderer, data: {} },
       { component: Instances, data: { transforms: IDENTITY } },
       { component: Visibility, data: { state: VisibilityStateValue.hidden } },
@@ -74,11 +85,11 @@ function autoFoldInstances(world: World): EntityHandle {
     .unwrap();
 }
 
-function explicitInstances(world: World): EntityHandle {
+function explicitInstances(world: World, assets: AssetRegistry): EntityHandle {
   return world
     .spawn(
       { component: Transform, data: {} },
-      { component: MeshFilter, data: { assetHandle: HANDLE_CUBE } },
+      { component: MeshFilter, data: { assetHandle: assets.create(BUILTIN_CUBE).unwrap() } },
       { component: MeshRenderer, data: {} },
       { component: Instances, data: { transforms: IDENTITY } },
       { component: Visibility, data: { state: VisibilityStateValue.hidden } },
@@ -86,10 +97,21 @@ function explicitInstances(world: World): EntityHandle {
     .unwrap();
 }
 
-function tilemap(world: World): EntityHandle {
+function tilemap(world: World, assets: AssetRegistry): EntityHandle {
   const tileset: TilesetAsset = {
     kind: 'tileset',
-    atlases: ['visibility/atlas'],
+    atlases: [
+      assets
+        .create({
+          kind: 'texture',
+          format: 'rgba8unorm',
+          colorSpace: 'linear',
+          mips: { kind: 'none' },
+          shape: { viewDimension: '2d', extent: { width: 16, height: 16 } },
+          data: new Uint8Array(16 * 16 * 4).fill(255),
+        })
+        .unwrap(),
+    ],
     tileWidth: 16,
     tileHeight: 16,
     columns: 1,
@@ -97,19 +119,14 @@ function tilemap(world: World): EntityHandle {
     regions: [{ x: 0, y: 0, width: 16, height: 16 }],
     tiles: [{ regionIndex: 0 }],
   };
-  const lookup = (guid: string) => (guid === 'test/tileset' ? tileset : undefined);
+  const handle = assets.create(tileset).unwrap();
   const map = world
     .spawn(
-      { component: Tilemap, data: { cols: 1, rows: 1, tileset: 'test/tileset' } },
+      { component: Tilemap, data: { cols: 1, rows: 1, tileset: handle, tiles: [1] } },
       { component: Transform, data: {} },
       { component: Visibility, data: { state: VisibilityStateValue.hidden } },
     )
     .unwrap();
-  world.spawn(
-    { component: TileLayer, data: { tiles: new Uint32Array([1]), dirty: 0 } },
-    { component: ChildOf, data: { parent: map } },
-  );
-  tilemapChunkExtractSystem(world, lookup);
   return map;
 }
 
@@ -133,19 +150,26 @@ describe('visibility built-in producer matrix', () => {
   });
 
   it.each(PRODUCERS)('$name is hidden, visible, then restorable', ({ setup }) => {
-    const world = new World();
-    const entity = setup(world);
+    const assets = new AssetRegistry();
+    assets.shaderRegistry.installMaterialArtifact('forgeax::default-unlit', {
+      source: 'fn main() {}',
+      paramSchema: DEFAULT_UNLIT_PARAM_SCHEMA,
+    });
+    const world = new World({ assets });
+    registerPropagateTransforms(world);
+    const entity = setup(world, assets);
+    world.update(0).unwrap();
 
-    const hidden = extractFrames([world], 0);
+    const hidden = extractFrames([world], { cameraOwner: 0, resourceOwner: 0 }, assets);
     expect(hidden.renderables).toHaveLength(0);
     expect(hidden.dispatch).toHaveLength(0);
 
     world.set(entity, Visibility, { state: VisibilityStateValue.visible }).unwrap();
-    const visible = extractFrames([world], 0);
+    const visible = extractFrames([world], { cameraOwner: 0, resourceOwner: 0 }, assets);
     expect(visible.visibilitySnapshots[0]?.get(entity)?.effective).toBe('visible');
 
     world.set(entity, Visibility, { state: VisibilityStateValue.hidden }).unwrap();
-    const restored = extractFrames([world], 0);
+    const restored = extractFrames([world], { cameraOwner: 0, resourceOwner: 0 }, assets);
     expect(restored.renderables).toHaveLength(0);
     expect(restored.dispatch).toHaveLength(0);
   });
@@ -155,7 +179,13 @@ it.each([
   'self',
   'parent',
 ] as const)('removes %s-hidden casters from the retained shadow projection and restores them', (hiddenBy) => {
-  const world = new World();
+  const assets = new AssetRegistry();
+  assets.shaderRegistry.installMaterialArtifact('forgeax::default-unlit', {
+    source: 'fn main() {}',
+    paramSchema: DEFAULT_UNLIT_PARAM_SCHEMA,
+  });
+  const world = new World({ assets });
+  registerPropagateTransforms(world);
   registerPropagateTransforms(world);
   const parent = world
     .spawn(
@@ -167,7 +197,7 @@ it.each([
     .spawn(
       { component: Transform, data: {} },
       { component: ChildOf, data: { parent } },
-      { component: MeshFilter, data: { assetHandle: HANDLE_CUBE } },
+      { component: MeshFilter, data: { assetHandle: assets.create(BUILTIN_CUBE).unwrap() } },
       { component: MeshRenderer, data: {} },
       {
         component: Visibility,
@@ -179,19 +209,26 @@ it.each([
     )
     .unwrap();
   world.update(0).unwrap();
-  const scene = new PersistentRenderScene();
+  const scene = new PersistentRenderScene({ assets });
   const lease = createRenderReadLease(world);
   const draw = () =>
     scene.extractComposition(
       [world],
       { cameraOwner: 0, resourceOwner: 0 },
-      0,
+      assets,
       (renderables) =>
-        extractFrames([world], 0, undefined, undefined, scene.materialSnapshotCacheStore(), {
-          cull: 'none',
-          retainHidden: true,
-          renderables,
-        }),
+        extractFrames(
+          [world],
+          { cameraOwner: 0, resourceOwner: 0 },
+          assets,
+          undefined,
+          scene.materialSnapshotCacheStore(),
+          {
+            cull: 'none',
+            retainHidden: true,
+            renderables,
+          },
+        ),
       [lease],
     );
   const shadowDispatch = () =>
@@ -217,32 +254,4 @@ it.each([
     lease.dispose();
     scene.dispose();
   }
-});
-
-describe('tileset durable atlas projection', () => {
-  it('projects the atlas GUID through the current World for the tilemap owner', () => {
-    const world = new World();
-    const atlas = { kind: 'texture', width: 1, height: 1 } as never;
-    const first = resolveTilesetRuntime(world, 'visibility/atlas', (guid) =>
-      guid === 'visibility/atlas' ? atlas : undefined,
-    );
-    const second = resolveTilesetRuntime(world, 'visibility/atlas', () => atlas);
-
-    expect(first.ok).toBe(true);
-    expect(second.ok).toBe(true);
-    if (first.ok && second.ok) expect(first.value.handle).toBe(second.value.handle);
-
-    const otherWorld = new World();
-    const other = resolveTilesetRuntime(otherWorld, 'visibility/atlas', () => atlas);
-    expect(other.ok).toBe(true);
-    if (first.ok && other.ok) {
-      expect(world.sharedRefs.resolve(first.value.handle).ok).toBe(true);
-      expect(otherWorld.sharedRefs.resolve(other.value.handle).ok).toBe(true);
-    }
-  });
-
-  it('fails closed for stale atlas payloads', () => {
-    const result = resolveTilesetRuntime(new World(), 'stale-atlas', () => ({ code: 'stale' }));
-    expect(result).toMatchObject({ ok: false, error: { code: 'tileset-atlas-stale' } });
-  });
 });

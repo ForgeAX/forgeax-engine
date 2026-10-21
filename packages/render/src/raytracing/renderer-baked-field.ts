@@ -1,5 +1,7 @@
-import type { LoaderRegistry } from '@forgeax/engine-assets-runtime';
+import type { AssetRegistry } from '@forgeax/engine-assets-runtime';
+import { runtimeAssets } from '@forgeax/engine-assets-runtime/internal';
 import { type Buffer, RhiError } from '@forgeax/engine-rhi';
+import type { AssetHandle } from '@forgeax/engine-types';
 import type { RendererGenerationFence } from '../assembly/renderer-frame-transaction';
 import { ResidencyLifetime } from '../device/residency-lifetime';
 import type { StandardBakedDiffuseGi } from '../pipeline/standard-profile';
@@ -12,16 +14,14 @@ import {
   packIrradianceFieldUniform,
 } from './irradiance-field';
 import type { FieldGatherExtent, FieldGatherSource } from './irradiance-field-graph';
-import {
-  IRRADIANCE_FIELD_DEPTH_BYTES,
-  IRRADIANCE_FIELD_META_BYTES,
-  IRRADIANCE_FIELD_PROBE_BYTES,
-} from './irradiance-field-plan';
+import { IRRADIANCE_FIELD_PROBE_BYTES } from './irradiance-field-plan';
 import {
   type IrradianceVolume,
-  irradianceVolumePackLoader,
+  irradianceVolumeKind,
   irradianceVolumeProbeBlocks,
+  validateIrradianceVolume,
 } from './irradiance-volume';
+import { requirePublishedKernel } from './published-kernel';
 
 export interface BakedFieldFrameInput {
   readonly runtime: RenderSystemInternals;
@@ -69,37 +69,9 @@ export interface PreparedBakedField extends FieldGatherSource<BakedFieldExtent> 
 }
 
 const storage = 128 | 12;
-const registered = new WeakSet<LoaderRegistry>();
-
-/** The volume kind is renderer-consumed; a host that registered it first keeps its owner. */
-function admitVolumeLoader(loaders: LoaderRegistry): void {
-  if (registered.has(loaders)) return;
-  registered.add(loaders);
-  try {
-    loaders.registerPackLoader(irradianceVolumePackLoader);
-  } catch {
-    // Duplicate kind: the loaded value is still shape-checked below.
-  }
-}
-
-function isVolume(value: unknown): value is IrradianceVolume {
-  if (typeof value !== 'object' || value === null) return false;
-  const v = value as Partial<IrradianceVolume>;
-  return (
-    typeof v.probeCount === 'number' &&
-    typeof v.digest === 'string' &&
-    v.irradiance instanceof Float32Array &&
-    v.moments instanceof Float32Array &&
-    v.meta instanceof Uint32Array &&
-    v.irradiance.byteLength === v.probeCount * 1024 &&
-    v.moments.byteLength === v.probeCount * IRRADIANCE_FIELD_DEPTH_BYTES &&
-    v.meta.byteLength === v.probeCount * IRRADIANCE_FIELD_META_BYTES
-  );
-}
-
 /** Renderer-owned baked diffuse GI: a Catalog irradiance volume gathered per
  * pixel through the irradiance-field sampler. The generation follows the
- * device, the Catalog epoch and the profile; no frame traces or updates probes. */
+ * device, the selected volume content and the profile; no frame traces or updates probes. */
 export class RendererBakedField {
   #input: BakedFieldFrameInput | undefined;
   #key = '';
@@ -109,6 +81,13 @@ export class RendererBakedField {
   #error: RhiError | undefined;
   #disposed = false;
   #submitted = 0;
+  #source:
+    | {
+        readonly assets: AssetRegistry;
+        readonly guid: string;
+        readonly handle: AssetHandle<'irradiance-volume', IrradianceVolume>;
+      }
+    | undefined;
 
   get ready(): PreparedBakedField | undefined {
     const ready = this.#ready;
@@ -156,7 +135,9 @@ export class RendererBakedField {
     if (input === undefined) return '';
     return JSON.stringify([
       input.runtime.deviceScope.generation,
-      input.runtime.assets.catalogEpoch,
+      this.#source === undefined
+        ? undefined
+        : runtimeAssets(this.#source.assets).version(this.#source.handle).unwrap(),
       input.profile.volume,
       input.profile.resolution,
     ]);
@@ -164,7 +145,37 @@ export class RendererBakedField {
 
   prepare(input: BakedFieldFrameInput): void {
     if (this.#disposed) return;
+    if (
+      this.#input !== undefined &&
+      (this.#input.runtime.assets !== input.runtime.assets ||
+        this.#input.profile.volume !== input.profile.volume)
+    )
+      this.disable();
     this.#input = input;
+    if (this.#source === undefined) {
+      if (this.#pending || this.#error) return;
+      this.#pending = true;
+      const generation = this.#generation;
+      const assets = input.runtime.assets;
+      void assets
+        .load(input.profile.volume, irradianceVolumeKind)
+        .then((loaded) => {
+          if (!loaded.ok) {
+            if (!this.#disposed && this.#generation === generation)
+              this.#fail(input.runtime, loaded.error);
+            return;
+          }
+          if (this.#disposed || this.#generation !== generation) assets.release(loaded.value);
+          else this.#source = { assets, guid: input.profile.volume, handle: loaded.value };
+        })
+        .catch((cause) => {
+          if (!this.#disposed && this.#generation === generation) this.#fail(input.runtime, cause);
+        })
+        .finally(() => {
+          this.#pending = false;
+        });
+      return;
+    }
     const key = this.#signature();
     if (key !== this.#key) {
       this.#generation++;
@@ -231,152 +242,161 @@ export class RendererBakedField {
     const compile = runtime.createShaderModule;
     if (shaders === undefined || compile === undefined)
       throw new Error('baked GI requires the ordinary shader registry and compiler');
-    admitVolumeLoader(runtime.assets.loaders);
-    const loaded = await runtime.assets.loadByGuid<unknown>(
-      runtime.assets.parseGuid(profile.volume),
-    );
-    if (!loaded.ok) throw loaded.error;
-    const volume = loaded.value;
-    if (!isVolume(volume)) throw new Error(`asset ${profile.volume} is not an irradiance-volume`);
-    const entries = [...shaders.entries()];
-    const source = (entryPoint: string): string => {
-      const matched = entries.filter((entry) => entry.wgsl.includes(`fn ${entryPoint}(`));
-      const entry = matched[0];
-      if (matched.length !== 1 || entry === undefined)
-        throw new Error(`expected one published ${entryPoint} kernel`);
-      return entry.wgsl;
-    };
-    const [viewModule, compositeModule] = await Promise.all([
-      compile(device, { label: 'baked-field.view', code: source('gatherBakedField') }),
-      compile(device, { label: 'baked-field.composite', code: source('fs_ray_diffuse') }),
-    ]);
-    const { sampleLayout, kernels: view } = createIrradianceFieldViewKernels(
-      device,
-      viewModule.unwrap(),
-      'baked',
-    ).unwrap();
-    const composite = createRayDiffuseComposite(
-      device,
-      compositeModule.unwrap(),
-      'reconstructed',
-    ).unwrap();
-    const owned: Buffer[] = [];
-    const limit = device.limits.maxStorageBufferBindingSize;
-    const upload = (label: string, bytes: ArrayBufferView, usage = storage) => {
-      if ((usage & 64) === 0 && bytes.byteLength > limit)
-        throw new Error(
-          `baked ${label} of ${bytes.byteLength} bytes exceeds the storage binding limit`,
-        );
-      const buffer = device
-        .createBuffer({ label: `baked-field.${label}`, size: bytes.byteLength, usage })
-        .unwrap();
-      owned.push(buffer);
-      device.queue
-        .writeBuffer(buffer, 0, new Uint8Array(bytes.buffer, bytes.byteOffset, bytes.byteLength))
-        .unwrap();
-      return { buffer, size: bytes.byteLength };
-    };
-    let extent: BakedFieldExtent | undefined;
-    const destroy = () => {
-      extent?.lifetime.retire();
-      for (const buffer of owned) device.destroyBuffer(buffer);
-    };
+    const sourceAsset = this.#source;
+    if (
+      sourceAsset === undefined ||
+      sourceAsset.assets !== runtime.assets ||
+      sourceAsset.guid !== profile.volume
+    )
+      throw new Error('baked GI requires its selected runtime volume');
+    const fixed = runtimeAssets(runtime.assets).pin<IrradianceVolume>(sourceAsset.handle).unwrap();
+    const volume = fixed.value;
     try {
-      const [dx, dy, dz] = volume.dimensions;
-      const buffers = {
-        field: upload(
-          'field',
-          packIrradianceFieldUniform(
-            {
-              origin: volume.origin,
-              spacing: volume.spacing,
-              dimensions: volume.dimensions,
-              probeCount: volume.probeCount,
-              levels: 1,
-            },
-            [{ window: [0, 0, 0], min: [0, 0, 0], max: [dx, dy, dz] }],
-          ),
-          64 | 8,
-        ),
-        frame: upload('frame', new Uint8Array(IRRADIANCE_FIELD_FRAME_BYTES), 64 | 8),
-        irradiance: upload('irradiance', irradianceVolumeProbeBlocks(volume)),
-        moments: upload('moments', volume.moments),
-        meta: upload('meta', volume.meta),
+      validateIrradianceVolume(volume).unwrap();
+      const entries = [...shaders.entries()];
+
+      const [viewModule, compositeModule] = await Promise.all([
+        compile(device, {
+          label: 'baked-field.view',
+          code: requirePublishedKernel(entries, 'gatherBakedField'),
+        }),
+        compile(device, {
+          label: 'baked-field.composite',
+          code: requirePublishedKernel(entries, 'fs_ray_diffuse'),
+        }),
+      ]);
+      const { sampleLayout, kernels: view } = createIrradianceFieldViewKernels(
+        device,
+        viewModule.unwrap(),
+        'baked',
+      ).unwrap();
+      const composite = createRayDiffuseComposite(
+        device,
+        compositeModule.unwrap(),
+        'reconstructed',
+      ).unwrap();
+      const owned: Buffer[] = [];
+      const limit = device.limits.maxStorageBufferBindingSize;
+      const upload = (label: string, bytes: ArrayBufferView, usage = storage) => {
+        if ((usage & 64) === 0 && bytes.byteLength > limit)
+          throw new Error(
+            `baked ${label} of ${bytes.byteLength} bytes exceeds the storage binding limit`,
+          );
+        const buffer = device
+          .createBuffer({ label: `baked-field.${label}`, size: bytes.byteLength, usage })
+          .unwrap();
+        owned.push(buffer);
+        device.queue
+          .writeBuffer(buffer, 0, new Uint8Array(bytes.buffer, bytes.byteOffset, bytes.byteLength))
+          .unwrap();
+        return { buffer, size: bytes.byteLength };
       };
-      if (buffers.irradiance.size !== volume.probeCount * IRRADIANCE_FIELD_PROBE_BYTES)
-        throw new Error('baked probe blocks do not match the field stride');
-      if (buffers.field.size !== IRRADIANCE_FIELD_UNIFORM_BYTES)
-        throw new Error('baked field uniform does not match the sampler layout');
-      const sample = device
-        .createBindGroup({
-          layout: sampleLayout,
-          entries: (['field', 'irradiance', 'moments', 'meta'] as const).map((name, binding) => ({
-            binding,
-            resource: { kind: 'buffer' as const, value: buffers[name] },
-          })),
-        })
-        .unwrap();
-      const half = profile.resolution === 'half';
-      const lifetime = new ResidencyLifetime(destroy);
-      const resize = (): BakedFieldExtent => {
-        const { width, height } = this.#input ?? input;
-        if (extent !== undefined && extent.width === width && extent.height === height)
-          return extent;
-        if (width * height * 16 > limit)
-          throw new Error('baked field view buffers exceed the storage binding limit');
-        const gatherWidth = half ? Math.ceil(width / 2) : width;
-        const gatherHeight = half ? Math.ceil(height / 2) : height;
-        const created: Buffer[] = [];
-        const make = (label: string, size: number) => {
-          const buffer = device
-            .createBuffer({ label: `baked-field.${label}`, size, usage: storage })
-            .unwrap();
-          created.push(buffer);
-          return buffer;
-        };
+      let extent: BakedFieldExtent | undefined;
+      const destroy = () => {
         extent?.lifetime.retire();
-        extent = {
-          width,
-          height,
-          gatherWidth,
-          gatherHeight,
-          gathered: make('gathered', gatherWidth * gatherHeight * 16),
-          upsampled: half ? make('upsampled', width * height * 16) : undefined,
-          lifetime: new ResidencyLifetime(() => {
-            for (const buffer of created) device.destroyBuffer(buffer);
-          }),
+        for (const buffer of owned) device.destroyBuffer(buffer);
+        fixed.dispose();
+      };
+      try {
+        const [dx, dy, dz] = volume.dimensions;
+        const buffers = {
+          field: upload(
+            'field',
+            packIrradianceFieldUniform(
+              {
+                origin: volume.origin,
+                spacing: volume.spacing,
+                dimensions: volume.dimensions,
+                probeCount: volume.probeCount,
+                levels: 1,
+              },
+              [{ window: [0, 0, 0], min: [0, 0, 0], max: [dx, dy, dz] }],
+            ),
+            64 | 8,
+          ),
+          frame: upload('frame', new Uint8Array(IRRADIANCE_FIELD_FRAME_BYTES), 64 | 8),
+          irradiance: upload('irradiance', irradianceVolumeProbeBlocks(volume)),
+          moments: upload('moments', volume.moments),
+          meta: upload('meta', volume.meta),
         };
-        // The gather/upsample kernels read only `gather` (u32 20..23) of the field frame.
-        const frame = new Uint32Array(IRRADIANCE_FIELD_FRAME_BYTES / 4);
-        frame.set([gatherWidth, gatherHeight, width, height], 20);
-        device.queue.writeBuffer(buffers.frame.buffer, 0, new Uint8Array(frame.buffer)).unwrap();
-        return extent;
-      };
-      resize();
-      return {
-        generation: fence.capturedGeneration,
-        fence,
-        volume,
-        buffers,
-        view,
-        sample,
-        composite,
-        extent: resize,
-        track: (completed) => {
-          lifetime.track(completed);
-          extent?.lifetime.track(completed);
-        },
-        commit: () => {
-          if (
-            fence.currentGeneration() === fence.capturedGeneration &&
-            this.#ready?.generation === fence.capturedGeneration
-          )
-            this.#submitted++;
-        },
-        retire: () => lifetime.retire(),
-      };
+        if (buffers.irradiance.size !== volume.probeCount * IRRADIANCE_FIELD_PROBE_BYTES)
+          throw new Error('baked probe blocks do not match the field stride');
+        if (buffers.field.size !== IRRADIANCE_FIELD_UNIFORM_BYTES)
+          throw new Error('baked field uniform does not match the sampler layout');
+        const sample = device
+          .createBindGroup({
+            layout: sampleLayout,
+            entries: (['field', 'irradiance', 'moments', 'meta'] as const).map((name, binding) => ({
+              binding,
+              resource: { kind: 'buffer' as const, value: buffers[name] },
+            })),
+          })
+          .unwrap();
+        const half = profile.resolution === 'half';
+        const lifetime = new ResidencyLifetime(destroy);
+        const resize = (): BakedFieldExtent => {
+          const { width, height } = this.#input ?? input;
+          if (extent !== undefined && extent.width === width && extent.height === height)
+            return extent;
+          if (width * height * 16 > limit)
+            throw new Error('baked field view buffers exceed the storage binding limit');
+          const gatherWidth = half ? Math.ceil(width / 2) : width;
+          const gatherHeight = half ? Math.ceil(height / 2) : height;
+          const created: Buffer[] = [];
+          const make = (label: string, size: number) => {
+            const buffer = device
+              .createBuffer({ label: `baked-field.${label}`, size, usage: storage })
+              .unwrap();
+            created.push(buffer);
+            return buffer;
+          };
+          extent?.lifetime.retire();
+          extent = {
+            width,
+            height,
+            gatherWidth,
+            gatherHeight,
+            gathered: make('gathered', gatherWidth * gatherHeight * 16),
+            upsampled: half ? make('upsampled', width * height * 16) : undefined,
+            lifetime: new ResidencyLifetime(() => {
+              for (const buffer of created) device.destroyBuffer(buffer);
+            }),
+          };
+          // The gather/upsample kernels read only `gather` (u32 20..23) of the field frame.
+          const frame = new Uint32Array(IRRADIANCE_FIELD_FRAME_BYTES / 4);
+          frame.set([gatherWidth, gatherHeight, width, height], 20);
+          device.queue.writeBuffer(buffers.frame.buffer, 0, new Uint8Array(frame.buffer)).unwrap();
+          return extent;
+        };
+        resize();
+        return {
+          generation: fence.capturedGeneration,
+          fence,
+          volume,
+          buffers,
+          view,
+          sample,
+          composite,
+          extent: resize,
+          track: (completed) => {
+            lifetime.track(completed);
+            extent?.lifetime.track(completed);
+          },
+          commit: () => {
+            if (
+              fence.currentGeneration() === fence.capturedGeneration &&
+              this.#ready?.generation === fence.capturedGeneration
+            )
+              this.#submitted++;
+          },
+          retire: () => lifetime.retire(),
+        };
+      } catch (cause) {
+        destroy();
+        throw cause;
+      }
     } catch (cause) {
-      destroy();
+      fixed.dispose();
       throw cause;
     }
   }
@@ -387,6 +407,8 @@ export class RendererBakedField {
     this.#ready?.retire();
     this.#ready = undefined;
     this.#input = undefined;
+    if (this.#source !== undefined) this.#source.assets.release(this.#source.handle);
+    this.#source = undefined;
     this.#key = '';
     this.#error = undefined;
     this.#submitted = 0;

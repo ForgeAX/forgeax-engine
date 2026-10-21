@@ -31,8 +31,9 @@ beforeEach(() => {
     .update(shaderSourceDigestInput([createHash('sha256').update(source).digest()]))
     .digest('hex');
   files.manifest = JSON.stringify({
-    schemaVersion: '4.0.0',
+    schemaVersion: '5.0.0',
     receipts: [],
+    entryPoints: [],
     fragments: [source],
     sources: { [digest]: [0] },
     entries: [{ hash: 'engine', sourceDigest: digest, bindings: '[]' }],

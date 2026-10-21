@@ -1,8 +1,5 @@
 import type { AssetRegistry } from '@forgeax/engine-assets-runtime';
-import {
-  resolveAssetHandle,
-  walkMaterialPassesOverSharedRefs,
-} from '@forgeax/engine-assets-runtime';
+import { runtimeAssetRegistry, runtimeAssets } from '@forgeax/engine-assets-runtime/internal';
 import type { EntityHandle, World } from '@forgeax/engine-ecs';
 import {
   readArrayRangesChangedSince,
@@ -35,21 +32,12 @@ import {
 } from '@forgeax/engine-skinning';
 import type {
   Asset,
-  Handle,
-  MaterialAsset,
+  AssetHandle,
   MeshAsset,
   MeshLodLevel,
   SkeletonAsset,
 } from '@forgeax/engine-types';
-import {
-  ASSET_ERROR_HINTS,
-  AssetError,
-  derive,
-  isTriangleTopology,
-  materialValuesToLinearRuntime,
-  ok,
-  toShared,
-} from '@forgeax/engine-types';
+import { ASSET_ERROR_HINTS, AssetError, ok } from '@forgeax/engine-types';
 import { buildCameraFrusta } from './camera-frusta';
 import { type CapsuleShadowSnapshot, poseShadowCapsules } from './capsule-shadow/world-capsules';
 import {
@@ -70,7 +58,7 @@ import {
 import type { DirectionalShadowQuality } from './components/directional-shadow-filter';
 import { GlyphText } from './components/glyph-text';
 import type { LightValidationError } from './components/light-helpers';
-import { validateLightingChannels } from './components/lighting-channels';
+import { validateChannelMask } from './components/lighting-channels';
 import { ProjectedDecalInvalidError } from './decals/component';
 import { extractProjectedDecals } from './decals/extract';
 import {
@@ -78,11 +66,7 @@ import {
   MaterialSkinAttrMissingError,
   SkinMaterialMismatchError,
 } from './errors/render';
-import {
-  buildGpuDrivenDraws,
-  gpuDrivenShadowDrawKey,
-  gpuDrivenSourceDrawItemIndex,
-} from './extract/gpu-driven';
+import { buildGpuDrivenDraws } from './extract/gpu-driven';
 import type { VisibilitySnapshot } from './extract/visibility';
 import { extractWorldEnvironment } from './extract/world-environment';
 import { MotionBlurValidationError } from './features/motion-blur/motion-blur-params';
@@ -90,9 +74,10 @@ import type {
   RenderFeatureHiddenEntityReport,
   RenderFeatureWorldVisibilitySnapshot,
 } from './features/types';
-import { ensureGlyphMeshMaterialSlots } from './glyph-text-layout-system';
+import { extractGlyphSources } from './glyph-source';
 import { type InstanceProjectionStore, validateInstanceTransforms } from './instances';
 import { deriveInstancesUnionBounds } from './instances-derived-bounds';
+import { MaterialResource, materialUsesSpriteGeometry } from './material-resource';
 import {
   type MeshMaterialBindingDiagnostic,
   type MeshMaterialBindingSource,
@@ -102,12 +87,13 @@ import { isStandardPbrSkinMaterialShader } from './pbr-pipeline';
 import { expandPointsLinesBounds } from './points-lines/bounds';
 import type { PointsLinesRetainedSnapshot, PointsLinesStyle } from './points-lines/snapshot';
 import { IES_SLICE_CAPACITY } from './prepare/extended-lighting/resources';
-import { worldEntityKey } from './record/frame-snapshot';
+import { renderAsset, worldRenderResources } from './publication/resource-scope';
 import { STANDARD_OUTPUT_TRANSFORM_FEATURE_ID } from './render-contract';
 import type {
   DirectionalCsmConfig,
   DirectionalLightSnapshot,
   DispatchEntry,
+  DispatchList,
   ExtractedFrame,
   ExtractedLights,
   ExtractFramesOwner,
@@ -117,7 +103,7 @@ import type {
   MaterialSnapshot,
   MaterialSnapshotCache,
   MaterialSnapshotCachesByWorld,
-  MaterialTextureSourceCache,
+  MaterialSnapshotContexts,
   MaterialTextureSourceStats,
   MorphSnapshot,
   PointLightSnapshot,
@@ -125,55 +111,34 @@ import type {
   PreparedExtractContext,
   RectAreaDirectLightSnapshot,
   RenderableSnapshot,
-  ShadowCasterMembership,
   SpotLightSnapshot,
   SpriteInstancesSnapshot,
   TransformSnapshot,
 } from './render-system-extract';
 import {
   appendMaterialDispatchEntries,
-  assetReferenceText,
-  BUILTIN_MATERIAL_TEXTURE_FIELDS,
-  collectAuthoredMaterialSamplerFields,
-  collectAuthoredMaterialTextureFields,
-  collectMaterialTextureCoordinates,
-  collectMaterialTextureSamplers,
-  collectMaterialTextureSources,
   computeDirectionalCsm,
   createWorldInternalView,
   DEFAULT_FORWARD_PASS,
   defaultMaterialSnapshot,
   fogState,
-  internSharedRefFromGuid,
-  isEngineInjectedTextureField,
-  materialColorParameterSchema,
-  materialParamSchemaForMaterial,
   materialProgramSelectionsForMaterial,
-  materialPublicationForMaterial,
-  materialSceneIndexProgramKeysForMaterial,
-  materialStandardTextureMask,
-  materialSurfaceModel,
-  materialSurfaceProgramsForMaterial,
-  materialTextureFields,
-  materialTextureRef,
-  materialTextureSourceFields,
-  materialValueSnapshot,
-  pipelineRenderState,
+  materialSnapshotContext,
   prepareExtractContext,
+  prepareMaterialSnapshot,
   readPersistentMaterialSnapshot,
-  readStablePersistentMaterialSnapshot,
   resolveMaterialSnapshot,
-  resolveVideoFieldHandle,
-  runtimeMaterialShaderIdForMaterial,
+  resolveRuntimeAssetReference,
   Severity,
   selectFogFrame,
-  shadowCasterCpuReason,
   sortDispatchByQueue,
   storeMaterialSnapshot,
   tonemapParams,
 } from './render-system-extract';
+import { captureMaterialOverrides } from './scene/mesh-materials';
 import { buildShadowFrusta } from './scene/shadow-visibility';
 import { skinPosedBounds, skinPosedBoundsCache } from './skin-posed-bounds';
+import { spriteUvRegion } from './sprite-region';
 import {
   expandDisplacementBounds,
   standardDisplacementRadius,
@@ -181,105 +146,10 @@ import {
 import { prepareSkinPalette } from './systems/skin-palette-allocator';
 import type { SkinPaletteReceipt, SkinPose } from './systems/skin-palette-types';
 import { extractTerrainSources } from './terrain/source.js';
+import { extractTilemapSources } from './tilemap-source';
 
 function skinPaletteIdentity(world: World, entity: number): string {
   return `skin:${world.identity}:${entity}`;
-}
-
-// The existing persistent cache is scoped to one extraction owner. Skin and
-// vertex-color program contexts must never consume its ordinary mesh entries.
-const skinMaterialCaches = new WeakMap<
-  MaterialSnapshotCache,
-  Map<boolean, MaterialSnapshotCache>
->();
-function skinMaterialCache(
-  owner: MaterialSnapshotCache | undefined,
-  vertexColor: boolean,
-): MaterialSnapshotCache | undefined {
-  if (owner === undefined) return undefined;
-  let contexts = skinMaterialCaches.get(owner);
-  if (contexts === undefined) {
-    contexts = new Map();
-    skinMaterialCaches.set(owner, contexts);
-  }
-  let cache = contexts.get(vertexColor);
-  if (cache === undefined) {
-    cache = new Map();
-    contexts.set(vertexColor, cache);
-  }
-  return cache;
-}
-
-// Self-contained Pack materials can prove immutability without invoking any
-// author getter or following a potentially mutable foreign parent. Inherited,
-// accessor-bearing and mutable skin sources keep their original projection.
-function frozenSkinMaterial(value: unknown, seen = new Set<object>()): boolean {
-  if (value === null || value === undefined) return true;
-  if (typeof value !== 'object') return ['string', 'number', 'boolean'].includes(typeof value);
-  if (seen.has(value)) return true;
-  try {
-    const root = seen.size === 0;
-    const prototype = Object.getPrototypeOf(value);
-    if (
-      !Object.isFrozen(value) ||
-      (prototype !== Object.prototype && prototype !== Array.prototype && prototype !== null)
-    )
-      return false;
-    seen.add(value);
-    for (const key of Reflect.ownKeys(value)) {
-      const descriptor = Object.getOwnPropertyDescriptor(value, key);
-      if (descriptor === undefined || !Object.hasOwn(descriptor, 'value')) return false;
-      if (root && key === 'parent' && descriptor.value !== undefined) return false;
-      if (!frozenSkinMaterial(descriptor.value, seen)) return false;
-    }
-    return true;
-  } catch {
-    return false;
-  }
-}
-
-// A frozen author payload does not freeze the registry's accepted program
-// owner. Readiness and program replacement can occur without a catalog epoch.
-const frozenSkinMaterialOwners = new WeakMap<
-  MaterialSnapshot,
-  (assets: AssetRegistry) => boolean
->();
-function rememberFrozenSkinMaterial(
-  snapshot: MaterialSnapshot,
-  material: MaterialAsset,
-  assets: AssetRegistry,
-  selections: readonly MaterialProgramSelection[] | undefined,
-): void {
-  const projection = assets.getMaterialProjectionForPayload(material);
-  const programs = (material.passes ?? []).map(({ program }) => ({
-    module: program.module,
-    artifact: assets.shaderRegistry.materialArtifact(program.module),
-  }));
-  const specializations = (selections ?? []).map(({ specializationKey }) => ({
-    key: specializationKey,
-    artifact: assets.getMaterialArtifact(specializationKey),
-  }));
-  frozenSkinMaterialOwners.set(
-    snapshot,
-    (current) =>
-      current === assets &&
-      current.getMaterialProjectionForPayload(material) === projection &&
-      programs.every(
-        ({ module, artifact }) => current.shaderRegistry.materialArtifact(module) === artifact,
-      ) &&
-      specializations.every(({ key, artifact }) => current.getMaterialArtifact(key) === artifact),
-  );
-}
-function frozenSkinMaterialSnapshotCurrent(
-  snapshot: MaterialSnapshot,
-  assets: AssetRegistry | undefined | null,
-): boolean {
-  try {
-    return assets != null && frozenSkinMaterialOwners.get(snapshot)?.(assets) === true;
-  } catch {
-    // Re-enter the original resolver, which owns the material diagnostic.
-    return false;
-  }
 }
 
 function materialProgramSelectionRequiresSkin(selection: {
@@ -323,7 +193,7 @@ export function extractFrames(
     readonly preparationMesh?: {
       readonly world: World;
       readonly entity: number;
-      readonly meshHandle: Handle<'MeshAsset', 'shared'>;
+      readonly meshHandle: AssetHandle<'mesh'>;
       readonly mesh: MeshAsset;
     };
     readonly getMaterialShaderArtifact?: (
@@ -419,11 +289,11 @@ export function extractFrames(
         ...(materialSnapshotCachesByWorld === undefined
           ? {}
           : {
-              materialSnapshotCache:
-                materialSnapshotCachesByWorld.get(world) ??
+              materialSnapshotContexts:
+                materialSnapshotCachesByWorld.get(worldRenderResources(world)) ??
                 (() => {
-                  const cache: MaterialSnapshotCache = new Map();
-                  materialSnapshotCachesByWorld.set(world, cache);
+                  const cache: MaterialSnapshotContexts = new Map();
+                  materialSnapshotCachesByWorld.set(worldRenderResources(world), cache);
                   return cache;
                 })(),
             }),
@@ -494,9 +364,6 @@ export function extractFrames(
   // AC-04: renderables — concat by worlds[] order, stamp worldId.
   const renderables: RenderableSnapshot[] = [];
   const dispatchEntries: DispatchEntry[] = [];
-  const shadowCasterEntityKeys = new Set<number>();
-  const shadowCasterDrawKeys = new Set<string>();
-  const shadowCasterMembership = new Map<string, ShadowCasterMembership>();
   const visibilitySnapshots: VisibilitySnapshot[] = [];
   const featureVisibilitySnapshots: RenderFeatureWorldVisibilitySnapshot[] = [];
   const hiddenEntityReports: RenderFeatureHiddenEntityReport[] = [];
@@ -526,18 +393,6 @@ export function extractFrames(
     // D-3: dispatch — per-world renderableIndex rebased by base offset.
     for (const d of f.dispatch) {
       dispatchEntries.push({ ...d, renderableIndex: (d.renderableIndex ?? 0) + base });
-    }
-    for (const key of f.shadowCasterEntityKeys) shadowCasterEntityKeys.add(key);
-    for (const key of f.shadowCasterDrawKeys) shadowCasterDrawKeys.add(key);
-    for (const membership of f.shadowCasterMembership ?? []) {
-      const rebased = { ...membership, renderableIndex: membership.renderableIndex + base };
-      const key = gpuDrivenShadowDrawKey(
-        rebased.worldEntity,
-        rebased.materialHandle,
-        rebased.drawItemIndex,
-        rebased.passIndex,
-      );
-      shadowCasterMembership.set(key, rebased);
     }
   }
 
@@ -754,18 +609,12 @@ export function extractFrames(
   };
   const materialTextureSources: MaterialTextureSourceStats = {
     sourceFieldsVisited: 0,
-    numericSharedRefProbes: 0,
-    sourceCacheHits: 0,
-    sourceCacheMisses: 0,
     producerRoutes: {},
   };
   for (const frame of succeededFrames) {
     const stats = frame.materialTextureSources;
     if (stats === undefined) continue;
     materialTextureSources.sourceFieldsVisited += stats.sourceFieldsVisited;
-    materialTextureSources.numericSharedRefProbes += stats.numericSharedRefProbes;
-    materialTextureSources.sourceCacheHits += stats.sourceCacheHits;
-    materialTextureSources.sourceCacheMisses += stats.sourceCacheMisses;
     for (const [route, count] of Object.entries(stats.producerRoutes)) {
       materialTextureSources.producerRoutes[route] =
         (materialTextureSources.producerRoutes[route] ?? 0) + count;
@@ -789,11 +638,6 @@ export function extractFrames(
     ...(cloudLayer === undefined ? {} : { cloudLayer }),
     renderables,
     dispatch: dispatchEntries,
-    shadowCasterEntityKeys,
-    shadowCasterDrawKeys,
-    ...(shadowCasterMembership.size === 0
-      ? {}
-      : { shadowCasterMembership: [...shadowCasterMembership.values()] }),
     skylight,
     skylightCount,
     lightProbes,
@@ -852,9 +696,9 @@ export function extractFrame(world: World, context: PreparedExtractContext): Ext
   // extractFrame is now a pure world->snapshot function with no frame-level
   // side effects. See plan-decisions PD2 for the reviewer ruling.
   const {
-    assets,
+    assets: contextAssets,
     pipelineState,
-    materialSnapshotCache: persistentMaterialSnapshotCache,
+    materialSnapshotContexts,
     cull: cullMode,
     resourceOwnerFog,
     getMaterialShaderArtifact,
@@ -862,6 +706,7 @@ export function extractFrame(world: World, context: PreparedExtractContext): Ext
     renderableEntities,
     retainHidden,
   } = context;
+  const assets = world.assets === undefined ? contextAssets : runtimeAssetRegistry(world.assets);
   const skinComponent = (world.components.resolve(Skin.name) as typeof Skin | undefined) ?? Skin;
   // Environment reads are owned by the retained resource projection and are
   // established at the frame boundary; record never revisits World state.
@@ -872,12 +717,8 @@ export function extractFrame(world: World, context: PreparedExtractContext): Ext
   const skinPaletteAllocator = pipelineState?.skinPaletteAllocator ?? null;
   const materialTextureSourceStats: MaterialTextureSourceStats = {
     sourceFieldsVisited: 0,
-    numericSharedRefProbes: 0,
-    sourceCacheHits: 0,
-    sourceCacheMisses: 0,
     producerRoutes: {},
   };
-  const materialTextureSourceCache: MaterialTextureSourceCache = new Map();
 
   const worldInternal = createWorldInternalView(world);
   const admitSkinMaterial = (
@@ -899,7 +740,9 @@ export function extractFrame(world: World, context: PreparedExtractContext): Ext
       return false;
     }
     if (wantsSkin && mesh !== undefined && mesh !== 0) {
-      const current = resolveAssetHandle<MeshAsset>(world, toShared<'MeshAsset'>(mesh));
+      const current = runtimeAssets(world.assets).resolveAsset<MeshAsset>(
+        mesh as AssetHandle<'mesh'>,
+      );
       if (current.ok) {
         const indices = current.value.attributes.skinIndex !== undefined;
         const weights = current.value.attributes.skinWeight !== undefined;
@@ -963,7 +806,6 @@ export function extractFrame(world: World, context: PreparedExtractContext): Ext
   // (plan-strategy D-3). Entries built per-entity per-pass inside the
   // archetype walk, then sorted by queue at the end.
   let dispatch: DispatchEntry[] = [];
-  const shadowMembershipEntries: ShadowCasterMembership[] = [];
   // Keep the derived material snapshot and its resolved passes local to this
   // extraction. Shared handles are immutable inputs for the frame, while
   // dispatch entries still need to be rebuilt for each entity.
@@ -1028,7 +870,7 @@ export function extractFrame(world: World, context: PreparedExtractContext): Ext
   // renderable can be pushed between staging and this entity's push, so publish
   // the original fresh entries instead of cloning every submesh descriptor.
   // A culled entity still discards its private pending array unchanged.
-  const flushPendingDispatch = (pending: readonly DispatchEntry[]): void => {
+  const flushPendingDispatch = (pending: DispatchList): void => {
     for (const entry of pending) dispatch.push(entry);
   };
   const requestedRows =
@@ -1054,7 +896,7 @@ export function extractFrame(world: World, context: PreparedExtractContext): Ext
       MeshRenderer,
       'lightingChannels',
     ) as number;
-    const channelsError = validateLightingChannels(lightingChannels);
+    const channelsError = validateChannelMask(lightingChannels);
     if (channelsError !== null) {
       worldInternal._routeError(channelsError, {
         severity: Severity.Error,
@@ -1078,6 +920,16 @@ export function extractFrame(world: World, context: PreparedExtractContext): Ext
     const participationRead = world.hasComponent(row.entity, ShadowParticipation)
       ? world.get(row.entity, ShadowParticipation)
       : undefined;
+    const shadowChannelsError = participationRead?.ok
+      ? validateChannelMask(participationRead.value.channels, 'shadowChannels')
+      : null;
+    if (shadowChannelsError !== null) {
+      worldInternal._routeError(shadowChannelsError, {
+        severity: Severity.Error,
+        systemName: 'RenderSystem.extract (shadow-channels)',
+      });
+      continue;
+    }
     const shadowCastDisabled =
       participationRead?.ok === true && participationRead.value.cast === false;
     const shadowReceiveDisabled =
@@ -1208,10 +1060,10 @@ export function extractFrame(world: World, context: PreparedExtractContext): Ext
         assets !== undefined &&
         assets !== null
       ) {
-        const meshHandle = toShared<'MeshAsset'>(fAssetHandleVal);
+        const meshHandle = fAssetHandleVal as AssetHandle<'mesh'>;
         const meshRes =
           preparationMesh === undefined
-            ? resolveAssetHandle<Asset>(world, meshHandle)
+            ? runtimeAssets(world.assets).resolveAsset<Asset>(meshHandle)
             : ok(preparationMesh.mesh);
         if (meshRes.ok && meshRes.value.kind === 'mesh') {
           const meshAsset = meshRes.value as MeshAsset;
@@ -1222,19 +1074,20 @@ export function extractFrame(world: World, context: PreparedExtractContext): Ext
           // owns exactly one Default slot; arbitrary meshes still fail closed
           // and never infer slot topology from their submeshes.
           if (!Array.isArray(meshAsset.materialSlots) && world.get(entity, GlyphText).ok) {
-            ensureGlyphMeshMaterialSlots(world, meshHandle);
           }
           const resolvedBindings = resolveMeshMaterialBindings(meshAsset, materialsView ?? [], {
             isValidOverride(handle) {
-              const resolved = resolveAssetHandle(world, toShared<'MaterialAsset'>(handle));
+              const resolved = runtimeAssets(world.assets).resolveAsset(
+                handle as AssetHandle<'material'>,
+              );
               return resolved.ok && resolved.value.kind === 'material';
             },
             resolveMeshDefault(defaultGuid) {
-              const guidText = AssetGuid.format(defaultGuid);
-              if (assets.lookup<Asset>(guidText)?.kind !== 'material') return undefined;
-              return internSharedRefFromGuid(world, assets, guidText, 'MaterialAsset') as
-                | number
-                | undefined;
+              return resolveRuntimeAssetReference(
+                worldRenderResources(world),
+                defaultGuid,
+                'material',
+              ) as number | undefined;
             },
           });
           if (!resolvedBindings.ok) {
@@ -1258,12 +1111,15 @@ export function extractFrame(world: World, context: PreparedExtractContext): Ext
               );
               continue;
             }
-            const materialGuid = AssetGuid.format(resolvedBindings.defaultMaterial);
+            const materialGuid =
+              typeof resolvedBindings.defaultMaterial === 'number'
+                ? String(resolvedBindings.defaultMaterial)
+                : AssetGuid.format(resolvedBindings.defaultMaterial);
             worldInternal._routeError(
               new AssetError({
                 code: 'load-failed',
                 expected: `MeshAsset materialSlots[${resolvedBindings.slotIndex}] default ${materialGuid} is ready and a MaterialAsset`,
-                hint: `loadByGuid(meshGuid) must recursively load the declared default material; mesh=${guid}, slot=${resolvedBindings.slotIndex}, material=${materialGuid}`,
+                hint: `assets.load(meshGuid, 'mesh') must recursively load the declared default material; mesh=${guid}, slot=${resolvedBindings.slotIndex}, material=${materialGuid}`,
                 detail: {
                   referencedByGuid: guid,
                   referencedByKind: 'mesh',
@@ -1346,24 +1202,11 @@ export function extractFrame(world: World, context: PreparedExtractContext): Ext
         geometryMaterialCache = new Map();
         materialCaches.set(cacheKey, geometryMaterialCache);
       }
-      const geometryPersistentCache = hasSkin
-        ? skinMaterialCache(persistentMaterialSnapshotCache, vertexColorAvailable)
-        : geometry === 'mesh' && !vertexColorAvailable
-          ? persistentMaterialSnapshotCache
-          : undefined;
-      // Secondary materials use the existing plain resolver. Its entries must
-      // never become primary skin admission records on another entity.
-      let secondaryMaterialCache = geometryMaterialCache;
-      if (hasSkin && materialHandles.length > 1) {
-        const secondaryKey = `${cacheKey}:secondary`;
-        let secondary = materialCaches.get(secondaryKey);
-        if (secondary === undefined) {
-          secondary = new Map();
-          materialCaches.set(secondaryKey, secondary);
-        }
-        secondaryMaterialCache = secondary;
-      }
-      const secondaryPersistentCache = hasSkin ? undefined : geometryPersistentCache;
+      const geometryPersistentCache = materialSnapshotContext(
+        materialSnapshotContexts,
+        geometry,
+        vertexColorAvailable,
+      );
       const geometryMaterialContext =
         context.materialContext === undefined
           ? undefined
@@ -1377,15 +1220,8 @@ export function extractFrame(world: World, context: PreparedExtractContext): Ext
       // i-th submesh draw.) -- feat-20260608 M5 amend / w11-a.
       const handleRaw = materialHandles[0] ?? 0;
 
-      const cachedCandidate =
-        handleRaw !== 0 && !hasSpriteRegionOverride
-          ? geometryMaterialCache.get(handleRaw)
-          : undefined;
-      const cachedMaterial =
-        cachedCandidate !== undefined &&
-        (!hasSkin || frozenSkinMaterialSnapshotCurrent(cachedCandidate.snapshot, assets))
-          ? cachedCandidate
-          : undefined;
+      const cachedCandidate = handleRaw !== 0 ? geometryMaterialCache.get(handleRaw) : undefined;
+      const cachedMaterial = cachedCandidate;
 
       let materialSnap: MaterialSnapshot;
       let materialProgramSelections: readonly MaterialProgramSelection[] | undefined;
@@ -1408,12 +1244,11 @@ export function extractFrame(world: World, context: PreparedExtractContext): Ext
         if (isRenderable) {
           appendMaterialDispatchEntries(
             pendingDispatch,
-            cachedMaterial.passes,
+            cachedMaterial.snapshot.passes,
             entity,
             handleRaw,
             renderables.length,
             layerVal,
-            materialSnap.paramSnapshot,
             0,
             materialSnap.materialProgramKeys,
           );
@@ -1422,15 +1257,13 @@ export function extractFrame(world: World, context: PreparedExtractContext): Ext
         // case B: missing-spec sentinel -> mid-grey defaultMaterialSnapshot.
         materialSnap = defaultMaterialSnapshot(handleRaw);
       } else {
-        const tagged = toShared<'MaterialAsset'>(handleRaw);
-        const stableCandidate = !hasSpriteRegionOverride
-          ? readStablePersistentMaterialSnapshot(geometryPersistentCache, handleRaw, assets, world)
-          : undefined;
-        const stablePersistentCached =
-          stableCandidate !== undefined &&
-          (!hasSkin || frozenSkinMaterialSnapshotCurrent(stableCandidate.snapshot, assets))
-            ? stableCandidate
-            : undefined;
+        const tagged = handleRaw as AssetHandle<'material'>;
+        const stableCandidate = readPersistentMaterialSnapshot(
+          geometryPersistentCache,
+          handleRaw,
+          worldRenderResources(world),
+        );
+        const stablePersistentCached = stableCandidate;
         if (stablePersistentCached !== undefined) {
           geometryMaterialCache.set(handleRaw, stablePersistentCached);
           materialSnap = stablePersistentCached.snapshot;
@@ -1450,24 +1283,23 @@ export function extractFrame(world: World, context: PreparedExtractContext): Ext
           if (isRenderable) {
             appendMaterialDispatchEntries(
               pendingDispatch,
-              stablePersistentCached.passes,
+              stablePersistentCached.snapshot.passes,
               entity,
               handleRaw,
               renderables.length,
               layerVal,
-              materialSnap.paramSnapshot,
               0,
               materialSnap.materialProgramKeys,
             );
           }
         } else {
-          const res = resolveAssetHandle(world, tagged);
+          const res = runtimeAssets(world.assets).resolveAsset(tagged);
           if (!res.ok) {
             if (isRenderable) {
               const rhiErr = new RhiError({
                 code: 'asset-not-registered',
                 expected: 'MeshRenderer.material in AssetRegistry',
-                hint: 'catalog the material via assetRegistry.catalog(guid, asset) + world.allocSharedRef before spawn, or remove the material field to fall back to default',
+                hint: 'bind a live material reference from the same asset owner via assets.load or assets.create',
                 detail: { assetHandle: handleRaw },
               });
               worldInternal._routeError(rhiErr, {
@@ -1481,51 +1313,9 @@ export function extractFrame(world: World, context: PreparedExtractContext): Ext
           if (asset.kind !== 'material') {
             materialSnap = defaultMaterialSnapshot(handleRaw);
           } else {
-            // Program selection belongs to the shared source; RuntimeMaterialValue
-            // only projects the numeric parameter content resolved below.
-            const source = world.sharedRefs.resolve<string, Asset>(tagged);
-            const programOwner =
-              source.ok && source.value.kind === 'material' ? source.value : asset;
-            // feat-20260529 M3 / w11: material parent chain inheritance via
-            // read-through _materialWalk accessor (plan-strategy D-6).
-            // The old direct asset.passes / asset.values read never
-            // walked the parent chain, causing broken-inheritance (root cause).
-            const resolvedResult = walkMaterialPassesOverSharedRefs(world, tagged, assets);
-            if (!resolvedResult.ok) {
-              // AC-09 / S-7 / q8=A: passes-empty or cycle must fire structured
-              // error through _routeError (same routing as asset-not-registered
-              // branch above). Silent continue is forbidden because it produces
-              // a black screen indistinguishable from a content bug.
-              const err = resolvedResult.error;
-              switch (err.code) {
-                case 'material-parent-not-found':
-                case 'material-no-effective-pass':
-                case 'material-value-unknown':
-                case 'material-value-type-mismatch':
-                case 'material-contract-program-mismatch':
-                  worldInternal._routeError(err, {
-                    severity: Severity.Error,
-                    systemName: `RenderSystem.extract (${err.code})`,
-                  });
-                  break;
-                case 'material-circular-inheritance':
-                  worldInternal._routeError(err, {
-                    severity: Severity.Error,
-                    systemName: 'RenderSystem.extract (material-circular-inheritance)',
-                  });
-                  break;
-                default:
-                  // Exhaustive guard: unhandled error codes from _materialWalk
-                  // surface an internal assertion to avoid silent continuation.
-                  worldInternal._routeError(err, {
-                    severity: Severity.Error,
-                    systemName: `RenderSystem.extract (_materialWalk: ${err.code})`,
-                  });
-              }
-              continue;
-            }
-            const resolved = resolvedResult.value;
-            const allPasses = resolved.passes;
+            // Programs and values come from the same accepted runtime material.
+            const programOwner = asset;
+            const allPasses = programOwner.passes ?? [];
             const materialContext = geometryMaterialContext;
             try {
               materialProgramSelections = materialProgramSelectionsForMaterial(
@@ -1579,381 +1369,40 @@ export function extractFrame(world: World, context: PreparedExtractContext): Ext
               }
               throw error;
             }
-            const materialProgramKeys =
-              materialProgramSelections === undefined
-                ? undefined
-                : Object.fromEntries(
-                    materialProgramSelections.map(({ pass, specializationKey }) => [
-                      pass,
-                      specializationKey,
-                    ]),
-                  );
-            const materialSceneIndexProgramKeys = materialSceneIndexProgramKeysForMaterial(
-              programOwner,
+            materialSnap = prepareMaterialSnapshot({
+              handle: handleRaw,
+              world: worldRenderResources(world),
               assets,
+              material: programOwner,
+              programSelections: materialProgramSelections,
               materialContext,
+              textureSourceStats: materialTextureSourceStats,
               vertexColorAvailable,
-            );
-            const materialSurfacePrograms = materialSurfaceProgramsForMaterial(
-              programOwner,
-              assets,
-              materialContext,
-              resolved,
-            );
-            const firstPassShader = runtimeMaterialShaderIdForMaterial(
-              allPasses,
-              materialProgramKeys,
-            );
-            const pv = materialValuesToLinearRuntime(
-              resolved.values,
-              materialColorParameterSchema(resolved.parameters ?? [], firstPassShader, assets),
-              resolved.colorSpace,
-            ) as Readonly<Record<string, unknown>>;
-
-            const valueSnapshot = materialValueSnapshot(pv);
-            const paramSnap = valueSnapshot.paramSnapshot;
-
-            const materialParamSchema = materialParamSchemaForMaterial(
-              resolved.parameters ?? [],
-              firstPassShader,
-              allPasses,
-              assets,
-            );
-            // feat-20260611-fox-skinning-vertex-attribute-chain M4 / w17 (D-5):
-            // bidirectional Skin <-> pbr-skin material fail-fast at extract.
-            // Skin component without a forgeax::pbr-skin first-pass material
-            // would draw with a non-skin shader against the 18-float vertex
-            // buffer (joints/weights bytes interpreted as garbage). Conversely
-            // a forgeax::pbr-skin material against a 12-float (unskinned) mesh
-            // would have @location(4)/@location(5) read uninitialized memory.
-            // Both cases route through `_routeError` + `continue` so a single
-            // misconfigured entity does NOT abort the whole frame's draw list
-            // (charter P3 explicit failure + plan-decisions D-5 over `return err`).
+              geometry,
+            });
             if (
               !admitSkinMaterial(
                 entity,
                 hasSkin,
                 skinSkeletonView,
-                firstPassShader,
+                materialSnap.materialShaderId,
                 materialProgramSelections,
                 fAssetHandleVal,
               )
             )
               continue;
-            // feat-20260625-refactor-sprite-as-transparent-mesh M3 / w12 (D-3):
-            // sprite materials now flow through the same generic paramSchema-
-            // driven extract path PBR / unlit use. The narrow `forgeax::sprite`
-            // exception block below covers exactly 2 plan-authorised cases:
-            //   1. SpriteRegionOverride per-entity region displacement (Q4=a)
-            //   2. flipX / flipY -> region fold (plan-strategy D-8)
-            // No legacy values field-name shim; demos and SpriteParamValues
-            // are UBO-aligned (no `texture` / `baseColor` / `pivot` / `slices`
-            // / `sliceMode` keys reaching this code path). AGENTS.md §Change
-            // stance: "no shim layer, no v1/v2 dual-path".
-            //
-            // feat-20260624 M1' / t6: `'forgeax::sprite-lit'` walks the same
-            // sprite-family vertex path (VsOut byte-identical, paramSchema
-            // mirror) so the SAME 2 folds apply — extending `isSprite` to
-            // cover both shader ids keeps the narrowing-point count at 1
-            // (plan-strategy §1.6 + D-1: mirror sprite, no new branch).
-            const firstPassModule = runtimeMaterialShaderIdForMaterial(allPasses, undefined);
-            const isSprite =
-              firstPassModule === 'forgeax::sprite' || firstPassModule === 'forgeax::sprite-lit';
 
-            // feat-20260613-material-paramschema-driven-binding M4 / w23
-            // (D-5 graceful): paramSchema-driven texture-field validation.
-            // For each handle-shaped paramValue (typeof === 'number'),
-            // verify it actually points at a registered texture asset
-            // when the field is declared as a texture in the shader's
-            // paramSchema; mis-typed handles (e.g. a scalar f32 stored as
-            // int 0 the M4 / w22 graceful fallback resolved to a wrong
-            // sub-asset) are dropped here so the record stage falls back
-            // to MISSING_TEXTURE_HANDLE (default white) without raising.
-            const validateTextureHandle = (
-              fieldName: string,
-              raw: unknown,
-            ): Handle<'TextureAsset', 'shared'> | undefined => {
-              // feat-20260614 M8 (D-19): a string value is an embedded texture
-              // GUID; resolve it to a column handle via catalog + allocSharedRef
-              // before validation. A number is an already-minted column handle.
-              let handle: Handle<'TextureAsset', 'shared'>;
-              const textureRef = materialTextureRef(raw);
-              const textureGuid = assetReferenceText(textureRef);
-              if (textureGuid !== undefined) {
-                if (assets === null || assets === undefined) return undefined;
-                // M4: intern so the GUID mints one stable handle per World
-                // instead of a fresh slot every frame (GPU residency relies on
-                // a stable handleSlot). onLastRelease -> gpuStore.evictTexture.
-                const interned = internSharedRefFromGuid(
-                  world,
-                  assets,
-                  textureGuid,
-                  'TextureAsset',
-                );
-                if (interned === undefined) return undefined;
-                handle = interned;
-              } else if (typeof textureRef === 'number') {
-                handle = toShared<'TextureAsset'>(textureRef);
-              } else {
-                return undefined;
-              }
-              if (assets === null || assets === undefined) return handle;
-              const declaredFields = materialTextureFields(
-                firstPassShader,
-                materialParamSchema.length > 0
-                  ? derive(materialParamSchema).textureFieldNames
-                  : firstPassShader !== undefined
-                    ? assets.materialShaderTextureFieldNames(firstPassShader)
-                    : undefined,
-              );
-              // Shader not registered (R-4 cross-worktree path) -> trust the
-              // raw handle and let the record stage / GPU layer surface each
-              // mismatch via MISSING_TEXTURE_HANDLE.
-              if (declaredFields === undefined) return handle;
-              // Field is not declared as a texture by the shader -> the
-              // loader's "try every int" fallback misclassified a scalar;
-              // drop the slot so the record stage uses the default white.
-              if (
-                !declaredFields.has(fieldName) &&
-                !isEngineInjectedTextureField(firstPassShader, fieldName)
-              ) {
-                return undefined;
-              }
-              // Field declared as texture: verify the handle's asset kind.
-              const assetRes = resolveAssetHandle(world, handle);
-              if (!assetRes.ok) return undefined;
-              const kind = (assetRes.value as { kind?: string }).kind;
-              if (kind !== 'texture') return undefined;
-              return handle;
-            };
-            // feat-20260614 M8 (D-19): resolve a sampler / texture paramValue
-            // that may be an embedded GUID string (catalog + allocSharedRef) or
-            // an already-minted column handle (number passthrough).
-            const resolveParamHandle = <B extends string>(
-              raw: unknown,
-              brand: B,
-            ): Handle<B, 'shared'> | undefined => {
-              const value = materialTextureRef(raw);
-              if (typeof value === 'number') return toShared<B>(value);
-              const guid = assetReferenceText(value);
-              if (guid !== undefined) {
-                if (assets === null || assets === undefined) return undefined;
-                // M4: intern the GUID -> column-handle resolution (one stable
-                // handle per (world, guid, brand), reused across frames).
-                return internSharedRefFromGuid(world, assets, guid, brand);
-              }
-              return undefined;
-            };
-            // feat-20260621-learn-render-5-5-parallax M2 / w7 (D-3): iterate the
-            // shader's derive(paramSchema).textureFieldNames SSOT so the Nth
-            // user-region texture (e.g. parallax heightTexture) is validated +
-            // carried, replacing the hardcoded 3-field list. validateTextureHandle
-            // already drops fields a shader doesn't declare as a texture.
-            const userRegionFields =
-              materialTextureFields(
-                firstPassShader,
-                materialParamSchema.length > 0
-                  ? derive(materialParamSchema).textureFieldNames
-                  : firstPassShader !== undefined && assets !== null && assets !== undefined
-                    ? assets.materialShaderTextureFieldNames(firstPassShader)
-                    : undefined,
-              ) ?? BUILTIN_MATERIAL_TEXTURE_FIELDS;
-            const authoredTextureFields = collectAuthoredMaterialTextureFields(
-              resolved.values,
-              firstPassShader,
-              materialParamSchema.length > 0 ? materialParamSchema : undefined,
-              assets,
-            );
-            const authoredSamplerFields = collectAuthoredMaterialSamplerFields(
-              resolved.values,
-              authoredTextureFields,
-            );
-            const textureHandles = new Map<string, Handle<'TextureAsset', 'shared'>>();
-            const videoTextureFields = new Map<string, Handle<'VideoAsset', 'shared'>>();
-            for (const field of userRegionFields) {
-              // D-5: a video-kind paramValue routes to the transient path
-              // (videoTextureFields), NOT validateTextureHandle (which drops
-              // kind!=='texture', the R-7 silent-fail path). Static fields fall
-              // through to validateTextureHandle unchanged.
-              const videoHandle =
-                assets !== null && assets !== undefined
-                  ? resolveVideoFieldHandle(pv[field], world, assets)
-                  : undefined;
-              if (videoHandle !== undefined) {
-                videoTextureFields.set(field, videoHandle);
-                continue;
-              }
-              const handle = validateTextureHandle(field, pv[field]);
-              if (handle !== undefined) textureHandles.set(field, handle);
-            }
-            const baseColorTextureHandle = textureHandles.get('baseColorTexture');
-            const metallicRoughnessTextureHandle = textureHandles.get('metallicRoughnessTexture');
-            const normalTextureHandle = textureHandles.get('normalTexture');
-            const samplerHandles = collectMaterialTextureSamplers(pv, (value) =>
-              resolveParamHandle(materialTextureRef(value), 'SamplerAsset'),
-            );
-            const emissiveTextureHandle = validateTextureHandle(
-              'emissiveTexture',
-              pv.emissiveTexture,
-            );
-            const occlusionTextureHandle = validateTextureHandle(
-              'occlusionTexture',
-              pv.occlusionTexture,
-            );
-            const textureCoordinates = collectMaterialTextureCoordinates(pv);
-            const textureSources = collectMaterialTextureSources(
-              pv,
-              world,
-              materialTextureSourceFields(
-                materialParamSchema.length > 0 ? materialParamSchema : undefined,
-              ),
-              materialTextureSourceStats,
-              materialTextureSourceCache,
-            );
-
-            // feat-20260625 M2 / w6: first-pass transparency flag folds into
-            // MaterialSnapshot.transparent so the record stage can drive the
-            // LDR split + premultiplied-alpha blend decision without
-            // re-reading passes[]. feat-20260626-collapse M2: derive from
-            // `passes[0].renderState.blend !== undefined` (blend presence is
-            // the SSOT after MaterialPass.transparent was dropped).
-            // Result is plain boolean (always defined here) — written as-is
-            // into the snapshot (`boolean | undefined` field, see L759).
-            const firstPassTransparent: boolean = allPasses[0]?.renderState?.blend !== undefined;
-
-            // feat-20260625-refactor-sprite-as-transparent-mesh M3 / w12 (D-8):
-            // narrow `forgeax::sprite` extract block --- folds the legacy user
-            // values format (flipX / flipY / slices / sliceMode + free
-            // region / pivot) into the UBO-aligned paramSnapshot vec4 fields
-            // (region / pivotAndSize / slicesAndMode + colorTint). Also folds
-            // per-entity SpriteRegionOverride (Q4=a). After this block the
-            // generic else branch picks up the snapshot via the same writer
-            // path PBR / unlit use; no more shadingModel='sprite' arm, no
-            // spriteFields POD (AC-02 / AC-07: extract has exactly 2 hard
-            // `forgeax::sprite` checks --- this fold + the slices mesh swap on
-            // the record side).
-            if (isSprite) {
-              // SpriteRegionOverride: per-entity per-frame region displacement.
-              let overrideRegion: readonly [number, number, number, number] | undefined;
-              if (hasSpriteRegionOverride) {
-                const overrideView = worldInternal._getArrayView(
-                  entity,
-                  SpriteRegionOverride,
-                  'region',
-                ) as Float32Array | undefined;
-                if (overrideView !== undefined && overrideView.length >= 4) {
-                  overrideRegion = [
-                    overrideView[0] ?? 0,
-                    overrideView[1] ?? 0,
-                    overrideView[2] ?? 1,
-                    overrideView[3] ?? 1,
-                  ];
-                }
-              }
-              // Region resolution priority: SpriteRegionOverride > paramSnapshot.
-              // region (UBO-aligned user input) > [0,0,1,1] identity.
-              const regionPv = paramSnap.region as readonly number[] | undefined;
-              let regionX = overrideRegion?.[0] ?? regionPv?.[0] ?? 0;
-              let regionY = overrideRegion?.[1] ?? regionPv?.[1] ?? 0;
-              let regionZ = overrideRegion?.[2] ?? regionPv?.[2] ?? 1;
-              let regionW = overrideRegion?.[3] ?? regionPv?.[3] ?? 1;
-              // flipX / flipY fold into region (D-8): the shader does
-              // `uv * region.zw + region.xy`, so flipping along U is a sign
-              // negation of region.z plus an origin offset.
-              const flipXPv = typeof pv.flipX === 'number' ? pv.flipX : 0;
-              const flipYPv = typeof pv.flipY === 'number' ? pv.flipY : 0;
-              if (flipXPv !== 0) {
-                regionX += regionZ;
-                regionZ = -regionZ;
-              }
-              if (flipYPv !== 0) {
-                regionY += regionW;
-                regionW = -regionW;
-              }
-              paramSnap.region = [regionX, regionY, regionZ, regionW];
-              // Guard: slicesAndMode must be present and zero for non-9-slice
-              // sprites so the record-stage UBO writer (applyParamSnapshotToUbo)
-              // writes [0,0,0,0] at offset 48 instead of leaving the
-              // buildPbrMaterialUboPayload PBR baseline (e.g. occlusionStrength=1
-              // at that slot). A non-zero slicesAndMode trips `useSlices=true`
-              // in sprite.wgsl, which degenerates HANDLE_QUAD geometry → invisible.
-              if (!('slicesAndMode' in paramSnap)) {
-                (paramSnap as Record<string, unknown>).slicesAndMode = [0, 0, 0, 0];
-              }
-            }
-
-            // Generic materialShaderId snapshot --- sprite included now flows
-            // through this single branch (plan-strategy D-3 / AC-01 / AC-02 /
-            // AC-07). The sprite block above only writes paramSnap.region (D-8
-            // SpriteRegionOverride + flip fold); the rest of the UBO is filled
-            // by the same paramSchema-driven path PBR / unlit use.
-            materialSnap = {
-              ...valueSnapshot,
-              surfaceModel: materialSurfaceModel(allPasses, resolved.surface?.model),
-              deferredPass: allPasses.some(
-                (pass) =>
-                  String(
-                    (pass.renderState?.tags as Record<string, unknown> | undefined)?.LightMode ??
-                      pass.name,
-                  ) === 'Deferred',
-              ),
-              materialShaderId: firstPassShader,
-              materialProgramKeys,
-              materialPublication: materialPublicationForMaterial(
-                programOwner,
-                assets,
-                materialProgramSelections,
-                vertexColorAvailable,
-              ),
-              materialSceneIndexProgramKeys,
-              materialSurfacePrograms,
-              materialHandle: handleRaw,
-              renderState: pipelineRenderState(allPasses[0]?.renderState),
-              ...(materialParamSchema.length > 0 && { materialParamSchema }),
-              standardTextureMask: materialStandardTextureMask(
-                resolved.parameters,
-                firstPassShader,
-                pv,
-                { textureHandles, samplerHandles, textureCoordinates },
-              ),
-              ...(textureCoordinates.size > 0 && { textureCoordinates }),
-              ...(authoredTextureFields === undefined ? {} : { authoredTextureFields }),
-              ...(samplerHandles.size > 0 && { samplerHandles }),
-              ...(authoredSamplerFields === undefined ? {} : { authoredSamplerFields }),
-              ...(textureHandles.size > 0 && { textureHandles }),
-              ...(textureSources.size > 0 && { textureSources }),
-              ...(videoTextureFields.size > 0 && { videoTextureFields }),
-              ...(baseColorTextureHandle !== undefined && {
-                baseColorTexture: baseColorTextureHandle,
-              }),
-              ...(metallicRoughnessTextureHandle !== undefined && {
-                metallicRoughnessTexture: metallicRoughnessTextureHandle,
-              }),
-              ...(normalTextureHandle !== undefined && { normalTexture: normalTextureHandle }),
-              ...(emissiveTextureHandle !== undefined && {
-                emissiveTexture: emissiveTextureHandle,
-              }),
-              ...(occlusionTextureHandle !== undefined && {
-                occlusionTexture: occlusionTextureHandle,
-              }),
-              transparent: firstPassTransparent,
-            };
-
-            if (!hasSpriteRegionOverride && (!hasSkin || frozenSkinMaterial(asset))) {
+            {
               const stored = storeMaterialSnapshot(
-                geometryMaterialCache,
+                geometryPersistentCache ?? geometryMaterialCache,
                 handleRaw,
                 materialSnap,
-                allPasses,
-                asset,
-                assets,
-                world,
+                worldRenderResources(world),
                 materialProgramSelections,
               );
               materialSnap = stored.snapshot;
-              if (hasSkin)
-                rememberFrozenSkinMaterial(materialSnap, asset, assets, materialProgramSelections);
-              if (stored.crossFrameSafe) geometryPersistentCache?.set(handleRaw, stored);
+              geometryMaterialCache.set(handleRaw, stored);
+              geometryPersistentCache?.set(handleRaw, stored);
             }
 
             // Build dispatch entries from resolved passes.
@@ -1965,9 +1414,8 @@ export function extractFrame(world: World, context: PreparedExtractContext): Ext
                 handleRaw,
                 renderables.length,
                 layerVal,
-                paramSnap,
                 0,
-                materialProgramKeys,
+                materialSnap.materialProgramKeys,
               );
             }
           }
@@ -2008,13 +1456,15 @@ export function extractFrame(world: World, context: PreparedExtractContext): Ext
           passIndex: 0,
           queue: 2000,
           layer: layerVal,
+          ...(participationRead?.ok && participationRead.value.channels !== 0xffffffff
+            ? { shadowChannels: participationRead.value.channels }
+            : {}),
           tags: shadowCasterTags,
           renderState: undefined,
           defines: undefined,
           vertexEntry: 'vs_main',
           fragmentEntry: undefined,
           materialShaderId: 'forgeax::default-shadow-caster',
-          paramSnapshot: {},
         });
         // Also add a Forward pass entry so the entity renders in the
         // main scene pass (mirrors Materials.unlit default).
@@ -2025,7 +1475,6 @@ export function extractFrame(world: World, context: PreparedExtractContext): Ext
           0,
           nextRenderableIndex,
           layerVal,
-          {},
           1,
         );
       }
@@ -2064,8 +1513,10 @@ export function extractFrame(world: World, context: PreparedExtractContext): Ext
               continue;
             }
             // (a) Resolve skeleton asset; on failure -> skeleton-resolve-failed.
-            const skeletonHandle = toShared<'SkeletonAsset'>(skeletonHandleRaw);
-            const skeletonRes = resolveAssetHandle<SkeletonAsset>(world, skeletonHandle);
+            const skeletonHandle = skeletonHandleRaw as AssetHandle<'skeleton'>;
+            const skeletonRes = runtimeAssets(world.assets).resolveAsset<SkeletonAsset>(
+              skeletonHandle,
+            );
             if (!skeletonRes.ok || skeletonRes.value.kind !== 'skeleton') {
               worldInternal._routeError(new SkeletonResolveFailedError(entity, skeletonHandleRaw), {
                 severity: Severity.Error,
@@ -2183,8 +1634,7 @@ export function extractFrame(world: World, context: PreparedExtractContext): Ext
         // feat-20260608 M5 amend / w11-a: per-submesh `materials[]` array
         // aligned 1-1 with `MeshAsset.submeshes[]`. materials[0] === the
         // representative entity-level snapshot already built; materials[i>=1]
-        // are resolved via `resolveMaterialSnapshot` (a non-sprite, single-
-        // pass-equivalent resolver — sprite per-submesh is OOS-1). When the
+        // use the same material preparation and cache. When the
         // entity has no materialsView (case-B sentinel) the array is a single
         // mid-grey default mirroring the legacy single-material path so the
         // record stage's per-submesh UBO upload loop trivially writes one
@@ -2193,19 +1643,18 @@ export function extractFrame(world: World, context: PreparedExtractContext): Ext
         if (assets !== undefined && assets !== null) {
           for (let mi = 1; mi < materialHandles.length; mi++) {
             const subHandle = materialHandles[mi] ?? 0;
-            const subCache = secondaryMaterialCache;
+            const subCache = geometryMaterialCache;
             const cachedSubmaterial = subCache.get(subHandle);
             materialsArr.push(
               cachedSubmaterial?.snapshot ??
                 resolveMaterialSnapshot(
                   subHandle,
-                  world,
+                  worldRenderResources(world),
                   assets,
                   subCache,
-                  secondaryPersistentCache,
+                  geometryPersistentCache,
                   geometryMaterialContext,
                   materialTextureSourceStats,
-                  materialTextureSourceCache,
                   vertexColorAvailable,
                 ),
             );
@@ -2216,16 +1665,19 @@ export function extractFrame(world: World, context: PreparedExtractContext): Ext
             const subHandle = materialHandles[mi] ?? 0;
             if (subHandle === handleRaw) continue;
             const subEntry =
-              secondaryMaterialCache.get(subHandle) ??
-              readPersistentMaterialSnapshot(secondaryPersistentCache, subHandle, assets, world);
+              geometryMaterialCache.get(subHandle) ??
+              readPersistentMaterialSnapshot(
+                geometryPersistentCache,
+                subHandle,
+                worldRenderResources(world),
+              );
             appendMaterialDispatchEntries(
               pendingDispatch,
-              subEntry?.passes ?? (subHandle === 0 ? [DEFAULT_FORWARD_PASS] : []),
+              subEntry?.snapshot.passes ?? (subHandle === 0 ? [DEFAULT_FORWARD_PASS] : []),
               entity,
               subHandle,
               renderables.length,
               layerVal,
-              materialsArr[mi]?.paramSnapshot,
               0,
               materialsArr[mi]?.materialProgramKeys,
             );
@@ -2249,22 +1701,9 @@ export function extractFrame(world: World, context: PreparedExtractContext): Ext
             );
             continue;
           }
-          // (2) requires sprite shader — the per-instance UV region is
-          // consumed by the sprite vertex shader path only (plan-strategy D-4
-          // axis on sprite.wgsl). Post-collapse (PR #520): sprite is no longer
-          // a `shadingModel` enum member; identification is via the first-pass
-          // `materialShaderId === 'forgeax::sprite'` (OOS-1 path retained).
-          //
-          // feat-20260624 M1' / t6: `'forgeax::sprite-lit'` also walks the same
-          // per-instance UV region vertex path (VsOut byte-identical, paramSchema
-          // mirror); accept either shader id.
-          // Cooked materials were admitted by the exact sprite-instances
-          // context above. Their runtime ID is an artifact key, not a module.
-          if (
-            materialSnap.materialProgramKeys === undefined &&
-            materialSnap.materialShaderId !== 'forgeax::sprite' &&
-            materialSnap.materialShaderId !== 'forgeax::sprite-lit'
-          ) {
+          // The immutable author program owns geometry semantics even when
+          // program selection returns a cooked artifact key.
+          if (!materialUsesSpriteGeometry(materialSnap)) {
             worldInternal._routeError(
               new SpriteInstancesRequiresSpriteShaderError(
                 entity,
@@ -2324,7 +1763,7 @@ export function extractFrame(world: World, context: PreparedExtractContext): Ext
         if (assetHandleRaw !== 0) {
           const meshRes =
             preparationMesh === undefined
-              ? resolveAssetHandle(world, toShared<'MeshAsset'>(assetHandleRaw))
+              ? runtimeAssets(world.assets).resolveAsset(assetHandleRaw as AssetHandle<'mesh'>)
               : ok(preparationMesh.mesh);
           if (meshRes.ok && meshRes.value.kind === 'mesh') {
             const meshAsset = meshRes.value as MeshAsset;
@@ -2394,11 +1833,12 @@ export function extractFrame(world: World, context: PreparedExtractContext): Ext
                 entityKey: entity,
                 component: pointsLinesComponent,
                 meshHandle: assetHandleRaw,
-                meshGeneration: assets?.catalogEpoch ?? 0,
                 materialHandle: handleRaw,
-                materialGeneration: assets?.catalogEpoch ?? 0,
                 style: pointsLinesStyle,
                 layer: layerVal,
+                ...(participationRead?.ok && participationRead.value.channels !== 0xffffffff
+                  ? { shadowChannels: participationRead.value.channels }
+                  : {}),
                 sortKey,
                 visible: true,
                 sourceBounds: cullingLocalAabb,
@@ -2449,15 +1889,50 @@ export function extractFrame(world: World, context: PreparedExtractContext): Ext
         }
 
         const baseRenderable: RenderableSnapshot = {
+          ...(hasSpriteRegionOverride
+            ? {
+                spriteRegion: spriteUvRegion(
+                  worldInternal._getArrayView(entity, SpriteRegionOverride, 'region'),
+                  0,
+                  0,
+                ),
+              }
+            : {}),
+          layer: layerVal,
+          ...(participationRead?.ok && participationRead.value.channels !== 0xffffffff
+            ? { shadowChannels: participationRead.value.channels }
+            : {}),
+          ...(shadowCastDisabled || pointsLinesComponent !== undefined
+            ? { shadowCaster: false as const }
+            : {}),
           lightingChannels,
           assetHandle: Math.round(fAssetHandle ?? 0),
           transform: transformSnap,
           ...(lods === undefined ? {} : { lods }),
           ...(lodHysteresis === undefined ? {} : { lodHysteresis }),
           ...(localAabb !== undefined ? { localAabb: cullingLocalAabb } : {}),
-          material: materialSnap,
-          materials: materialsArr,
+          material: MaterialResource.from(materialSnap),
+          materials: materialsArr.map(MaterialResource.from),
           materialBindingSources,
+          materialOverrides: captureMaterialOverrides(
+            Array.from(materialsView ?? [], (handle) => {
+              if (handle === 0 || assets == null) return undefined;
+              const current = runtimeAssets(world.assets).resolveAsset(handle);
+              if (!current.ok || current.value.kind !== 'material') return undefined;
+              return MaterialResource.from(
+                resolveMaterialSnapshot(
+                  handle,
+                  worldRenderResources(world),
+                  assets,
+                  geometryMaterialCache,
+                  geometryPersistentCache,
+                  geometryMaterialContext,
+                  materialTextureSourceStats,
+                  vertexColorAvailable,
+                ),
+              );
+            }),
+          ),
           materialBindingDiagnostics,
           worldId: context.worldId,
           entityKey: entity,
@@ -2478,13 +1953,13 @@ export function extractFrame(world: World, context: PreparedExtractContext): Ext
                 mesh: gpuDrivenMesh,
                 materials: materialsArr,
                 fallbackMaterial: materialSnap,
-                baseSnapshot: baseRenderable,
+                deformation: baseRenderable.skin === undefined ? 'rigid' : 'skin',
                 ...(getMaterialShaderArtifact === undefined ? {} : { getMaterialShaderArtifact }),
                 ...(lods === undefined
                   ? {}
                   : {
                       lodMeshes: lods.map((lod) => {
-                        const lower = assets?.lookup<Asset>(lod.mesh);
+                        const lower = renderAsset(worldRenderResources(world), lod.mesh);
                         return lower?.kind === 'mesh' ? lower : undefined;
                       }),
                     }),
@@ -2608,85 +2083,18 @@ export function extractFrame(world: World, context: PreparedExtractContext): Ext
         // Retain hidden snapshots for incremental composition, but never
         // publish their display or ShadowCaster passes to either record lane.
         if (!authorVisible) pendingDispatch.length = 0;
-        const localShadowMembershipEntries: ShadowCasterMembership[] = [];
-        if (gpuDrivenMesh !== undefined) {
-          const worldEntity = worldEntityKey(context.worldId, entity);
-          for (const [drawItemIndex, submesh] of gpuDrivenMesh.submeshes.entries()) {
-            if (!isTriangleTopology(submesh.topology)) {
-              continue;
-            }
-            const material = materialsArr[submesh.materialSlot] ?? materialSnap;
-            const materialHandle = material.materialHandle ?? -1;
-            const shadowEntries = pendingDispatch.filter(
-              (entry) =>
-                entry.tags.LightMode === 'ShadowCaster' && entry.materialHandle === materialHandle,
-            );
-            const draw = renderable.gpuDrivenDraws?.find(
-              (candidate, compactIndex) =>
-                gpuDrivenSourceDrawItemIndex(candidate, compactIndex) === drawItemIndex,
-            );
-            const cpuReason = shadowCasterCpuReason(
-              material,
-              draw,
-              shadowEntries,
-              morph,
-              skinSlice,
-            );
-            for (const entry of shadowEntries) {
-              const membership: ShadowCasterMembership = {
-                worldEntity,
-                renderableIndex: renderables.length,
-                drawItemIndex,
-                materialHandle,
-                passIndex: entry.passIndex,
-                ...(entry.materialShaderId === undefined
-                  ? {}
-                  : { materialShaderId: entry.materialShaderId }),
-                ...(entry.vertexEntry === undefined ? {} : { vertexEntry: entry.vertexEntry }),
-                ...(entry.fragmentEntry === undefined
-                  ? {}
-                  : { fragmentEntry: entry.fragmentEntry }),
-                ...(entry.renderState === undefined ? {} : { renderState: entry.renderState }),
-                ...(cpuReason === undefined ? {} : { cpuReason }),
-                gpuDrivenEligible: cpuReason === undefined,
-              };
-              shadowMembershipEntries.push(membership);
-              localShadowMembershipEntries.push(membership);
-            }
-          }
-        }
-        const shadowCasterPasses = localShadowMembershipEntries.map((membership) => ({
-          drawItemIndex: membership.drawItemIndex,
-          materialHandle: membership.materialHandle,
-          passIndex: membership.passIndex,
-          ...(membership.materialShaderId === undefined
-            ? {}
-            : { materialShaderId: membership.materialShaderId }),
-          ...(membership.vertexEntry === undefined ? {} : { vertexEntry: membership.vertexEntry }),
-          ...(membership.fragmentEntry === undefined
-            ? {}
-            : { fragmentEntry: membership.fragmentEntry }),
-          ...(membership.renderState === undefined ? {} : { renderState: membership.renderState }),
-          ...(membership.cpuReason === undefined ? {} : { cpuReason: membership.cpuReason }),
-        }));
         const capsuleShadow: CapsuleShadowSnapshot | undefined = !capsuleShadowRequested
           ? undefined
           : !hasSkin
             ? { status: 'not-skinned' }
             : !skeletonHasCapsules || posedCapsules === undefined
               ? { status: 'no-shadow-capsules' }
-              : pendingDispatch.some((entry) => entry.tags.LightMode === 'ShadowCaster')
-                ? { status: 'ready', capsules: posedCapsules }
-                : { status: 'no-shadow-caster-pass' };
+              : { status: 'ready', capsules: posedCapsules };
         const renderableWithShadowPasses =
-          shadowCasterPasses.length === 0 &&
-          capsuleShadow === undefined &&
-          !mobilityStatic &&
-          !shadowReceiveDisabled
+          capsuleShadow === undefined && !mobilityStatic && !shadowReceiveDisabled
             ? renderable
             : {
                 ...renderable,
-                ...(shadowCasterPasses.length === 0 ? {} : { shadowCasterPasses }),
                 ...(capsuleShadow === undefined ? {} : { capsuleShadow }),
                 ...(mobilityStatic ? { mobility: 'static' as const } : {}),
                 ...(shadowReceiveDisabled ? { shadowReceiver: false as const } : {}),
@@ -2727,32 +2135,31 @@ export function extractFrame(world: World, context: PreparedExtractContext): Ext
       explicitlyHidden,
     );
 
+  if (context.renderables !== 'none')
+    extractGlyphSources(
+      world,
+      context.worldId,
+      renderables,
+      renderableEntities,
+      visibility,
+      retainHidden,
+      explicitlyHidden,
+    );
+
+  if (context.renderables !== 'none')
+    extractTilemapSources(
+      world,
+      context.worldId,
+      renderables,
+      renderableEntities,
+      visibility,
+      retainHidden,
+      explicitlyHidden,
+    );
+
   // M3 / w26: sort dispatch entries by queue (ascending, stable sort)
   // per plan-strategy D-3.
   dispatch = sortDispatchByQueue(dispatch);
-  const shadowCasterEntityKeys = new Set<number>();
-  const shadowCasterDrawKeys = new Set<string>();
-  const shadowCasterMembership = new Map<string, ShadowCasterMembership>();
-  for (const entry of dispatch) {
-    if (entry.tags.LightMode !== 'ShadowCaster') continue;
-    const renderable = renderables[entry.renderableIndex];
-    if (renderable !== undefined) {
-      const worldEntity = worldEntityKey(renderable.worldId, renderable.entityKey);
-      shadowCasterEntityKeys.add(worldEntity);
-    }
-  }
-  for (const membership of shadowMembershipEntries) {
-    const key = gpuDrivenShadowDrawKey(
-      membership.worldEntity,
-      membership.materialHandle,
-      membership.drawItemIndex,
-      membership.passIndex,
-    );
-    shadowCasterDrawKeys.add(key);
-    shadowCasterMembership.set(key, membership);
-    shadowCasterEntityKeys.add(membership.worldEntity);
-  }
-
   // D-1: collect PostProcessParams entities into Map<shaderId, Uint8Array>.
   // Last-one-wins when multiple entities bear the same shader id (mirrors
   // Camera.exposure -> CameraSnapshot pattern; extract stage only reads).
@@ -2797,11 +2204,6 @@ export function extractFrame(world: World, context: PreparedExtractContext): Ext
     ...(cloudLayer === undefined ? {} : { cloudLayer }),
     renderables,
     dispatch,
-    shadowCasterEntityKeys,
-    shadowCasterDrawKeys,
-    ...(shadowCasterMembership.size === 0
-      ? {}
-      : { shadowCasterMembership: [...shadowCasterMembership.values()] }),
     skylight,
     skylightCount,
     lightProbes,

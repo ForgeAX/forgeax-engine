@@ -1,9 +1,8 @@
 import { Button, EmptyState, PropertyRow, Toolbar } from '@forgeax/view-components';
 import type { ViewWorkspaceClient } from '@forgeax/view-workspace-core/client';
-import type { AssetReferenceService } from '@forgeax/view-workspace-core/asset-references';
 import { createWorkspaceStateReader } from '@forgeax/view-workspace-core/workspace-state';
 import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react';
-import { type RuntimeParameter as Parameter, parameterDrafts, parameterValues, runtimePackTarget, runtimeToolingOwnership, userRuntimePacks } from './runtime-packs.ts';
+import { type RuntimeParameter as Parameter, parameterDrafts, parameterValues, runtimePackTarget } from './runtime-packs.ts';
 import './runtime-packs.css';
 import { useTranslation } from '../i18n/useTranslation';
 
@@ -14,19 +13,17 @@ type Inspection = { packs: Pack[]; executions: Execution[] };
 type Installation = { uid: number; state: string };
 type Asset = { guid: string; kind: string; name?: string; sourceKey?: string; packageId?: string };
 
-export function RuntimePacksPanel({ client, assetReferences }: { client: ViewWorkspaceClient; assetReferences?: AssetReferenceService }) {
+export function RuntimePacksPanel({ client }: { client: ViewWorkspaceClient }) {
   const reader = useMemo(() => createWorkspaceStateReader(client), [client]);
   const workspace = useSyncExternalStore(reader.subscribe, reader.getSnapshot, reader.getSnapshot);
   const target = runtimePackTarget(workspace);
   const key = target ? `${target.projectId}/${target.targetId}/${target.worldId}` : '';
   // A replacement project gets fresh drafts and cancels all old requests.
-  return target ? <BoundRuntimePacks key={key} client={client} target={target} assetReferences={assetReferences} /> :
+  return target ? <BoundRuntimePacks key={key} client={client} target={target} /> :
     <EmptyState title="Runtime content unavailable" description="Wait for the project target to be ready." />;
 }
 
-function BoundRuntimePacks({ client, target, assetReferences }: { client: ViewWorkspaceClient; target: { projectId: string; targetId: string; worldId: string }; assetReferences?: AssetReferenceService }) {
-  const toolingState = useSyncExternalStore(assetReferences?.subscribe ?? (() => () => {}), assetReferences?.getState ?? (() => undefined), () => undefined);
-  const tooling = runtimeToolingOwnership(toolingState, target);
+function BoundRuntimePacks({ client, target }: { client: ViewWorkspaceClient; target: { projectId: string; targetId: string; worldId: string } }) {
   const { t } = useTranslation();
   const [inspection, setInspection] = useState<Inspection>({ packs: [], executions: [] });
   const [plugins, setPlugins] = useState<Installation[]>([]);
@@ -38,8 +35,7 @@ function BoundRuntimePacks({ client, target, assetReferences }: { client: ViewWo
   const [error, setError] = useState('');
   const lifetime = useRef<AbortController | null>(null);
   const upload = useRef<HTMLInputElement>(null);
-  const packs = userRuntimePacks(inspection.packs, tooling?.packageId);
-  const visiblePlugins = plugins.filter(plugin => plugin.uid !== tooling?.pluginUid);
+  const packs = inspection.packs;
   const generators = packs.filter(pack => pack.source.kind === 'scriptable-pack-source');
   const generator = generators.find(pack => pack.source.packageId === selected);
   const parameters = generator?.source.parameters ?? [];
@@ -89,9 +85,7 @@ function BoundRuntimePacks({ client, target, assetReferences }: { client: ViewWo
   async function save() {
     const snapshot = await call<{ packs: Pack[] }>('snapshot');
     if (lifetime.current?.signal.aborted) return;
-    const owner = runtimeToolingOwnership(assetReferences?.getState(), target);
-    const saved = { ...snapshot, packs: userRuntimePacks(snapshot.packs, owner?.packageId) };
-    const url = URL.createObjectURL(new Blob([JSON.stringify(saved)], { type: 'application/json' }));
+    const url = URL.createObjectURL(new Blob([JSON.stringify(snapshot)], { type: 'application/json' }));
     try {
       const link = document.createElement('a');
       link.href = url; link.download = `${target.projectId}-runtime-content.json`; link.click();
@@ -149,11 +143,11 @@ function BoundRuntimePacks({ client, target, assetReferences }: { client: ViewWo
       </fieldset>
       <fieldset disabled={busy}>
         <legend>Plugin assets</legend>
-        {assets.filter(asset => asset.kind === 'plugin' && (!tooling?.packageId || asset.packageId !== tooling.packageId)).map(asset => <PropertyRow key={asset.guid} label={asset.name ?? asset.sourceKey ?? asset.guid}>
+        {assets.filter(asset => asset.kind === 'plugin').map(asset => <PropertyRow key={asset.guid} label={asset.name ?? asset.sourceKey ?? asset.guid}>
           <Button size="compact" onClick={() => void act(() => call('plugin-install', { guid: asset.guid }))}>Install</Button>
         </PropertyRow>)}
         <p>Installations owned by this View connection</p>
-        {visiblePlugins.length ? visiblePlugins.map(plugin => <PropertyRow key={plugin.uid} label={`#${plugin.uid} · ${plugin.state}`}>
+        {plugins.length ? plugins.map(plugin => <PropertyRow key={plugin.uid} label={`#${plugin.uid} · ${plugin.state}`}>
           <Button size="compact" onClick={() => void act(() => call('plugin-dispose', { uid: plugin.uid }))}>Dispose</Button>
         </PropertyRow>) : <p>No installations.</p>}
         <p>Generated outputs appear in the asset browser below. Open an output for its dedicated preview.</p>

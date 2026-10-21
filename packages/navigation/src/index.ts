@@ -6,6 +6,7 @@ export {
   navigationPlugin,
   setNavigationPath,
 } from './agent';
+export { navigationMeshContribution } from './asset-decoder';
 export {
   type AvoidanceAgent,
   type AvoidanceOptions,

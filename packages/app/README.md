@@ -1,6 +1,25 @@
 # @forgeax/engine-app
 
+## Optional Pack author preview capabilities
+
+Workspace previews expose `writeAssetField`, `prepareAssetContent` and
+`commitAssetContent` through the existing browser command transport. A live
+material value uses the Registry's managed update; a Scene component field uses
+the exact instantiated root and Scene binding. An existing nested instance
+override addresses its authored target within that same root. These operations
+do not enumerate entities or mirror SceneAsset changes into other instances.
+Generated content uses private publication preparation; a successful scene
+replacement retires this preview's previous instance. Preview close releases
+field holds and pending preparations. Domain execution remains available without
+View; UI labels, selection and field controls remain frontend policy.
+
 > **App uses an explicit native platform to measure frame deltas, advance the World and draw.** Game scheduling, time resources, fixed-step policy, and gameplay behavior belong to the ECS World.
+
+Both local and Worker canvas hosts admit the same gameplay input options from
+`BrowserInputBackendOptions`: `uiRoot`, `pointerLockAllowed`,
+`virtualJoysticks` and `lockProvider`. App projects these once before attaching
+browser listeners. A supplied `input` backend retains its host-owned lifetime;
+DOM test overrides and pointer-lock error dispatch remain with their owners.
 
 ## One-screen takeoff
 
@@ -106,8 +125,9 @@ Vite/browser bridge. Other environments supply the session constructor.
 the existing workspace `vfx` preview kind; ordinary Preview and cached thumbnails
 consume this same capability projection.
 
-`createTextureWorkspacePreview` accepts initial texture-view options before
-allocating its ordinary resources. DevKit's retained thumbnail batch selects
+`createTextureWorkspacePreview(world, assets, handle, options)` retains the
+managed source handle and validates initial options before allocating its
+ordinary preview resources. DevKit's retained thumbnail batch selects
 transparent flat output through this same owner; interactive previews keep their
 channel, mip and directional environment controls. Renderer owns both outputs.
 
@@ -118,13 +138,43 @@ dispatch the existing Engine type-preview capability. A session's optional
 These are provider contracts, not consumer-side substitutes or mock readiness.
 
 Preview `assetBinding` contains the consumer's captured publication and bounded
-payload metadata. `captureEngineWorkspaceAssetBinding` synchronously checks that
-the loaded payload is still the Registry's current object before copying its
-publication; an intervening replacement fails instead of labeling old data with
-the new version. The owner retains this snapshot when later publications arrive.
-Mesh counts, bounds and slots describe that same payload. Current project
+payload metadata. `captureEngineWorkspaceAssetBinding(assets, handle)` reads
+current runtime content and its adopted source publication from the same owner.
+Later Catalog changes cannot relabel already adopted content; explicit `reload`
+adopts a newer source without changing the runtime handle. The preview retains
+its captured binding.
+An explicit Scene open reconciles the Catalog and, when its saved publication
+differs from the retained SceneAsset, reloads that source closure before creating
+entities and capturing the new binding. Ordinary repeated asset loads continue
+to preserve runtime edits; unchanged Scene publications are not reloaded.
+Mesh topology counts, bounds, slots, UV channels, declared LODs and collision
+attachment facts describe that same payload. Texture shape/format/mip policy and
+payload bytes, and material pass/parameter/render-state facts are also captured
+as typed metadata. Missing material contracts remain null, not invented zeroes.
+Payload bytes are not GPU allocation measurements. Current project
 `asset.inspect` remains a separate read; it does not identify an old preview's
 binding. These facts contain no World handles or vertex buffers.
+
+App assembly installs Runtime's default domain decoders even when the asset
+Registry and Renderer are supplied separately. Concurrent preview material
+loads return asset handles directly, wait for every load to settle, and release
+all acquired grants on failure. No World asset registration is required.
+
+Resource preview owners may expose `display.get/set`, available as
+`engine.preview.display.get/set` through the same workspace ToolApi and browser
+transport. Both require exact targetId/targetGeneration. The optional
+`workspaceMeshDisplayPlugin` is a native child of the preview App; it retains
+the source bindings, reuses Geometry wireframe generation and Render line
+carriers, and owns temporary wireframe/collision/bounds resources. It restores
+source bindings on removal. Collision is only the existing cooked attachment,
+not an inferred instance Collider. Missing capabilities fail explicitly.
+`createWorkspaceMeshDisplay` mounts this plugin for the DevKit resource owner
+in a native isolated service scope for each preview. Simultaneous previews
+cannot register or consume another preview's display service, and closing one
+preserves the others. Generated startup only wires the owner and forwards its
+display capability.
+UI labels, defaults and statistics visibility remain consumer policy. Scene,
+Play and independent run owners do not acquire resource display behavior.
 
 `createEngineWorkspaceTools(runtime)` supplies the domain Tool contributions;
 `snapshotEngineWorkspace(runtime)` projects current owners without surface handles.
@@ -183,12 +233,44 @@ tools remain callable with the presentation plugin absent.
 | `engine.preview.close/capture/resize`, `engine.camera.get/begin/update/commit/abort` | `targetId` and `targetGeneration` from `preview.target.generation` |
 | `engine.asset.inspect`, `engine.asset.source.rebuild/cold-cook` | Registered only when the provider supplies the corresponding capability |
 
+`engine.asset.open` returns its exact accepted owner in `preview`, including
+`target.generation` and the owner's immutable `assetBinding`. The `previews`
+collection may also contain other live owners; consumers must not search by GUID
+or use the most recently opened owner to identify this response. Preview close
+retains that owner until native cleanup acknowledges success. A failed close can
+be retried; delayed cleanup only removes the same owner, never its replacement.
+
+Bound Texture and Equirect facts use the same `textureViewSource` projection as
+their preview owner. Equirect dimensions, format, color space and source bytes
+are available without exposing its pixels; its source mip policy is `none`,
+independent of internal lighting prefilter mips.
+
+`engine.entity.inspect` optionally includes `assetReferences: { references,
+truncated }` when its target-tools realm provides `assets`. Missing means the
+capability is unavailable; an empty list is a supported query with no references.
+The existing target/generation and entity World checks apply. The target-tools
+Fiber validates schema-declared `asset<kind>` references through the realm's
+AssetRegistry and reads each handle's adopted source GUID. It includes
+effective mesh material defaults from the current runtime content and preserves
+nonzero instance overrides. Raw component fields are unchanged. Reads return at
+most 128 entries per collection/default-slot list and 256 references per entity,
+with explicit truncation. Unbound, stale and unregistered references remain
+explicit; the neutral engine material is `builtin`. The exported
+`EngineWorkspaceAssetReference` and `EngineWorkspaceAssetReferences` types carry
+facts only. Primary-asset selection and navigation belong to consumers. No
+presentation plugin or runtime Pack installation is required.
+
 Concrete App sessions inspect assets through their existing AssetRegistry. Browser
-sessions forward the same operation into their App realm. Mesh inspection reads
-the current payload and projects vertex/index counts, bounds, submeshes and material
-slots as JSON data; it does not transport geometry buffers or reconstruct source code.
+sessions forward the same operation into their App realm. Mesh, Material, Texture
+and Equirect inspection reads current payloads and publication identities as
+bounded JSON facts. Mesh facts include vertex/index counts, bounds, submeshes and
+material slots; no geometry or pixel buffers are transported or reconstructed.
 Inspection preserves project identity and cancellation; each existing preview
 continues to own its independently acquired result.
+Inspection `meta` and top-level `publication` describe the current runtime handle,
+including local edits. `source.publication` separately describes the current
+Catalog publication. Consumers can compare that source tuple before reopening
+without reloading or relabeling a live runtime asset.
 
 The workspace runtime owns its preview collection and one optional Play. Opening
 a distinct preview preserves other targets; closing the project drains them all.
@@ -337,6 +419,10 @@ single-frame `captureFrame()` capability. A successful call returns one
 self-contained `rhi-tape` artifact; pass that same artifact to DevKit's
 `rhi.summary` and `rhi.inspect` operations, using the summary's
 `FrameModel.works[].workIndex` for selection.
+
+The browser publishes `globalThis.__forgeax.captureFrame` only after App
+assembly has bound that same capture to its frame driver. Initialization never
+exposes a bare recorder; failed assembly leaves no public capture entry.
 
 Recorder assembly consumes its backend-selection adapter only for startup.
 Renderer recovery requests a fresh adapter from the same backend; the capture
@@ -664,7 +750,12 @@ share one pool-start deadline, while running kernel dispatch keeps its separate
 5-second deadline. The first source frame uses this startup policy too: deferred
 source preparation must not inherit the shorter steady-frame admission budget.
 After its first accepted source completion, `frameTimeoutMs` bounds subsequent
-admissions (default two seconds). Each rebuilt World starts again at its first
+admissions (default two seconds). Set `frameTimeoutMs: null` to retain the pending
+admission until completion, an actual execution fault, cancellation or disposal.
+No successor frame is issued while its credit is outstanding; a late receipt is
+accepted normally. This is useful when a loading workflow already owns progress
+and cancellation deadlines. It does not retry a partially executed World or
+suppress Worker/device errors. Each rebuilt World starts again at its first
 source frame; visibility and identity fencing retain the existing watchdog rules.
 Set `startupTimeoutMs` to `null` to remove these startup deadlines while
 retaining explicit cancellation and disposal. The preliminary DedicatedWorker
@@ -679,6 +770,13 @@ returns the current canvas; external DOM
 listeners attached to the old element must be rebound by their owner. App
 rebinds its own input backend. Simulation admission pauses during this replacement;
 a source World failure still follows the existing stop/rebuild contract.
+
+Loss of the Engine Worker closes its World and asset scope: the active World
+identity becomes `null`, and later inspections reject immediately. Asset edits
+committed in that Worker but not yet published can be lost; App does not persist
+or replay them. Create a new App to obtain fresh World and asset-owner identities.
+Old World-scoped references reject against that new owner. A poisoned World whose
+Worker is still alive retains its identity for inspection and explicit rebuild.
 
 Explicit Worker World rebuild transfers a fresh Host canvas for both Engine-only
 and split execution. Read `app.canvas` again and rebind caller-owned DOM listeners;
@@ -1162,6 +1260,10 @@ The owning Registry reuses its privately prepared CPU payload; it does not read
 back the encoded package. An independent preview App needs only the returned `catalog`: its existing
 `openPackage` method binds publication bytes and artifacts. The preview owns its
 Registry and World, follows subsequent publications, and has no producer.
+The merged Catalog preserves each source's captured root revisions alongside its
+rows and forwards the corresponding delta windows. This keeps publication order
+independent of Runtime Pack's stable content generation through fresh readers and
+offline restoration.
 
 When `assetSource` is omitted, the existing base Catalog supplies fixed dependency
 captures owned by assets-runtime. Original bytes are retained once and requested
@@ -1205,6 +1307,10 @@ The existing live inspector exposes the same native Context through
 const runtime = simulation.pluginContext.get('runtimePacks');
 return runtime.producer.inspect();
 ```
+
+The Node remote server loads only when its native startup path executes. Browser
+module preparation must not crawl that server or optimize its `ws` dependency;
+the browser remote bridge uses its native WebSocket transport.
 
 Node eval resolves configured public module specifiers through the same Host
 import bindings, with native Host import for other requests. This is the existing
@@ -1425,9 +1531,12 @@ locally; external API and CLI callers continue through the same target operation
 A resource preview may expose `texture: TextureViewControl`. The public workspace
 operations `preview.texture.get` and `preview.texture.set` use the same exact
 target/generation admission as other preview operations. Reads return bound
-source facts and accepted display options; writes validate before replacing an
-ordinary material binding. `createTextureWorkspacePreview` assembles that
-material, quad and camera from the source payload and Preview's shared material
-contract, whose shader is compiled into the host manifest. Renderer owns
+source facts and accepted display options. Writes validate and call
+`assets.update` on the existing material; its handle and ECS bindings stay stable.
+`createTextureWorkspacePreview` retains the source handle and assembles its
+material, quad and camera using Preview's shared material contract, whose shader
+is compiled into the host manifest. Renderer owns
 sampling and real mip residency. The preview closes its entities and
 producer references together; host UI owns no resource or execution state.
+
+ExecutionAudioReport derives observation fields from AudioState and retains an explicit serialized error boundary. The runtime projection still selects only declared report fields.

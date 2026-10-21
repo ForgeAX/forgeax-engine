@@ -233,7 +233,7 @@ function invalidSurfaceDynamicRange(
 
 type MaterialPipelineFactory = NonNullable<RenderSystemInternals['getMaterialShaderPipelineEntry']>;
 
-export interface MaterialAbiRasterPipelineInput {
+interface MaterialAbiRasterPipelineInput {
   readonly artifact: MaterialShaderArtifact;
   readonly deformation: 'rigid' | 'skin';
   readonly format: TextureFormat;
@@ -1967,13 +1967,13 @@ function buildProjectedSurfaceFrameRanges(
           worldIdentity,
           worldId: slot.worldId,
           entityKey: slot.entityKey,
-          drawItemIndex: candidate.drawItemIndex,
+          drawItemIndex: prepared.batch.binding?.drawItemIndex ?? candidate.drawItemIndex,
           instanceOrdinal: candidate.instanceOrdinal,
         },
         identity: JSON.stringify([
           worldIdentity,
           slot.entityKey,
-          candidate.drawItemIndex,
+          prepared.batch.binding?.drawItemIndex ?? candidate.drawItemIndex,
           candidate.instanceOrdinal,
         ]),
       });

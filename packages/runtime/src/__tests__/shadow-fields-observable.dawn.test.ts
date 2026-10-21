@@ -1,3 +1,5 @@
+import { createPrimitiveMesh } from '@forgeax/engine-geometry';
+import { testAssets } from './helpers/runtime-assets';
 // shadow-fields-observable.dawn.test.ts
 // feat-20260621-merge-directionallightshadow-into-directionallight M6
 //
@@ -12,7 +14,6 @@
 // shadow-atlas state and device-lost crashes from prior A/B rounds cannot
 // contaminate the current comparison.
 
-import { HANDLE_CUBE } from '@forgeax/engine-assets-runtime';
 import { World } from '@forgeax/engine-ecs';
 import type { Renderer } from '@forgeax/engine-render';
 import {
@@ -134,52 +135,56 @@ function buildTranslationGrid(): Float32Array {
 
 // Material with ShadowCaster pass -- required for depth writes into shadow atlas
 function casterMat(w: World) {
-  return w.allocSharedRef<'MaterialAsset', MaterialAsset>('MaterialAsset', {
-    kind: 'material',
-    passes: [
-      {
-        name: 'Forward',
-        program: { module: 'forgeax::default-standard-pbr' },
-        renderState: { tags: { LightMode: 'Forward' }, queue: 2000 },
-      },
-      {
-        name: 'ShadowCaster',
-        program: { module: 'forgeax::default-shadow-caster' },
-        renderState: {
-          tags: { LightMode: 'ShadowCaster' } as Record<string, string>,
-          passKind: 'shadow-caster' as const,
+  return testAssets(w)
+    .create({
+      kind: 'material',
+      passes: [
+        {
+          name: 'Forward',
+          program: { module: 'forgeax::default-standard-pbr' },
+          renderState: { tags: { LightMode: 'Forward' }, queue: 2000 },
         },
+        {
+          name: 'ShadowCaster',
+          program: { module: 'forgeax::default-shadow-caster' },
+          renderState: {
+            tags: { LightMode: 'ShadowCaster' } as Record<string, string>,
+            passKind: 'shadow-caster' as const,
+          },
+        },
+      ],
+      values: {
+        baseColor: [0.8, 0.6, 0.4, 1],
+        metallic: 0.3,
+        roughness: 0.5,
+        emissive: [0, 0, 0],
+        emissiveIntensity: 0,
+        occlusionStrength: 1,
       },
-    ],
-    values: {
-      baseColor: [0.8, 0.6, 0.4, 1],
-      metallic: 0.3,
-      roughness: 0.5,
-      emissive: [0, 0, 0],
-      emissiveIntensity: 0,
-      occlusionStrength: 1,
-    },
-  } as MaterialAsset);
+    } as MaterialAsset)
+    .unwrap();
 }
 function floorMat(w: World) {
-  return w.allocSharedRef<'MaterialAsset', MaterialAsset>('MaterialAsset', {
-    kind: 'material',
-    passes: [
-      {
-        name: 'Forward',
-        program: { module: 'forgeax::default-standard-pbr' },
-        renderState: { tags: { LightMode: 'Forward' }, queue: 2000 },
+  return testAssets(w)
+    .create({
+      kind: 'material',
+      passes: [
+        {
+          name: 'Forward',
+          program: { module: 'forgeax::default-standard-pbr' },
+          renderState: { tags: { LightMode: 'Forward' }, queue: 2000 },
+        },
+      ],
+      values: {
+        baseColor: [0.9, 0.9, 0.9, 1],
+        metallic: 0,
+        roughness: 0.9,
+        emissive: [0, 0, 0],
+        emissiveIntensity: 0,
+        occlusionStrength: 1,
       },
-    ],
-    values: {
-      baseColor: [0.9, 0.9, 0.9, 1],
-      metallic: 0,
-      roughness: 0.9,
-      emissive: [0, 0, 0],
-      emissiveIntensity: 0,
-      occlusionStrength: 1,
-    },
-  } as MaterialAsset);
+    } as MaterialAsset)
+    .unwrap();
 }
 
 // Floor at Y=5 Z=5 — in camera frustum (camera Y=8 Z=16, FOV 45, depth 11,
@@ -203,7 +208,12 @@ function spawnScene(
         scale: [8, 0.1, 8],
       },
     },
-    { component: MeshFilter, data: { assetHandle: HANDLE_CUBE } },
+    {
+      component: MeshFilter,
+      data: {
+        assetHandle: testAssets(world).create(createPrimitiveMesh('cube').unwrap()).unwrap(),
+      },
+    },
     { component: MeshRenderer, data: { materials: [fm] } },
   );
   world.spawn(
@@ -255,7 +265,12 @@ function spawnScene(
         scale: [0.5, 0.5, 0.5],
       },
     },
-    { component: MeshFilter, data: { assetHandle: HANDLE_CUBE } },
+    {
+      component: MeshFilter,
+      data: {
+        assetHandle: testAssets(world).create(createPrimitiveMesh('cube').unwrap()).unwrap(),
+      },
+    },
     { component: MeshRenderer, data: { materials: [cm] } },
     { component: Instances, data: { transforms: buildTranslationGrid() } },
   );

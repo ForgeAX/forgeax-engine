@@ -8,7 +8,7 @@
 // independent play state (AC-05, research Finding 6).
 //
 // Schema vocab is the CLOSED ECS set (component.ts:315-333): clip uses
-// `shared<VideoAsset>` (a branded u32 handle, NOT a bare GUID string), the
+// `asset<video>` (a branded u32 handle, NOT a bare GUID string), the
 // three play-state fields use `bool` / `f32`. No opaque / object field type is
 // introduced — the host HTMLVideoElement reference travels through the
 // VideoSourceProvider World Resource (plan-strategy D-1 / w9), never inside an
@@ -29,7 +29,7 @@ import { defineComponent } from '@forgeax/engine-ecs';
  * VideoPlayer — attaches video play state to an entity.
  *
  * Fields:
- *   - `clip: shared<VideoAsset>` — handle to the VideoAsset describing the
+ *   - `clip: asset<video>` — handle to the VideoAsset describing the
  *     source URL (mirrors `AudioSource.clip`). Resolved into an
  *     HTMLVideoElement at frame time via the host `VideoSourceProvider`
  *     (the engine never decodes video bytes — D-1).
@@ -44,7 +44,7 @@ import { defineComponent } from '@forgeax/engine-ecs';
 export const VideoPlayer = defineComponent('VideoPlayer', {
   // The host HTMLVideoElement owns the live asset/presentation binding; the
   // portable play controls remain in the simulation projection.
-  clip: { type: 'shared<VideoAsset>' },
+  clip: { type: 'asset<video>' },
   playing: { type: 'bool', default: false },
   loop: { type: 'bool', default: false },
   currentTime: { type: 'f32', default: 0, transient: true },

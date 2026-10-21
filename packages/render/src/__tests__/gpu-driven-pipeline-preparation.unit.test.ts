@@ -1,13 +1,18 @@
 import { RenderGraphBuilder } from '@forgeax/engine-render-graph';
 import { ok } from '@forgeax/engine-rhi';
 import { type RhiNullDevice, rhi } from '@forgeax/engine-rhi-null';
-import { expect, it, vi } from 'vitest';
+import { assert, expect, it, vi } from 'vitest';
 import { BatchTopology } from '../gpu-driven/batch-topology';
+import {
+  collectGpuDrivenMaterialArtifacts,
+  GpuDrivenMaterialProgramProjection,
+} from '../gpu-driven/material-artifacts';
 import { GpuDrivenProduction } from '../gpu-driven/production-raster';
 import { GpuScene } from '../gpu-scene';
 import { makeZeroCameraFallbackSnapshot } from '../record/frame-snapshot';
 import type { RenderSystemInternals } from '../record/render-context';
 import type { RenderPipelineFrame } from '../render-pipeline';
+import { MaterialDispatch } from '../scene/material-dispatch';
 import { RenderScene } from '../scene/render-scene';
 import { DEFERRED_COLOR_FORMATS } from '../standard-attachments';
 import {
@@ -17,7 +22,10 @@ import {
   updateSnapshot,
 } from './gpu-driven-production-fixture';
 
-it('waits for the exact declared scene-index fragment and targets without encoding or a synchronous fallback', async () => {
+it.each([
+  false,
+  true,
+])('prepares the exact scene-index pipeline from shared batches (culled=%s)', async (hidden) => {
   const device = (
     await (await rhi.requestAdapter()).unwrap().requestDevice()
   ).unwrap() as RhiNullDevice;
@@ -35,6 +43,22 @@ it('waits for the exact declared scene-index fragment and targets without encodi
   const topology = new BatchTopology();
   topology.rebuild(scene.slotsSnapshot());
   const production = new GpuDrivenProduction(device, { createShaderModule: () => ok(shader) });
+  const dispatch = new MaterialDispatch();
+  const slots = scene.slotsSnapshot();
+  for (const slot of slots) dispatch.bind(slot.slot, slot.snapshot);
+  const programs = new GpuDrivenMaterialProgramProjection().project(
+    dispatch.query(slots),
+    dispatch.materials(),
+  );
+  const selected = collectGpuDrivenMaterialArtifacts({
+    batches: topology.query(topology.sourcePlan(), undefined).batches,
+    programs,
+    resolve: () => inputs.materialArtifact,
+    clustered: false,
+    reflectionFallback: false,
+    probeBlend: false,
+    shadowViews: false,
+  });
   let released = false;
   const pipeline = device
     .createRenderPipeline({
@@ -56,21 +80,25 @@ it('waits for the exact declared scene-index fragment and targets without encodi
     const prepared = production
       .prepare({
         ...inputs,
+        batchExecutions: selected.batchExecutions,
+        materialArtifacts: selected.materialArtifacts,
+        ...(hidden ? { activeEntityKeys: new Set<number>() } : {}),
         materialPipelineFactory: ordinary,
         materialPipelinePreparationFactory: prepare,
         scene: {
           scene: available.scene,
-          plan: topology.plan(),
+          plan: topology.query(topology.sourcePlan(), undefined),
           slots: scene.slotsSnapshot(),
           slotAt: scene.slotAt,
         },
         camera: makeZeroCameraFallbackSnapshot(),
-        meshBySlot: new Map([
-          [0, mesh(device)],
-          [1, mesh(device)],
-        ]),
+        meshByBinding: new Map(
+          topology.query(topology.sourcePlan(), undefined).batches.map((batch) => {
+            assert(batch.binding);
+            return [batch.binding, mesh(device)] as const;
+          }),
+        ),
         viewBindGroupLayout: viewLayout,
-        meshResidencyEpoch: 1,
       })
       .unwrap();
     if (prepared === undefined) throw Error('missing prepared owner');

@@ -48,14 +48,14 @@ export type DshNotification = Readonly<HarnessNotification>;
 interface DshActivity {
   readonly harness: DshHarness;
   readonly sink: ActivitySink;
-  task: Promise<void>;
+  readonly task: Promise<void>;
   cancelRequested: boolean;
   closeTask?: Promise<void>;
 }
 
 function closeActivity(activity: DshActivity): Promise<void> {
   if (activity.closeTask !== undefined) return activity.closeTask;
-  activity.closeTask = (async () => {
+  activity.closeTask = Promise.resolve().then(async () => {
     try {
       await activity.harness.close();
     } catch {
@@ -65,7 +65,7 @@ function closeActivity(activity: DshActivity): Promise<void> {
         return;
       }
     }
-  })();
+  });
   return activity.closeTask;
 }
 
@@ -105,12 +105,12 @@ export function createDshIntelligenceProvider(
 ): IntelligenceProvider {
   const activities = new Map<ActivityId, DshActivity>();
   const createHarness = options.createHarness ?? defaultHarness;
-  let closed = false;
+  let closeTask: Promise<void> | undefined;
 
   const provider: IntelligenceProvider = {
     id: 'deepseek-harness',
     start(submission, sink): Result<void, IntelligenceError> {
-      if (closed) {
+      if (closeTask !== undefined) {
         return err(new IntelligenceErrorValue({ code: 'intelligence-closed', detail: {} }));
       }
       let harness: DshHarness;
@@ -133,11 +133,10 @@ export function createDshIntelligenceProvider(
       const activity: DshActivity = {
         harness,
         sink,
-        task: Promise.resolve(),
+        task: Promise.resolve().then(() => runActivity(submission, activity)),
         cancelRequested: false,
       };
       activities.set(submission.id, activity);
-      activity.task = runActivity(submission, activity);
       return ok(undefined);
     },
     cancel(id): Result<void, IntelligenceError> {
@@ -154,22 +153,26 @@ export function createDshIntelligenceProvider(
       void closeActivity(activity);
       return ok(undefined);
     },
-    async close(): Promise<void> {
-      if (closed) return;
-      closed = true;
+    close(): Promise<void> {
+      if (closeTask !== undefined) return closeTask;
       const current = [...activities.values()];
-      for (const activity of current) {
-        activity.cancelRequested = true;
-      }
-      const closeTasks = current.map(closeActivity);
-      await Promise.allSettled(current.map((activity) => activity.task));
-      await Promise.allSettled(closeTasks);
-      activities.clear();
+      closeTask = Promise.resolve().then(async () => {
+        const closeTasks = current.map(closeActivity);
+        await Promise.allSettled(current.map((activity) => activity.task));
+        await Promise.allSettled(closeTasks);
+      });
+      for (const activity of current) activity.cancelRequested = true;
+      return closeTask;
     },
   };
 
   async function runActivity(submission: ActivitySubmission, activity: DshActivity): Promise<void> {
     try {
+      if (activity.cancelRequested) {
+        await closeActivity(activity);
+        activity.sink.cancelled();
+        return;
+      }
       const result = await activity.harness.run(submission.input, {
         sessionId: submission.session.id,
         onNotification(notification: HarnessNotification) {
@@ -186,7 +189,7 @@ export function createDshIntelligenceProvider(
       if (activity.cancelRequested) activity.sink.cancelled();
       else activity.sink.fail(cause);
     } finally {
-      activities.delete(submission.id);
+      if (activities.get(submission.id) === activity) activities.delete(submission.id);
     }
   }
 

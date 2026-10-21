@@ -22,6 +22,7 @@ export function probeCardGraphShape(global: PreparedProbeGlobal) {
   const capture = value.region.capture;
   return [
     value.region.schedule.mode(),
+    value.region.textureRevision,
     capture.width,
     capture.height,
     capture.bufferReads.map((r) => [r.size, r.usage]),
@@ -202,7 +203,7 @@ export function addCardAtlasPasses(
       .unwrap();
     textures.set(item.entry.view, view);
     materialViews.push(view);
-    if (captureMode === 'clear' && item.needsMipmaps) {
+    if (captureMode !== undefined && item.needsMipmaps) {
       let previous = graph.view(allocation, { baseMipLevel: 0, mipLevelCount: 1 }).unwrap();
       for (let mip = 1; mip < receipt.mipLevelCount; mip++) {
         const source = previous;

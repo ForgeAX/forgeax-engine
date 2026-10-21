@@ -100,17 +100,22 @@ export async function validateMeshDistanceFieldAttachment(
   const valid = validateMeshDistanceField(field);
   if (!valid.ok) return valid;
   const meshDigest = await distanceFieldMeshDigest(source.value.positions, source.value.indices);
+  return validateSourceIdentity(field, meshDigest, source.value.triangleSidedness);
+}
+
+async function validateSourceIdentity(
+  field: MeshDistanceField,
+  meshDigest: string,
+  triangleSidedness: Uint8Array,
+): Promise<Result<void, DistanceFieldError>> {
   if (
     field.meshDigest !== meshDigest ||
     (field.policy.kind === 'sampled-visibility'
       ? field.policy.sourceDigest !==
-          (await visibilityDistanceFieldSourceDigest(meshDigest, source.value.triangleSidedness)) ||
+          (await visibilityDistanceFieldSourceDigest(meshDigest, triangleSidedness)) ||
         field.policy.mostlyTwoSided !==
-          source.value.triangleSidedness.reduce((sum, flag) => sum + flag, 0) * 4 >=
-            source.value.triangleSidedness.length
-      : !source.value.triangleSidedness.every(
-          (flag) => flag === Number(field.policy.kind === 'two-sided'),
-        ))
+          triangleSidedness.reduce((sum, flag) => sum + flag, 0) * 4 >= triangleSidedness.length
+      : !triangleSidedness.every((flag) => flag === Number(field.policy.kind === 'two-sided')))
   )
     return distanceFieldFailure(
       'distance field geometry or source sidedness policy is stale; recook the mesh',
@@ -118,23 +123,18 @@ export async function validateMeshDistanceFieldAttachment(
   return ok(undefined);
 }
 
-/** No builder or artifact work occurs when both optional publication members are omitted. */
-export async function attachMeshDistanceField(
+/** Decode one complete attachment from already admitted mesh source and artifact bytes. */
+export async function decodeMeshDistanceFieldAttachment(
   mesh: MeshAsset,
   descriptor: unknown,
-  bytes?: Uint8Array,
-): Promise<Result<MeshAsset, DistanceFieldError>> {
-  if (descriptor === undefined && bytes === undefined) return ok(mesh);
+  bytes: Uint8Array,
+): Promise<Result<NonNullable<MeshAsset['distanceField']>, DistanceFieldError>> {
   const source = meshDistanceFieldSource(mesh, descriptor);
   if (!source.ok) return source;
-  if (!bytes) return distanceFieldFailure('mesh distance field artifact is missing');
   const digest = await distanceFieldMeshDigest(source.value.positions, source.value.indices);
   const decoded = await decodeMeshDistanceField(bytes, digest);
   if (!decoded.ok) return decoded;
-  const valid = await validateMeshDistanceFieldAttachment(mesh, descriptor, decoded.value);
+  const valid = await validateSourceIdentity(decoded.value, digest, source.value.triangleSidedness);
   if (!valid.ok) return valid;
-  return ok({
-    ...mesh,
-    distanceField: { ...decoded.value, sectionSidedness: source.value.descriptor.sectionSidedness },
-  });
+  return ok({ ...decoded.value, sectionSidedness: source.value.descriptor.sectionSidedness });
 }

@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+import { drawReadyFrame } from '../../../scripts/test/ready-render-frame.mjs';
 import { solidTexture } from './texture-fixture.mjs';
 // hello-multi-uv headless smoke (AC-10 visual differentiation gate).
 //
@@ -206,18 +207,12 @@ const { Transform } = await import('@forgeax/engine-scene');
 const { Camera, DirectionalLight, MeshFilter, MeshRenderer } = await import('@forgeax/engine-render');
 const { readShaderManifestPublication } = await import('@forgeax/engine-shader');
 
-const world = new World();
-const baseColorTextureHandle = world.allocSharedRef('TextureAsset', solidTexture([255, 128, 64, 255]));
-const detailTextureHandle = world.allocSharedRef('TextureAsset', solidTexture([64, 192, 255, 255]));
+const { createPublicationAssets } = await import('@forgeax/engine-runtime/internal/renderer-host');
+const assets = await createPublicationAssets({shaderManifestUrl: `data:application/json,${encodeURIComponent(readFileSync(new URL('../dist/shaders/manifest.json', import.meta.url), 'utf8'))}`});
+const world = new World({assets});
+const baseColorTextureHandle = assets.create(solidTexture([255, 128, 64, 255])).unwrap();
+const detailTextureHandle = assets.create(solidTexture([64, 192, 255, 255])).unwrap();
 
-// Mint user-tier column handles for the custom mesh + material via
-// world.allocSharedRef (slots >= 1024, resolved by the renderer through
-// world.sharedRefs at draw time). This mirrors apps/hello-multi-uv/src/main.ts:
-// the prior smoke spawned MeshFilter with a raw integer handle (100) that was
-// never registered and an empty MeshRenderer, so the render system reported
-// `asset-not-registered` every frame and never drew. The mesh carries a real
-// second UV set; the material references the demo's custom multi-UV shader by
-// path (the shader itself is registered after host initialization below).
 const DEMO_MATERIAL_SHADER_PATH = 'hello-multi-uv::multi-uv-demo';
 const meshAsset = {
   kind: 'mesh',
@@ -258,8 +253,8 @@ const materialAsset = {
     detailTexture: detailTextureHandle,
   },
 };
-const meshHandle = world.allocSharedRef('MeshAsset', meshAsset);
-const matHandle = world.allocSharedRef('MaterialAsset', materialAsset);
+const meshHandle = assets.create(meshAsset).unwrap();
+const matHandle = assets.create(materialAsset).unwrap();
 
 world.spawn(
   {
@@ -372,7 +367,7 @@ renderer.subscribe((event) => {
 // the first receipt. Warm-up only yields to the host lifecycle; it never installs
 // a late shader or pipeline registry entry.
 const yieldTick = () => new Promise((r) => setTimeout(r, 0));
-const drawFrame = () => renderer.draw({
+const drawFrame = () => drawReadyFrame(renderer, {
   leases: [lease],
   camera: { lease },
   environment: { lease },
@@ -380,8 +375,7 @@ const drawFrame = () => renderer.draw({
 let lastReceipt;
 for (let warm = 0; warm < 16; warm++) {
   world.update().unwrap();
-  const frame = drawFrame();
-  if (frame.ok) lastReceipt = frame.value;
+  lastReceipt = await drawFrame();
   await yieldTick();
 }
 
@@ -390,9 +384,7 @@ const frameStart = Date.now();
 let framesObserved = 0;
 for (let i = 0; i < TARGET_FRAMES; i++) {
   world.update().unwrap();
-  const r = drawFrame();
-  if (!r.ok) console.error(`[smoke] draw frame ${i} error: ${r.error.code}`);
-  else lastReceipt = r.value;
+  lastReceipt = await drawFrame();
   framesObserved++;
 }
 

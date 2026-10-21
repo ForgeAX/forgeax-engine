@@ -1,3 +1,4 @@
+import { AssetRegistry } from '@forgeax/engine/assets-runtime';
 import { AudioSource } from '@forgeax/engine/audio';
 import { defineFeature } from '../../lab/feature';
 import { createIntentWorld } from './support/intents';
@@ -13,11 +14,16 @@ export default defineFeature({
   async run(checks) {
     const lab = await createIntentWorld();
     try {
-      const clip = lab.world.allocSharedRef('AudioClipAsset', {
-        kind: 'audio',
-        sourceKey: 'lab-seek',
-        bytes: Uint8Array.of(1),
-      });
+      const assets = lab.world.assets;
+      if (!(assets instanceof AssetRegistry)) throw new Error('Audio requires its asset owner');
+      const clip = assets
+        .create({
+          kind: 'audio',
+          mediaType: 'audio/wav',
+          sourceKey: 'lab-seek',
+          bytes: Uint8Array.of(1),
+        })
+        .unwrap();
       const player = lab.world
         .spawn({
           component: AudioSource,

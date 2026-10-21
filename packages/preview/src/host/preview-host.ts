@@ -5,24 +5,6 @@ import {
   type SnapshotRef,
 } from '@forgeax/engine-tool-runtime';
 
-export interface PreviewAssetLoadResult<TAsset = unknown> {
-  readonly ok: true;
-  readonly value: TAsset;
-  readonly digest?: string;
-  readonly ownerFacts?: Readonly<Record<string, string | number | boolean>>;
-}
-
-export interface PreviewAssetLoadFailure {
-  readonly ok: false;
-  readonly error: unknown;
-}
-
-export interface PreviewAssetRegistry {
-  readonly loadByGuid: <TAsset = unknown>(
-    guid: string,
-  ) => Promise<PreviewAssetLoadResult<TAsset> | PreviewAssetLoadFailure>;
-}
-
 export interface PreviewRenderRuntime {
   readonly rendererReady: boolean;
   readonly worldReady: boolean;
@@ -49,7 +31,13 @@ export interface PreviewHostMechanisms {
   readonly projectRoot: string;
   readonly backend: 'webgpu';
   readonly signal: AbortSignal;
-  readonly assets?: PreviewAssetRegistry;
+  /** Fixed source facts admitted by the Host before this bounded preview session. */
+  readonly subject?: {
+    readonly guid: string;
+    readonly asset: Readonly<Record<string, unknown>>;
+    readonly digest?: string;
+    readonly ownerFacts?: Readonly<Record<string, string | number | boolean>>;
+  };
   readonly renderer?: PreviewRenderRuntime;
   readonly artifacts?: readonly ArtifactRef[];
 }

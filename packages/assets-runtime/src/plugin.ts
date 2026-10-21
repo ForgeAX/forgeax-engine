@@ -1,8 +1,7 @@
 import type { Plugin } from '@forgeax/engine-plugin';
-import type { Loader } from '@forgeax/engine-types';
+import type { AssetDecoderContribution } from '@forgeax/engine-types';
 
 import type { AssetRegistry } from './asset-registry';
-import type { PackLoader } from './loader-registry';
 
 declare module '@forgeax/engine-plugin' {
   interface EngineContextServices {
@@ -10,7 +9,7 @@ declare module '@forgeax/engine-plugin' {
   }
 }
 
-/** Provide one renderer-owned asset registry to the current Cordis realm. */
+/** Provide the gameplay asset owner to the current Cordis realm. */
 export function assetsPlugin(assets: AssetRegistry): Plugin {
   return {
     name: 'assets',
@@ -21,28 +20,20 @@ export function assetsPlugin(assets: AssetRegistry): Plugin {
   };
 }
 
-/** Reversibly register one runtime asset loader. */
-export function assetLoaderPlugin(loader: Loader<unknown>): Plugin {
+/** Lease one owner decoder for the current Cordis Fiber. */
+export function assetDecoderPlugin<P, K extends string>(
+  contribution: AssetDecoderContribution<P, K>,
+): Plugin {
   return {
-    name: `asset-loader:${loader.kind}`,
+    name: `asset-decoder:${contribution.kind.kind}`,
     inject: ['assets'],
     apply(ctx) {
       const assets = ctx.assets;
-      if (assets === undefined) throw new Error('asset loader plugin requires the assets service');
-      ctx.effect(() => assets.loaders.register(loader), `assets/loader:${loader.kind}`);
-    },
-  };
-}
-
-/** Reversibly register one pack loader. */
-export function packLoaderPlugin(loader: PackLoader): Plugin {
-  return {
-    name: `pack-loader:${loader.kind}`,
-    inject: ['assets'],
-    apply(ctx) {
-      const assets = ctx.assets;
-      if (assets === undefined) throw new Error('pack loader plugin requires the assets service');
-      ctx.effect(() => assets.loaders.registerPackLoader(loader), `assets/pack:${loader.kind}`);
+      if (assets === undefined) throw new Error('asset decoder plugin requires the assets service');
+      ctx.effect(() => {
+        const lease = assets.installDecoder(contribution.kind, contribution.decoder);
+        return () => lease.dispose();
+      }, `assets/decoder:${contribution.kind.kind}`);
     },
   };
 }

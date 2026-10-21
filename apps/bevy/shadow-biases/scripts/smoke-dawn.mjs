@@ -1,4 +1,6 @@
 #!/usr/bin/env node
+import { constructRuntimeRendererHost } from '@forgeax/engine-runtime/internal/renderer-host';
+let smokeAssets;
 // bevy-shadow-biases Dawn smoke. Renders the shared scene through the Bevy
 // key states and falsifies each live control from pixels:
 //   baseline          directional light casts sphere shadows onto the ground
@@ -38,9 +40,11 @@ const here = dirname(fileURLToPath(import.meta.url));
 const manifest = readFileSync(resolve(here, '..', 'dist', 'shaders', 'manifest.json'), 'utf8');
 let renderer;
 try {
-  renderer = await createSmokeRenderer(createRenderer, dawn.canvas, {}, {
+  const hostResult = await constructRuntimeRendererHost(dawn.canvas, {}, {
     shaderManifestUrl: `data:application/json,${encodeURIComponent(manifest)}`,
   });
+if (!hostResult.ok) throw hostResult.error;
+({ renderer, assets: smokeAssets } = hostResult.value);
 } finally {
   dawn.release();
 }
@@ -48,7 +52,7 @@ console.log(`[shadow-biases] backend=${rendererBackend(renderer)}`);
 const errors = [];
 subscribeSmokeErrors(renderer, (error) => errors.push(error.code));
 
-const world = new World();
+const world = new World({ assets: smokeAssets });
 const scene = spawnBiasesScene(world, WIDTH / HEIGHT);
 const project = createProjector({ position: CAMERA_POSITION, target: CAMERA_TARGET, fov: Math.PI / 4, width: WIDTH, height: HEIGHT });
 

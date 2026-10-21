@@ -2,7 +2,6 @@ import type { MeshGpuHandles } from '../device/gpu-residency';
 import { type LodHeightCamera, projectedHeightForSnapshot } from '../gpu-driven/batch-topology';
 import { selectGpuLodLane } from '../gpu-driven/view-gpu';
 import type { RenderableSnapshot } from '../render-system-extract';
-import { renderableDrawKey } from '../scene/draw-key';
 import { selectLod } from '../scene/visibility/lod-selector';
 import type { ValidatedRenderable } from './frame-snapshot';
 
@@ -64,6 +63,12 @@ function levelMesh(mesh: MeshGpuHandles, level: number): MeshGpuHandles {
   return view;
 }
 
+/** Latest numeric result of one actual CPU LOD query; tokens retain no rows or Meshes. */
+export interface CpuLodSelection {
+  values: readonly number[];
+  token: object;
+}
+
 /**
  * Project validated rows onto the CPU-selected LOD level. Rows that stay at
  * LOD0 are returned by identity, so a scene without LOD chains is unchanged.
@@ -71,15 +76,45 @@ function levelMesh(mesh: MeshGpuHandles, level: number): MeshGpuHandles {
 export function selectCpuLodRows(
   rows: readonly ValidatedRenderable[],
   camera: LodHeightCamera,
+  selection?: CpuLodSelection,
 ): readonly ValidatedRenderable[] {
   let projected: ValidatedRenderable[] | undefined;
+  let next: number[] | undefined;
+  let cursor = 0;
   for (let index = 0; index < rows.length; index += 1) {
     const row = rows[index];
     if (row === undefined) continue;
     const level = cpuLodLevel(row.source, row.mesh, camera);
+    if (selection !== undefined && (row.source.lods?.length ?? 0) > 0) {
+      const world = row.source.worldId;
+      const entity = row.source.entityKey;
+      if (!Number.isSafeInteger(world) || world < 0 || !Number.isSafeInteger(entity) || entity < 0)
+        throw new RangeError('CPU LOD query requires exact nonnegative source identities');
+      const previous = selection.values;
+      if (
+        next === undefined &&
+        (previous[cursor] !== world ||
+          previous[cursor + 1] !== entity ||
+          previous[cursor + 2] !== level)
+      )
+        next = previous.slice(0, cursor);
+      next?.push(world, entity, level);
+      cursor += 3;
+    }
     if (level === 0) continue;
     projected ??= rows.slice();
     projected[index] = { ...row, mesh: levelMesh(row.mesh, level) };
+  }
+  if (selection !== undefined) {
+    if (next === undefined && cursor !== selection.values.length)
+      next = selection.values.slice(0, cursor);
+    // Publish only a complete actual query. A throw above leaves its prior
+    // numbers and token unchanged; consumers still receive current rows.
+    if (next !== undefined) {
+      const token = {};
+      selection.values = next;
+      selection.token = token;
+    }
   }
   return projected ?? rows;
 }
@@ -92,9 +127,10 @@ export function selectCpuLodRows(
 export function cpuLaneLodRows(
   caps: Parameters<typeof selectGpuLodLane>[0],
   camera: LodHeightCamera,
+  selection?: CpuLodSelection,
 ): (rows: readonly ValidatedRenderable[]) => readonly ValidatedRenderable[] {
   return selectGpuLodLane(caps) === 'cpu'
-    ? (rows) => selectCpuLodRows(rows, camera)
+    ? (rows) => selectCpuLodRows(rows, camera, selection)
     : (rows) => rows;
 }
 
@@ -108,38 +144,4 @@ export function lodLevelHistogram(
   return [...counts]
     .sort((left, right) => left[0] - right[0])
     .map(([level, count]) => ({ level, count }));
-}
-
-/**
- * Project one shared validation result into a cull-specific renderable index
- * domain. The retained ShadowCaster projection is the superset; the primary
- * camera submission reuses its resolved mesh rows without a second residency
- * walk or a second validation authority.
- */
-export function projectValidatedRows(
-  validated: readonly ValidatedRenderable[],
-  target: readonly RenderableSnapshot[],
-): readonly ValidatedRenderable[] {
-  if (validated.length === target.length) {
-    let sameDomain = true;
-    for (let index = 0; index < target.length; index += 1) {
-      const row = validated[index];
-      if (row?.source !== target[index] || row?.renderableIndex !== index) {
-        sameDomain = false;
-        break;
-      }
-    }
-    if (sameDomain) return validated;
-  }
-  const byIdentity = new Map<string, ValidatedRenderable>();
-  for (const row of validated) byIdentity.set(renderableDrawKey(row.source), row);
-  const projected: ValidatedRenderable[] = [];
-  for (let index = 0; index < target.length; index += 1) {
-    const snapshot = target[index];
-    if (snapshot === undefined) continue;
-    const row = byIdentity.get(renderableDrawKey(snapshot));
-    if (row === undefined) continue;
-    projected.push({ ...row, source: snapshot, renderableIndex: index });
-  }
-  return projected;
 }

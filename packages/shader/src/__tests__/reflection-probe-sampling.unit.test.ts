@@ -58,7 +58,7 @@ describe('Standard reflection probe sampling contract', () => {
     // metadata by the specular lobe. The same decoded scale must drive the
     // PROBE_BLEND specular ambient term and detached SSR fallback.
     expect(lightingSource).toContain(
-      'specular * decodeSpecularEnvironmentScale(tint, sky.intensity)',
+      'specular * single * decodeSpecularEnvironmentScale(tint, sky.intensity)',
     );
     for (const root of [standardSource, skinSource]) {
       expect(root).toContain('evaluateStandardEnvironment(');

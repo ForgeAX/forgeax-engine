@@ -22,6 +22,7 @@ describe('domain preview catalog', () => {
       'asset.source.values.apply',
       'asset.source.rebuild',
       'asset.source.cold-cook',
+      'asset.source.draft',
       'asset.material.preview',
       'asset.mesh.preview',
       'asset.vfx.preview',

@@ -1,5 +1,16 @@
 # `@forgeax/engine-scene`
 
+## Explicit instance field writes
+
+`worldWriteSceneField(world, root, sceneEntity(sourceKey, address), component,
+field, value)` changes one declared scalar or short vector through normal
+`World.set`. It validates the component schema and resolves the exact existing
+instance binding, including nested addresses. References and structural fields
+require their domain owner. A retired root or mismatched sourceKey rejects the
+write. `worldSceneEntityAddressOf` reverses one known instance binding without
+searching entities or other scenes. Updating a SceneAsset still affects future
+instantiation; it does not broadcast to existing instances.
+
 > [!IMPORTANT]
 > Owner: scene identity, hierarchy, and world-space propagation. This package is the sole authority for `Transform`, `ChildOf`, `Children`, `Name`, `Mobility`, and `scenePlugin`.
 
@@ -185,14 +196,18 @@ and previously returned snapshots remain unchanged.
 The first propagation, and the next one after any hierarchy error, validates
 the full hierarchy through ECS-maintained `Children` lists. After that, work is
 driven by change evidence: edited `Transform`/`ChildOf`/`GlobalTransform` rows,
-plus the occupants of each 256-row storage block whose membership changed
-(spawn, despawn, component add/remove). Only the highest such entities and
+plus the exact structural identities from spawn, despawn and component changes. Only the highest such entities and
 their subtrees are expanded in parent-first order, so an unrelated spawn or
-despawn costs the touched blocks, not the Transform population. A `ChildOf`
+despawn does not rescan unrelated Transform storage. Changed rows are recorded
+during computation, then published through the ECS-owned numeric write fence.
+Only touched row markers are cleared; a table grows only its own scratch storage. A `ChildOf`
 value write whose target `Children` list does not mirror the edge, a parent
-walk longer than the hierarchy, or an entity that leaves the Transform pair
+cycle detected on the actual parent path, or an entity that leaves the Transform pair
 while still holding a hierarchy edge falls back to the full pass so malformed
-graphs report the same diagnostics as a cold evaluation. A second
+graphs report the same diagnostics as a cold evaluation. An unexpected planning
+exception invalidates discovery before rethrowing, so a healthy explicit retry
+rebuilds the baseline even if private dirty cursors had already advanced. Numeric
+producer/staging failures instead poison the World through ECS. A second
 FixedUpdate/Update propagation without intervening writes performs no
 hierarchy traversal. External writes to `GlobalTransform` (flat roots
 included) are reconciled back to the derived value; the owner's own

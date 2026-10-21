@@ -10,7 +10,7 @@
 //
 // ComponentId is used by archetype storage, bitmask matching, and edges cache.
 
-import { err, type Handle, ok, type Result } from '@forgeax/engine-types';
+import { type AssetHandle, err, type Handle, ok, type Result } from '@forgeax/engine-types';
 import {
   assertComponentStorage,
   deepFreeze,
@@ -86,7 +86,11 @@ export type ScalarFieldType = keyof typeof VIEW_CTORS;
  * column placeholder) is in the whitelist; the parametric `unique<T>` /
  * `shared<T>` scalars are rejected as array element types by AC-03.
  */
-export type ManagedArrayElementType = ScalarFieldType | 'entity' | `shared<${string}>`;
+export type ManagedArrayElementType =
+  | ScalarFieldType
+  | 'entity'
+  | `shared<${string}>`
+  | `asset<${string}>`;
 
 /**
  * Schema-vocab keywords beyond the legacy scalar tier (AC-01).
@@ -109,6 +113,7 @@ export type SchemaVocabKeyword =
   | `buffer<${number}>`
   | `unique<${string}>`
   | `shared<${string}>`
+  | `asset<${string}>`
   | 'entity'
   | `array<${ManagedArrayElementType}, ${number}>`
   | `array<${ManagedArrayElementType}>`;
@@ -162,6 +167,7 @@ export function fieldTypeToMetaKey(fieldType: string): string | null {
     return fieldType;
   }
   if (fieldType.startsWith('unique<') && fieldType.endsWith('>')) return 'ref';
+  if (fieldType.startsWith('asset<') && fieldType.endsWith('>')) return 'asset';
   if (fieldType.startsWith('shared<') && fieldType.endsWith('>')) return 'shared';
   if (fieldType.startsWith('buffer<') && fieldType.endsWith('>')) return 'buffer';
   if (fieldType.startsWith('array<') && fieldType.endsWith('>')) return 'array';
@@ -241,20 +247,7 @@ export function isManagedArrayField(fieldType: string): boolean {
  * special case (D-8) rather than living in this Set.
  */
 export const MANAGED_ARRAY_ELEMENT_TYPES: ReadonlySet<ManagedArrayElementType> =
-  new Set<ManagedArrayElementType>([
-    'f32',
-    'f64',
-    'i32',
-    'u32',
-    'i16',
-    'u16',
-    'i8',
-    'u8',
-    'bool',
-    'enum',
-    'ref',
-    'entity',
-  ]);
+  new Set<ManagedArrayElementType>([...(Object.keys(VIEW_CTORS) as ScalarFieldType[]), 'entity']);
 
 /**
  * Return `true` when `elementType` is a legal array element type
@@ -266,14 +259,8 @@ export const MANAGED_ARRAY_ELEMENT_TYPES: ReadonlySet<ManagedArrayElementType> =
  */
 function isValidArrayElementType(elementType: string): elementType is ManagedArrayElementType {
   if (MANAGED_ARRAY_ELEMENT_TYPES.has(elementType as ManagedArrayElementType)) return true;
-  // feat-20260614 D-8: `shared<X>` is a legal element-type via the
-  // startsWith special case; `MANAGED_ARRAY_ELEMENT_TYPES` Set deliberately
-  // does NOT carry a `'shared'` entry (D-8 keeps the static-whitelist Set
-  // free of the new family; runtime validation through the special case
-  // here pairs with the independent `'shared'` TYPE_METADATA row that
-  // routes element retain/release semantics in M4).
-  if (elementType.startsWith('shared<') && elementType.endsWith('>') && elementType.length > 9)
-    return true;
+  if (elementType.startsWith('asset<') || elementType.startsWith('shared<'))
+    return isSchemaVocabKeyword(elementType);
   return false;
 }
 
@@ -286,7 +273,7 @@ function isValidArrayElementType(elementType: string): elementType is ManagedArr
  * Examples:
  *   parseManagedArraySchema('array<entity>')                => { elementType: 'entity', length: undefined }
  *   parseManagedArraySchema('array<f32, 16>')               => { elementType: 'f32',    length: 16 }
- *   parseManagedArraySchema('array<shared<MaterialAsset>>') => { elementType: 'shared<MaterialAsset>', length: undefined }
+ *   parseManagedArraySchema('array<asset<material>>') => { elementType: 'asset<material>', length: undefined }
  *   parseManagedArraySchema('array<shared<>>')              => null (empty tag rejection)
  *   parseManagedArraySchema('array<unique<X>>')             => null (illegal element)
  *   parseManagedArraySchema('array<array<f32,4>>')          => null (nested rejected)
@@ -353,12 +340,12 @@ export function isSchemaVocabKeyword(s: string): s is SchemaVocabKeyword {
   if (s === 'entity') return true;
   if (s === 'buffer') return true;
   if (s.startsWith('buffer<') && s.endsWith('>')) {
-    const tail = s.slice(7, -1);
-    return /^[1-9]\d*$/.test(tail);
+    return !Number.isNaN(bufferFieldByteLength(s));
   }
   if (s.startsWith('unique<') && s.endsWith('>')) {
     return /^\w+$/.test(s.slice(7, -1));
   }
+  if (s.startsWith('asset<') && s.endsWith('>')) return /^[\w-]+$/.test(s.slice(6, -1));
   if (s.startsWith('shared<') && s.endsWith('>')) {
     return /^\w+$/.test(s.slice(7, -1));
   }
@@ -396,31 +383,35 @@ export function isSchemaVocabKeyword(s: string): s is SchemaVocabKeyword {
  * dispatch routes the column u32 through `UniqueRefStore.resolve(handle)`
  * which returns the immutable string payload by reference.
  */
-export type FieldValueType<T extends SchemaFieldType> = T extends 'bool'
-  ? boolean
-  : T extends 'entity'
-    ? EntityHandle | null
-    : T extends 'string'
-      ? string
-      : T extends 'buffer'
-        ? Uint8Array
-        : T extends `buffer<${number}>`
-          ? Uint8Array
-          : T extends `array<shared<${infer Target}>, ${number}>`
-            ? readonly Handle<Target, 'shared'>[]
-            : T extends `array<shared<${infer Target}>>`
-              ? readonly Handle<Target, 'shared'>[]
-              : T extends `array<${infer Elem extends ManagedArrayElementType}, ${number}>`
-                ? TypedArrayFor<Elem extends 'entity' ? 'u32' : Elem>
-                : T extends `array<${infer Elem extends ManagedArrayElementType}>`
-                  ? TypedArrayFor<Elem extends 'entity' ? 'u32' : Elem>
-                  : T extends `unique<${infer Target}>`
-                    ? Handle<Target, 'unique'>
-                    : T extends `shared<${infer Target}>`
-                      ? Handle<Target, 'shared'>
-                      : T extends ScalarFieldType
-                        ? number
-                        : never;
+export type FieldValueType<T extends SchemaFieldType> = T extends `asset<${infer Target}>`
+  ? AssetHandle<Target>
+  : T extends `array<asset<${infer Target}>, ${number}>` | `array<asset<${infer Target}>>`
+    ? readonly AssetHandle<Target>[]
+    : T extends 'bool'
+      ? boolean
+      : T extends 'entity'
+        ? EntityHandle | null
+        : T extends 'string'
+          ? string
+          : T extends 'buffer'
+            ? Uint8Array
+            : T extends `buffer<${number}>`
+              ? Uint8Array
+              : T extends `array<shared<${infer Target}>, ${number}>`
+                ? readonly Handle<Target, 'shared'>[]
+                : T extends `array<shared<${infer Target}>>`
+                  ? readonly Handle<Target, 'shared'>[]
+                  : T extends `array<${infer Elem extends ManagedArrayElementType}, ${number}>`
+                    ? TypedArrayFor<Elem extends 'entity' ? 'u32' : Elem>
+                    : T extends `array<${infer Elem extends ManagedArrayElementType}>`
+                      ? TypedArrayFor<Elem extends 'entity' ? 'u32' : Elem>
+                      : T extends `unique<${infer Target}>`
+                        ? Handle<Target, 'unique'>
+                        : T extends `shared<${infer Target}>`
+                          ? Handle<Target, 'shared'>
+                          : T extends ScalarFieldType
+                            ? number
+                            : never;
 
 /**
  * Input-side counterpart of {@link FieldValueType} for write paths
@@ -446,31 +437,15 @@ export type FieldValueType<T extends SchemaFieldType> = T extends 'bool'
  * Every other arm matches FieldValueType verbatim (no widening): handles
  * are already arrays-of-handle, scalars stay number, etc.
  */
-export type FieldInputType<T extends SchemaFieldType> = T extends 'bool'
-  ? boolean
-  : T extends 'entity'
-    ? EntityHandle | null
-    : T extends 'string'
-      ? string
-      : T extends 'buffer'
-        ? AllowSharedBufferSource
-        : T extends `buffer<${number}>`
-          ? AllowSharedBufferSource
-          : T extends `array<shared<${infer Target}>, ${number}>`
-            ? readonly Handle<Target, 'shared'>[]
-            : T extends `array<shared<${infer Target}>>`
-              ? readonly Handle<Target, 'shared'>[]
-              : T extends `array<${infer Elem extends ManagedArrayElementType}, ${number}>`
-                ? TypedArrayFor<Elem extends 'entity' ? 'u32' : Elem> | readonly number[]
-                : T extends `array<${infer Elem extends ManagedArrayElementType}>`
-                  ? TypedArrayFor<Elem extends 'entity' ? 'u32' : Elem> | readonly number[]
-                  : T extends `unique<${infer Target}>`
-                    ? Handle<Target, 'unique'>
-                    : T extends `shared<${infer Target}>`
-                      ? Handle<Target, 'shared'>
-                      : T extends ScalarFieldType
-                        ? number
-                        : never;
+export type FieldInputType<T extends SchemaFieldType> = T extends 'buffer' | `buffer<${number}>`
+  ? AllowSharedBufferSource
+  :
+      | FieldValueType<T>
+      | (T extends `array<${string}>`
+          ? FieldValueType<T> extends ArrayBufferView
+            ? readonly number[]
+            : never
+          : never);
 
 /**
  * Maps a SchemaFieldType to its zero-copy query-column view type.
@@ -499,25 +474,33 @@ export type FieldInputType<T extends SchemaFieldType> = T extends 'bool'
  * The `extends SchemaFieldType` upper bound matches `ComponentSchema[K]`
  * so query bundle types do not have to pre-filter.
  */
-export type TypedArrayFor<T extends SchemaFieldType> = T extends ScalarFieldType
-  ? (typeof VIEW_CTORS)[T]['prototype']
-  : T extends 'entity'
-    ? Uint32Array
-    : T extends 'string'
-      ? ManagedColumnReader<'string'>
-      : T extends `unique<${string}>`
-        ? ManagedColumnReader<T>
-        : T extends `shared<${string}>`
+export type TypedArrayFor<T extends SchemaFieldType> = T extends
+  | `array<asset<${string}>, ${number}>`
+  | `array<asset<${string}>>`
+  ? ManagedColumnReader<T>
+  : T extends ScalarFieldType
+    ? (typeof VIEW_CTORS)[T]['prototype']
+    : T extends 'entity'
+      ? Uint32Array
+      : T extends 'string'
+        ? ManagedColumnReader<'string'>
+        : T extends `unique<${string}>`
           ? ManagedColumnReader<T>
-          : T extends 'buffer'
-            ? ManagedColumnReader<'buffer'>
-            : T extends `buffer<${number}>`
-              ? Uint8Array
-              : T extends `array<${infer Elem extends ManagedArrayElementType}, ${number}>`
-                ? TypedArrayFor<Elem extends 'entity' | `shared<${string}>` ? 'u32' : Elem>
-                : T extends `array<${string}>`
-                  ? ManagedColumnReader<T>
-                  : never;
+          : T extends `shared<${string}>` | `asset<${string}>`
+            ? ManagedColumnReader<T>
+            : T extends 'buffer'
+              ? ManagedColumnReader<'buffer'>
+              : T extends `buffer<${number}>`
+                ? Uint8Array
+                : T extends `array<${infer Elem extends ManagedArrayElementType}, ${number}>`
+                  ? TypedArrayFor<
+                      Elem extends 'entity' | `shared<${string}>` | `asset<${string}>`
+                        ? 'u32'
+                        : Elem
+                    >
+                  : T extends `array<${string}>`
+                    ? ManagedColumnReader<T>
+                    : never;
 
 /**
  * Relationship metadata (feat-20260531 M2 / plan-strategy D-5). Declares this
@@ -718,6 +701,7 @@ export const TYPE_METADATA: Readonly<Record<string, TypeMetadataRow>> = Object.f
   entity: { ...scalarRow('u32'), isScalar: false, isEntityRef: true },
   string: { ...scalarRow('u32'), isScalar: false, isManaged: true },
   buffer: { ...scalarRow('u32'), isScalar: false, isBuffer: true },
+  asset: { ...scalarRow('u32'), isScalar: false, isManaged: true },
   shared: { ...scalarRow('u32'), isScalar: false, isManaged: true },
   array: { ...scalarRow('u32'), isScalar: false, isArray: true },
 });

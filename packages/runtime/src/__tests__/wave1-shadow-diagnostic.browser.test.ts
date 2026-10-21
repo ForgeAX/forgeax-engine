@@ -17,7 +17,7 @@ import {
   type WorkEntry,
 } from '@forgeax/engine-rhi-debug';
 import { propagateTransforms, scenePlugin } from '@forgeax/engine-scene';
-import type { Handle, MeshAsset } from '@forgeax/engine-types';
+import type { AssetHandle, MeshAsset } from '@forgeax/engine-types';
 import { ok } from '@forgeax/engine-types';
 import { expect, it } from 'vitest';
 import { commands, page } from 'vitest/browser';
@@ -25,6 +25,7 @@ import { createWave1RenderingRecipe } from '../../../../scripts/dev-verify/wave1
 import { drawReadyFrame } from '../../../../scripts/test/ready-render-frame.mjs';
 import { loadBackendPack } from '../backend-selection';
 import { constructRuntimeRendererHost } from '../renderer-host';
+import { testAssets } from './helpers/runtime-assets';
 
 interface ScreenshotPixels {
   readonly width: number;
@@ -375,12 +376,15 @@ it('captures one shadow layout tape and isolates jagged shadow casters', async (
   const renderer = rendererResult.value.renderer;
   const world = new World();
   const scene = await createWorldContext(world, [scenePlugin()]);
-  const recipe = createWave1RenderingRecipe(world, { aspect: 1, includeAtmosphere: true });
+  const recipe = createWave1RenderingRecipe(world, testAssets(world), {
+    aspect: 1,
+    includeAtmosphere: true,
+  });
   const attached = renderer.attach(world);
   if (!attached.ok) throw attached.error;
   const lease = attached.value;
-  let canonicalHandle: Handle<'MeshAsset', 'shared'> | undefined;
-  let canonicalFloorHandle: Handle<'MeshAsset', 'shared'> | undefined;
+  let canonicalHandle: AssetHandle<'mesh'> | undefined;
+  let canonicalFloorHandle: AssetHandle<'mesh'> | undefined;
   const rendererErrors: unknown[] = [];
   const unsubscribe = renderer.subscribe((event) => {
     if (event.kind === 'error') rendererErrors.push(event.error);
@@ -417,8 +421,8 @@ it('captures one shadow layout tape and isolates jagged shadow casters', async (
     const canonicalFloorMesh = createBoxGeometry(8, 0.2, 8).unwrap();
     const canonicalLayout = meshLayout(canonicalMesh);
     const canonicalFloorLayout = meshLayout(canonicalFloorMesh);
-    canonicalHandle = world.allocSharedRef('MeshAsset', canonicalMesh);
-    canonicalFloorHandle = world.allocSharedRef('MeshAsset', canonicalFloorMesh);
+    canonicalHandle = testAssets(world).create(canonicalMesh).unwrap();
+    canonicalFloorHandle = testAssets(world).create(canonicalFloorMesh).unwrap();
 
     // Persist the raw tape through Vitest's host file command. Sending this
     // multi-megabyte payload through console reporting can stall CI log transport.
@@ -583,8 +587,9 @@ it('captures one shadow layout tape and isolates jagged shadow casters', async (
     unsubscribe();
     await renderer.dispose();
     recipe.dispose();
-    if (canonicalHandle !== undefined) world.sharedRefs.release(canonicalHandle).unwrap();
-    if (canonicalFloorHandle !== undefined) world.sharedRefs.release(canonicalFloorHandle).unwrap();
+    if (canonicalHandle !== undefined) testAssets(world).release(canonicalHandle).unwrap();
+    if (canonicalFloorHandle !== undefined)
+      testAssets(world).release(canonicalFloorHandle).unwrap();
     await scene.fiber.dispose();
     const recorderDisposed = await recorder.dispose();
     expect(recorderDisposed.ok, inspect(recorderDisposed)).toBe(true);

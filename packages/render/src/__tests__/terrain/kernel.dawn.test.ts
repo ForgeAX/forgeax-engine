@@ -40,7 +40,7 @@ it.each([
     layers: [{ material: 'layer', blend: 'weight' as const }],
   };
   const cooked = cookTerrain(source).unwrap(),
-    data = defined(cooked.sections[0]).height.data,
+    data = cooked.height.data,
     device = (await (await rhi.requestAdapter()).unwrap().requestDevice()).unwrap();
   const texture = device
     .createTexture({
@@ -114,8 +114,8 @@ it.each([
             n,
             k,
             lod,
-            range[0],
-            range[1],
+            1,
+            1,
             neighbor,
             lod,
             lod,
@@ -156,7 +156,9 @@ it.each([
             width: (n - 1) * spacing,
             lod,
             neighbors: [neighbor, lod, lod, lod],
-            heightRange: range,
+            textureWidth: n,
+            textureHeight: n,
+            sectionIndex: 0,
             heights: data,
           },
           i % drawN,
@@ -192,7 +194,9 @@ it.each([
           width: (n - 1) * spacing,
           lod,
           neighbors: [neighbor, lod, lod, lod],
-          heightRange: range,
+          textureWidth: n,
+          textureHeight: n,
+          sectionIndex: 0,
           heights: data,
         };
         const at = (x: number, z: number) =>

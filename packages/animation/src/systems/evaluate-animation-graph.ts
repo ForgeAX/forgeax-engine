@@ -1,3 +1,4 @@
+import { runtimeAssets } from '@forgeax/engine-assets-runtime/internal';
 // @forgeax/engine-animation -- evaluateAnimationGraph system (post-order DAG eval).
 //
 // feat-20260713-animation-state-machine-plugin M3 / w25 (plan D-2 independent
@@ -7,8 +8,8 @@
 // "N-slot -> pose" seam) and is the SOLE writer of the derived slot columns for
 // entities carrying an AnimationGraph handle (AnimationPlayer.graph != 0):
 //
-//   1. Resolve the shared<AnimationGraph> handle to its POD.
-//   2. Resolve every clip leaf's shared<AnimationClip> BEFORE writing anything --
+//   1. Resolve the asset<animation-graph> handle to its POD.
+//   2. Resolve every clip leaf's asset<animation-clip> BEFORE writing anything --
 //      a dangling handle throws the structured animation asset error so no
 //      dirty pose is left (AC-04 / AC-11).
 //   3. Post-order evaluate effective weights: effective = runtime weight
@@ -27,7 +28,6 @@
 // the direct-write SSOT (single evaluation path, plan D-3). advance's mixing
 // math never branches on graph mode; it just consumes whatever fills the slots.
 
-import { resolveAssetHandle } from '@forgeax/engine-assets-runtime';
 import type { EntityHandle, SystemHandle, World } from '@forgeax/engine-ecs';
 import {
   defineSystem,
@@ -38,7 +38,7 @@ import {
   Update,
 } from '@forgeax/engine-ecs';
 import { worldRead } from '@forgeax/engine-ecs/world-read';
-import type { AnimationClip, AnimationGraph, Handle } from '@forgeax/engine-types';
+import type { AnimationClip, AnimationGraph, AssetHandle } from '@forgeax/engine-types';
 import { resolveAnimationMask } from '../animation-mask';
 import { AnimationPlayer } from '../animation-player';
 import { AnimationBlendError } from '../blend-errors';
@@ -59,10 +59,6 @@ import { ADVANCE_ANIMATION_PLAYER_SYSTEM } from './advance-animation-player';
  * graph-evaluation seam.
  */
 export const EVALUATE_ANIMATION_GRAPH_SYSTEM = 'evaluateAnimationGraph' as const;
-
-export type AnimationPayloadLookup = (
-  guid: string,
-) => AnimationClip | { readonly code: 'stale' } | undefined;
 
 /**
  * Resolved per-entity graph-mode columns (a `world.get` snapshot). `graph` is the
@@ -90,11 +86,7 @@ function readAt(arr: ArrayLike<number>, i: number, dflt: number): number {
  * collecting entity handles first, then resolving + writing each player outside
  * the transient row facade.
  */
-export function evaluateAnimationGraph(
-  world: World,
-  dt: number,
-  lookup: AnimationPayloadLookup = () => undefined,
-): void {
+export function evaluateAnimationGraph(world: World, dt: number): void {
   clearPlaybackIntervals(world);
   const query = world.query({ with: [AnimationPlayer] }).unwrap();
 
@@ -102,7 +94,7 @@ export function evaluateAnimationGraph(
   for (const row of query) entities.push(row.entity);
 
   for (const entityRaw of entities) {
-    evaluateOneEntity(world, entityRaw, dt, lookup);
+    evaluateOneEntity(world, entityRaw, dt);
   }
 }
 
@@ -112,12 +104,7 @@ export function evaluateAnimationGraph(
  * resolved through the World-local animation lookup and invalid handles throw
  * a structured animation error before any derived write (AC-04 / AC-11).
  */
-function evaluateOneEntity(
-  world: World,
-  entityRaw: number,
-  dt: number,
-  lookup: AnimationPayloadLookup,
-): void {
+function evaluateOneEntity(world: World, entityRaw: number, dt: number): void {
   const entity = entityRaw as EntityHandle;
   // Direct playback needs only this scalar probe, not every variable graph column.
   const graphRaw = world[worldRead].getFieldValue(entity, AnimationPlayer, 'graph');
@@ -126,10 +113,7 @@ function evaluateOneEntity(
   if (!apRes.ok) return;
   const ap = apRes.value as unknown as PlayerGraphColumns;
 
-  const graphLookup = resolveAssetHandle<AnimationGraph>(
-    world,
-    graphRaw as Handle<string, 'shared'>,
-  );
+  const graphLookup = runtimeAssets(world.assets).resolveAsset<AnimationGraph>(graphRaw);
   if (!graphLookup.ok) throw graphLookup.error;
   const graph = graphLookup.value;
 
@@ -158,19 +142,12 @@ function evaluateOneEntity(
   // Collect clip leaves (ascending node index) and resolve every clip BEFORE any
   // write (AC-11: a dangling handle must not leave a dirty pose).
   const clipNodeIndices: number[] = [];
-  const clipHandles: Handle<'AnimationClip', 'shared'>[] = [];
+  const clipHandles: AssetHandle<'animation-clip'>[] = [];
   const clips: AnimationClip[] = [];
   for (let i = 0; i < nodes.length; i++) {
     const node = nodes[i];
     if (node === undefined || node.type !== 'clip') continue;
-    const clipLookup = resolveAnimationAsset<AnimationClip>(
-      world,
-      node.clip,
-      'animation-clip',
-      (guid) => {
-        return lookup(guid);
-      },
-    );
+    const clipLookup = resolveAnimationAsset<AnimationClip>(world, node.clip, 'animation-clip');
     if (!clipLookup.ok) throw clipLookup.error;
     const handle = clipLookup.value.handle;
     clipNodeIndices.push(i);
@@ -286,7 +263,6 @@ export const EvaluateAnimationGraph: SystemHandle<readonly []> = defineSystem({
  */
 export function registerEvaluateAnimationGraph(
   world: World,
-  lookup: AnimationPayloadLookup = () => undefined,
   schedule: ScheduleToken = Update,
 ): () => void {
   world
@@ -300,7 +276,6 @@ export function registerEvaluateAnimationGraph(
           schedule === FixedUpdate
             ? world.getResource(FixedTime).delta
             : world.getResource(Time).delta,
-          lookup,
         );
       },
     })

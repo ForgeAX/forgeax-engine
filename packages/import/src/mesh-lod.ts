@@ -221,11 +221,29 @@ function hasCycle(relations: readonly MeshLodRelation[]): boolean {
   return [...edges.keys()].some(visit);
 }
 
-/** Preserve sidecar facts by sourceKey while permitting only suffix changes. */
+/** Read retained sidecar LOD facts, ignoring incomplete legacy entries, then
+ * preserve them by sourceKey while permitting only suffix changes. */
 export function reconcileMeshLodMeta(
-  previous: readonly MeshLodMetaEntry[],
+  previousInput: unknown,
   next: readonly MeshLodMetaEntry[],
 ): Result<ReconciledMeshLodMeta, MeshLodContractError> {
+  const previous: MeshLodMetaEntry[] = Array.isArray(previousInput)
+    ? previousInput.flatMap((entry: unknown) => {
+        if (entry === null || typeof entry !== 'object') return [];
+        const value = entry as Record<string, unknown>;
+        return typeof value.sourceKey === 'string' && typeof value.meshGuid === 'string'
+          ? [
+              {
+                sourceKey: value.sourceKey,
+                meshGuid: value.meshGuid,
+                ...(typeof value.screenCoverage === 'number'
+                  ? { screenCoverage: value.screenCoverage }
+                  : {}),
+              },
+            ]
+          : [];
+      })
+    : [];
   const overlap = Math.min(previous.length, next.length);
   for (let index = 0; index < overlap; index++) {
     const oldEntry = previous[index];

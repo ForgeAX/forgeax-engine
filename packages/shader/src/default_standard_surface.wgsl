@@ -11,6 +11,11 @@
 #ifdef ALPHA_HASH_AVAILABLE
 #import forgeax_material::alpha_hash::{applyAlphaHash}
 #endif
+#ifdef ALPHA_CLIPPING_AVAILABLE
+#ifndef SURFACE_COVERAGE_DEFERRED
+#import forgeax_material::alpha_hash::{alphaCoverage}
+#endif
+#endif
 
 // The default Surface owns only base facts. Standard's generated Material
 // interface remains the source of the scalar and texture values; the
@@ -150,7 +155,11 @@ fn surfaceChannel(value : vec4<f32>, channel : u32) -> f32 {
   }
 }
 
-fn evaluate_standard_surface(input : SurfaceInput, materialValue : MaterialParameters) -> SurfaceData {
+fn evaluate_standard_surface(sourceInput : SurfaceInput, materialValue : MaterialParameters) -> SurfaceData {
+  var input = sourceInput;
+#ifdef FLAT_SHADING_AVAILABLE
+  input.vertexNormalWS = select(input.vertexNormalWS, input.geometricNormalWS, materialValue.flatShading != 0u);
+#endif
 #ifdef TRIPLANAR_PROJECTION_AVAILABLE
   let triplanar = standardUsesTriplanarProjection();
 #else
@@ -309,8 +318,26 @@ fn evaluate_standard_surface(input : SurfaceInput, materialValue : MaterialParam
 #else
   let occlusion = 1.0;
 #endif
+  let sampledAlpha = clamp(materialValue.baseColor.a * baseSample.a * vertexColor.a * alpha, 0.0, 1.0);
+  var alphaClipThreshold = 0.0;
+#ifdef ALPHA_CLIPPING_AVAILABLE
+#ifdef SURFACE_COVERAGE_DEFERRED
+  let coverage = sampledAlpha;
+  alphaClipThreshold = materialValue.alphaCutoff;
+#else
+  let coverage = alphaCoverage(sampledAlpha, materialValue.alphaCutoff,
+#ifdef ALPHA_TO_COVERAGE_AVAILABLE
+    materialValue.alphaToCoverage,
+#else
+    0.0,
+#endif
+  );
+#endif
+#else
+  let coverage = sampledAlpha;
+#endif
 #ifdef ALPHA_HASH_AVAILABLE
-  applyAlphaHash(materialValue.baseColor.a * baseSample.a * vertexColor.a * alpha, input.positionOS, materialValue.alphaHash);
+  applyAlphaHash(coverage, input.positionOS, materialValue.alphaHash);
 #endif
   return SurfaceData(
     baseColor,
@@ -319,12 +346,8 @@ fn evaluate_standard_surface(input : SurfaceInput, materialValue : MaterialParam
     roughness,
     emissive,
     occlusion,
-    clamp(materialValue.baseColor.a * baseSample.a * vertexColor.a * alpha, 0.0, 1.0),
-#ifdef ALPHA_CLIPPING_AVAILABLE
-    clamp(materialValue.alphaCutoff, 0.0, 1.0),
-#else
-    0.0,
-#endif
+    coverage,
+    alphaClipThreshold,
   );
 }
 

@@ -10,8 +10,7 @@ import type {
 } from '@forgeax/engine-rhi';
 import { err, ok, type Result, RhiError } from '@forgeax/engine-rhi';
 import type { ShaderCatalog } from '@forgeax/engine-shader';
-import type { Handle, ParamSchemaEntry } from '@forgeax/engine-types';
-import { AssetError } from '@forgeax/engine-types';
+import type { ParamSchemaEntry } from '@forgeax/engine-types';
 import { adoptBackendDevice, DeviceScope } from '../../device/device-scope';
 import { GpuResidencyCache } from '../../device/gpu-residency';
 import { RecoverError, type RecoverFailure } from '../../errors/recover';
@@ -119,7 +118,7 @@ export type RendererCandidateState = {
     | undefined;
   meshSsboState: MeshSsboState | undefined;
 };
-export type RendererGenerationBindings = {
+type RendererGenerationBindings = {
   readonly gpuPassTimingSession?: GpuPassTimingSession | undefined;
   readonly gpuPassTimingUnavailable?: GpuPassTimingObservation | undefined;
   readonly gpuStore: GpuResidencyCache;
@@ -141,7 +140,7 @@ export type RendererGeneration = GenerationAggregate<
   undefined
 >;
 
-export interface RendererRecoveryDependencies {
+interface RendererRecoveryDependencies {
   readonly prepareGpuPassTimingState: (
     device: RhiDevice,
   ) => Pick<RendererGenerationBindings, 'gpuPassTimingSession' | 'gpuPassTimingUnavailable'>;
@@ -472,26 +471,7 @@ export function createRendererRecovery(deps: RendererRecoveryDependencies): Rend
     // Step (e): rebuild GPU-bound state against the new device. Every cache,
     // shader adapter, hook, and store used by this build belongs to
     // candidateState; the active aggregate remains untouched on every await.
-    candidateGpuStore.configureGpuDevice(
-      device,
-      internals.pack.createShaderModule,
-      (world, pod) => {
-        if ('resolveAsset' in world)
-          return err(
-            new AssetError({
-              code: 'asset-not-found',
-              expected: 'source-owned environment asset allocation',
-              hint: 'publish the environment asset from its source owner before GPU preparation',
-            }),
-          );
-        const handle: Handle<'EquirectAsset', 'shared'> = world.allocSharedRef(
-          'EquirectAsset',
-          pod,
-        );
-        return ok(handle);
-      },
-      device.caps,
-    );
+    candidateGpuStore.configureGpuDevice(device, internals.pack.createShaderModule, device.caps);
     candidateGpuStore.configureIblDevice(
       device,
       internals.pack.createShaderModule === undefined
@@ -527,12 +507,7 @@ export function createRendererRecovery(deps: RendererRecoveryDependencies): Rend
       setRecoveryPhase('rehydrate');
       const preparation = await runRecoveryStep(
         async (attemptToken) => {
-          await prepareMaterialShaders(
-            device,
-            getShader,
-            assets,
-            candidateState.materialShaderUvSetCounts,
-          );
+          await prepareMaterialShaders(device, getShader, candidateState.materialShaderUvSetCounts);
           if (attemptToken !== undefined && !attemptToken.isValid('rehydrate', Date.now())) {
             return err(
               new RhiError({
@@ -746,6 +721,26 @@ export function createRendererRecovery(deps: RendererRecoveryDependencies): Rend
       releaseCandidate();
       return err(new RecoverError('recover-device-unavailable'));
     }
+    const textures = await runRecoveryStep(
+      async () => {
+        await renderSystem.prepareRecoveryTextureData({
+          internals: candidateInternals,
+          pipelineState: candidatePipelineState,
+        });
+        return ok(undefined);
+      },
+      'compile-graph',
+      deadline,
+      () => Date.now(),
+      continuation,
+    );
+    if (textures.kind !== 'value') {
+      recordFailure('compile-graph', textures.error);
+      releaseCandidate();
+      return err(new RecoverError('recover-device-unavailable'));
+    }
+    const abortedAfterTextures = abortDisposedRecovery('compile-graph');
+    if (abortedAfterTextures !== undefined) return abortedAfterTextures;
     const graphPreparation = renderSystem.prepareRecoveryGraphCandidate({
       internals: candidateInternals,
       pipelineState: candidatePipelineState,

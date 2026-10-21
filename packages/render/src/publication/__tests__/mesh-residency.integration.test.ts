@@ -19,14 +19,16 @@ function required<T>(value: T | undefined): T {
 }
 
 function fixture() {
-  const world = new World();
-  const assets = new AssetRegistry(new ShaderRegistry({ manifestUrl: undefined }));
+  const assets = new AssetRegistry({
+    shaderRegistry: new ShaderRegistry({ manifestUrl: undefined }),
+  });
+  const world = new World({ assets });
   const identity = { source: 'prepared-mesh', epoch: 1 };
   const publisher = createRenderPublisher(world, assets, identity);
   const receiver = new RenderPublicationReceiver(identity);
   const mesh = createBoxGeometry(1, 1, 1).unwrap();
-  const meshHandle = world.allocSharedRef('MeshAsset', mesh);
-  const input = { ...identity, meshHandle, mesh };
+  const meshHandle = assets.create(mesh).unwrap();
+  const input = { ...identity, meshHandle, mesh: assets.read(meshHandle).unwrap(), revision: 1 };
   const packet = () => {
     world
       .spawn(
@@ -38,7 +40,7 @@ function fixture() {
     world.update(0).unwrap();
     return structuredClone(publisher.prepare(0).unwrap().packet);
   };
-  return { world, publisher, receiver, input, packet };
+  return { world, assets, publisher, receiver, input, packet };
 }
 
 it('prepares in the accepted resource namespace without admitting the mesh or a World', async () => {
@@ -47,21 +49,20 @@ it('prepares in the accepted resource namespace without admitting the mesh or a 
   expect(prepared.resources.resolveAsset(f.input.meshHandle).ok).toBe(false);
   const device = (await (await rhi.requestAdapter()).unwrap().requestDevice()).unwrap();
   const store = new GpuResidencyCache();
-  store.configureGpuDevice(
-    device,
-    undefined,
-    () => {
-      throw new Error('unused');
-    },
-    device.caps,
-  );
-  const gpu = store.ensureResident(f.input.meshHandle, prepared.mesh, prepared.resources).unwrap();
+  store.configureGpuDevice(device, undefined, device.caps);
+  const physical = store
+    .prepareMeshResidency(f.input.meshHandle, prepared.mesh, f.input.revision, prepared.resources)
+    .unwrap();
+  const gpu = physical.entry;
+  expect(store.getMeshGpuHandles(f.input.meshHandle, prepared.resources)).toBeUndefined();
   const accepted = f.receiver.accept(f.packet()).unwrap();
+  expect(physical.commit()).toBe(true);
   expect(accepted.resources).toBe(prepared.resources);
   expect(accepted.resources.resolveAsset(f.input.meshHandle).unwrap()).toBe(prepared.mesh);
   expect(store.ensureResident(f.input.meshHandle, prepared.mesh, accepted.resources).unwrap()).toBe(
     gpu,
   );
+  physical.lease.release(false);
   prepared.release();
   expect(prepared.isCurrent()).toBe(false);
   expect(accepted.resources.resolveAsset(f.input.meshHandle).ok).toBe(true);
@@ -116,14 +117,14 @@ async function gpuFixture() {
   const f = fixture();
   const device = (await (await rhi.requestAdapter()).unwrap().requestDevice()).unwrap();
   const store = new GpuResidencyCache();
-  store.configureGpuDevice(
-    device,
-    undefined,
-    () => {
-      throw new Error('unused');
-    },
-    device.caps,
-  );
+  store.configureGpuDevice(device, undefined, device.caps);
+  const allocations: ReturnType<GpuResidencyCache['prepareMeshResidency']>[] = [];
+  const preparePhysical = store.prepareMeshResidency.bind(store);
+  vi.spyOn(store, 'prepareMeshResidency').mockImplementation((...args) => {
+    const result = preparePhysical(...args);
+    allocations.push(result);
+    return result;
+  });
   const bindings = createDynamicGeometryFrameBindings();
   let finish!: () => void;
   const upload = new Promise<void>((resolve) => {
@@ -142,6 +143,7 @@ async function gpuFixture() {
   return {
     ...f,
     store,
+    allocation: () => required(allocations.at(-1)).unwrap().entry,
     bindings,
     prepare,
     finish,
@@ -161,8 +163,8 @@ it('keeps a source-committed allocation until the receiver accepts its actual Me
   f.finish();
   const prepared = (await pending).unwrap();
   const resourceLease = f.receiver.prepareMesh(f.input).unwrap();
-  const gpu = f.store.getMeshGpuHandles(f.input.meshHandle, resourceLease.resources);
-  expect(gpu).toBeDefined();
+  const gpu = f.allocation();
+  expect(f.store.getMeshGpuHandles(f.input.meshHandle, resourceLease.resources)).toBeUndefined();
   resourceLease.release();
   const released = vi.fn();
   const transfer = prepared.release(false);
@@ -170,7 +172,7 @@ it('keeps a source-committed allocation until the receiver accepts its actual Me
   await Promise.resolve();
   expect(prepared.isCurrent()).toBe(false);
   expect(released).not.toHaveBeenCalled();
-  expect(f.store.getMeshGpuHandles(f.input.meshHandle, resourceLease.resources)).toBe(gpu);
+  expect(f.store.getMeshGpuHandles(f.input.meshHandle, resourceLease.resources)).toBeUndefined();
   expect(f.receiver.prepareMesh({ ...f.input, mesh: createBoxGeometry(2, 2, 2).unwrap() }).ok).toBe(
     false,
   );
@@ -216,8 +218,8 @@ it('waits for physical upload and reads only an exact current submitted frame', 
   const prepared = (await pending).unwrap();
   expect(prepared.isCurrent()).toBe(true);
   const accepted = f.receiver.accept(f.packet()).unwrap();
-  const entity = required(accepted.frame.renderables[0]).entityKey;
-  const entry = { source: required(accepted.frame.renderables[0]) };
+  const entity = required(accepted.frame.renderables.at(0)).entityKey;
+  const entry = { source: required(accepted.frame.renderables.at(0)) };
   f.bindings.begin();
   f.bindings.onRenderableDraw([accepted.resources])(entry, 'gpu');
   expect(prepared.recordStageLane(f.frame(), entity).unwrap()).toBeUndefined();
@@ -242,7 +244,8 @@ it.each([
   const f = await gpuFixture();
   const pending = f.prepare(f.input);
   const scope = f.receiver.prepareMesh(f.input).unwrap();
-  const gpu = required(f.store.getMeshGpuHandles(f.input.meshHandle, scope.resources));
+  const gpu = f.allocation();
+  expect(f.store.getMeshGpuHandles(f.input.meshHandle, scope.resources)).toBeUndefined();
   let complete!: () => void;
   const submitted = new Promise<void>((resolve) => {
     complete = resolve;
@@ -272,7 +275,8 @@ it('fences released published mesh residency until its last submitted GPU work f
   f.finish();
   const prepared = (await f.prepare(f.input)).unwrap();
   const scope = f.receiver.prepareMesh(f.input).unwrap();
-  const gpu = required(f.store.getMeshGpuHandles(f.input.meshHandle, scope.resources));
+  const gpu = f.allocation();
+  expect(f.store.getMeshGpuHandles(f.input.meshHandle, scope.resources)).toBeUndefined();
   let complete!: () => void;
   const frame = new Promise<void>((resolve) => {
     complete = resolve;

@@ -3,7 +3,7 @@
 > [!NOTE]
 > **LO original chapter**: [LearnOpenGL 2.lighting 1.colors](https://learnopengl.com/Lighting/Colors)
 >
-> **Engine surface**: `createApp` + ECS components (`Transform`, `Camera`, `MeshFilter`, `MeshRenderer`, `DirectionalLight`) + `MaterialAsset` (`shadingModel: 'standard'` / `'unlit'`) + builtin `HANDLE_CUBE` mesh.
+> **Engine surface**: `createApp` + ECS components (`Transform`, `Camera`, `MeshFilter`, `MeshRenderer`, `DirectionalLight`) + `Materials.standard(...)` / `Materials.unlit(...)` + `assets.create(createPrimitiveMesh('cube').unwrap())` geometry.
 
 ## What this example shows
 
@@ -573,7 +573,7 @@ base-color texture alpha reaches the render target independently of scalar alpha
 | Frag shader formula | `ambient + diffuse` (Phong per-fragment) | `pbr.wgsl` microfacet BRDF (Cook-Torrance specular + Lambertian diffuse) |
 | Camera | `Camera` class + WASD movement (LO section 1.7) | `Transform` + `Camera` ECS components + `addFirstPersonSystem` from `apps/shared` (mirrors LO WASD/mouse/scroll controls) |
 | Window + render loop | `glfwCreateWindow` + `while(!glfwWindowShouldClose)` | `createApp(canvas, opts)` from `@forgeax/engine-app` |
-| Vertex data | Manual `float vertices[]` array + VBO/VAO setup | Built-in `HANDLE_CUBE` procedural geometry from `@forgeax/engine-runtime` |
+| Vertex data | Manual `float vertices[]` array + VBO/VAO setup | `createPrimitiveMesh('cube')` from `@forgeax/engine-geometry`, admitted with `assets.create` |
 
 ## Differences from the LearnOpenGL original
 

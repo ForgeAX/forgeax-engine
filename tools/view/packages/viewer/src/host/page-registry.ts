@@ -33,7 +33,7 @@ function normalizePageController(createController: PageTypeContribution['createC
   if (typeof controller !== 'object' || Array.isArray(controller)) {
     throw new TypeError('page type controller must be an object');
   }
-  const { getTitle, getResource, subscribeTitle, dispose } = controller;
+  const { getTitle, getResource, subscribeTitle, dispose, beforeClose, getStatus } = controller;
   if (getResource !== undefined && typeof getResource !== 'function') throw new TypeError('page controller getResource must be a function');
   if (getTitle !== undefined && typeof getTitle !== 'function') {
     throw new TypeError('page controller getTitle must be a function');
@@ -41,10 +41,14 @@ function normalizePageController(createController: PageTypeContribution['createC
   if (subscribeTitle !== undefined && typeof subscribeTitle !== 'function') {
     throw new TypeError('page controller subscribeTitle must be a function');
   }
+  if (beforeClose !== undefined && typeof beforeClose !== 'function') throw new TypeError('page controller beforeClose must be a function');
+  if (getStatus !== undefined && typeof getStatus !== 'function') throw new TypeError('page controller getStatus must be a function');
   if (dispose !== undefined && typeof dispose !== 'function') {
     throw new TypeError('page controller dispose must be a function');
   }
   return Object.freeze({
+    ...(beforeClose === undefined ? {} : { beforeClose }),
+    ...(getStatus === undefined ? {} : { getStatus }),
     ...(getResource === undefined ? {} : { getResource }),
     ...(getTitle === undefined ? {} : { getTitle }),
     ...(subscribeTitle === undefined ? {} : { subscribeTitle }),
@@ -83,7 +87,11 @@ export function subscribePageTypeTitles(pageTypes: readonly PageType[], listener
 
 export function readPageTypeTitleRevision(pageTypes: readonly PageType[]) {
   const types = Array.isArray(pageTypes) ? pageTypes : [];
-  return types.map((pageType) => pageType?.controller?.getTitle?.() ?? '').join('\0');
+  return types.map(pageType => {
+    const title = pageType.controller?.getTitle?.() ?? '';
+    const status = pageType.controller?.getStatus?.();
+    return status ? JSON.stringify([title, status]) : title;
+  }).join('\0');
 }
 
 function normalizePageType(input: PageTypeContribution) {

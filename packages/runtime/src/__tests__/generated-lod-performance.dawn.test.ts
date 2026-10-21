@@ -11,13 +11,13 @@ import {
 } from '@forgeax/engine-render';
 import { summarizeGpuPassTimingIntervals } from '@forgeax/engine-render/internal';
 import { propagateTransforms, Transform } from '@forgeax/engine-scene';
-import type { MeshAsset } from '@forgeax/engine-types';
 import { expect, it } from 'vitest';
 import {
   type BarrelRendererFixture,
   createBarrelRendererFixture,
 } from './barrel-distortion-gpu-fixture';
 import { startGeneratedLodServer } from './generated-lod.server';
+import { testAssets } from './helpers/runtime-assets';
 import { renderValue } from './standard-gbuffer-replay.fixture';
 
 const quantile = (values: number[], q: number) =>
@@ -35,15 +35,17 @@ it.skipIf(process.env.MESH_LOD_PERF !== '1')(
         server.guids.map(async (text) => {
           const guid = AssetGuid.parse(text);
           if (!guid.ok) throw guid.error;
-          const mesh = renderValue(await assets.loadByGuid<MeshAsset>(guid.value));
-          return { ...mesh, lods: undefined };
+          const handle = (await assets.load(guid.value, 'mesh')).unwrap();
+          const { lods: _lods, ...mesh } = assets.read(handle).unwrap();
+          return mesh;
         }),
       );
-      const world = new World();
-      const material = world.allocSharedRef(
-        'MaterialAsset',
-        Materials.standard({ baseColor: [0.5, 0.5, 0.5, 1], roughness: 0.8 }),
-      );
+      const firstMesh = meshes[0];
+      if (firstMesh === undefined) throw new Error('missing generated LOD root mesh');
+      const world = new World({ assets });
+      const material = testAssets(world)
+        .create(Materials.standard({ baseColor: [0.5, 0.5, 0.5, 1], roughness: 0.8 }))
+        .unwrap();
       const objects = [];
       for (let i = 0; i < 64; i++)
         objects.push(
@@ -58,7 +60,7 @@ it.skipIf(process.env.MESH_LOD_PERF !== '1')(
               },
               {
                 component: MeshFilter,
-                data: { assetHandle: world.allocSharedRef('MeshAsset', meshes[0]) },
+                data: { assetHandle: testAssets(world).create(firstMesh).unwrap() },
               },
               { component: MeshRenderer, data: { materials: [material] } },
             )
@@ -92,7 +94,7 @@ it.skipIf(process.env.MESH_LOD_PERF !== '1')(
       for (const level of [0, 2, 2, 0]) {
         const mesh = meshes[level];
         if (!mesh) throw new Error('missing generated level');
-        const handle = world.allocSharedRef('MeshAsset', mesh);
+        const handle = testAssets(world).create(mesh).unwrap();
         for (const object of objects)
           world.set(object, MeshFilter, { assetHandle: handle }).unwrap();
         const samples = [];

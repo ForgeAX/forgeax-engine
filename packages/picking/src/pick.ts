@@ -1,3 +1,8 @@
+import type { EntityHandle, World } from '@forgeax/engine-ecs';
+import { box3, ray, type Vec3Like, vec3 } from '@forgeax/engine-math';
+import { computeScreenRay, type ScreenRay } from './pick-core';
+import { meshQueryEntities, queryMesh, queryMeshMatrix } from './query-mesh';
+
 // pick.ts — screen-to-entity raycast (feat-20260529-picking-raycasting-screen-to-entity M3 / w13).
 //
 // `pick(world, cameraEntity, screenX, screenY, viewportWidth, viewportHeight)`
@@ -6,14 +11,8 @@
 // camera, walks every renderable archetype, ray-AABB tests each pickable mesh's
 // world-space bounding box, and returns the NEAREST `PickHit` (or `undefined` on miss).
 //
-// Mesh AABB source (feat-20260614 M8, D-15/D-18): the ray-AABB test needs each
-// mesh's local-space `MeshAsset.aabb`, resolved from the entity's `MeshFilter`
-// handle via `resolveAssetHandle<MeshAsset>(world, handle)` (two-tier builtin /
-// world.sharedRefs dispatch). The registry no longer holds handles, so `pick`
-// takes no `AssetRegistry` -- it resolves entirely World-side. Keeping `pick` a
-// free function (rather than a `World` method) preserves the layering: `World`
-// (engine-ecs) stays asset-free; the picking glue lives in the runtime package
-// alongside the renderer.
+// The World binds runtime asset identities; the asset owner supplies current
+// local bounds for this actual query. Asset edits do not rewrite entity bindings.
 //
 // Error channel split (charter P3): the single unrecoverable precondition —
 // `cameraEntity` carries no `Camera` — throws a structured `PickError`
@@ -31,15 +30,6 @@
 //
 // Related: requirements in-scope #5/#6/#7 + AC-05..AC-11; plan-strategy D-3 / D-6 / 5.3;
 //          research Finding 4 (local->world AABB) + Finding 5 (entity-id via query rows).
-
-import { resolveAssetHandle } from '@forgeax/engine-assets-runtime';
-import type { EntityHandle, World } from '@forgeax/engine-ecs';
-import { box3, ray, type Vec3Like, vec3 } from '@forgeax/engine-math';
-import { MeshFilter, MeshRenderer } from '@forgeax/engine-render';
-import { GlobalTransform, Transform } from '@forgeax/engine-scene';
-import type { MeshAsset } from '@forgeax/engine-types';
-import { toShared } from '@forgeax/engine-types';
-import { computeScreenRay, readWorldMatrix, type ScreenRay } from './pick-core';
 
 /**
  * Result of a successful screen-to-entity pick.
@@ -62,8 +52,8 @@ export interface PickHit {
  * Raycast from a viewport-relative screen coordinate into the world and return the
  * nearest pickable mesh entity whose world-space AABB the ray enters.
  *
- * @param world The ECS world holding the camera + candidate mesh entities (and the
- *   per-World SharedRefStore that owns each `MeshAsset` and its local-space `aabb`).
+ * @param world The ECS world holding the camera and candidate mesh entities;
+ *   its asset owner provides each current Mesh and local-space bounds.
  * @param cameraEntity The entity carrying the `Camera` component (and a Transform).
  * @param screenX Horizontal pixel coordinate relative to the viewport top-left (y-down).
  * @param screenY Vertical pixel coordinate.
@@ -99,31 +89,24 @@ export function pick(
 export function pickWithScreenRay(world: World, screenRay: ScreenRay): PickHit | undefined {
   const r = screenRay.ray;
 
-  const query = world
-    .query({ read: [Transform, GlobalTransform, MeshFilter, MeshRenderer] })
-    .unwrap();
-
   const worldAabb = box3.create();
   let bestDistance = Number.POSITIVE_INFINITY;
   let bestEntity: EntityHandle | undefined;
 
-  for (const row of query) {
-    const assetHandleRaw = Math.round(row.get(MeshFilter).assetHandle as number);
-    if (assetHandleRaw === 0) continue;
-    const meshRes = resolveAssetHandle<MeshAsset>(world, toShared<'MeshAsset'>(assetHandleRaw));
-    if (!meshRes.ok) continue;
-    const localAabb = meshRes.value.aabb;
+  for (const entity of meshQueryEntities(world)) {
+    const value = queryMesh(world, entity);
+    if (value === undefined) continue;
+    const localAabb = value.mesh.aabb;
     if (localAabb === undefined) continue;
     // Inverted-infinity empty box (mesh without positions): not pickable.
     if ((localAabb[0] as number) > (localAabb[3] as number)) continue;
 
     // read the packed Entity for this row from the essential id=0 Entity
     // column (`self` field); the column exists on every archetype.
-    const entity = row.entity;
 
     // local AABB -> world AABB using the resolved GlobalTransform.world mat4
     // directly (feat-20260601 D-3: no compose from decomposed TRS).
-    const entityWorld = readWorldMatrix(world, entity);
+    const entityWorld = queryMeshMatrix(world, entity, screenRay);
     if (entityWorld === undefined) continue;
     box3.transformBox3(
       worldAabb,

@@ -1,5 +1,6 @@
+import { AssetRegistry } from '@forgeax/engine-assets-runtime';
 /// <reference types="@webgpu/types" />
-import { resolveAssetHandle } from '@forgeax/engine-assets-runtime';
+import { type AssetVersion, runtimeAssets } from '@forgeax/engine-assets-runtime/internal';
 import { createWorldContext, World } from '@forgeax/engine-ecs';
 import { RenderGraphBuilder } from '@forgeax/engine-render-graph';
 import type { RhiComputePassEncoder } from '@forgeax/engine-rhi';
@@ -26,6 +27,7 @@ import {
   type RenderFeatureGpuProgramRef,
 } from '../../../render/src/features/prepared-gpu-work';
 import { projectRenderFeaturePlans } from '../../../render/src/features/render-graph-contribution';
+import { runtimeEffectFixture } from '../../../vfx/src/__tests__/runtime-effect-fixture';
 import { gpuParticleRenderFeature } from '../feature/gpu-particle-feature';
 import { singleViewContext } from './vfx-frame-fixture';
 
@@ -80,19 +82,32 @@ fn vfx_update(ctx: VfxUpdateContext, p: ptr<function,VfxParticle>, c: ptr<functi
   const errors: string[] = [];
   native.addEventListener('uncapturederror', (event) => errors.push(event.error.message));
   native.pushErrorScope('validation');
-  const world = new World();
+  const assets = new AssetRegistry();
+  const world = new World({ assets });
   const player = world.spawn().unwrap();
-  const reference = (program: typeof cooked) => ({
-    id: required(program.program.emitters[0]).id,
-    effect: world.internSharedRef('ParticleEffectAsset', {
-      kind: 'particle-effect',
-      schemaVersion: 3,
-      guid: `restart-${program.fingerprint}`,
-      programFingerprint: program.fingerprint,
-      emitters: program.program.emitters.map(({ id, capacity }) => ({ id, capacity })),
-      program: { ...program.program, fingerprint: program.fingerprint },
-    } satisfies VfxGpuEffectAssetAny),
-  });
+  const fixedVersions: AssetVersion<unknown>[] = [];
+  const reference = (program: typeof cooked) => {
+    const effect = assets
+      .create(
+        runtimeEffectFixture(world, {
+          kind: 'particle-effect',
+          schemaVersion: 3,
+          guid: `restart-${program.fingerprint}`,
+          programFingerprint: program.fingerprint,
+          emitters: program.program.emitters.map(({ id, capacity }) => ({ id, capacity })),
+          program: { ...program.program, fingerprint: program.fingerprint },
+        } satisfies VfxGpuEffectAssetAny),
+      )
+      .unwrap();
+    const version = runtimeAssets(assets).pin(effect).unwrap();
+    fixedVersions.push(version);
+    return {
+      id: required(program.program.emitters[0]).id,
+      effect,
+      revision: version.revision,
+      fingerprint: (version.value as VfxGpuEffectAssetAny).program.fingerprint,
+    };
+  };
   const references = new Map([
     [cooked, reference(cooked)],
     [incompatible, reference(incompatible)],
@@ -115,7 +130,7 @@ fn vfx_update(ctx: VfxUpdateContext, p: ptr<function,VfxParticle>, c: ptr<functi
     sequence: ++sequence,
     player,
     emitter: required(references.get(program)),
-    programFingerprint: program.fingerprint,
+    programFingerprint: required(references.get(program)).fingerprint,
     reset: phaseTick === 0,
     fixedDelta: 1 / 60,
     initialFixedDelta: 1 / 60,
@@ -176,8 +191,6 @@ fn vfx_update(ctx: VfxUpdateContext, p: ptr<function,VfxParticle>, c: ptr<functi
         ]),
         materials: new Map(),
         meshes: new Map(),
-        forceFields: new Map(),
-        textureGuids: [],
         intents,
         retained: retained.map((intent) => ({
           player,
@@ -206,7 +219,8 @@ fn vfx_update(ctx: VfxUpdateContext, p: ptr<function,VfxParticle>, c: ptr<functi
       .plan(
         input,
         singleViewContext({
-          resolveAsset: (_index, handle) => resolveAssetHandle(world, handle),
+          resolveAsset: (_index, handle, revision) =>
+            runtimeAssets(world.assets).resolveAsset(handle, revision),
           targets: [],
           caps: device.caps,
           generation,
@@ -265,13 +279,15 @@ fn vfx_update(ctx: VfxUpdateContext, p: ptr<function,VfxParticle>, c: ptr<functi
       if (pass.kind === 'copy')
         return {
           ...common,
-          resolvedGpuCopies: pass.copies.map((copy) => ({
-            source: required(buffers.get(copy.source)),
-            destination: required(buffers.get(copy.destination)),
-            size: copy.size,
-            sourceOffset: copy.sourceOffset ?? 0,
-            destinationOffset: copy.destinationOffset ?? 0,
-          })),
+          resolvedGpuCopies: pass.copies
+            .filter((copy) => copy.enabled !== false)
+            .map((copy) => ({
+              source: required(buffers.get(copy.source)),
+              destination: required(buffers.get(copy.destination)),
+              size: copy.size,
+              sourceOffset: copy.sourceOffset ?? 0,
+              destinationOffset: copy.destinationOffset ?? 0,
+            })),
         };
       if (pass.kind !== 'compute') throw new Error(`Unexpected simulation pass ${pass.kind}`);
       const gpuCompute = {
@@ -279,7 +295,13 @@ fn vfx_update(ctx: VfxUpdateContext, p: ptr<function,VfxParticle>, c: ptr<functi
         bindings: required(bindings.get(pass.bindings)),
         dispatches: pass.dispatches.map((dispatch) => {
           if (dispatch.kind !== 'direct') throw new Error('Unexpected indirect simulation');
-          return { entryPoint: dispatch.entryPoint, workgroups: dispatch.workgroups };
+          return {
+            entryPoint: dispatch.entryPoint,
+            workgroups: dispatch.workgroups,
+            ...(dispatch.bindings === undefined
+              ? {}
+              : { bindings: required(bindings.get(dispatch.bindings)) }),
+          };
         }),
       };
       return {
@@ -291,6 +313,31 @@ fn vfx_update(ctx: VfxUpdateContext, p: ptr<function,VfxParticle>, c: ptr<functi
     return { input, current, session, plan, work, buffers, programs, bindings, passes };
   };
   type Prepared = ReturnType<typeof prepare>;
+  const simulations = (prepared: Prepared) =>
+    prepared.work.passes.flatMap((pass) =>
+      pass.kind === 'compute' && pass.enabled !== false
+        ? pass.dispatches
+            .filter(
+              (dispatch) =>
+                /^forgeax_vfx_update(?:_compact)?_main$/.test(dispatch.entryPoint) &&
+                dispatch.kind === 'direct' &&
+                dispatch.workgroups[0] > 0,
+            )
+            .map((dispatch) => ({
+              program: pass.program,
+              bindings: dispatch.bindings ?? pass.bindings,
+            }))
+        : [],
+    );
+  const finalStoragePrefix = (prepared: Prepared) => {
+    const binding = required(simulations(prepared).at(-1)).bindings;
+    const resource = prepared.work.resources.find((resource) => resource.name === binding);
+    if (resource?.kind !== 'compute-bindings') throw new Error('Missing final simulation bindings');
+    return required(resource.entries.find((entry) => entry.binding === 0)).resource.replace(
+      /particles$/,
+      '',
+    );
+  };
   const stateName = /\.(particles|custom|alive-indices|counters|scratch|indirect|history)$/;
   const read = async (prepared: Prepared) => {
     const buffers = [...prepared.buffers].filter(([name]) => stateName.test(name));
@@ -488,9 +535,9 @@ fn vfx_update(ctx: VfxUpdateContext, p: ptr<function,VfxParticle>, c: ptr<functi
       world.update(1 / 60).unwrap();
       const runtime = world.getResource<VfxGpuRuntime>(VFX_GPU_RUNTIME_RESOURCE_KEY);
       expect(runtime.snapshot().map((intent) => intent.programFingerprint)).toEqual([
-        cooked.fingerprint,
-        incompatible.fingerprint,
-        cooked.fingerprint,
+        required(references.get(cooked)).fingerprint,
+        required(references.get(incompatible)).fingerprint,
+        required(references.get(cooked)).fingerprint,
       ]);
       const source = gpuParticleRenderFeature({ camera: { read: () => camera } });
       const published = source
@@ -502,11 +549,7 @@ fn vfx_update(ctx: VfxUpdateContext, p: ptr<function,VfxParticle>, c: ptr<functi
         })
         .unwrap();
       const interleaved = prepare(published);
-      const simulations = interleaved.work.passes.filter(
-        (pass) =>
-          pass.kind === 'compute' && pass.name.endsWith('.simulate') && pass.enabled !== false,
-      );
-      const programs = simulations.map((pass) => (pass.kind === 'compute' ? pass.program : ''));
+      const programs = simulations(interleaved).map((dispatch) => dispatch.program);
       expect(programs).toHaveLength(3);
       expect(programs[0]).toBe(programs[2]);
       expect(programs[0]).not.toBe(programs[1]);
@@ -548,12 +591,7 @@ fn vfx_update(ctx: VfxUpdateContext, p: ptr<function,VfxParticle>, c: ptr<functi
       expect(runtime.snapshot().map((intent) => intent.reset)).toEqual([false, true, true]);
       let replayed = prepare(recovery, feature, recoveredOwner, 2);
       const submittedPrograms = (prepared: Prepared) =>
-        prepared.work.passes
-          .filter(
-            (pass) =>
-              pass.kind === 'compute' && pass.name.endsWith('.simulate') && pass.enabled !== false,
-          )
-          .map((pass) => (pass.kind === 'compute' ? pass.program : ''));
+        simulations(prepared).map((dispatch) => dispatch.program);
       const expected = [programs[0], programs[0], programs[1], programs[0]];
       expect(submittedPrograms(replayed)).toEqual(expected);
       const previous = await read(replayed);
@@ -566,7 +604,7 @@ fn vfx_update(ctx: VfxUpdateContext, p: ptr<function,VfxParticle>, c: ptr<functi
       const finalIntent = required(required(recovery.worlds[0]).intents.at(-1));
       const standalone = prepare(frame([finalIntent]), freshFeature, freshOwner);
       await execute(standalone);
-      const finalPrefix = required(programs[0]).replace(/\.compute-program$/, '.');
+      const finalPrefix = finalStoragePrefix(replayed);
       expect(
         await read({
           ...replayed,
@@ -576,6 +614,50 @@ fn vfx_update(ctx: VfxUpdateContext, p: ptr<function,VfxParticle>, c: ptr<functi
       source.onSourceFrameSubmitted?.(recovery, structuredClone(replayed.plan.sourceFeedback));
       expect(runtime.snapshot()).toHaveLength(0);
       expect(runtime.lastCommittedEmitter(player, 'restart')?.seed).toBe(25);
+
+      const editedHandle = required(references.get(cooked)).effect;
+      const originalDefinition = assets.read(editedHandle).unwrap();
+      const replacementDefinition = assets
+        .read(required(references.get(incompatible)).effect)
+        .unwrap();
+      assets.replace(editedHandle, replacementDefinition).unwrap();
+      world.update(1 / 60).unwrap();
+      assets.replace(editedHandle, originalDefinition).unwrap();
+      world.update(1 / 60).unwrap();
+      expect(world.get(player, ParticleEffectPlayer).unwrap().effect).toBe(editedHandle);
+      expect(runtime.snapshot().map((intent) => intent.emitter.capacity)).toEqual([16, 8]);
+      expect(runtime.snapshot().map((intent) => intent.reset)).toEqual([true, true]);
+      const editedFrame = source
+        .extract({
+          worlds: [world],
+          owner: 0,
+          frameNumber: ++frameNumber,
+          views: [{ identity: 'main', render: true }],
+        })
+        .unwrap();
+      const editedIntents = required(editedFrame.worlds[0]).intents;
+      expect(editedIntents.map((intent) => intent.emitter.effect)).toEqual([
+        editedHandle,
+        editedHandle,
+      ]);
+      expect(new Set(editedIntents.map((intent) => intent.emitter.revision)).size).toBe(2);
+      const editedWork = prepare(editedFrame, feature, recoveredOwner, 2);
+      expect(simulations(editedWork)).toHaveLength(2);
+      await execute(editedWork);
+      const editedFinal = required(editedIntents.at(-1));
+      const editedControl = prepare(frame([editedFinal]), freshFeature, freshOwner);
+      await execute(editedControl);
+      const editedPrefix = finalStoragePrefix(editedWork);
+      expect(
+        await read({
+          ...editedWork,
+          buffers: new Map(
+            [...editedWork.buffers].filter(([name]) => name.startsWith(editedPrefix)),
+          ),
+        }),
+      ).toEqual(await read(editedControl));
+      source.onSourceFrameSubmitted?.(editedFrame, structuredClone(editedWork.plan.sourceFeedback));
+      expect(runtime.snapshot()).toHaveLength(0);
     } finally {
       await context.fiber.dispose();
     }
@@ -592,5 +674,9 @@ fn vfx_update(ctx: VfxUpdateContext, p: ptr<function,VfxParticle>, c: ptr<functi
     owner.dispose().unwrap();
     freshOwner.dispose().unwrap();
     recoveredOwner.dispose().unwrap();
+    for (const version of fixedVersions) {
+      version.dispose();
+      assets.release(version.handle).unwrap();
+    }
   }
 });

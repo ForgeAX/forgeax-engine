@@ -1,5 +1,5 @@
 import { createCatalogSource } from '@forgeax/engine-assets-runtime';
-import { type AudioIntent, createAudioIntentBackend } from '@forgeax/engine-audio';
+import { createAudioIntentBackend } from '@forgeax/engine-audio';
 import { createWorldContext, World } from '@forgeax/engine-ecs';
 import type { SharedKernelExecutor } from '@forgeax/engine-ecs/shared';
 import {
@@ -29,7 +29,6 @@ import {
   createPublicationAssets,
 } from '@forgeax/engine-runtime/internal/renderer-host';
 import { err } from '@forgeax/engine-types';
-import { createAnimationPayloadLookup } from '../animation-asset-lookup';
 import { type AssetRuntimeAssembly, createAssetRuntimeAssembly } from '../assets-runtime-assembly';
 import { syncCameraAspect } from '../canvas-policy';
 import { APP_ERROR_HINTS, APP_EXPECTED, AppError } from '../errors';
@@ -45,6 +44,7 @@ import { type AppObservation, createAppObservation } from '../observation';
 import { createRenderFeatureHost } from '../renderer-plugin';
 import { APP_PHASE_CATALOG, type CanvasDrawingBufferSize } from '../types';
 import { commitAttachedWorld, SerializedRebuildQueue } from './attached-world-swap';
+import { AudioIntentQueue } from './audio-intent-queue';
 import {
   activateExecutionRoot,
   executionBootstrapHostPlugin,
@@ -77,7 +77,6 @@ const scope = globalThis as unknown as {
 };
 
 let renderer: Renderer | undefined;
-let assets: import('@forgeax/engine-assets-runtime').AssetRegistry | undefined;
 let currentSample: InputBackendSample = {
   downKeys: new Set(),
   upKeys: new Set(),
@@ -105,7 +104,8 @@ interface WorkerRealm {
   publicationTargets?: RenderPublicationTargetOwner;
   readonly init: ExecutionInitMessage;
   assetAssembly: AssetRuntimeAssembly | undefined;
-  pendingAudioIntents: AudioIntent[];
+  readonly pendingAudioIntents: AudioIntentQueue;
+  audioBackend: ReturnType<typeof createAudioIntentBackend> | undefined;
   musicState?: import('@forgeax/engine-audio').MusicState;
   audioPreparation?: import('@forgeax/engine-audio').AudioPreparationReceipt;
   feedback: ReturnType<typeof createGamepadFeedback>;
@@ -227,7 +227,7 @@ async function executeInspection(job: ExecutionInspectMessage, target: WorkerRea
       pluginContext: target.pluginContext,
       world: target.world,
       renderer,
-      assets,
+      assets: target.assetAssembly?.registry,
       input: inputLease,
       rhiCapture: target.rhiCapture,
       profiler: target.profiler,
@@ -295,7 +295,7 @@ async function executeInspection(job: ExecutionInspectMessage, target: WorkerRea
     const result = await module.executeScript(job.code, {
       world: target.world,
       renderer,
-      assets,
+      assets: target.assetAssembly?.registry,
       simulation: { ...simulation, observation },
       rhiCapture: target.rhiCapture,
       profiler: target.profiler,
@@ -485,11 +485,13 @@ async function disposeRealm(target: WorkerRealm): Promise<void> {
     target.pluginContext = undefined;
     target.publicationTargets?.dispose();
     target.assetAssembly?.dispose();
+    // A split source realm creates its CPU Registry without a Renderer host.
+    if (target.init.workers.render.enabled) target.assetAssembly?.registry.dispose();
     target.assetAssembly = undefined;
     await target.rhiAttachment?.dispose();
     target.rhiAttachment = undefined;
     target.rhiCapture = undefined;
-    target.pendingAudioIntents = [];
+    target.pendingAudioIntents.clear();
     target.feedback.dispose();
   }
   if (renderFailure !== undefined) throw renderFailure;
@@ -524,7 +526,8 @@ async function createRealm(init: ExecutionInitMessage): Promise<boolean> {
     drawingBufferSize: { width: init.canvas.width, height: init.canvas.height },
     init,
     assetAssembly: undefined,
-    pendingAudioIntents: [],
+    pendingAudioIntents: new AudioIntentQueue(),
+    audioBackend: undefined,
     feedback: createGamepadFeedback(),
     kernelPool: undefined,
     pluginContext: undefined,
@@ -539,7 +542,9 @@ async function createRealm(init: ExecutionInitMessage): Promise<boolean> {
   const feedback = candidate.feedback;
   const realmInput = { ...inputBackend, feedback };
   const audioBackend = createAudioIntentBackend({
-    emit: (intent) => candidate.pendingAudioIntents.push(intent),
+    emit: (intent) => {
+      candidate.pendingAudioIntents.push(intent);
+    },
     state: () => ({
       contextState: 'suspended',
       activeSourceCount: 0,
@@ -548,6 +553,7 @@ async function createRealm(init: ExecutionInitMessage): Promise<boolean> {
       ...(candidate.audioPreparation ? { preparation: candidate.audioPreparation } : {}),
     }),
   });
+  candidate.audioBackend = audioBackend;
   let candidateRenderer: Renderer | undefined;
   let rendererLifecycleTransferred = false;
   let rhiLifecycleTransferred = false;
@@ -586,6 +592,7 @@ async function createRealm(init: ExecutionInitMessage): Promise<boolean> {
       ...(prepared.features === undefined ? {} : { features: prepared.features }),
       ...(prepared.ssrIdentity === undefined ? {} : { ssrIdentity: prepared.ssrIdentity }),
       ...(profiler === undefined ? {} : { profiler }),
+      ...(init.diagnostics?.shadowWorkload === true ? { shadowWorkload: true } : {}),
       ...(init.diagnostics?.gpuPassTiming === undefined
         ? {}
         : { gpuPassTiming: init.diagnostics.gpuPassTiming }),
@@ -622,7 +629,6 @@ async function createRealm(init: ExecutionInitMessage): Promise<boolean> {
     const host = constructed?.ok === true ? constructed.value : undefined;
     candidateRenderer = host?.renderer;
     if (candidateRenderer !== undefined) await prepared.configureRenderer?.(candidateRenderer);
-    assets = host?.assets ?? (await createPublicationAssets(bundler));
     const catalogSource =
       init.assetCatalog === undefined
         ? undefined
@@ -632,13 +638,19 @@ async function createRealm(init: ExecutionInitMessage): Promise<boolean> {
               ? {}
               : { expectedScope: init.assetCatalog.expectedScope }),
           });
-    const assetAssemblyResult = createAssetRuntimeAssembly(assets, {
-      ...(catalogSource === undefined ? {} : { catalogSource }),
-      ...(runtimeBinding === undefined ? {} : { runtimeBinding }),
-    });
-    if (!assetAssemblyResult.ok) throw assetAssemblyResult.error;
-    candidate.assetAssembly = assetAssemblyResult.value;
-    rendererLifecycleTransferred = true;
+    const assets = host?.assets ?? (await createPublicationAssets(bundler));
+    try {
+      const assembly = createAssetRuntimeAssembly(assets, {
+        ...(catalogSource === undefined ? {} : { catalogSource }),
+        ...(runtimeBinding === undefined ? {} : { runtimeBinding }),
+      });
+      if (!assembly.ok) throw assembly.error;
+      candidate.assetAssembly = assembly.value;
+    } catch (cause) {
+      // Before assembly admission, the split source has no other lifecycle owner.
+      if (split) assets.dispose();
+      throw cause;
+    }
     const renderTargets = candidate.publicationTargets?.authoring ?? candidateRenderer;
     if (split) {
       // Construct the source service before plugin apply; physical initialization
@@ -693,12 +705,11 @@ async function createRealm(init: ExecutionInitMessage): Promise<boolean> {
         assets,
         input: realmInput,
         audio: audioBackend,
-        assetAssembly: assetAssemblyResult.value,
+        assetAssembly: candidate.assetAssembly,
         ...(prepared.pluginPrograms === undefined
           ? {}
           : { pluginPrograms: prepared.pluginPrograms }),
         ...(prepared.runtimePacks === undefined ? {} : { runtimePacks: prepared.runtimePacks }),
-        animationPayloads: createAnimationPayloadLookup(assetAssemblyResult.value.registry),
         ...(init.animation === undefined ? {} : { animation: init.animation }),
         extensions: [
           ...(init.workers.kernels.enabled ? [sharedKernelPlugin(candidate)] : []),
@@ -740,6 +751,7 @@ async function createRealm(init: ExecutionInitMessage): Promise<boolean> {
       }),
     );
     candidate.pluginContext = pluginContext;
+    rendererLifecycleTransferred = true;
     if (split) {
       try {
         stagedRenderWorker?.preloadModule();
@@ -877,6 +889,8 @@ async function runFrame(message: ExecutionFrameMessage): Promise<void> {
   else delete activeRealm.musicState;
   if (message.audioPreparation) activeRealm.audioPreparation = message.audioPreparation;
   else delete activeRealm.audioPreparation;
+  for (const asset of message.rejectedAudioPublications ?? [])
+    activeRealm.audioBackend?.rejectPublication(asset);
   currentSample = message.inputSample;
   const sampleTimeSeconds =
     message.sampleTimeSeconds === undefined
@@ -952,8 +966,7 @@ async function runFrame(message: ExecutionFrameMessage): Promise<void> {
       activeRealm.renderWorker.publish(message, sampleTimeSeconds);
       renderSampleTimeSeconds = sampleTimeSeconds;
       lastFrameId = message.frameId;
-      const audioIntents = activeRealm.pendingAudioIntents;
-      activeRealm.pendingAudioIntents = [];
+      const audioIntents = activeRealm.pendingAudioIntents.drain();
       scope.postMessage({
         kind: 'simulation-complete',
         worldIdentity: world.identity,
@@ -991,8 +1004,7 @@ async function runFrame(message: ExecutionFrameMessage): Promise<void> {
           ++submitRejectionsWithoutFrame === 1
         ) {
           lastFrameId = message.frameId;
-          const audioIntents = activeRealm.pendingAudioIntents;
-          activeRealm.pendingAudioIntents = [];
+          const audioIntents = activeRealm.pendingAudioIntents.drain();
           scope.postMessage({
             kind: 'simulation-complete',
             worldIdentity: world.identity,
@@ -1023,6 +1035,9 @@ async function runFrame(message: ExecutionFrameMessage): Promise<void> {
         worldIdentity: world.identity,
         frameId: message.frameId,
         deviceGeneration: draw.value.deviceGeneration,
+        ...(draw.value.shadowWorkload === undefined
+          ? {}
+          : { shadowWorkload: draw.value.shadowWorkload }),
         ...(draw.value.graphGeneration === undefined
           ? {}
           : { graphGeneration: draw.value.graphGeneration }),
@@ -1047,13 +1062,15 @@ async function runFrame(message: ExecutionFrameMessage): Promise<void> {
         continue;
       }
       lastFrameId = message.frameId;
-      const audioIntents = activeRealm.pendingAudioIntents;
-      activeRealm.pendingAudioIntents = [];
+      const audioIntents = activeRealm.pendingAudioIntents.drain();
       scope.postMessage({
         kind: 'frame-complete',
         worldIdentity: world.identity,
         frameId: message.frameId,
         deviceGeneration: draw.value.deviceGeneration,
+        ...(draw.value.shadowWorkload === undefined
+          ? {}
+          : { shadowWorkload: draw.value.shadowWorkload }),
         ...(draw.value.graphGeneration === undefined
           ? {}
           : { graphGeneration: draw.value.graphGeneration }),

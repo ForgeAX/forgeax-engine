@@ -40,7 +40,7 @@ export async function parseObjPackage(
 ): Promise<Result<MeshSourcePackage, AssetError>> {
   const meshes = parseObj(text);
   if (!meshes.ok) return meshes;
-  const materials: ObjMaterialSource[] = [],
+  const materials = new Map<string, ObjMaterialSource>(),
     textures = new Map<string, ObjTextureSource>(),
     dependencies = new Set<string>();
   const libraries = [...text.matchAll(/^\s*mtllib\s+(.+?)\s*$/gm)].map((match) =>
@@ -50,22 +50,24 @@ export async function parseObjPackage(
     meshes.value.flatMap((mesh) => mesh.mesh.materialSlots.map((slot) => slot.slotName)),
   );
   const missingUvs = new Set<string>();
+  const declaredNames = new Set<string>();
   let activeMaterial = '';
   for (const line of text.split(/\r?\n/)) {
     const fields = line.trim().split(/\s+/);
-    if (fields[0] === 'usemtl') activeMaterial = fields.slice(1).join(' ');
+    if (fields[0] === 'usemtl') {
+      activeMaterial = line.trim().slice('usemtl'.length).trim();
+      declaredNames.add(activeMaterial);
+    }
     if (fields[0] === 'f' && fields.slice(1).some((vertex) => !vertex.split('/')[1]))
       missingUvs.add(activeMaterial);
   }
-  const seen = new Set<string>();
   try {
     for (const path of new Set(libraries)) {
       dependencies.add(path);
       const creator = new MTLLoader().parse(new TextDecoder().decode(await read(path)), '');
       for (const [name, info] of Object.entries(creator.materialsInfo)) {
         if (!used.has(name)) continue;
-        if (seen.has(name)) return formatFailure('MTL', `ambiguous material ${name}`);
-        seen.add(name);
+        if (materials.has(name)) return formatFailure('MTL', `ambiguous material ${name}`);
         const raw = info as Record<string, unknown>;
         for (const key of Object.keys(raw))
           if (
@@ -167,18 +169,20 @@ export async function parseObjPackage(
           ...(opacity < 1 ? { alphaMode: 'BLEND' as const } : {}),
           ...slots,
         });
-        materials.push({ sourceKey: materialSourceKey(name), name, material, textures: bindings });
+        materials.set(name, {
+          sourceKey: materialSourceKey(name),
+          name,
+          material,
+          textures: bindings,
+        });
       }
     }
-    const declaredNames = new Set(
-      [...text.matchAll(/^\s*usemtl\s+(.+?)\s*$/gm)].map((match) => (match[1] ?? '').trim()),
-    );
     for (const name of declaredNames)
-      if (used.has(name) && !seen.has(name))
+      if (used.has(name) && !materials.has(name))
         return formatFailure('MTL', `unresolved usemtl ${name}`);
     return ok({
       meshes: meshes.value,
-      materials,
+      materials: [...materials.values()],
       textures: [...textures.values()],
       dependencies: [...dependencies],
     });

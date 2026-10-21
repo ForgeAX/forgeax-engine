@@ -12,7 +12,7 @@ import {
 } from 'node:fs';
 import { dirname, isAbsolute, join, relative, resolve } from 'node:path';
 import { decodeCatalogWire } from '@forgeax/engine-pack';
-import { BUILTIN_MESH_ASSETS } from '@forgeax/engine-pack/builtin';
+import { decodeMaterialProgramWire } from '@forgeax/engine-pack/runtime';
 import { appShardRoster } from './app-build-roster.mjs';
 import { projectAppShaderManifest, readSharedShaderManifest } from './app-shader-manifest.mjs';
 import { readRoster, resolveRunnableEntries } from './run-dawn-smoke-roster.mjs';
@@ -113,14 +113,6 @@ function packClosureInventory(root, app, packGuids) {
   for (let index = 0; index < pending.length; index += 1) {
     const guid = pending[index];
     const matches = packIndex.filter((entry) => entry?.guid === guid);
-    // Runtime-owned builtin meshes need no Pack file. Authored overrides still
-    // resolve through the catalog, and every other missing reference is fatal.
-    if (
-      matches.length === 0 &&
-      !packGuids.includes(guid) &&
-      BUILTIN_MESH_ASSETS.some((asset) => asset.guid === guid)
-    )
-      continue;
     if (matches.length !== 1)
       failArtifact('ci-app-shard-pack-guid-missing', { app, guid, matchCount: matches.length });
     const packageUrl = matches[0].packageUrl;
@@ -134,7 +126,9 @@ function packClosureInventory(root, app, packGuids) {
     let packFile = packageRecords.get(packagePath);
     if (packFile === undefined) {
       try {
-        packFile = JSON.parse(readFileSync(packagePath, 'utf8'));
+        packFile = decodeMaterialProgramWire(
+          JSON.parse(readFileSync(packagePath, 'utf8')),
+        ).unwrap();
       } catch {
         failArtifact('ci-app-shard-pack-package-invalid', { app, guid, path: packagePath });
       }

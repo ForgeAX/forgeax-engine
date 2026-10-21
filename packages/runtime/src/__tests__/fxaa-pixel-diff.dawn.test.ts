@@ -1,3 +1,5 @@
+import { createPrimitiveMesh } from '@forgeax/engine-geometry';
+import { testAssets } from './helpers/runtime-assets';
 import { shaderManifestUrl } from './shader-manifest-url.fixture';
 // fxaa-pixel-diff.dawn.test.ts - feat-20260528-fxaa-post-processing / M3 / w16.
 // Dawn integration tests: (a) AC-03 — render with antialias='fxaa' produces
@@ -7,7 +9,6 @@ import { shaderManifestUrl } from './shader-manifest-url.fixture';
 // Follows the user-handle-mesh-render.dawn.test.ts pattern for canvas mock,
 // device capture, and pixel readback.
 
-import { HANDLE_CUBE } from '@forgeax/engine-assets-runtime';
 import { World } from '@forgeax/engine-ecs';
 import {
   ANTIALIAS_FXAA,
@@ -71,7 +72,12 @@ function spawnCubeScene(world: World, antialias: number, tonemap?: number): void
         scale: [1, 1, 1],
       },
     },
-    { component: MeshFilter, data: { assetHandle: HANDLE_CUBE } },
+    {
+      component: MeshFilter,
+      data: {
+        assetHandle: testAssets(world).create(createPrimitiveMesh('cube').unwrap()).unwrap(),
+      },
+    },
     { component: MeshRenderer, data: {} },
   );
   const cameraData: Record<string, number> = {

@@ -21,8 +21,10 @@ import * as webgpu from '@forgeax/engine-rhi-webgpu';
 import { propagateTransforms, Transform } from '@forgeax/engine-scene';
 import { ok } from '@forgeax/engine-types';
 import { assert, expect } from 'vitest';
+import { loadMaterialFixture } from '../../../assets-runtime/src/__tests__/fixtures/runtime-material';
 import type { RayPublicationSet } from '../../../render/src/__tests__/raytracing/path-tracer.commands';
 import { constructRuntimeRendererHost } from '../renderer-host';
+import { testAssets } from './helpers/runtime-assets';
 import { renderValue } from './standard-gbuffer-replay.fixture';
 
 type Save = (name: string, bytes: Uint8Array) => void | Promise<void>;
@@ -115,9 +117,9 @@ export async function verifyRendererReflections(
   const unsubscribe = renderer.subscribe((event) => {
     if (event.kind === 'error') errors.push(event.error);
   });
-  const world = new World();
+  const world = new World({ assets });
   const allocMaterial = (asset: RayPublicationSet['materials'][number]['asset']) =>
-    world.allocSharedRef('MaterialAsset', asset);
+    testAssets(world).create(asset).unwrap();
   const materials = new Map<string, ReturnType<typeof allocMaterial>>();
   for (const material of fixture.materials) {
     if (!['mirror', 'glossy', 'metal', 'matte', 'emission'].includes(material.name)) continue;
@@ -126,7 +128,7 @@ export async function verifyRendererReflections(
     ).unwrap();
     const ready = await createMaterialLoader({
       loadPublication: async () => ({
-        guid: material.name,
+        guid: record.guid,
         record,
         artifacts: Object.fromEntries(
           Object.entries(material.cookedPublication.artifacts).map(([path, bytes]) => [
@@ -135,11 +137,9 @@ export async function verifyRendererReflections(
           ]),
         ),
       }),
-    }).load({ guid: material.name, specializationKey: record.specializationKey ?? '' });
+    }).load({ guid: record.guid, specializationKey: record.specializationKey ?? '' });
     assert(ready.status === 'Ready', JSON.stringify(ready));
-    assets.catalog(material.name, material.asset).unwrap();
-    assets.recordMaterialReadiness(material.name, ready);
-    materials.set(material.name, allocMaterial(material.asset));
+    materials.set(material.name, (await loadMaterialFixture(assets, ready.record)).unwrap().handle);
   }
   const use = (name: string) => {
     const handle = materials.get(name);
@@ -147,7 +147,9 @@ export async function verifyRendererReflections(
     return [handle];
   };
   const box = (x: number, y: number, z: number) =>
-    world.allocSharedRef('MeshAsset', createBoxGeometry(x, y, z).unwrap());
+    testAssets(world)
+      .create(createBoxGeometry(x, y, z).unwrap())
+      .unwrap();
   // A metallic wall fills the view; diffuse GI adds nothing to it, so every
   // HDR delta under reflections is specular indirect.
   const wall = world

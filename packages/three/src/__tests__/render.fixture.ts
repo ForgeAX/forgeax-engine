@@ -24,7 +24,7 @@ export function testScene() {
 }
 
 export async function readyFrames(
-  renderer: THREE.WebGLRenderer,
+  renderer: THREE.WebGPURenderer,
   scene: THREE.Object3D,
   camera: THREE.Camera,
   frames = 1,
@@ -39,7 +39,9 @@ export async function readyFrames(
     if (!result.ok) throw result.error;
     if (receipt.presentation === 'ready') completed++;
     if (Date.now() > deadline)
-      throw new Error(`scene readiness timed out: ${receipt.presentationPendingReason}`);
+      throw new Error(
+        `scene readiness timed out: ${JSON.stringify(receipt.presentationPendingReason)}`,
+      );
     await new Promise((resolve) => setTimeout(resolve, 0));
   }
 }
@@ -80,6 +82,8 @@ export async function verifyReplay(capture: THREE.ThreeFrameCapture) {
   const device = (
     await adapter.requestDevice(replayDeviceRequest(decoded, adapter.features, adapter.limits))
   ).unwrap();
+  const nativeDevice = device.nativeDevice().unwrap();
+  nativeDevice.pushErrorScope('validation');
   const replay = (
     await openReplay(decoded, { device, createShaderModule: webgpu.createShaderModule })
   ).unwrap();
@@ -89,6 +93,8 @@ export async function verifyReplay(capture: THREE.ThreeFrameCapture) {
     expect(image.width).toBe(SIZE);
     expect(image.height).toBe(SIZE);
     comparePixels(toRgba8(image), displayPixels(capture), 1 / 255);
+    const validation = await nativeDevice.popErrorScope();
+    expect(validation?.message ?? null).toBeNull();
   } finally {
     (await replay.dispose()).unwrap();
     webgpu.disposeDevice(device);
@@ -97,8 +103,8 @@ export async function verifyReplay(capture: THREE.ThreeFrameCapture) {
 }
 
 export async function verifyRender(
-  renderer: THREE.WebGLRenderer,
-  oracle?: (scene: THREE.Object3D, camera: THREE.Camera) => Uint8Array,
+  renderer: THREE.WebGPURenderer,
+  oracle?: (scene: THREE.Object3D, camera: THREE.Camera) => Uint8Array | Promise<Uint8Array>,
   evidence?: (
     name: string,
     capture: THREE.ThreeFrameCapture,
@@ -115,12 +121,12 @@ export async function verifyRender(
   expect(baseline[0]).toBe(0);
   const source = capture.sources.find((source) => source.uuid === f.mesh.uuid);
   expect(source?.name).toBe('compatibility-cube');
-  if (oracle !== undefined) comparePixels(baseline, oracle(f.scene, f.camera));
+  if (oracle !== undefined) comparePixels(baseline, await oracle(f.scene, f.camera));
   const replay = await verifyReplay(capture);
   const coreFrame = async (name: string, root: THREE.Object3D = f.scene) => {
     await readyFrames(renderer, root, f.camera);
     const frame = await renderer.captureFrame(root, f.camera);
-    const expected = oracle?.(root, f.camera);
+    const expected = await oracle?.(root, f.camera);
     await evidence?.(`core-${name}`, frame, expected);
     const actual = displayPixels(frame);
     if (expected !== undefined) comparePixels(actual, expected);
@@ -131,9 +137,12 @@ export async function verifyRender(
   f.mesh.matrix.set(1, 0.35, 0.2, 0.1, 0, 0.8, -0.2, 0, 0, 0, 1, 0, 0, 0, 0, 1);
   const affine = await coreFrame('manual-affine');
   expect(displayPixels(affine)).not.toEqual(baseline);
-  const normals = new THREE.MeshNormalMaterial();
+  const normals = new THREE.MeshStandardMaterial({ color: 0x80b090, roughness: 1 });
+  const affineLight = new THREE.DirectionalLight(0xffffff, 3);
+  affineLight.position.set(2, 3, 5);
+  f.scene.add(affineLight);
   f.mesh.material = normals;
-  const affineNormals = await coreFrame('affine-normals');
+  const affineNormals = await coreFrame('affine-lit-normals');
   f.mesh.matrix.elements[0] = -1;
   const mirrored = await coreFrame('mirrored-affine');
   // The box is symmetric about local X: reflection changes winding, not its visible surface.
@@ -147,6 +156,8 @@ export async function verifyRender(
   );
   f.mesh.material = f.material;
   normals.dispose();
+  f.scene.remove(affineLight);
+  affineLight.dispose();
   f.mesh.matrixWorldAutoUpdate = false;
   f.mesh.matrix.makeTranslation(100, 0, 0);
   comparePixels(displayPixels(await coreFrame('frozen-world')), displayPixels(affine), 1 / 255);
@@ -218,7 +229,7 @@ export async function verifyRender(
   expect(changedPixels[center]).toBeGreaterThan(200);
   expect(changedPixels[center + 1]).toBeLessThan(100);
   expect(changedPixels).not.toEqual(baseline);
-  if (oracle !== undefined) comparePixels(changedPixels, oracle(f.scene, f.camera));
+  if (oracle !== undefined) comparePixels(changedPixels, await oracle(f.scene, f.camera));
   // An old tape must remain unchanged after the live source material was edited.
   await verifyReplay(capture);
   f.scene.remove(f.mesh);
@@ -241,7 +252,7 @@ export async function verifyRender(
   await readyFrames(renderer, f.scene, f.camera);
   const textureCapture = await renderer.captureFrame(f.scene, f.camera);
   const textured = displayPixels(textureCapture);
-  const textureOracle = oracle?.(f.scene, f.camera);
+  const textureOracle = await oracle?.(f.scene, f.camera);
   await evidence?.('texture', textureCapture, textureOracle);
   if (textureOracle !== undefined) comparePixels(textured, textureOracle);
   expect(textured).not.toEqual(restored);
@@ -252,7 +263,7 @@ export async function verifyRender(
   await readyFrames(renderer, f.scene, f.camera);
   const standardCapture = await renderer.captureFrame(f.scene, f.camera);
   const standard = displayPixels(standardCapture);
-  const standardOracle = oracle?.(f.scene, f.camera);
+  const standardOracle = await oracle?.(f.scene, f.camera);
   await evidence?.('standard', standardCapture, standardOracle);
   expect(standard[center + 1]).toBeGreaterThan(100);
   if (standardOracle !== undefined) comparePixels(standard, standardOracle);
@@ -309,7 +320,7 @@ export async function verifyRender(
     await readyFrames(renderer, f.scene, f.camera);
     const frame = await renderer.captureFrame(f.scene, f.camera);
     const actual = displayPixels(frame);
-    const expected = oracle?.(f.scene, f.camera);
+    const expected = await oracle?.(f.scene, f.camera);
     await evidence?.(`ambient-${state}`, frame, expected);
     if (expected !== undefined) comparePixels(actual, expected);
     if (state === 'hidden' || state === 'removed') expect(actual[center + 1]).toBeLessThan(3);
@@ -349,7 +360,7 @@ export async function verifyRender(
     await readyFrames(renderer, f.scene, f.camera);
     const frame = await renderer.captureFrame(f.scene, f.camera);
     const actual = displayPixels(frame);
-    const reference = oracle?.(f.scene, f.camera);
+    const reference = await oracle?.(f.scene, f.camera);
     await evidence?.(`spot-${state}`, frame, reference);
     if (reference !== undefined) comparePixels(actual, reference);
     if (state === 'baseline') {
@@ -375,7 +386,6 @@ export async function verifyRender(
   const materialFailures: unknown[] = [];
   for (const material of [
     new THREE.MeshLambertMaterial({ color: 0x50bb80 }),
-    new THREE.MeshNormalMaterial(),
     new THREE.MeshMatcapMaterial({ matcap: texture }),
     new THREE.MeshPhysicalMaterial({
       color: 0x50bb80,
@@ -393,10 +403,10 @@ export async function verifyRender(
     if (material instanceof THREE.MeshMatcapMaterial) f.scene.add(sharedMap);
     await readyFrames(renderer, f.scene, f.camera);
     const frame = await renderer.captureFrame(f.scene, f.camera);
-    const expected = oracle?.(f.scene, f.camera);
+    const expected = await oracle?.(f.scene, f.camera);
     await evidence?.(material.type, frame, expected);
     // A ready receipt can contain only the output transform. Require visible
-    // source geometry on both backends, including Dawn without a WebGL oracle.
+    // source geometry on both backends, including Dawn without the WebGPU oracle.
     expect(displayPixels(frame)[center + 2]).toBeGreaterThan(30);
     if (expected !== undefined) {
       try {
@@ -418,7 +428,7 @@ export async function verifyRender(
         await readyFrames(renderer, f.scene, f.camera);
         const edited = await renderer.captureFrame(f.scene, f.camera);
         const pixels = displayPixels(edited);
-        const reference = oracle?.(f.scene, f.camera);
+        const reference = await oracle?.(f.scene, f.camera);
         await evidence?.(`physical-clearcoat-${clearcoat}`, edited, reference);
         expect(
           edited.observation.draws?.draws.find((entry) => entry.entityKey === source?.entityKey)

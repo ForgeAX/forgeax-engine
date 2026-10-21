@@ -7,11 +7,12 @@ import { createWorkspaceObservation, createWorkspaceStateReader } from '@forgeax
 import { VIEW_WORKSPACE_TAB_ID, jsonUnchanged, type WorkspaceState } from '@forgeax/view-workspace-core/contract';
 import { useTranslation } from '../i18n/useTranslation';
 import { inspectorEntityFromInspection, inspectorWorkspaceTarget, type EntityInspection, type InspectorEntity } from '../inspection.ts';
+import { useInspectorAuthoring } from './InspectorAuthoring';
 import { EntityInspectorBody } from './EntityInspectorBody';
 
 type InspectionRecord = { key: string; source: InspectorEntity | null };
 
-export function InspectorPanel({ client, assetReferences, browseAsset }: { client?: ViewWorkspaceClient; assetReferences?: AssetReferenceService; browseAsset?: (guid: string) => Promise<boolean> }) {
+export function InspectorPanel({ client, assetReferences, browseAsset, addConversationReference }: { addConversationReference?: (reference: { title: string; text: string }) => Promise<void>; client?: ViewWorkspaceClient; assetReferences?: AssetReferenceService; browseAsset?: (guid: string) => Promise<boolean> }) {
   const visible = usePanelVisible();
   const { t } = useTranslation();
   const reader = useMemo(() => createWorkspaceStateReader(client), [client]);
@@ -81,6 +82,7 @@ export function InspectorPanel({ client, assetReferences, browseAsset }: { clien
     // A batched return to the same selection still needs a fresh observation.
   }, [client, connected, selectionKey, reader, workspace, t, visible, assetReferences, referenceState]);
   const source = connected && inspection?.key === selectionKey ? inspection.source : null;
+  const authoring = useInspectorAuthoring({ client, inspection: source?.raw, project: workspace?.project, target, projectId, sessionId: workspace?.projectTarget?.sessionId, targetId: target?.targetId, addConversationReference });
   const submit = (operation: string, args: Record<string, unknown>) => {
     if (!client || !connected || !target || !primary?.entityId) return;
     const observation = createWorkspaceObservation(reader, matches);
@@ -90,13 +92,14 @@ export function InspectorPanel({ client, assetReferences, browseAsset }: { clien
       .catch(error => { if (!observation.signal.aborted) setActionFailure(String(error)); })
       .finally(() => observation.dispose());
   };
-  return <div className="fx-inspector fx-ui" data-testid="panel-inspector" data-view-readonly="true" data-entity-id={primary?.entityId} data-inspector-loading={primary && !source && loading ? 'true' : undefined}>
+  return <div className="fx-inspector fx-ui" data-testid="panel-inspector" data-view-readonly={source?.raw.source ? undefined : "true"} data-entity-id={primary?.entityId} data-inspector-loading={primary && !source && loading ? 'true' : undefined}>
     {!primary || (!source && !loading) ? <EmptyState className="dp-empty" data-testid="insp-empty"
       title={primary ? t('inspector.inspectionUnavailable') : t('inspector.emptyTitle')}
       description={!connected ? t('inspector.connectionUnavailable') : failure ?? t('inspector.emptyDescription')} icon={<MousePointer2 />} />
       : !source ? <div className="fx-inspector__loading-pane" data-testid="insp-loading"><Spinner label={t('inspector.loading')} /></div>
         : <>
-          <EntityInspectorBody key={selectionKey} source={source} selectionCount={workspace?.sceneSelection?.entityIds?.length ?? 1}
+          {authoring.toolbar}
+          <EntityInspectorBody renderAuthorField={authoring.renderField} key={selectionKey} source={source} selectionCount={workspace?.sceneSelection?.entityIds?.length ?? 1}
             focus={() => submit('entity.focus', { entityId: primary.entityId })}
             openAsset={guid => {
               if (!matches(reader.getSnapshot())) return;

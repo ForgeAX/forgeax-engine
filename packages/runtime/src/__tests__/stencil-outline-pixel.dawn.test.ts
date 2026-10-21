@@ -1,3 +1,5 @@
+import { createPrimitiveMesh } from '@forgeax/engine-geometry';
+import { testAssets } from './helpers/runtime-assets';
 import { shaderManifestUrl } from './shader-manifest-url.fixture';
 // stencil-outline-pixel.dawn.test.ts -- bug-20260611-stencil-testing-outline-regression.
 //
@@ -32,7 +34,6 @@ import { shaderManifestUrl } from './shader-manifest-url.fixture';
 // without lighting, giving the LO 4.2 cyan-green tint regardless of
 // lighting setup, and the test scene needs no DirectionalLight.
 
-import { HANDLE_CUBE } from '@forgeax/engine-assets-runtime';
 import { World } from '@forgeax/engine-ecs';
 import { Camera, MeshFilter, MeshRenderer } from '@forgeax/engine-render';
 import { Transform } from '@forgeax/engine-scene';
@@ -193,53 +194,57 @@ describe('bug-20260611 stencil-outline pixel-presence (dawn)', () => {
     // Cube material (writes stencil ref=1). Standard PBR like the demo, so
     // the GPU-driven admission sees it; grayscale baseColor keeps the body
     // off the outline color signature.
-    const cubeMatHandle = world.allocSharedRef<'MaterialAsset', MaterialAsset>('MaterialAsset', {
-      kind: 'material',
-      passes: [
-        {
-          name: 'Forward',
-          program: { module: 'forgeax::default-standard-pbr' },
-          renderState: {
-            ...{
-              stencilWriteMask: 0xff,
-              stencil: { compare: 'always', passOp: 'replace' },
+    const cubeMatHandle = testAssets(world)
+      .create({
+        kind: 'material',
+        passes: [
+          {
+            name: 'Forward',
+            program: { module: 'forgeax::default-standard-pbr' },
+            renderState: {
+              ...{
+                stencilWriteMask: 0xff,
+                stencil: { compare: 'always', passOp: 'replace' },
+              },
+              tags: { LightMode: 'Forward' },
+              queue: RenderQueue.Geometry as number,
+              stencilReference: 1,
             },
-            tags: { LightMode: 'Forward' },
-            queue: RenderQueue.Geometry as number,
-            stencilReference: 1,
           },
+        ],
+        values: {
+          baseColor: [0.5, 0.5, 0.5, 1.0],
         },
-      ],
-      values: {
-        baseColor: [0.5, 0.5, 0.5, 1.0],
-      },
-    } as MaterialAsset);
+      } as MaterialAsset)
+      .unwrap();
 
     // Outline material (stencil-test only, unlit cyan-green).
     // Tag MUST be LightMode='Forward' to be picked by URP main pass selector;
     // pre-fix the demo set 'ForwardOutline' which silently dropped the pass.
-    const outlineMatHandle = world.allocSharedRef<'MaterialAsset', MaterialAsset>('MaterialAsset', {
-      kind: 'material',
-      passes: [
-        {
-          name: 'ForwardOutline',
-          program: { module: 'forgeax::default-unlit' },
-          renderState: {
-            ...{
-              stencilReadMask: 0xff,
-              stencil: { compare: 'not-equal' },
-              depthWriteEnabled: false,
+    const outlineMatHandle = testAssets(world)
+      .create({
+        kind: 'material',
+        passes: [
+          {
+            name: 'ForwardOutline',
+            program: { module: 'forgeax::default-unlit' },
+            renderState: {
+              ...{
+                stencilReadMask: 0xff,
+                stencil: { compare: 'not-equal' },
+                depthWriteEnabled: false,
+              },
+              tags: { LightMode: 'Forward' },
+              queue: (RenderQueue.Geometry as number) + 1,
+              stencilReference: 1,
             },
-            tags: { LightMode: 'Forward' },
-            queue: (RenderQueue.Geometry as number) + 1,
-            stencilReference: 1,
           },
+        ],
+        values: {
+          baseColor: OUTLINE_COLOR as readonly number[],
         },
-      ],
-      values: {
-        baseColor: OUTLINE_COLOR as readonly number[],
-      },
-    } as MaterialAsset);
+      } as MaterialAsset)
+      .unwrap();
 
     // Cube at origin.
     world.spawn(
@@ -251,7 +256,12 @@ describe('bug-20260611 stencil-outline pixel-presence (dawn)', () => {
           scale: [1, 1, 1],
         },
       },
-      { component: MeshFilter, data: { assetHandle: HANDLE_CUBE } },
+      {
+        component: MeshFilter,
+        data: {
+          assetHandle: testAssets(world).create(createPrimitiveMesh('cube').unwrap()).unwrap(),
+        },
+      },
       { component: MeshRenderer, data: { materials: [cubeMatHandle] } },
     );
 
@@ -265,7 +275,12 @@ describe('bug-20260611 stencil-outline pixel-presence (dawn)', () => {
           scale: [1.1, 1.1, 1.1],
         },
       },
-      { component: MeshFilter, data: { assetHandle: HANDLE_CUBE } },
+      {
+        component: MeshFilter,
+        data: {
+          assetHandle: testAssets(world).create(createPrimitiveMesh('cube').unwrap()).unwrap(),
+        },
+      },
       { component: MeshRenderer, data: { materials: [outlineMatHandle] } },
     );
 

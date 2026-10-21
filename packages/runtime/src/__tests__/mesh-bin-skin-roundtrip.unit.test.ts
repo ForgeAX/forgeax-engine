@@ -17,8 +17,7 @@
 //   (C) edge -- vertex count zero (empty mesh, empty skin streams) does
 //       not panic and unpacks to a vertex-less mesh with no skin streams.
 
-import { unpackMeshBin } from '@forgeax/engine-assets-runtime';
-import { packInterleavedVertexAttributes } from '@forgeax/engine-geometry';
+import { packInterleavedVertexAttributes, unpackMeshBin } from '@forgeax/engine-geometry';
 import { packMeshBin } from '@forgeax/engine-import';
 import { describe, expect, it } from 'vitest';
 

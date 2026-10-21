@@ -1,14 +1,14 @@
 import type { World } from '@forgeax/engine-ecs';
 import { PointLight, PointLightShadow, SpotLight } from '@forgeax/engine-render';
 import { Transform } from '@forgeax/engine-scene';
-import type { Handle } from '@forgeax/engine-types';
+import type { AssetHandle } from '@forgeax/engine-types';
 import type { OfficialScenePose } from './scene-pose';
 
 /** Spawn the exact official Point+Spot pair used by the fog demo. */
 export function spawnVolumetricSpot(
   world: World,
   castShadow: boolean,
-  projector?: Handle<'TextureAsset', 'shared'>,
+  projector?: AssetHandle<'texture'>,
   options: { readonly pointEnabled?: boolean; readonly spotEnabled?: boolean } = {},
   scenePose?: OfficialScenePose,
 ) {

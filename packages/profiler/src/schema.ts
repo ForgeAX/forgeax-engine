@@ -1,4 +1,4 @@
-import type { ProfileCapture, ProfileRecord } from './generated/profile-capture.js';
+import type { ProfileCapture } from './generated/profile-capture.js';
 import validator from './generated/schema-validator.cjs';
 import type { ProfileResult } from './types.js';
 
@@ -30,10 +30,10 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 }
 
 function validateSemanticRules(
-  value: Record<string, unknown>,
+  value: ProfileCapture,
 ): ProfileResult<ProfileCapture, ProfileArtifactError> {
-  const catalog = value.phaseCatalog as { app: string[]; render: string[] };
-  const records = value.records as ProfileRecord[];
+  const catalog = value.phaseCatalog;
+  const records = value.records;
   let previousFrameId = 0;
 
   for (const [index, record] of records.entries()) {
@@ -93,7 +93,7 @@ function validateSemanticRules(
     }
   }
 
-  const completeness = value.completeness as ProfileCapture['completeness'];
+  const completeness = value.completeness;
   if (completeness.retainedEventCount !== records.length) {
     return error(
       'profile-artifact-invalid',
@@ -136,7 +136,7 @@ function validateSemanticRules(
       );
     }
   }
-  return { ok: true, value: value as unknown as ProfileCapture };
+  return { ok: true, value };
 }
 
 export function validateProfileCapture(

@@ -34,7 +34,6 @@ async function composePixels(
   } = {},
 ) {
   const height = options.height ?? 2;
-  const radianceHeight = Math.max(1, Math.floor(height / 2));
   const device = (await (await rhi.requestAdapter()).unwrap().requestDevice()).unwrap();
   const common = readFileSync(resolve(process.cwd(), 'packages/shader/src/common.wgsl'), 'utf8');
   const viewDeclarations = common.match(/struct (?:AtmosphereMedium|View)\s*\{[\s\S]*?\};/g);
@@ -96,7 +95,7 @@ async function composePixels(
   textures.push(packed);
   writePackedNormals(device, packed, width, height, normals);
   const views = [
-    upload(width / 2, radianceHeight, radiance, options.mips),
+    upload(width, height, radiance, options.mips),
     upload(width, height, repeat([0.1, 0.1, 0.1, options.coverage ?? 1])),
     upload(width, height, repeat([1, 1, 1, 1])),
     device.createTextureView(packed, {}).unwrap(),
@@ -220,13 +219,10 @@ async function composePixels(
   }
 }
 
-it('does not compose a half-resolution reflection onto a differently facing full-resolution surface', async () => {
-  const pixels = await composePixels(
-    2,
-    [0.5, 1, 0.5, 0.08, 1, 0.5, 0.5, 0.08, 0.5, 1, 0.5, 0.08, 0.5, 0.5, 1, 0.08],
-    [1, 0, 0, 1],
-  );
-  // Zero contribution may have either IEEE sign after multiplying by zero.
+it('keeps each full-resolution receiver on its own ray, including one-pixel faces', async () => {
+  const normals = [0.5, 1, 0.5, 0.08, 1, 0.5, 0.5, 0.08, 0.5, 1, 0.5, 0.08, 0.5, 0.5, 1, 0.08];
+  const radiance = [1, 0, 0, 1, 0, 0, 0, 0, 0, 1, 0, 1, 0, 0, 0, 0];
+  const pixels = await composePixels(2, normals, radiance);
   expect(
     pixels.slice(4, 8).every((value) => value === 0),
     'side face',
@@ -235,28 +231,25 @@ it('does not compose a half-resolution reflection onto a differently facing full
     pixels.slice(68, 72).every((value) => value === 0),
     'wall face',
   ).toBe(true);
-  for (const offset of [0, 64]) {
-    expect(pixels[offset]).toBeCloseTo(0.9, 3);
-    expect(pixels[offset + 1]).toBeCloseTo(-0.1, 3);
-  }
+  expect(pixels[0], 'red first row').toBeCloseTo(0.9, 3);
+  expect(pixels[1]).toBeCloseTo(-0.1, 3);
+  expect(pixels[64], 'green second row').toBeCloseTo(-0.1, 3);
+  expect(pixels[65]).toBeCloseTo(0.9, 3);
 });
 
-it('keeps the rough reflected lobe beyond a mirror miss without admitting disabled or incompatible receivers', async () => {
-  // A real confidence-weighted step pyramid: one red hit, then one miss.
-  // At full pixel 3, mip zero misses but the rough lobe still covers red.
-  const radiance = [1, 0, 0, 1, 0, 0, 0, 0];
-  // One exact mip average keeps the numeric oracle independent of backend
-  // trilinear LOD quantization; the production shader still selects the LOD.
+it('keeps the rough reflected lobe beyond a mirror miss without admitting disabled receivers', async () => {
+  // A 2x2 confidence-premultiplied step has a single 1x1 average.
+  const radiance = [1, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 1, 0, 0, 0, 0];
   const mips = [[0.5, 0, 0, 0.5]];
-  // Use the UNORM8-decoded roughness in the independent LOD oracle.
-  const normals = Array.from({ length: 8 }, () => [0.5, 1, 0.5, 0.75]).flat();
-  const pixels = await composePixels(4, normals, radiance, { mips });
-  // The base misses and mip 1 contributes 0.5 * roughness^2 confidence.
-  // Decode fallback 0.1 through FP16, then apply the independent delta formula.
+  const normals = Array.from({ length: 4 }, () => [0.5, 1, 0.5, 0.75]).flat();
+  const pixels = await composePixels(2, normals, radiance, { mips });
   const confidence = 0.5 * (Math.round(0.75 * 255) / 255) ** 2;
   const fallback = 0.0999755859375;
-  expect(pixels[12], 'rough lobe red').toBeCloseTo(confidence * (1 - fallback), 4);
-  expect(pixels[13], 'weighted fallback replacement').toBeCloseTo(-confidence * fallback, 4);
+  expect(pixels[4], 'rough lobe red at the missing central ray').toBeCloseTo(
+    confidence * (1 - fallback),
+    4,
+  );
+  expect(pixels[5], 'weighted fallback replacement').toBeCloseTo(-confidence * fallback, 4);
   for (const options of [
     { enabled: 0 },
     { enabled: Number.NaN },
@@ -266,145 +259,34 @@ it('keeps the rough reflected lobe beyond a mirror miss without admitting disabl
     { roughnessLimit: 0.74 },
     { coverage: 0 },
   ]) {
-    const guarded = await composePixels(4, normals, radiance, { ...options, mips });
-    // Disabled, over-cutoff, and zero-coverage receivers must not contribute
-    // even a signed-zero/quantization residue.
-    expect(guarded.slice(12, 16).every((value) => value === 0)).toBe(true);
+    const guarded = await composePixels(2, normals, radiance, { ...options, mips });
+    expect(guarded.slice(4, 8).every((value) => value === 0)).toBe(true);
   }
-  const sideNormals = [...normals];
-  sideNormals.splice(3 * 4, 3, 1, 0.5, 0.5);
-  const side = await composePixels(4, sideNormals, radiance, { mips });
-  expect(
-    side.slice(12, 16).every((value) => value === 0),
-    'no top lobe on side',
-  ).toBe(true);
 });
 
-it('reconstructs a compatible neighbor instead of dropping reflection at the receiver seam', async () => {
-  const row = [1, 0.5, 0.5, 0.08, 0.5, 1, 0.5, 0.08, 0.5, 1, 0.5, 0.08, 0.5, 0.5, 1, 0.08];
-  const pixels = await composePixels(4, [...row, ...row], [1, 0, 0, 1, 0, 1, 0, 1]);
-  // Pixel 1 lies between a red side-face ray and a green top-face ray.
-  // floor(pixel/2) chooses the wrong face, although a compatible ray exists.
-  for (const offset of [4, 8, 68, 72]) {
-    expect(pixels[offset], 'no side-face red').toBeCloseTo(-0.1, 3);
-    expect(pixels[offset + 1], 'compatible top-face reflection').toBeCloseTo(0.9, 3);
-  }
-  expect(
-    pixels.slice(12, 16).every((value) => value === 0),
-    'unmatched wall',
-  ).toBe(true);
-});
-
-it('keeps the receiver gather as four statically ordered manual taps', () => {
-  const source = readFileSync(
-    resolve(process.cwd(), 'packages/shader/src/ssr-compose.wgsl'),
-    'utf8',
-  );
-  const receiver = source.match(/fn ssrReceiverSample[\s\S]*?\n}\n\nfn ssrReflectionLod/);
-  expect(receiver?.[0]).toBeDefined();
-  if (receiver === null || receiver === undefined) throw new Error('Receiver function missing');
-  expect(receiver[0]).not.toMatch(/for\s*\(/);
-  expect(receiver[0].match(/textureLoad\(radiance/g)).toHaveLength(4);
-  expect(receiver[0]).toMatch(/pixel00[\s\S]*pixel10[\s\S]*pixel01[\s\S]*pixel11/);
-});
-
-it('matches the loop baseline on the same Dawn inputs within the compose error budget', async () => {
-  const source = readFileSync(
-    resolve(process.cwd(), 'packages/shader/src/ssr-compose.wgsl'),
-    'utf8',
-  );
-  const baselineReceiver = `fn ssrReceiverSample(uv : vec2<f32>, packedNormal : u32, lod : f32) -> SsrReceiverSample {
-  let normal = decodeStandardNormalRoughness(packedNormal).xyz;
-  let size = vec2<i32>(textureDimensions(radiance, 0));
-  let coordinate = uv * vec2<f32>(size) - vec2<f32>(0.5);
-  let first = vec2<i32>(floor(coordinate));
-  let fraction = fract(coordinate);
-  var sum = vec4<f32>(0.0);
-  var totalWeight = 0.0;
-  for (var y = 0; y < 2; y++) {
-    for (var x = 0; x < 2; x++) {
-      let pixel = clamp(first + vec2<i32>(x, y), vec2<i32>(0), size - vec2<i32>(1));
-      let tracedNormal = loadStandardNormalRoughness(normalRoughness, pixel * 2).xyz;
-      let weight = select(1.0 - fraction.x, fraction.x, x == 1) * select(1.0 - fraction.y, fraction.y, y == 1)
-        * ssrReceiverWeight(normal, tracedNormal);
-      let sample = textureLoad(radiance, pixel, 0);
-      sum += sample * weight;
-      totalWeight += weight;
-    }
-  }
-  return SsrReceiverSample(sum / max(totalWeight, 1e-6), totalWeight);
-}`;
-  const baseline = source.replace(
-    /fn ssrReceiverSample[\s\S]*?\n}\n\nfn ssrReflectionLod/,
-    `${baselineReceiver}\n\nfn ssrReflectionLod`,
-  );
-  expect(baseline).not.toBe(source);
-  // The fourth channel is source confidence and intentionally differs across
-  // all four radiance taps.
-  const radiance = [1, 0, 0, 1, 0, 0.5, 0, 0.25, 0, 0, 1, 0.6, 0.5, 1, 0.25, 0.75];
+it('samples the roughness pyramid at pixel centers without a half-pixel drift', async () => {
+  const source = readFileSync(resolve('packages/shader/src/ssr-compose.wgsl'), 'utf8');
+  const radiance = Array.from({ length: 16 }, (_, i) => [i / 16, 0, 0, 1]).flat();
   const mips = [
-    [0.5, 0.1, 0.05, 0.625, 0.25, 0.375, 0.1, 0.425],
-    [0.3, 0.25, 0.2, 0.55],
+    [2.5 / 16, 0, 0, 1, 4.5 / 16, 0, 0, 1, 10.5 / 16, 0, 0, 1, 12.5 / 16, 0, 0, 1],
+    [7.5 / 16, 0, 0, 1],
   ];
-  const directions = [
-    [0.5, 1, 0.5],
-    [0.5, 1, 0.5],
-    [0.5, 0.5, 1],
-    [1, 0.5, 0.5],
-  ] as const;
-  // With three levels, .04/.2 exercise the base-to-mip-1 path while .8 uses
-  // the rough mip path.
-  for (const roughness of [0.04, 0.2, 0.8]) {
-    const normals = Array.from({ length: 4 }, () => directions)
-      .flat()
-      .flatMap(([x, y, z]) => [x, y, z, roughness]);
-    const [expanded, loop] = await Promise.all([
-      composePixels(8, normals, radiance, { mips, source }),
-      composePixels(8, normals, radiance, { mips, source: baseline }),
-    ]);
-    const maxDifference = Math.max(
-      ...expanded.map((value, index) => Math.abs(value - (loop[index] ?? 0))),
-    );
-    expect(maxDifference, `roughness ${roughness}`).toBeLessThanOrEqual(0.00025);
-  }
-
-  // A separate 2x2, no-mip witness proves that the vertical pair is consumed
-  // by the receiver gather, rather than merely matching on a one-row image.
-  const twoDimensionalRadiance = [
-    1, 0, 0, 1, 0, 0.25, 0, 0.25, 0, 0, 0.5, 0.5, 0.75, 0.75, 0, 0.75,
-  ];
-  const allCompatibleNormals = Array.from({ length: 4 * 4 }, () => [0.5, 1, 0.5, 0.2])
-    .flat()
-    .flat();
-  const twoDimensionalNormals = [...allCompatibleNormals];
-  // Keep the receiver at (1,1) compatible while making its 11 trace normal
-  // incompatible; this covers the rejection/renormalization branch too.
-  twoDimensionalNormals.splice((2 * 4 + 2) * 4, 3, 1, 0.5, 0.5);
-  const [expanded2d, loop2d] = await Promise.all([
-    composePixels(4, twoDimensionalNormals, twoDimensionalRadiance, { height: 4, source }),
-    composePixels(4, twoDimensionalNormals, twoDimensionalRadiance, {
-      height: 4,
-      source: baseline,
-    }),
-  ]);
-  const maxDifference2d = Math.max(
-    ...expanded2d.map((value, index) => Math.abs(value - (loop2d[index] ?? 0))),
+  const normals = Array.from({ length: 16 }, () => [0.5, 1, 0.5, 0.75]).flat();
+  const pixels = await composePixels(4, normals, radiance, { height: 4, mips });
+  const roughness = Math.round(0.75 * 255) / 255;
+  const lodFraction = roughness ** 2 * 2 - 1;
+  // At pixel (1,1), the mip-1 bilinear footprint has weights 9/16,3/16,3/16,1/16.
+  const mip1 = (2.5 * 9 + 4.5 * 3 + 10.5 * 3 + 12.5) / 256;
+  const expected = mip1 * (1 - lodFraction) + (7.5 / 16) * lodFraction - 0.0999755859375;
+  expect(pixels[64 + 4]).toBeCloseTo(expected, 3);
+  const shifted = source.replace(
+    'let uv = in.position.xy /',
+    'let uv = (in.position.xy + vec2<f32>(0.5)) /',
   );
-  expect(maxDifference2d, '2x2 receiver taps').toBeLessThanOrEqual(0.00025);
-
-  const wrongTapSource = source.replace(
-    'sum += textureLoad(radiance, pixel11, 0) * weight11;',
-    'sum += textureLoad(radiance, pixel10, 0) * weight11;',
-  );
-  expect(wrongTapSource).not.toBe(source);
-  const wrong2d = await composePixels(4, allCompatibleNormals, twoDimensionalRadiance, {
-    height: 4,
-    source: wrongTapSource,
-  });
-  const wrongDifference2d = Math.max(
-    ...(await composePixels(4, allCompatibleNormals, twoDimensionalRadiance, { height: 4 })).map(
-      (value, index) => Math.abs(value - (wrong2d[index] ?? 0)),
-    ),
-  );
-  expect(wrongDifference2d, 'wrong 11 tap must be observable').toBeGreaterThan(0.001);
+  expect(shifted).not.toBe(source);
+  const wrong = await composePixels(4, normals, radiance, { height: 4, mips, source: shifted });
+  expect(
+    Math.abs((wrong[68] ?? 0) - expected),
+    'old extra half-pixel is observable',
+  ).toBeGreaterThan(0.05);
 });

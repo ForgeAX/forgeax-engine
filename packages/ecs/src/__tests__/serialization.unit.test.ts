@@ -231,19 +231,16 @@ import { handleNumeric } from './utils/handle-numeric';
       if (!after.ok) expect(after.error.code).toBe('unique-ref-stale');
     });
 
-    it('(3) `handle<T>` field stores unmanaged Handle; ECS does NOT release on despawn', () => {
-      const MeshFilter = defineComponent('MeshFilter', {
-        assetHandle: { type: 'shared<MeshAsset>' },
-      });
+    it('(3) shared fields retain a binding and release it on despawn', () => {
+      const Resource = defineComponent('SerializedResource', { value: 'shared<SerializedData>' });
       const w = new World();
-      const fakeHandle: Handle<'MeshAsset', 'shared'> = 0x1234_5678 as Handle<
-        'MeshAsset',
-        'shared'
-      >;
-      const e = w.spawn({ component: MeshFilter, data: { assetHandle: fakeHandle } }).unwrap();
-      const r = w.get(e, MeshFilter).unwrap();
-      expect(r.assetHandle).toBe(fakeHandle);
-      w.despawn(e).unwrap();
+      const handle = w.allocSharedRef('SerializedData', { id: 1 });
+      const entity = w.spawn({ component: Resource, data: { value: handle } }).unwrap();
+      expect(w.get(entity, Resource).unwrap().value).toBe(handle);
+      expect(w.sharedRefs.refcount(handle)).toBe(2);
+      w.despawn(entity).unwrap();
+      expect(w.sharedRefs.refcount(handle)).toBe(1);
+      w.sharedRefs.release(handle).unwrap();
     });
 
     it('(4) ENTITY_NULL_RAW sentinel is 0xffffffff (entity-field null encoding)', () => {
@@ -304,21 +301,21 @@ import { handleNumeric } from './utils/handle-numeric';
 {
   // --- from array-handle-element.test.ts ---
   describe('array<handle<X>> parse (w6, D-1)', () => {
-    it("parseManagedArraySchema('array<shared<MaterialAsset>>') returns { elementType: 'shared<MaterialAsset>', length: undefined }", () => {
-      const result = parseManagedArraySchema('array<shared<MaterialAsset>>');
-      // pre w5: returns null because 'shared<MaterialAsset>' is not in
+    it("parseManagedArraySchema('array<asset<material>>') returns { elementType: 'asset<material>', length: undefined }", () => {
+      const result = parseManagedArraySchema('array<asset<material>>');
+      // pre w5: returns null because 'asset<material>' is not in
       // ManagedArrayElementType — this is the TDD red state
       expect(result).not.toBeNull();
       if (result === null) return;
-      expect(result.elementType).toBe('shared<MaterialAsset>');
+      expect(result.elementType).toBe('asset<material>');
       expect(result.length).toBeUndefined();
     });
 
-    it("parseManagedArraySchema('array<shared<MeshAsset>>') returns { elementType: 'shared<MeshAsset>' }", () => {
-      const result = parseManagedArraySchema('array<shared<MeshAsset>>');
+    it("parseManagedArraySchema('array<asset<mesh>>') returns { elementType: 'asset<mesh>' }", () => {
+      const result = parseManagedArraySchema('array<asset<mesh>>');
       expect(result).not.toBeNull();
       if (result === null) return;
-      expect(result.elementType).toBe('shared<MeshAsset>');
+      expect(result.elementType).toBe('asset<mesh>');
       expect(result.length).toBeUndefined();
     });
 
@@ -343,8 +340,8 @@ import { handleNumeric } from './utils/handle-numeric';
       expect(result).toBeNull();
     });
 
-    it("isSchemaVocabKeyword('array<shared<MaterialAsset>>') returns true", () => {
-      const result = isSchemaVocabKeyword('array<shared<MaterialAsset>>');
+    it("isSchemaVocabKeyword('array<asset<material>>') returns true", () => {
+      const result = isSchemaVocabKeyword('array<asset<material>>');
       expect(result).toBe(true);
     });
   });
@@ -627,7 +624,7 @@ import { handleNumeric } from './utils/handle-numeric';
     it('array<handle<X>> with non-empty tag is accepted at runtime (feat-20260608 M2 D-1)', () => {
       expect(() => {
         defineComponent('Good', {
-          good: { type: 'array<shared<MeshAsset>>' as unknown as SchemaFieldType },
+          good: { type: 'array<asset<mesh>>' as unknown as SchemaFieldType },
         });
       }).not.toThrow();
     });
@@ -1151,7 +1148,7 @@ import { handleNumeric } from './utils/handle-numeric';
     });
 
     it('array<handle<X>> is now a recognised schema field type (feat-20260608 M2 D-1)', () => {
-      const valid: SchemaFieldType = 'array<shared<MeshAsset>>';
+      const valid: SchemaFieldType = 'array<asset<mesh>>';
       void valid;
     });
 

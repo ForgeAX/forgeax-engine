@@ -4,6 +4,7 @@ import { createRequire } from 'node:module';
 import { dirname, resolve } from 'node:path';
 import {
   expandShaderManifestPublication,
+  type ManifestEntry,
   type MaterialShaderManifestEntry,
   SHADER_MANIFEST_PUBLICATION_VERSION,
   shaderSourceDigestInput,
@@ -16,10 +17,7 @@ import {
 } from './engine-inputs/source-digest.js';
 import type { ShaderManifestPublication } from './manifest-publication.js';
 
-export interface ShaderManifestInput {
-  readonly hash: string;
-  readonly wgsl: string;
-  readonly bindings: string;
+export interface ShaderManifestInput extends Omit<ManifestEntry, 'glsl'> {
   readonly uvSetCount?: number;
 }
 
@@ -69,7 +67,7 @@ function readNodePublication(value: unknown): {
  * that placeholder as a successful packaged input silently suppresses the
  * source compiler and leaves the renderer without its Standard entry.
  */
-export function hasUsablePackagedEngineShaderInputs(input: {
+function hasUsablePackagedEngineShaderInputs(input: {
   readonly entries: readonly ShaderManifestInput[];
   readonly materialShaders: readonly MaterialShaderManifestEntry[];
 }): boolean {

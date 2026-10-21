@@ -33,7 +33,10 @@ describe('validateMeshPayload', () => {
     expect(e?.code).toBe('mesh-asset-submeshes-empty');
   });
 
-  it('errors on strip topology without an index buffer', () => {
+  it.each([
+    'line-strip',
+    'triangle-strip',
+  ] as const)('accepts nonindexed %s geometry', (topology) => {
     const e = validateMeshPayload(
       mesh({
         vertices: new Float32Array(12),
@@ -42,14 +45,13 @@ describe('validateMeshPayload', () => {
             indexOffset: 0,
             indexCount: 0,
             vertexCount: 1,
-            topology: 'triangle-strip',
+            topology,
             materialSlot: 0,
           },
         ],
       }),
     );
-    expect(e?.code).toBe('asset-invalid-value');
-    expect((e?.detail as { reason: string }).reason).toBe('strip-topology-without-indices');
+    expect(e).toBeNull();
   });
 
   it('errors when an empty-geometry submesh uses a non-triangle-list topology', () => {

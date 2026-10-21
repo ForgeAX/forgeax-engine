@@ -1,4 +1,6 @@
 #!/usr/bin/env node
+import { constructRuntimeRendererHost } from '@forgeax/engine-runtime/internal/renderer-host';
+let smokeAssets;
 import { createSmokeRenderer, drawSmokeFrame, rendererBackend, subscribeSmokeErrors } from "../../scripts/renderer-smoke.mjs";
 // bevy-mesh-picking headless smoke (structural-only, no pixel readback).
 //
@@ -109,20 +111,22 @@ const { createRenderer } = enginePkg;
 const { Transform, propagateTransforms } = await import('@forgeax/engine-scene');
 const { Camera, Materials, MeshFilter, MeshRenderer, perspective, PointLight } = await import('@forgeax/engine-render');
 
-const world = new World();
 const here = dirname(fileURLToPath(import.meta.url));
 const MANIFEST_PATH = resolve(here, '..', 'dist', 'shaders', 'manifest.json');
 const MANIFEST_URL = `data:application/json,${encodeURIComponent(readFileSync(MANIFEST_PATH, 'utf8'))}`;
 
 let renderer;
 try {
-  renderer = await createSmokeRenderer(createRenderer, mockCanvas, {}, { shaderManifestUrl: MANIFEST_URL });
+  const hostResult = await constructRuntimeRendererHost(mockCanvas, {}, { shaderManifestUrl: MANIFEST_URL });
+if (!hostResult.ok) throw hostResult.error;
+({ renderer, assets: smokeAssets } = hostResult.value);
 } catch (err) {
   console.error(`[smoke] FAIL - createRenderer threw: ${err instanceof Error ? err.message : String(err)}`);
   process.exit(1);
 } finally {
   globalThis.navigator.gpu.requestAdapter = originalAmbientRequestAdapter;
 }
+const world = new World({ assets: smokeAssets });
 const worldAttachment1 = renderer.attach(world);
 if (!worldAttachment1.ok) throw worldAttachment1.error;
 
@@ -143,12 +147,12 @@ if (!boxGeom.ok || !sphereGeom.ok || !capsuleGeom.ok || !torusGeom.ok) {
   process.exit(1);
 }
 
-const boxHandle = world.allocSharedRef('MeshAsset', boxGeom.value);
-const sphereHandle = world.allocSharedRef('MeshAsset', sphereGeom.value);
-const capsuleHandle = world.allocSharedRef('MeshAsset', capsuleGeom.value);
-const torusHandle = world.allocSharedRef('MeshAsset', torusGeom.value);
+const boxHandle = world.assets.create(boxGeom.value).unwrap();
+const sphereHandle = world.assets.create(sphereGeom.value).unwrap();
+const capsuleHandle = world.assets.create(capsuleGeom.value).unwrap();
+const torusHandle = world.assets.create(torusGeom.value).unwrap();
 
-const defaultMat = world.allocSharedRef('MaterialAsset', Materials.standard({ baseColor: [0.8, 0.8, 0.8, 1] }));
+const defaultMat = world.assets.create(Materials.standard({ baseColor: [0.8, 0.8, 0.8, 1] })).unwrap();
 
 const spacing = 1.5;
 const boxEntity = world.spawn(

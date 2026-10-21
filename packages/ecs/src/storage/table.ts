@@ -12,23 +12,17 @@ import {
 } from '../component';
 import { Entity, foldEssentials } from '../entity';
 import type { EntityHandle } from '../entity-handle';
-import {
-  type ComponentEpochColumns,
-  copyComponentEpoch,
-  createComponentEpochColumns,
-  growComponentEpochColumns,
-  PROJECTION_BLOCK_SIZE,
-} from './change-detection';
+import { PROJECTION_BLOCK_SIZE } from './change-detection';
 import { arrayCountColumnName, type Column, createColumn, growColumn } from './column';
 
 const INITIAL_CAPACITY = 64;
 
 export type TableId = number;
 
-export interface TableComponentStorage {
+interface TableComponentStorage {
   readonly component: Component;
   fields: Map<string, Column>;
-  epochs: ComponentEpochColumns;
+  added: Float64Array;
 }
 
 export interface Table {
@@ -97,7 +91,7 @@ export function createTable(
     storage.set(componentId(component), {
       component,
       fields,
-      epochs: createComponentEpochColumns(capacity),
+      added: new Float64Array(capacity),
     });
   }
   return {
@@ -144,7 +138,7 @@ export function removeTableRow(
       const arity = column.arity;
       column.view.set(column.view.subarray(lastRow * arity, lastRow * arity + arity), row * arity);
     }
-    copyComponentEpoch(componentStorage.epochs, lastRow, componentStorage.epochs, row);
+    componentStorage.added[row] = componentStorage.added[lastRow] ?? 0;
   }
   table.size = lastRow;
   return { movedEntity, newRow: row };
@@ -160,7 +154,9 @@ export function growTable(table: Table, targetCapacity: number): void {
       fields.set(fieldName, growColumn(column, capacity));
     }
     componentStorage.fields = fields;
-    componentStorage.epochs = growComponentEpochColumns(componentStorage.epochs, capacity);
+    const added = new Float64Array(capacity);
+    added.set(componentStorage.added);
+    componentStorage.added = added;
   }
   const membership = new Float64Array(Math.ceil(capacity / PROJECTION_BLOCK_SIZE));
   membership.set(table.membership);

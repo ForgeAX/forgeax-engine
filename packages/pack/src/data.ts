@@ -4,7 +4,7 @@ import { decodePackBlob } from './blob.js';
 const arrays = { Uint8Array, Uint16Array, Uint32Array, Float32Array };
 type ArrayKind = keyof typeof arrays;
 
-function packArrayKind(value: object): ArrayKind | undefined {
+export function packArrayKind(value: object): ArrayKind | undefined {
   const prototype = Object.getPrototypeOf(value);
   return (Object.keys(arrays) as ArrayKind[]).find((kind) => prototype === arrays[kind].prototype);
 }
@@ -15,7 +15,7 @@ function intrinsicGetter(prototype: object, key: string): (this: unknown) => unk
   return get;
 }
 const bufferLength = intrinsicGetter(ArrayBuffer.prototype, 'byteLength');
-function packBufferLength(buffer: ArrayBuffer): number {
+export function packBufferLength(buffer: ArrayBuffer): number {
   return bufferLength.call(buffer) as number;
 }
 

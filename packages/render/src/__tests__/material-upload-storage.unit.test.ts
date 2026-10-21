@@ -1,389 +1,250 @@
 import { vec3 } from '@forgeax/engine-math';
-import { rhi } from '@forgeax/engine-rhi-null';
-import { STANDARD_PIPELINE_PARAM_SCHEMA } from '@forgeax/engine-shader';
-import { derive, type ParamSchemaEntry } from '@forgeax/engine-types';
-import { describe, expect, it, vi } from 'vitest';
-import type { RenderFrameState } from '../record/frame-snapshot';
-import { uploadMaterialUniforms } from '../record/material-uniforms';
-import type { _InternalRenderPipelineContext } from '../record/render-context';
+import type { Buffer, RhiQueue } from '@forgeax/engine-rhi';
+import { err, ok } from '@forgeax/engine-types';
+import { assert, describe, expect, it, vi } from 'vitest';
+import { MaterialResource } from '../material-resource';
+import type { RenderResourceScope } from '../publication/resource-scope';
+import type { PerSubmeshMaterialBgDeps } from '../record/main-pass-material';
+import {
+  MaterialUniformRecording,
+  materialUniformResources,
+  materialUniformSlot,
+  prepareMaterialUniform,
+  prepareMaterialUniformFrame,
+  recordMaterialUniforms,
+} from '../record/material-uniforms';
 import { MATERIAL_PER_ENTITY_STRIDE } from '../record/render-context';
-import type { MaterialSnapshot } from '../render-system-extract';
+import { MaterialFrame } from '../scene/material-dispatch';
 
-describe('material upload storage', () => {
-  it('reuses storage across frames and restores bytes after an intervening capture context', async () => {
-    const device = (await (await rhi.requestAdapter()).unwrap().requestDevice()).unwrap();
-    const buffer = device
-      .createBuffer({ size: MATERIAL_PER_ENTITY_STRIDE * 8, usage: 0x48 })
-      .unwrap();
-    const writes: Uint8Array[] = [];
-    const nativeWrite = device.queue.writeBuffer.bind(device.queue);
-    const write = vi
-      .spyOn(device.queue, 'writeBuffer')
-      .mockImplementation((target, offset, data, ...rest) => {
-        const bytes =
-          data instanceof ArrayBuffer
-            ? new Uint8Array(data)
-            : new Uint8Array(data.buffer, data.byteOffset, data.byteLength);
-        const start = rest[0] ?? 0;
-        writes.push(bytes.slice(start, start + (rest[1] ?? bytes.byteLength - start)));
-        return nativeWrite(target, offset, data, ...rest);
-      });
-    const frameState = {} as RenderFrameState;
-    let reads = 0;
-    const tint = [1, 0, 0, 1];
-    const red: MaterialSnapshot = {
-      baseColor: vec3.create(1, 0, 0),
-      metallic: 0,
-      roughness: 0.5,
-      materialParamSchema: [{ name: 'tint', type: 'vec4' }],
-      paramSnapshot: {
-        get tint() {
-          reads++;
-          return tint;
-        },
-      },
-    };
-    const green: MaterialSnapshot = { ...red, paramSnapshot: { tint: [0, 1, 0, 1] } };
-    const context = (material: MaterialSnapshot, count = 1) =>
-      ({
-        runtime: { device },
-        frameState,
-        materialSlotCount: count,
-        materialSlots: Array(count).fill(material),
-        materialSlotOwners: Array.from({ length: count }, (_, renderableIndex) => ({
-          renderableIndex,
-        })),
-        validatedOrdered: [],
-        pipelineState: { materialUniformBuffer: { buffer } },
-      }) as unknown as _InternalRenderPipelineContext;
-    try {
-      const a = context(red);
-      uploadMaterialUniforms(a);
-      expect(reads).toBe(1);
-      expect(writes).toHaveLength(1);
-      uploadMaterialUniforms(a);
-      expect(writes).toHaveLength(1);
-      expect(reads).toBe(1);
-      expect(frameState.materialUboPayloadCache).toBeDefined(); // Explicit ABI values are written once, without a second overlay.
-      const storage = frameState.materialUboPayloadCache?.payload.buffer;
-      const b = context(green);
-      uploadMaterialUniforms(b);
-      expect(writes).toHaveLength(2);
-      expect(frameState.materialUboPayloadCache?.payload.buffer).toBe(storage);
-      uploadMaterialUniforms(a);
-      expect(writes).toHaveLength(3);
-      expect(new Float32Array(writes.at(-1)?.buffer ?? new ArrayBuffer(0))[0]).toBe(1);
-      const replacement = device
-        .createBuffer({ size: MATERIAL_PER_ENTITY_STRIDE * 8, usage: 0x48 })
-        .unwrap();
-      try {
-        const replaced = {
-          ...a,
-          pipelineState: {
-            ...a.pipelineState,
-            materialUniformBuffer: {
-              buffer: replacement,
-              sizeInBytes: MATERIAL_PER_ENTITY_STRIDE * 8,
-            },
-          },
-        };
-        uploadMaterialUniforms(replaced);
-        expect(writes).toHaveLength(4);
-        uploadMaterialUniforms(replaced);
-        expect(writes).toHaveLength(4);
-        uploadMaterialUniforms(a);
-        expect(writes).toHaveLength(4);
-      } finally {
-        device.destroyBuffer(replacement).unwrap();
-      }
-      tint[0] = 0.25;
-      uploadMaterialUniforms(context(red));
-      expect(new Float32Array(writes.at(-1)?.buffer ?? new ArrayBuffer(0))[0]).toBe(0.25);
-      expect(frameState.materialUboPayloadCache?.payload.buffer).toBe(storage);
-      uploadMaterialUniforms(context(green, 3));
-      const grown = frameState.materialUboPayloadCache?.payload.buffer;
-      expect(grown).not.toBe(storage);
-      uploadMaterialUniforms(context(red));
-      expect(frameState.materialUboPayloadCache?.payload.buffer).toBe(grown);
-      expect(writes.at(-1)?.byteLength).toBe(MATERIAL_PER_ENTITY_STRIDE);
-    } finally {
-      write.mockRestore();
-      device.destroyBuffer(buffer).unwrap();
-    }
+function material(value = 1) {
+  return new MaterialResource({
+    passes: [],
+    baseColor: vec3.create(value, 0, 0),
+    metallic: 0,
+    roughness: 0.5,
+    materialParamSchema: [{ name: 'baseColor', type: 'vec4' }],
+    immutableValues: true,
   });
-  it('skips repeated page uploads and invalidates when the physical page roster grows', async () => {
-    const device = (await (await rhi.requestAdapter()).unwrap().requestDevice()).unwrap();
-    const buffers = Array.from({ length: 3 }, () =>
-      device.createBuffer({ size: MATERIAL_PER_ENTITY_STRIDE, usage: 0x48 }).unwrap(),
-    );
-    const write = vi.spyOn(device.queue, 'writeBuffer');
-    const material: MaterialSnapshot = {
-      baseColor: vec3.create(1, 0, 0),
-      metallic: 0,
-      roughness: 0.5,
-    };
-    const storage = {
-      buffer: null,
-      sizeInBytes: MATERIAL_PER_ENTITY_STRIDE * 2,
-      pages: {
-        byteStride: MATERIAL_PER_ENTITY_STRIDE,
-        byteSize: MATERIAL_PER_ENTITY_STRIDE,
-        buffers: buffers.slice(0, 2),
+}
+function fixture() {
+  const writeBuffer = vi.fn().mockReturnValue(ok(undefined));
+  const queue = { writeBuffer } as unknown as RhiQueue;
+  const deps = {
+    runtime: { device: { queue }, errorRegistry: { fire: vi.fn() } },
+    pipelineState: {
+      materialUniformBuffer: {
+        buffer: {} as Buffer,
+        sizeInBytes: 4096 * MATERIAL_PER_ENTITY_STRIDE,
       },
-    };
-    const context = {
-      runtime: { device },
-      frameState: {},
-      materialSlotCount: 2,
-      materialSlots: [material, material],
-      materialSlotOwners: [{ renderableIndex: 0 }, { renderableIndex: 1 }],
-      validatedOrdered: [],
-      pipelineState: { materialUniformBuffer: storage },
-    } as unknown as _InternalRenderPipelineContext;
-    try {
-      uploadMaterialUniforms(context);
-      expect(write.mock.calls.map((call) => call[0])).toEqual(buffers.slice(0, 2));
-      uploadMaterialUniforms(context);
-      expect(write).toHaveBeenCalledTimes(2);
-      storage.pages = { ...storage.pages, buffers: [...buffers] };
-      uploadMaterialUniforms(context);
-      expect(write).toHaveBeenCalledTimes(4);
-      uploadMaterialUniforms(context);
-      expect(write).toHaveBeenCalledTimes(4);
-    } finally {
-      write.mockRestore();
-      for (const buffer of buffers) device.destroyBuffer(buffer).unwrap();
-    }
-  });
-  it('skips equal cross-frame bytes, uploads a coalesced changed slot and observes mutable values', async () => {
-    const device = (await (await rhi.requestAdapter()).unwrap().requestDevice()).unwrap();
-    const buffer = device
-      .createBuffer({ size: MATERIAL_PER_ENTITY_STRIDE * 4, usage: 0x48 })
-      .unwrap();
-    const write = vi.spyOn(device.queue, 'writeBuffer');
-    const frameState = {} as RenderFrameState;
-    const red: MaterialSnapshot = {
-      materialParamSchema: [
-        { name: 'baseColor', type: 'vec4' },
-        { name: 'roughness', type: 'f32' },
-        { name: 'metallic', type: 'f32' },
-      ],
-      baseColor: vec3.create(1, 0, 0),
-      metallic: 0,
-      roughness: 0.5,
-    };
-    const green: MaterialSnapshot = { ...red, baseColor: vec3.create(0, 1, 0) };
-    const context = (materials: MaterialSnapshot[], state = frameState) =>
-      ({
-        runtime: { device },
-        frameState: state,
-        materialSlots: materials,
-        materialSlotCount: materials.length,
-        materialSlotOwners: materials.map((_, renderableIndex) => ({ renderableIndex })),
-        validatedOrdered: [],
-        pipelineState: { materialUniformBuffer: { buffer } },
-      }) as unknown as _InternalRenderPipelineContext;
-    try {
-      uploadMaterialUniforms(context([red, red, red]));
-      uploadMaterialUniforms(context([red, red, red]));
-      expect(write).toHaveBeenCalledTimes(1);
-      uploadMaterialUniforms(context([red, green, red]));
-      expect(write).toHaveBeenCalledTimes(2);
-      expect(write.mock.calls[1]?.[1]).toBe(MATERIAL_PER_ENTITY_STRIDE);
-      expect(write.mock.calls[1]?.[4]).toBe(MATERIAL_PER_ENTITY_STRIDE);
-      red.baseColor[0] = 0.25;
-      uploadMaterialUniforms(context([red, green, red]));
-      expect(write).toHaveBeenCalledTimes(3);
-      expect(write.mock.calls[2]?.[4]).toBe(MATERIAL_PER_ENTITY_STRIDE * 3);
-      // A second view writes the same allocation. The first view must restore it.
-      uploadMaterialUniforms(context([green, green, green], {} as RenderFrameState));
-      uploadMaterialUniforms(context([red, green, red]));
-      expect(write).toHaveBeenCalledTimes(5);
-      expect(write.mock.calls[4]?.[1]).toBe(0);
-      expect(write.mock.calls[4]?.[4]).toBe(MATERIAL_PER_ENTITY_STRIDE * 3);
-      uploadMaterialUniforms(context([green, red, red]));
-      expect(write).toHaveBeenCalledTimes(6);
-      expect(write.mock.calls[5]?.[4]).toBe(MATERIAL_PER_ENTITY_STRIDE * 2);
-    } finally {
-      write.mockRestore();
-      device.destroyBuffer(buffer).unwrap();
-    }
+    },
+    frameState: { warnedMissingBaseColorTextureHandles: new Set<number>() },
+  } as unknown as PerSubmeshMaterialBgDeps;
+  return { deps, writeBuffer, world: {} as RenderResourceScope };
+}
+
+describe('draw-owned shared material storage', () => {
+  it('packs one edited root independently of 10,000 draw uses and 1,000 unrelated roots', () => {
+    const { deps, world, writeBuffer } = fixture();
+    const roots = Array.from({ length: 1001 }, () => material());
+    let frame = new MaterialFrame(undefined);
+    for (const root of roots) frame = frame.with(root);
+    prepareMaterialUniformFrame(deps.runtime, frame);
+    const resources = materialUniformResources([]);
+    for (const root of roots) prepareMaterialUniform(deps, root.snapshot, world, resources);
+    const before = deps.frameState.materialUboCounters?.packMisses;
+    writeBuffer.mockClear();
+    const changed = roots[0];
+    assert(changed);
+    changed.adopt({ ...changed.snapshot, baseColor: vec3.create(0, 1, 0) });
+    frame = frame.with(changed);
+    prepareMaterialUniformFrame(deps.runtime, frame);
+    expect(writeBuffer).not.toHaveBeenCalled();
+    for (let index = 0; index < 10_000; index++)
+      prepareMaterialUniform(deps, changed.snapshot, world, resources);
+    for (const root of roots) prepareMaterialUniform(deps, root.snapshot, world, resources);
+    expect(deps.frameState.materialUboCounters?.packMisses).toBe((before ?? 0) + 1);
+    expect(writeBuffer).toHaveBeenCalledTimes(1);
   });
 
-  it('reuses producer-owned immutable packing but still repacks ordinary mutable snapshots', async () => {
-    const device = (await (await rhi.requestAdapter()).unwrap().requestDevice()).unwrap();
-    const buffer = device.createBuffer({ size: MATERIAL_PER_ENTITY_STRIDE, usage: 0x48 }).unwrap();
-    let reads = 0;
-    const material: MaterialSnapshot = {
-      immutableValues: true,
-      baseColor: vec3.create(1, 0, 0),
-      metallic: 0,
-      roughness: 0.5,
-      materialParamSchema: [{ name: 'tint', type: 'vec4' }],
-      paramSnapshot: {
-        get tint() {
-          reads++;
-          return [1, 0, 0, 1];
-        },
-      },
-    };
-    const frameState = {} as RenderFrameState;
-    const context = (mat: MaterialSnapshot) =>
-      ({
-        runtime: { device },
-        frameState,
-        materialSlotCount: 1,
-        materialSlots: [mat],
-        materialSlotOwners: [{ renderableIndex: 0 }],
-        validatedOrdered: [],
-        pipelineState: { materialUniformBuffer: { buffer } },
-      }) as unknown as _InternalRenderPipelineContext;
-    const write = vi.spyOn(device.queue, 'writeBuffer');
-    try {
-      uploadMaterialUniforms(context(material));
-      uploadMaterialUniforms(context(material));
-      uploadMaterialUniforms(context(material));
-      expect(reads).toBe(2);
-      expect(write).toHaveBeenCalledTimes(1);
-      const { immutableValues: _, ...mutable } = material;
-      uploadMaterialUniforms(context(mutable));
-      uploadMaterialUniforms(context(mutable));
-      expect(reads).toBe(4);
-      expect(write).toHaveBeenCalledTimes(1);
-      const moved = { ...material };
-      uploadMaterialUniforms(context(moved));
-      uploadMaterialUniforms(context(moved));
-      const { materialParamSchema: schema, ...runtimeSchema } = material;
-      expect(schema).toBeDefined();
-      uploadMaterialUniforms(context(runtimeSchema));
-      expect(frameState.materialUboCounters).toMatchObject({
-        packHits: 1,
-        packMisses: 7,
-        packMissNoComparison: 1,
-        packMissMutable: 2,
-        packMissRuntimeSchema: 1,
-        packMissMovedSlot: 1,
-        packMissCold: 2,
-      });
-    } finally {
-      write.mockRestore();
-      device.destroyBuffer(buffer).unwrap();
-    }
+  it('native resource tuples invalidate only the actually changed root', () => {
+    const { deps, world, writeBuffer } = fixture();
+    const roots = Array.from({ length: 1000 }, () => material());
+    const textures = roots.map(() => ({}));
+    const sampler = {};
+    const identities = textures.map((texture) => materialUniformResources([sampler, texture]));
+    roots.forEach((root, index) => {
+      const identity = identities[index];
+      assert(identity);
+      prepareMaterialUniform(deps, root.snapshot, world, identity);
+    });
+    const packed = deps.frameState.materialUboCounters?.packMisses ?? 0;
+    writeBuffer.mockClear();
+    identities[617] = materialUniformResources([sampler, {}]);
+    roots.forEach((root, index) => {
+      const identity = identities[index];
+      assert(identity);
+      prepareMaterialUniform(deps, root.snapshot, world, identity);
+    });
+    expect(deps.frameState.materialUboCounters?.packMisses).toBe(packed + 1);
+    expect(writeBuffer).toHaveBeenCalledTimes(1);
+    const retainedTexture = textures[4];
+    assert(retainedTexture);
+    expect(materialUniformResources([sampler, retainedTexture])).toBe(identities[4]);
   });
-  it('compares current texture coordinate words even when immutable material values are cached', async () => {
-    const device = (await (await rhi.requestAdapter()).unwrap().requestDevice()).unwrap();
-    const buffer = device.createBuffer({ size: MATERIAL_PER_ENTITY_STRIDE, usage: 0x48 }).unwrap();
-    const schema: readonly ParamSchemaEntry[] = [
-      { name: 'color', type: 'vec4' },
-      { name: 'albedo', type: 'texture2d' },
-    ];
-    const offset = [0, 0] as [number, number];
-    const material: MaterialSnapshot = {
-      immutableValues: true,
-      baseColor: vec3.create(1, 0, 0),
-      roughness: 0.5,
-      metallic: 0,
-      materialParamSchema: schema,
-      paramSnapshot: { color: [1, 0, 0, 1] },
-      textureCoordinates: new Map([['albedo', { transform: { offset } }]]),
-    };
-    const frameState = {} as RenderFrameState;
-    const context = () =>
-      ({
-        runtime: { device },
-        frameState,
-        materialSlotCount: 1,
-        materialSlots: [material],
-        materialSlotOwners: [{ renderableIndex: 0 }],
-        validatedOrdered: [],
-        pipelineState: { materialUniformBuffer: { buffer } },
-      }) as unknown as _InternalRenderPipelineContext;
-    const write = vi.spyOn(device.queue, 'writeBuffer');
-    try {
-      uploadMaterialUniforms(context());
-      uploadMaterialUniforms(context());
-      uploadMaterialUniforms(context());
-      expect(write).toHaveBeenCalledTimes(1);
-      offset[0] = 0.25;
-      uploadMaterialUniforms(context());
-      expect(write).toHaveBeenCalledTimes(2);
-      const record = derive(schema, STANDARD_PIPELINE_PARAM_SCHEMA).coordinateRecords[0];
-      expect(record).toBeDefined();
-      expect(
-        new Float32Array(frameState.materialUboPayloadCache?.payload.buffer ?? new ArrayBuffer(0))[
-          (record?.offset ?? -4) / 4
-        ],
-      ).toBe(0.25);
-      // Changing the ABI must clear bytes written by fields removed from the new contract.
-      const replacement = {
-        ...material,
-        materialParamSchema: [{ name: 'color', type: 'vec4' }] as readonly ParamSchemaEntry[],
-        textureCoordinates: undefined,
-      };
-      uploadMaterialUniforms({
-        ...context(),
-        materialSlots: [replacement],
-      } as _InternalRenderPipelineContext);
-      expect(write).toHaveBeenCalledTimes(3);
-      expect(
-        new Float32Array(frameState.materialUboPayloadCache?.payload.buffer ?? new ArrayBuffer(0))[
-          (record?.offset ?? -4) / 4
-        ],
-      ).toBe(0);
-    } finally {
-      write.mockRestore();
-      device.destroyBuffer(buffer).unwrap();
-    }
+
+  it('restores a fixed earlier version in the same root address after a newer view', () => {
+    const { deps, world, writeBuffer } = fixture();
+    const root = material();
+    const old = root.snapshot;
+    const resources = materialUniformResources([]);
+    const firstSlot = prepareMaterialUniform(deps, old, world, resources);
+    root.adopt({ ...old, baseColor: vec3.create(0, 1, 0) });
+    expect(prepareMaterialUniform(deps, root.snapshot, world, resources)).toBe(firstSlot);
+    expect(prepareMaterialUniform(deps, old, world, resources)).toBe(firstSlot);
+    const bytes = writeBuffer.mock.calls.at(-1)?.[2] as Uint8Array;
+    expect(Array.from(new Float32Array(bytes.buffer).slice(0, 3))).toEqual([1, 0, 0]);
+    expect(deps.frameState.materialUboCounters?.packMisses).toBe(2);
   });
-  it('invalidates byte coverage when an unadmitted schema changes on the same array', async () => {
-    const device = (await (await rhi.requestAdapter()).unwrap().requestDevice()).unwrap();
-    const buffer = device.createBuffer({ size: MATERIAL_PER_ENTITY_STRIDE, usage: 0x48 }).unwrap();
-    const schema: ParamSchemaEntry[] = [
-      { name: 'keep', type: 'vec4' },
-      { name: 'old', type: 'f32' },
-    ];
-    const material: MaterialSnapshot = {
-      baseColor: vec3.create(1, 0, 0),
-      metallic: 0,
-      roughness: 0.5,
-      materialParamSchema: schema,
-      paramSnapshot: { keep: [1, 0, 0, 1], old: 7, next: 9 },
+
+  it('retries all overlapping physical pages after a partial failure and admits new pages', () => {
+    const { deps, world, writeBuffer } = fixture();
+    const root = material();
+    const pages = {
+      byteStride: MATERIAL_PER_ENTITY_STRIDE / 2,
+      byteSize: MATERIAL_PER_ENTITY_STRIDE,
+      buffers: [{} as Buffer, {} as Buffer],
     };
-    const frameState = {} as RenderFrameState;
-    const context = () =>
-      ({
-        runtime: { device },
-        frameState,
-        materialSlotCount: 1,
-        materialSlots: [material],
-        materialSlotOwners: [{ renderableIndex: 0 }],
-        validatedOrdered: [],
-        pipelineState: { materialUniformBuffer: { buffer } },
-      }) as unknown as _InternalRenderPipelineContext;
-    const write = vi.spyOn(device.queue, 'writeBuffer');
-    try {
-      uploadMaterialUniforms(context());
-      uploadMaterialUniforms(context());
-      expect(write).toHaveBeenCalledTimes(1);
-      schema[1] = { name: 'next', type: 'f32' };
-      uploadMaterialUniforms(context());
-      expect(write).toHaveBeenCalledTimes(2);
-      expect(
-        new Float32Array(
-          frameState.materialUboPayloadCache?.payload.buffer ?? new ArrayBuffer(0),
-        )[4],
-      ).toBe(9);
-      schema.splice(1, 1);
-      uploadMaterialUniforms(context());
-      expect(write).toHaveBeenCalledTimes(3);
-      expect(
-        new Float32Array(
-          frameState.materialUboPayloadCache?.payload.buffer ?? new ArrayBuffer(0),
-        )[4],
-      ).toBe(0);
-    } finally {
-      write.mockRestore();
-      device.destroyBuffer(buffer).unwrap();
-    }
+    Object.assign(deps.pipelineState.materialUniformBuffer, { buffer: null, pages });
+    const resources = materialUniformResources([]);
+    const failure = new Error('second page failed');
+    writeBuffer.mockReturnValueOnce(ok(undefined)).mockReturnValueOnce(err(failure));
+    expect(() => prepareMaterialUniform(deps, root.snapshot, world, resources)).toThrow(failure);
+    prepareMaterialUniform(deps, root.snapshot, world, resources);
+    expect(writeBuffer.mock.calls.map((call) => call[0])).toEqual([
+      pages.buffers[0],
+      pages.buffers[1],
+      pages.buffers[0],
+      pages.buffers[1],
+    ]);
+    writeBuffer.mockClear();
+    prepareMaterialUniform(deps, root.snapshot, world, resources);
+    expect(writeBuffer).not.toHaveBeenCalled();
   });
+
+  it('frees removed root addresses through MaterialFrame deltas and restores skipped versions', () => {
+    const { deps } = fixture();
+    const a = material(),
+      b = material();
+    const first = new MaterialFrame(undefined).with(a).with(b);
+    expect(prepareMaterialUniformFrame(deps.runtime, first)).toBe(2);
+    const aSlot = materialUniformSlot(deps.runtime, a.snapshot);
+    const bSlot = materialUniformSlot(deps.runtime, b.snapshot);
+    expect(
+      prepareMaterialUniformFrame(deps.runtime, new MaterialFrame(undefined).with(b)),
+    ).toBeLessThanOrEqual(2);
+    const c = material();
+    expect(
+      prepareMaterialUniformFrame(deps.runtime, new MaterialFrame(undefined).with(b).with(c)),
+    ).toBe(2);
+    expect(materialUniformSlot(deps.runtime, c.snapshot)).toBe(aSlot);
+    expect(materialUniformSlot(deps.runtime, b.snapshot)).toBe(bSlot);
+    expect(prepareMaterialUniformFrame(deps.runtime, first)).toBe(2);
+    expect(materialUniformSlot(deps.runtime, a.snapshot)).toBe(aSlot);
+  });
+});
+
+it('forks only unsubmitted versions and reuses a single slot across ordinary submitted frames', () => {
+  const { deps, world } = fixture();
+  const root = material();
+  const resources = materialUniformResources([]);
+  let original = -1;
+  for (let frame = 0; frame < 60; frame++) {
+    root.adopt({ ...root.snapshot, roughness: frame / 60 });
+    recordMaterialUniforms(() => {
+      const slot = prepareMaterialUniform(deps, root.snapshot, world, resources);
+      if (frame === 0) original = slot;
+      expect(slot).toBe(original);
+    });
+  }
+  const old = root.snapshot;
+  let latest = -1;
+  recordMaterialUniforms(() => {
+    const first = prepareMaterialUniform(deps, old, world, resources);
+    root.adopt({ ...old, roughness: 0.25 });
+    latest = prepareMaterialUniform(deps, root.snapshot, world, resources);
+    expect(latest).not.toBe(first);
+    expect(prepareMaterialUniform(deps, old, world, resources)).toBe(first);
+  });
+  recordMaterialUniforms(() =>
+    expect(prepareMaterialUniform(deps, root.snapshot, world, resources)).toBe(latest),
+  );
+  const failure = new Error('record rejected');
+  expect(() =>
+    recordMaterialUniforms(() => {
+      prepareMaterialUniform(deps, root.snapshot, world, resources);
+      root.adopt({ ...root.snapshot, roughness: 0.75 });
+      prepareMaterialUniform(deps, root.snapshot, world, resources);
+      throw failure;
+    }),
+  ).toThrow(failure);
+  root.adopt({ ...root.snapshot, roughness: 1 });
+  expect(prepareMaterialUniformFrame(deps.runtime, new MaterialFrame(undefined).with(root))).toBe(
+    1,
+  );
+});
+
+it('shares uniform allocation between capture and display runtimes using the same physical storage', () => {
+  const { deps, world, writeBuffer } = fixture();
+  Object.assign(deps.runtime, { meshSsboState: {} });
+  const capture = { ...deps, runtime: Object.create(deps.runtime) };
+  const red = material(1);
+  const green = material(0);
+  green.adopt({ ...green.snapshot, baseColor: vec3.create(0, 1, 0) });
+  const resources = materialUniformResources([]);
+  prepareMaterialUniformFrame(deps.runtime, new MaterialFrame(undefined).with(red).with(green));
+  recordMaterialUniforms(() => {
+    const captured = prepareMaterialUniform(capture, green.snapshot, world, resources);
+    const display = prepareMaterialUniform(deps, red.snapshot, world, resources);
+    expect(display).not.toBe(captured);
+    expect(materialUniformSlot(capture.runtime, green.snapshot)).toBe(captured);
+    expect(prepareMaterialUniform(deps, green.snapshot, world, resources)).toBe(captured);
+    const writes = new Map<number, Uint8Array>();
+    for (const [, offset, bytes] of writeBuffer.mock.calls) writes.set(offset, bytes);
+    const values = (slot: number) => {
+      const bytes = writes.get(slot * MATERIAL_PER_ENTITY_STRIDE);
+      assert(bytes);
+      return Array.from(new Float32Array(bytes.buffer).slice(0, 3));
+    };
+    expect(values(captured)).toEqual([0, 1, 0]);
+    expect(values(display)).toEqual([1, 0, 0]);
+  });
+});
+
+it('pins earlier versions across suspended preparation without leaking into another recording', () => {
+  const { deps, world } = fixture();
+  const root = material();
+  const resources = materialUniformResources([]);
+  const original = root.snapshot;
+  const suspended = new MaterialUniformRecording();
+  const first = suspended.run(() => prepareMaterialUniform(deps, original, world, resources));
+  root.adopt({ ...original, roughness: 0.25 });
+  let second = -1;
+  recordMaterialUniforms(() => {
+    second = prepareMaterialUniform(deps, root.snapshot, world, resources);
+    expect(second).not.toBe(first);
+  });
+  suspended.run(() => {
+    expect(prepareMaterialUniform(deps, original, world, resources)).toBe(first);
+    expect(prepareMaterialUniform(deps, root.snapshot, world, resources)).toBe(second);
+  });
+  root.adopt({ ...root.snapshot, roughness: 0.75 });
+  const third = prepareMaterialUniform(deps, root.snapshot, world, resources);
+  expect(third).not.toBe(first);
+  expect(third).not.toBe(second);
+  suspended.complete();
+  suspended.complete();
+  root.adopt({ ...root.snapshot, roughness: 1 });
+  expect(prepareMaterialUniformFrame(deps.runtime, new MaterialFrame(undefined).with(root))).toBe(
+    1,
+  );
 });

@@ -21,24 +21,17 @@
 // env, and skips itself when navigator.gpu is absent (the per-package unit
 // project) rather than failing.
 
-import { AssetRegistry } from '@forgeax/engine-assets-runtime';
-import { AssetGuid } from '@forgeax/engine-pack/guid';
+import { AssetRegistry, createCatalogSource } from '@forgeax/engine-assets-runtime';
+import { equirectContribution } from '@forgeax/engine-image';
+import { createRuntimePackPublication } from '@forgeax/engine-pack/runtime';
 import type { EquirectAsset } from '@forgeax/engine-types';
 import { beforeAll, describe, expect, it } from 'vitest';
 import { deriveRenderDataCubemap } from '../../../render/src/render-data';
-import { makeMockShaderRegistry } from './helpers/mock-shader-registry';
 
 const gpu = globalThis.navigator?.gpu;
 const hasGpu = gpu !== undefined;
 
 const GUID_EQUI = 'c0000000-0000-4000-a000-000065717569';
-const PACK_INDEX_URL = '/test-equirect-renderable-pack-index.json';
-
-function parseGuid(g: string): AssetGuid {
-  const parsed = AssetGuid.parse(g);
-  if (!parsed.ok) throw new Error(`bad guid ${g}`);
-  return parsed.value;
-}
 
 /** A deterministic WxH rgba16float (IEEE-754 binary16) HDR image. */
 function makeHdrHalf(w: number, h: number): Uint8Array {
@@ -59,8 +52,8 @@ describe.skipIf(!hasGpu)('equirect renderable-source integration (feat-20260707 
   const width = 64;
   const height = 32;
   let binBytes: Uint8Array;
-  const packageUrl = '/ddc/equirect.pack.json';
-  const artifactUrl = '/ddc/equirect.bin';
+  const packageUrl = 'https://equirect.invalid/equirect.pack.json';
+  const artifactUrl = 'https://equirect.invalid/equirect.bin';
 
   beforeAll(async () => {
     // biome-ignore lint/style/noNonNullAssertion: skipIf(!hasGpu) guards this
@@ -76,59 +69,73 @@ describe.skipIf(!hasGpu)('equirect renderable-source integration (feat-20260707 
     binBytes = makeHdrHalf(width, height);
   });
 
-  function wireFetch(): void {
-    globalThis.fetch = (async (input: RequestInfo | URL) => {
-      const url = typeof input === 'string' ? input : String(input);
-      if (url === PACK_INDEX_URL) {
-        return {
-          ok: true,
-          json: async () => [{ guid: GUID_EQUI, packageUrl, kind: 'equirect' }],
-        } as Response;
-      }
-      if (url === packageUrl) {
-        return {
-          ok: true,
-          json: async () => ({
-            schemaVersion: '2.0.0',
-            kind: 'internal-text-package',
-            assets: [
-              {
-                guid: GUID_EQUI,
-                kind: 'equirect',
-                payload: {
-                  kind: 'equirect',
-                  width,
-                  height,
-                  format: 'rgba16float',
-                  colorSpace: 'linear',
-                },
-                refs: [],
-                artifacts: {
-                  body: {
-                    path: 'equirect.bin',
-                    mediaType: 'application/x-forgeax-rgba16f',
-                  },
-                },
-              },
-            ],
-          }),
-        } as Response;
-      }
-      if (url === artifactUrl) {
-        return { ok: true, arrayBuffer: async () => binBytes.buffer } as Response;
-      }
-      return { ok: false, status: 404 } as Response;
-    }) as typeof globalThis.fetch;
-  }
-
   async function loadEquirect(): Promise<EquirectAsset> {
-    wireFetch();
-    const reg = new AssetRegistry(makeMockShaderRegistry());
-    reg.configurePackIndex(PACK_INDEX_URL);
+    const reg = new AssetRegistry();
+    reg.installDecoder(equirectContribution.kind, equirectContribution.decoder);
+    const sourcePath = 'equirect.pack.ts';
+    const digest = `sha256:${Array.from(
+      new Uint8Array(await crypto.subtle.digest('SHA-256', new Uint8Array(binBytes))),
+      (byte) => byte.toString(16).padStart(2, '0'),
+    ).join('')}`;
+    const publication = createRuntimePackPublication({
+      scopeId: 'asset-runtime',
+      sourcePath,
+      sourceRevision: 'fixture',
+      packageUrl,
+      pack: {
+        assets: [
+          {
+            guid: GUID_EQUI,
+            kind: 'equirect',
+            payload: {
+              kind: 'equirect',
+              width,
+              height,
+              format: 'rgba16float',
+              colorSpace: 'linear',
+            },
+            refs: [],
+            artifacts: {
+              body: {
+                path: 'equirect.bin',
+                mediaType: 'application/x-forgeax-rgba16f',
+                contentEncoding: 'identity',
+                byteLength: binBytes.byteLength,
+                integrity: { algorithm: 'sha256', digest },
+              },
+            },
+          },
+        ],
+      },
+    });
+    reg.setCatalogSource(
+      createCatalogSource({
+        entries: [
+          {
+            guid: GUID_EQUI,
+            kind: 'equirect',
+            sourcePath,
+            packageUrl,
+            publication: publication.publication,
+          },
+        ],
+        fetch: async (input) => {
+          const url = String(input);
+          if (url === packageUrl) return new Response(JSON.stringify(publication.pack));
+          if (url === artifactUrl) return new Response(new Uint8Array(binBytes));
+          return new Response('', { status: 404 });
+        },
+      }),
+    );
     reg.setTranscodeCaps({ bc: bcCap, etc2: false, astc: false });
-    const res = await reg.loadByGuid<EquirectAsset>(parseGuid(GUID_EQUI));
-    if (!res.ok) throw new Error(`equirect load failed: ${(res.error as { code: string }).code}`);
-    return res.value;
+    try {
+      const handle = (await reg.load(GUID_EQUI, 'equirect')).unwrap();
+      const asset = reg.read(handle).unwrap();
+      reg.release(handle).unwrap();
+      return asset;
+    } finally {
+      reg.dispose();
+    }
   }
 
   it('equirect is uncompressed rgba16float regardless of bc cap (IBL render source)', async () => {
@@ -137,6 +144,7 @@ describe.skipIf(!hasGpu)('equirect renderable-source integration (feat-20260707 
     // Never a block-compressed format: an equirect drives cube RENDER passes and
     // BC6H is not color-renderable.
     expect(asset.format).toBe('rgba16float');
+    expect(asset.data).toEqual(binBytes);
   });
 
   it('deriveRenderDataCubemap accepts the rgba16float equirect (renderable cube source)', async () => {

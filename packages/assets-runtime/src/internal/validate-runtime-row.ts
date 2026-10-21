@@ -14,7 +14,7 @@ function invalidRow(guid: string, reason: string): Result<never, AssetLoadError>
   });
 }
 
-export function validateCatalogRow(row: CatalogEntry): Result<CatalogEntry, AssetLoadError> {
+function validateCatalogRow(row: CatalogEntry): Result<CatalogEntry, AssetLoadError> {
   if (row === null || typeof row !== 'object') return invalidRow('', 'row');
   const candidate = row as Partial<CatalogEntry>;
   const guid = typeof candidate.guid === 'string' ? candidate.guid : '';

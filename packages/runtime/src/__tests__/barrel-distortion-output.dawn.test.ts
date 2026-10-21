@@ -1,5 +1,6 @@
-import { HANDLE_CUBE } from '@forgeax/engine-assets-runtime';
+import { AssetRegistry } from '@forgeax/engine-assets-runtime';
 import { World } from '@forgeax/engine-ecs';
+import { createBoxGeometry } from '@forgeax/engine-geometry';
 import {
   ANTIALIAS_FXAA,
   ANTIALIAS_NONE,
@@ -20,7 +21,7 @@ import {
   VolumetricFog,
 } from '@forgeax/engine-render';
 import { registerPropagateTransforms, Transform } from '@forgeax/engine-scene';
-import { createStandaloneRuntimeAssetBinding, type TextureAsset } from '@forgeax/engine-types';
+import type { TextureAsset } from '@forgeax/engine-types';
 import { describe, expect, it } from 'vitest';
 import {
   BARREL_GPU_HEIGHT,
@@ -75,6 +76,7 @@ function spawnSelectionCamera(
 
 function spawnBarrelScene(
   world: World,
+  assets: AssetRegistry,
   options: {
     readonly clearColor: readonly [number, number, number, number];
     readonly barrel?: {
@@ -92,10 +94,11 @@ function spawnBarrelScene(
     readonly depthOfField?: boolean;
   },
 ) {
+  const cube = assets.create(createBoxGeometry(1, 1, 1).unwrap()).unwrap();
   const geometryMaterial =
     options.geometryColor === undefined
       ? undefined
-      : world.allocSharedRef('MaterialAsset', Materials.unlit(options.geometryColor));
+      : assets.create(Materials.unlit(options.geometryColor)).unwrap();
   if (options.geometry) {
     for (const position of [-1.15, 0, 1.15]) {
       world.spawn(
@@ -107,7 +110,7 @@ function spawnBarrelScene(
             scale: [0.7, 1.6, 0.35],
           },
         },
-        { component: MeshFilter, data: { assetHandle: HANDLE_CUBE } },
+        { component: MeshFilter, data: { assetHandle: cube } },
         {
           component: MeshRenderer,
           data: geometryMaterial === undefined ? {} : { materials: [geometryMaterial] },
@@ -122,28 +125,25 @@ function spawnBarrelScene(
       [0, 2.2, [0.1, 0.95, 0.2, 1]],
       [0, -1.6, [0.95, 0.8, 0.1, 1]],
     ] as const) {
-      const material = world.allocSharedRef('MaterialAsset', Materials.unlit(color));
+      const material = assets.create(Materials.unlit(color)).unwrap();
       world.spawn(
         {
           component: Transform,
           data: { pos: [x, y, -0.4], scale: [0.08, 0.9, 0.08] },
         },
-        { component: MeshFilter, data: { assetHandle: HANDLE_CUBE } },
+        { component: MeshFilter, data: { assetHandle: cube } },
         { component: MeshRenderer, data: { materials: [material] } },
       );
     }
   }
   if (options.highContrastEdge === true) {
-    const material = world.allocSharedRef(
-      'MaterialAsset',
-      Materials.unlit([1, 1, 1, options.edgeAlpha ?? 0.5]),
-    );
+    const material = assets.create(Materials.unlit([1, 1, 1, options.edgeAlpha ?? 0.5])).unwrap();
     world.spawn(
       {
         component: Transform,
         data: { pos: [0, 0, 0], scale: [0.12, 2.6, 0.35] },
       },
-      { component: MeshFilter, data: { assetHandle: HANDLE_CUBE } },
+      { component: MeshFilter, data: { assetHandle: cube } },
       { component: MeshRenderer, data: { materials: [material] } },
     );
   }
@@ -192,8 +192,9 @@ function spawnBarrelScene(
   return cameraEntity;
 }
 
-function spawnTemporalHighContrastEdge(world: World) {
-  const edgeMaterial = world.allocSharedRef('MaterialAsset', Materials.unlit([1, 1, 1, 1]));
+function spawnTemporalHighContrastEdge(world: World, assets: AssetRegistry) {
+  const cube = assets.create(createBoxGeometry(1, 1, 1).unwrap()).unwrap();
+  const edgeMaterial = assets.create(Materials.unlit([1, 1, 1, 1])).unwrap();
   const edge = world
     .spawn(
       {
@@ -204,7 +205,7 @@ function spawnTemporalHighContrastEdge(world: World) {
           scale: [0.12, 2.6, 0.35],
         },
       },
-      { component: MeshFilter, data: { assetHandle: HANDLE_CUBE } },
+      { component: MeshFilter, data: { assetHandle: cube } },
       { component: MeshRenderer, data: { materials: [edgeMaterial] } },
     )
     .unwrap();
@@ -484,8 +485,8 @@ describe('barrel distortion real output on Dawn', () => {
   it('admits the selected camera only across a production switch and retirement', async () => {
     const fixture = await createBarrelRendererFixture();
     try {
-      const world = new World();
-      const disabledCamera = spawnBarrelScene(world, {
+      const world = new World({ assets: fixture.assets });
+      const disabledCamera = spawnBarrelScene(world, fixture.assets, {
         clearColor: [0.02, 0.02, 0.02, 1],
         geometry: true,
       });
@@ -537,8 +538,8 @@ describe('barrel distortion real output on Dawn', () => {
   it('keeps the typed rgba16float intermediate when FXAA follows the warp', async () => {
     const fixture = await createBarrelRendererFixture();
     try {
-      const world = new World();
-      spawnBarrelScene(world, {
+      const world = new World({ assets: fixture.assets });
+      spawnBarrelScene(world, fixture.assets, {
         clearColor: [0.02, 0.02, 0.02, 1],
         barrel: { strength: 0.2, centerX: 0.5, centerY: 0.5 },
         geometry: true,
@@ -591,8 +592,8 @@ describe('barrel distortion real output on Dawn', () => {
   it('keeps a moving high-contrast edge stable through TAA, MotionBlur, and Barrel', async () => {
     const fixture = await createBarrelRendererFixture();
     try {
-      const world = new World();
-      const { edge } = spawnTemporalHighContrastEdge(world);
+      const world = new World({ assets: fixture.assets });
+      const { edge } = spawnTemporalHighContrastEdge(world, fixture.assets);
       const attached = fixture.renderer.attach(world);
       expect(attached.ok).toBe(true);
       if (!attached.ok) throw attached.error;
@@ -700,8 +701,8 @@ describe('barrel distortion real output on Dawn', () => {
   it('composes active Barrel with VolumetricFog through a real Dawn readback', async () => {
     const fixture = await createBarrelRendererFixture();
     try {
-      const world = new World();
-      spawnBarrelScene(world, {
+      const world = new World({ assets: fixture.assets });
+      spawnBarrelScene(world, fixture.assets, {
         clearColor: [0.015, 0.02, 0.035, 1],
         barrel: { strength: 0.2, centerX: 0.5, centerY: 0.5 },
         geometry: true,
@@ -723,31 +724,8 @@ describe('barrel distortion real output on Dawn', () => {
           },
         })
         .unwrap();
-      const densityGuid = 'dab53d78-d233-4c79-8cb3-c03f33130003';
-      const densitySourceKey = 'test://barrel-distortion-output/volume-density';
-      const binding = createStandaloneRuntimeAssetBinding('barrel-distortion-output-volume');
-      const catalog = {
-        schemaVersion: 'runtime-catalog-snapshot-v1',
-        scopeId: binding.scopeId,
-        generation: binding.generation,
-        authority: 'authoritative',
-        entries: [
-          {
-            guid: densityGuid,
-            kind: 'texture',
-            packageUrl: 'data:application/json,{}',
-            sourceKey: densitySourceKey,
-          },
-        ],
-      } as const;
-      fixture.assets.configureRuntimeBinding({
-        ...binding,
-        catalogUrl: `data:application/json,${encodeURIComponent(JSON.stringify(catalog))}`,
-      });
-      expect(await fixture.assets.refreshCatalog()).toBe(true);
       const densityAsset = createConstantVolumeDensity();
-      fixture.assets.catalog(densityGuid, densityAsset).unwrap();
-      const density = world.allocSharedRef('TextureAsset', densityAsset);
+      const density = fixture.assets.create(densityAsset).unwrap();
       const releaseTransforms = registerPropagateTransforms(world);
       const attached = fixture.renderer.attach(world);
       expect(attached.ok).toBe(true);
@@ -814,7 +792,7 @@ describe('barrel distortion real output on Dawn', () => {
         }),
       );
       world.despawn(fog).unwrap();
-      world.sharedRefs.release(density).unwrap();
+      fixture.assets.release(density).unwrap();
       releaseTransforms();
     } finally {
       await fixture.renderer.dispose();
@@ -824,33 +802,10 @@ describe('barrel distortion real output on Dawn', () => {
   it('keeps HDR, non-identity LUT, alpha, and one final encoding in order', async () => {
     const fixture = await createBarrelRendererFixture();
     try {
-      const world = new World();
-      const lutGuid = 'dab53d78-d233-4c79-8cb3-c03f33130002';
-      const lutSourceKey = 'test://barrel-distortion-output/channel-swap-lut';
-      const binding = createStandaloneRuntimeAssetBinding('barrel-distortion-output-lut');
-      const catalog = {
-        schemaVersion: 'runtime-catalog-snapshot-v1',
-        scopeId: binding.scopeId,
-        generation: binding.generation,
-        authority: 'authoritative',
-        entries: [
-          {
-            guid: lutGuid,
-            kind: 'texture',
-            packageUrl: 'data:application/json,{}',
-            sourceKey: lutSourceKey,
-          },
-        ],
-      } as const;
-      fixture.assets.configureRuntimeBinding({
-        ...binding,
-        catalogUrl: `data:application/json,${encodeURIComponent(JSON.stringify(catalog))}`,
-      });
-      expect(await fixture.assets.refreshCatalog()).toBe(true);
+      const world = new World({ assets: fixture.assets });
       const lut = createChannelSwapLut();
-      fixture.assets.catalog(lutGuid, lut).unwrap();
-      const lutHandle = world.allocSharedRef('TextureAsset', lut);
-      const camera = spawnBarrelScene(world, {
+      const lutHandle = fixture.assets.create(lut).unwrap();
+      const camera = spawnBarrelScene(world, fixture.assets, {
         // The red channel is deliberately HDR. TONEMAP_LINEAR clamps it in
         // the rgba16float path before the LUT and final OETF.
         // Target alpha byte 128 without placing it halfway between UNORM8
@@ -899,7 +854,8 @@ describe('barrel distortion real output on Dawn', () => {
       );
       expect(enabled.receipt.barrelDistortion?.strength).toBeCloseTo(0.2, 6);
       expect(enabledInspection.output.displayEncoded).toBe(true);
-      expect(enabledInspection.output.standardLut?.sourceKey).toBe(lutSourceKey);
+      const lutSourceKey = enabledInspection.output.standardLut?.sourceKey;
+      expect(lutSourceKey).toBeTruthy();
       expect(lutIndex).toBeGreaterThan(enabledPasses.indexOf('standard-tone'));
       expect(barrelIndex).toBeGreaterThan(lutIndex);
       expect(fxaaIndex).toBeGreaterThan(barrelIndex);
@@ -934,6 +890,38 @@ describe('barrel distortion real output on Dawn', () => {
       expect(enabledCenter[0]).toBeLessThan(disabledCenter[0]);
       expect(enabledCenter[2]).toBeGreaterThan(disabledCenter[2]);
       expect(countRgbDifferences(enabled.pixels, disabled.pixels)).toBeGreaterThan(0);
+
+      world.set(camera, Camera, { colorLut: lutHandle, colorLutStrength: 1 }).unwrap();
+      await drawFrame();
+      const generation = fixture.renderer.inspect().recoveryEvidence.graph.generation;
+      fixture.assets.update(lutHandle, { data: new Uint8Array(lut.data.byteLength) }).unwrap();
+      const edited = await drawFrame();
+      expect(rgbAt(edited.pixels, BARREL_GPU_WIDTH >> 1, BARREL_GPU_HEIGHT >> 1)).toEqual([
+        0, 0, 0,
+      ]);
+      expect(edited.pixels[centerOffset + 3]).toBe(128);
+      expect(fixture.renderer.inspect().recoveryEvidence.graph.generation).toBe(generation);
+      expect(fixture.renderer.inspect().output.standardLut?.sourceKey).toBe(lutSourceKey);
+      fixture.assets.update(lutHandle, { data: lut.data }).unwrap();
+      const restored = await drawFrame();
+      expect(maxRgbDelta(restored.pixels, enabled.pixels)).toBeLessThanOrEqual(1);
+
+      world.set(camera, BarrelDistortion, { strength: 0 }).unwrap();
+      world.set(camera, Camera, { antialias: ANTIALIAS_NONE }).unwrap();
+      const fused = await drawFrame();
+      expect(fixture.renderer.inspect().output.graphPassNames).toContain(
+        'standard-tone-lut-output',
+      );
+      const fusedGeneration = fixture.renderer.inspect().recoveryEvidence.graph.generation;
+      fixture.assets.update(lutHandle, { data: new Uint8Array(lut.data.byteLength) }).unwrap();
+      const fusedEdited = await drawFrame();
+      expect(rgbAt(fusedEdited.pixels, BARREL_GPU_WIDTH >> 1, BARREL_GPU_HEIGHT >> 1)).toEqual([
+        0, 0, 0,
+      ]);
+      expect(fusedEdited.pixels[centerOffset + 3]).toBe(128);
+      expect(fixture.renderer.inspect().recoveryEvidence.graph.generation).toBe(fusedGeneration);
+      fixture.assets.update(lutHandle, { data: lut.data }).unwrap();
+      expect(maxRgbDelta((await drawFrame()).pixels, fused.pixels)).toBeLessThanOrEqual(1);
     } finally {
       await fixture.renderer.dispose();
     }
@@ -960,8 +948,8 @@ describe('barrel distortion real output on Dawn', () => {
         expect(observed.value.observations).toHaveLength(1);
         return receipt.value;
       };
-      const noFxaaWorld = new World();
-      spawnBarrelScene(noFxaaWorld, {
+      const noFxaaWorld = new World({ assets: fixture.assets });
+      spawnBarrelScene(noFxaaWorld, fixture.assets, {
         // Keep both sides of the high-contrast edge at the authored alpha so
         // FXAA can move RGB across the edge without fabricating alpha.
         clearColor: [0, 0, 0, 0.5],
@@ -973,8 +961,9 @@ describe('barrel distortion real output on Dawn', () => {
       await drawWithLinearObservation(noFxaaWorld);
       const noFxaa = await readBarrelPixels(fixture.device, fixture.renderTarget);
 
-      const fxaaWorld = new World();
-      spawnBarrelScene(fxaaWorld, {
+      const fxaaAssets = new AssetRegistry({ shaderRegistry: fixture.assets.shaderRegistry });
+      const fxaaWorld = new World({ assets: fxaaAssets });
+      spawnBarrelScene(fxaaWorld, fxaaAssets, {
         clearColor: [0, 0, 0, 0.5],
         geometry: false,
         highContrastEdge: true,
@@ -1107,8 +1096,8 @@ describe('barrel distortion real output on Dawn', () => {
   it('changes the submitted picture, keeps the disabled baseline, and has no white-source holes', async () => {
     const fixture = await createBarrelRendererFixture();
     try {
-      const world = new World();
-      const camera = spawnBarrelScene(world, {
+      const world = new World({ assets: fixture.assets });
+      const camera = spawnBarrelScene(world, fixture.assets, {
         clearColor: [0.02, 0.02, 0.02, 1],
         geometry: true,
       });
@@ -1169,8 +1158,9 @@ describe('barrel distortion real output on Dawn', () => {
       expect(disabledReceipt.value.barrelDistortion?.strength).toBe(0);
       expect(countRgbDifferences(baseline, disabled)).toBe(0);
 
-      const whiteWorld = new World();
-      spawnBarrelScene(whiteWorld, {
+      const whiteAssets = new AssetRegistry({ shaderRegistry: fixture.assets.shaderRegistry });
+      const whiteWorld = new World({ assets: whiteAssets });
+      spawnBarrelScene(whiteWorld, whiteAssets, {
         clearColor: [1, 1, 1, 1],
         barrel: { strength: 0.35, centerX: 0.5, centerY: 0.5 },
         geometry: false,
@@ -1188,8 +1178,9 @@ describe('barrel distortion real output on Dawn', () => {
       }
       expect(dimPixels).toBe(0);
 
-      const offCenterWorld = new World();
-      spawnBarrelScene(offCenterWorld, {
+      const offCenterAssets = new AssetRegistry({ shaderRegistry: fixture.assets.shaderRegistry });
+      const offCenterWorld = new World({ assets: offCenterAssets });
+      spawnBarrelScene(offCenterWorld, offCenterAssets, {
         clearColor: [0.02, 0.02, 0.02, 1],
         geometry: true,
         edgeRods: true,

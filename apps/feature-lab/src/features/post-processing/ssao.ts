@@ -1,7 +1,9 @@
+import { AssetRegistry } from '@forgeax/engine/assets-runtime';
+import { createPrimitiveMesh } from '@forgeax/engine/geometry';
 import { DEFAULT_STANDARD_PROFILE, PointLight, Skylight } from '@forgeax/engine/render';
 import { Transform } from '@forgeax/engine/scene';
 import { CheckList, defineFeature, type FeatureDefinition } from '../../lab/feature';
-import { MESH, spawnCamera, spawnMesh, standard } from '../../lab/stage';
+import { spawnCamera, spawnMesh, standard } from '../../lab/stage';
 
 const AO = {
   algorithm: 'gtao',
@@ -23,12 +25,20 @@ export default defineFeature<FeatureDefinition>({
     standardProfile: { ...DEFAULT_STANDARD_PROFILE, renderPath: 'deferred', ssao: AO },
   },
   setup({ app, world, frames }) {
+    const primitiveAssets = world.assets;
+    if (!(primitiveAssets instanceof AssetRegistry))
+      throw new Error('Scene requires its runtime asset owner');
+
+    const stageCube = primitiveAssets.create(createPrimitiveMesh('cube').unwrap()).unwrap();
+
+    const stageSphere = primitiveAssets.create(createPrimitiveMesh('sphere').unwrap()).unwrap();
+
     const grey = standard(world, { baseColor: [0.8, 0.8, 0.8, 1], roughness: 0.9 });
-    spawnMesh(world, MESH.cube, grey, { pos: [0, -0.05, 0], scale: [12, 0.1, 12] });
-    spawnMesh(world, MESH.cube, grey, { pos: [0, 1.5, -1.6], scale: [6, 3, 0.3] });
-    spawnMesh(world, MESH.cube, grey, { pos: [-1, 0.5, -0.5], scale: [1, 1, 1] });
-    spawnMesh(world, MESH.cube, grey, { pos: [0.3, 0.4, -0.9], scale: [0.8, 0.8, 0.8] });
-    spawnMesh(world, MESH.sphere, grey, { pos: [1.3, 0.5, 0], scale: [0.5, 0.5, 0.5] });
+    spawnMesh(world, stageCube, grey, { pos: [0, -0.05, 0], scale: [12, 0.1, 12] });
+    spawnMesh(world, stageCube, grey, { pos: [0, 1.5, -1.6], scale: [6, 3, 0.3] });
+    spawnMesh(world, stageCube, grey, { pos: [-1, 0.5, -0.5], scale: [1, 1, 1] });
+    spawnMesh(world, stageCube, grey, { pos: [0.3, 0.4, -0.9], scale: [0.8, 0.8, 0.8] });
+    spawnMesh(world, stageSphere, grey, { pos: [1.3, 0.5, 0], scale: [0.5, 0.5, 0.5] });
     world
       .spawn({ component: Skylight, data: { color: [1, 1, 1], intensity: 1.2 } as never })
       .unwrap();

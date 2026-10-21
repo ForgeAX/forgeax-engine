@@ -1,6 +1,7 @@
-import { toShared } from '@forgeax/engine-types';
+import type { AssetHandle } from '@forgeax/engine-types';
 import { expect, it } from 'vitest';
 import { preparedSnapshot } from '../../__tests__/gpu-driven-production-fixture';
+import { MaterialResource } from '../../material-resource';
 import type { MaterialSnapshot } from '../../render-system-extract';
 import { CanvasTexture } from '../../textures/canvas-texture';
 import {
@@ -17,14 +18,14 @@ it('keeps candidate texture consumer changes separate from the accepted roster',
   const changedRow = {
     ...row,
     materials: [
-      {
-        ...row.material,
+      new MaterialResource({
+        ...row.material.snapshot,
         videoTextureFields: new Map([
-          ['a', toShared<'VideoAsset'>(11)],
-          ['b', toShared<'VideoAsset'>(11)],
-          ['c', toShared<'VideoAsset'>(3)],
+          ['a', Number(11) as AssetHandle<'video'>],
+          ['b', Number(11) as AssetHandle<'video'>],
+          ['c', Number(3) as AssetHandle<'video'>],
         ]),
-      },
+      }),
     ],
   };
   const candidate = projectTextureConsumers(prior, new Set([7]), [changedRow], materialVideoClips);
@@ -40,18 +41,21 @@ it('deduplicates canvas owners and leaves texture-free materials empty', () => {
   const second = new CanvasTexture({ width: 0, height: 0 } as OffscreenCanvas);
   const material = preparedSnapshot(1, 1).material;
   const rows = [
-    {
-      ...material,
+    new MaterialResource({
+      ...material.snapshot,
       textureSources: new Map([
         ['a', first.source],
         ['b', first.source],
       ]),
-    },
-    { ...material, textureSources: new Map([['c', second.source]]) },
+    }),
+    new MaterialResource({ ...material.snapshot, textureSources: new Map([['c', second.source]]) }),
   ];
-  expect(materialCanvasSources(rows)).toEqual([first.source, second.source]);
-  expect(materialCanvasSources([material])).toBeUndefined();
-  expect(materialVideoClips([material])).toBeUndefined();
+  expect(materialCanvasSources(rows.map((row) => row.snapshot))).toEqual([
+    first.source,
+    second.source,
+  ]);
+  expect(materialCanvasSources([material.snapshot])).toBeUndefined();
+  expect(materialVideoClips([material.snapshot])).toBeUndefined();
   const borrowed = {
     get videoTextureFields() {
       throw Error('source failed');
@@ -62,7 +66,7 @@ it('deduplicates canvas owners and leaves texture-free materials empty', () => {
     projectTextureConsumers(
       accepted,
       new Set([2]),
-      [{ ...preparedSnapshot(1, 1), materials: [borrowed] }],
+      [{ ...preparedSnapshot(1, 1), materials: [new MaterialResource(borrowed)] }],
       materialVideoClips,
     ),
   ).toThrow('source failed');

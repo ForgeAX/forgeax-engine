@@ -59,7 +59,7 @@ it('renders distance UV on uneven and closed transported profiles for 60 complet
       const mesh = createProfileSweepGeometry(shape, path, { closed, up: [1, 0, 0] }).unwrap();
       scene.world
         .set(scene.entity, MeshFilter, {
-          assetHandle: scene.world.allocSharedRef('MeshAsset', mesh),
+          assetHandle: scene.assets.create(mesh).unwrap(),
         })
         .unwrap();
       const pixels = new Uint8Array(16 * 128 * 4);
@@ -71,21 +71,22 @@ it('renders distance UV on uneven and closed transported profiles for 60 complet
               : [240, 170, 40, 255],
             (y * 16 + x) * 4,
           );
-      const texture = scene.world.allocSharedRef('TextureAsset', {
-        kind: 'texture',
-        shape: { viewDimension: '2d', extent: { width: 16, height: 128 } },
-        format: 'rgba8unorm',
-        data: pixels,
-        colorSpace: 'linear',
-        mips: { kind: 'none' },
-      });
+      const texture = scene.assets
+        .create({
+          kind: 'texture',
+          shape: { viewDimension: '2d', extent: { width: 16, height: 128 } },
+          format: 'rgba8unorm',
+          data: pixels,
+          colorSpace: 'linear',
+          mips: { kind: 'none' },
+        })
+        .unwrap();
       scene.world
         .set(scene.entity, MeshRenderer, {
           materials: [
-            scene.world.allocSharedRef(
-              'MaterialAsset',
-              Materials.unlit([1, 1, 1, 1], { baseColorTexture: texture }),
-            ),
+            scene.assets
+              .create(Materials.unlit([1, 1, 1, 1], { baseColorTexture: texture }))
+              .unwrap(),
           ],
         })
         .unwrap();

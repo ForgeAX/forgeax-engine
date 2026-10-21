@@ -18,7 +18,11 @@
       "types": "./dist/index.d.ts",
       "import": "./dist/index.mjs"
     },
-    "./package.json": "./package.json"
+    "./package.json": "./package.json",
+    "./internal": {
+      "types": "./dist/internal.d.ts",
+      "import": "./dist/internal.mjs"
+    }
   },
   "main": "./dist/index.mjs",
   "types": "./dist/index.d.ts",

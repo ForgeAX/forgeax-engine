@@ -36,7 +36,7 @@ const passes: readonly MaterialPass[] = [
 describe('material dispatch shader identity', () => {
   it('uses the published Pass specialization for every authored pass', () => {
     const dispatch: DispatchEntry[] = [];
-    appendMaterialDispatchEntries(dispatch, passes, 0 as EntityHandle, 17, 0, 0, {}, 0, {
+    appendMaterialDispatchEntries(dispatch, passes, 0 as EntityHandle, 17, 0, 0, 0, {
       forward: 'forgeax::surface-variant::rusted-iron',
       deferred: 'forgeax::surface-variant::rusted-iron',
       'shadow-caster': 'forgeax::surface-variant::rusted-iron-shadow',

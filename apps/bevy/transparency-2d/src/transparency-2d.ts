@@ -1,9 +1,13 @@
-import { HANDLE_QUAD } from '@forgeax/engine-assets-runtime';
+
 import type { World } from '@forgeax/engine-ecs';
 import { Camera, MeshFilter, MeshRenderer, orthographic } from '@forgeax/engine-render';
 import { SPRITE_PREMULTIPLIED_ALPHA_BLEND } from '@forgeax/engine-render/authoring';
 import { Transform } from '@forgeax/engine-scene';
 import type { MaterialAsset } from '@forgeax/engine-types';
+import { AssetRegistry } from '@forgeax/engine-assets-runtime';
+
+import { createPrimitiveMesh } from '@forgeax/engine-geometry';
+
 
 export const TEXTURE_SIZE = 48;
 export const DEFAULT_ALPHAS = [1, 0.7, 0.35] as const;
@@ -44,6 +48,11 @@ function spriteMaterial(texture: number, color: readonly [number, number, number
 }
 
 export function buildTransparencyWorld(world: World, texture: number, alphas: readonly [number, number, number] = DEFAULT_ALPHAS): void {
+const sceneAssets = world.assets;
+if (!(sceneAssets instanceof AssetRegistry)) throw new Error('Scene requires its runtime asset owner');
+
+const primitiveQuad = sceneAssets.create(createPrimitiveMesh('quad').unwrap()).unwrap();
+
   const colors: readonly (readonly [number, number, number, number])[] = [
     [1, 1, 1, alphas[0]],
     [0.1, 0.25, 1, alphas[1]],
@@ -51,10 +60,10 @@ export function buildTransparencyWorld(world: World, texture: number, alphas: re
   ];
   const positions: readonly (readonly [number, number, number])[] = [[-0.9, 0, 0], [0, 0, 0.1], [0.9, 0, 0.2]];
   for (let i = 0; i < positions.length; i++) {
-    const material = world.allocSharedRef('MaterialAsset', spriteMaterial(texture, colors[i]!));
+    const material = sceneAssets.create(spriteMaterial(texture, colors[i]!)).unwrap();
     world.spawn(
       { component: Transform, data: { pos: positions[i]!, quat: [0, 0, 0, 1], scale: [2.8, 2.8, 1] } },
-      { component: MeshFilter, data: { assetHandle: HANDLE_QUAD } },
+      { component: MeshFilter, data: { assetHandle: primitiveQuad } },
       { component: MeshRenderer, data: { materials: [material] } },
     );
   }

@@ -24,7 +24,6 @@ import { Update } from '../schedule-token';
 
 import type { Handle } from '@forgeax/engine-types';
 import {
-  BUILTIN_BASE,
   handleGeneration,
   handleSlot,
   MAX_SLOT,
@@ -34,7 +33,7 @@ import {
 } from '@forgeax/engine-types';
 import { describe, expect, expectTypeOf, it } from 'vitest';
 import { defineComponent } from '../component';
-import { BuiltinSlotNotOwnedError, SharedRefStaleError } from '../errors';
+import { SharedRefStaleError } from '../errors';
 import { SharedRefStore } from '../shared-ref-store';
 import { World } from '../world';
 
@@ -102,16 +101,16 @@ describe('SharedRefStore.intern: producer identity', () => {
   it('acquires independent grants without duplicating the payload handle', () => {
     const store = new SharedRefStore();
     const payload = { material: 'shared' };
-    const first = store.acquire('MaterialAsset', payload);
-    const second = store.acquire('MaterialAsset', payload);
+    const first = store.acquire('SharedMaterialData', payload);
+    const second = store.acquire('SharedMaterialData', payload);
     expect(second).toBe(first);
     expect(store.refcount(first)).toBe(2);
     store.release(first).unwrap();
     expect(store.resolve(second).unwrap()).toBe(payload);
     store.release(second).unwrap();
     expect(store._liveCount()).toBe(0);
-    const producer = store.intern('MaterialAsset', payload);
-    const borrowed = store.acquire('MaterialAsset', payload);
+    const producer = store.intern('SharedMaterialData', payload);
+    const borrowed = store.acquire('SharedMaterialData', payload);
     expect(borrowed).toBe(producer);
     store.release(borrowed).unwrap();
     expect(store.refcount(producer)).toBe(1);
@@ -122,8 +121,8 @@ describe('SharedRefStore.intern: producer identity', () => {
     const store = new SharedRefStore();
     const payload = { id: 1 };
 
-    const first = store.intern('MaterialAsset', payload);
-    const second = store.intern('MaterialAsset', payload);
+    const first = store.intern('SharedMaterialData', payload);
+    const second = store.intern('SharedMaterialData', payload);
 
     expect(second).toBe(first);
     expect(store.refcount(first)).toBe(1);
@@ -134,9 +133,9 @@ describe('SharedRefStore.intern: producer identity', () => {
     const store = new SharedRefStore();
     const payload = { id: 1 };
 
-    const allocatedA = store.alloc('MaterialAsset', payload);
-    const allocatedB = store.alloc('MaterialAsset', payload);
-    const material = store.intern('MaterialAsset', payload);
+    const allocatedA = store.alloc('SharedMaterialData', payload);
+    const allocatedB = store.alloc('SharedMaterialData', payload);
+    const material = store.intern('SharedMaterialData', payload);
     const texture = store.intern('TextureAsset', payload);
 
     expect(allocatedB).not.toBe(allocatedA);
@@ -147,10 +146,10 @@ describe('SharedRefStore.intern: producer identity', () => {
   it('forgets the identity entry when the producer grant reaches zero', () => {
     const store = new SharedRefStore();
     const payload = { id: 1 };
-    const released = store.intern('MaterialAsset', payload);
+    const released = store.intern('SharedMaterialData', payload);
 
     expect(store.release(released).ok).toBe(true);
-    const next = store.intern('MaterialAsset', payload);
+    const next = store.intern('SharedMaterialData', payload);
 
     expect(next).not.toBe(released);
     expect(store.resolve(next)).toMatchObject({ ok: true, value: payload });
@@ -211,9 +210,9 @@ describe('w8 World.allocSharedRef: facade + AC-16 type inference', () => {
 
   it('World.internSharedRef preserves target handle inference', () => {
     const world = new World();
-    const handle = world.internSharedRef('MaterialAsset', { kind: 'material' });
+    const handle = world.internSharedRef('SharedMaterialData', { kind: 'material' });
 
-    expectTypeOf(handle).toEqualTypeOf<Handle<'MaterialAsset', 'shared'>>();
+    expectTypeOf(handle).toEqualTypeOf<Handle<'SharedMaterialData', 'shared'>>();
   });
 
   it('explicit release of the alloc-grant takes rc to 0 and publishes evidence', () => {
@@ -234,14 +233,14 @@ describe('w8 World.allocSharedRef: facade + AC-16 type inference', () => {
     // Validated inside a real system fn (not a *.test-d.ts file).
     //
     // This test exercises the type-inference end-to-end: schema vocab keyword
-    // 'shared<MaterialAsset>' -> column u32 -> world.get unwrap -> field
+    // 'shared<SharedMaterialData>' -> column u32 -> world.get unwrap -> field
     // value type. Runtime spawn-retain wiring is M4 (w12) work; here we only
     // exercise the type assertion, not the rc transition.
     const Material = defineComponent('SharedMaterialField', {
-      asset: 'shared<MaterialAsset>',
+      asset: 'shared<SharedMaterialData>',
     });
     const world = new World();
-    const handle = world.allocSharedRef('MaterialAsset', { albedo: 0xffffff });
+    const handle = world.allocSharedRef('SharedMaterialData', { albedo: 0xffffff });
 
     const e = world.spawn({ component: Material, data: { asset: handle } }).unwrap();
 
@@ -251,9 +250,9 @@ describe('w8 World.allocSharedRef: facade + AC-16 type inference', () => {
       queries: [{ with: [Material] }],
       fn: () => {
         const row = world.get(e, Material).unwrap();
-        // The type assertion: row.asset MUST be Handle<'MaterialAsset', 'shared'>
-        // (not Handle<'MaterialAsset', 'unique'>, not Uint32Array, not unknown).
-        expectTypeOf(row.asset).toEqualTypeOf<Handle<'MaterialAsset', 'shared'>>();
+        // The type assertion: row.asset MUST be Handle<'SharedMaterialData', 'shared'>
+        // (not Handle<'SharedMaterialData', 'unique'>, not Uint32Array, not unknown).
+        expectTypeOf(row.asset).toEqualTypeOf<Handle<'SharedMaterialData', 'shared'>>();
         observedType = 'matched';
       },
     });
@@ -263,44 +262,18 @@ describe('w8 World.allocSharedRef: facade + AC-16 type inference', () => {
   });
 });
 
-// ─── w50 (AC-32): builtin-slot fail-fast guard ───────────────────────────
-// D-15: World.sharedRefs manages ONLY user-tier slots (>= BUILTIN_BASE).
-// Passing a builtin slot (< BUILTIN_BASE) to alloc/retain/release/resolve is a
-// caller error -> BuiltinSlotNotOwnedError with a hint pointing at
-// the builtin asset owner. (toShared(1) is the cube slot.)
-describe('w50 SharedRefStore: fail-fast on builtin slot < BUILTIN_BASE (AC-32)', () => {
-  it('retain(builtin slot) returns BuiltinSlotNotOwnedError with a hint', () => {
+describe('SharedRefStore owns every nonzero slot', () => {
+  it('allocates slot one and validates unallocated and empty references', () => {
     const store = new SharedRefStore();
-    const r = store.retain(toShared<'MeshAsset'>(1));
-    expect(r.ok).toBe(false);
-    if (!r.ok) {
-      expect(r.error).toBeInstanceOf(BuiltinSlotNotOwnedError);
-      expect(r.error.code).toBe('builtin-slot-not-owned');
-      if (r.error.code === 'builtin-slot-not-owned') {
-        expect(r.error.hint.length).toBeGreaterThan(0);
-        expect(r.error.detail.slot).toBe(1);
-      }
-    }
-  });
-
-  it('release(builtin slot) returns BuiltinSlotNotOwnedError', () => {
-    const store = new SharedRefStore();
-    const r = store.release(toShared<'MeshAsset'>(2));
-    expect(r.ok).toBe(false);
-    if (!r.ok) expect(r.error).toBeInstanceOf(BuiltinSlotNotOwnedError);
-  });
-
-  it('resolve(builtin slot) returns BuiltinSlotNotOwnedError', () => {
-    const store = new SharedRefStore();
-    const r = store.resolve(toShared<'MeshAsset'>(3));
-    expect(r.ok).toBe(false);
-    if (!r.ok) expect(r.error).toBeInstanceOf(BuiltinSlotNotOwnedError);
-  });
-
-  it('alloc mints user-tier slots (>= BUILTIN_BASE), never a builtin slot', () => {
-    const store = new SharedRefStore();
-    const handle = store.alloc('MeshAsset', { kind: 'mesh' });
-    expect(unwrapHandle(handle)).toBeGreaterThanOrEqual(BUILTIN_BASE);
+    expect(store.resolve(toShared(1)).ok).toBe(false);
+    const handle = store.alloc('SharedData', { value: 7 });
+    expect(handleSlot(handle)).toBe(1);
+    expect(store.resolve(handle).unwrap()).toEqual({ value: 7 });
+    expect(store.retain(handle).ok).toBe(true);
+    expect(store.refcount(handle)).toBe(2);
+    expect(store.resolve(toShared(0)).ok).toBe(false);
+    expect(store.retain(toShared(0)).ok).toBe(false);
+    expect(store.release(toShared(0)).ok).toBe(false);
   });
 });
 
@@ -323,14 +296,11 @@ describe('w6 M3 SharedRefStore: gen welding on alloc', () => {
     expect(gen).toBe(0);
     expect(raw).toBe(slot);
     // AC-06: slot is the raw value when gen=0
-    expect(raw).toBeGreaterThanOrEqual(BUILTIN_BASE);
+    expect(raw).toBeGreaterThanOrEqual(1);
     expect(raw).toBeLessThanOrEqual(MAX_SLOT);
   });
 
-  it('AC-05: builtin invariant — pack(slot,0) === slot for slot 1-5', () => {
-    // Builtin handle constants (slot 1..5, gen=0) must encode to the same
-    // u32 value as the raw slot — ensures AssetRegistry builtin Map keys,
-    // GUID pre-registration, and entity bit patterns stay unchanged.
+  it('generation zero preserves the raw slot', () => {
     for (let s = 1; s <= 5; s++) {
       expect(pack(s, 0)).toBe(s);
     }
@@ -344,7 +314,7 @@ describe('w6 M3 SharedRefStore: gen welding on alloc', () => {
     const store = new SharedRefStore();
     const h = store.alloc('TestAsset', { id: 1 });
     expect(handleGeneration(h)).toBe(0);
-    expect(handleSlot(h)).toBeGreaterThanOrEqual(BUILTIN_BASE);
+    expect(handleSlot(h)).toBeGreaterThanOrEqual(1);
     // pack(slot, gen) round-trips: unpackSlot(pack(s,0)) === s
     expect(pack(handleSlot(h), handleGeneration(h))).toBe(unwrapHandle(h));
   });
@@ -548,12 +518,12 @@ describe('w9 M4 SharedRefStore: stale detection (resolve/retain/release + retire
 
   it('M32: public World mutation fences a released producer from its replacement', () => {
     const Material = defineComponent('M32SharedMaterialField', {
-      asset: 'shared<MaterialAsset>',
+      asset: 'shared<SharedMaterialData>',
     });
     const world = new World();
-    const sibling = world.allocSharedRef('MaterialAsset', { id: 'healthy-sibling' });
+    const sibling = world.allocSharedRef('SharedMaterialData', { id: 'healthy-sibling' });
     const oldPayload = { id: 'old-material' };
-    const oldHandle = world.allocSharedRef('MaterialAsset', oldPayload);
+    const oldHandle = world.allocSharedRef('SharedMaterialData', oldPayload);
     const entity = world.spawn({ component: Material, data: { asset: oldHandle } }).unwrap();
 
     expect(world.sharedRefs.refcount(oldHandle)).toBe(2);
@@ -564,7 +534,7 @@ describe('w9 M4 SharedRefStore: stale detection (resolve/retain/release + retire
     expect(world.sharedRefs.release(oldHandle).ok).toBe(true);
 
     const replacementPayload = { id: 'replacement-material' };
-    const replacementHandle = world.allocSharedRef('MaterialAsset', replacementPayload);
+    const replacementHandle = world.allocSharedRef('SharedMaterialData', replacementPayload);
     expect(handleSlot(replacementHandle)).toBe(handleSlot(oldHandle));
     expect(handleGeneration(replacementHandle)).toBe(handleGeneration(oldHandle) + 1);
 

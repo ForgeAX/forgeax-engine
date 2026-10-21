@@ -1,4 +1,4 @@
-import { RuntimeMeshVertices } from '@forgeax/engine-assets-runtime';
+import { AssetRegistry } from '@forgeax/engine-assets-runtime';
 import { World } from '@forgeax/engine-ecs';
 import { createRenderReadLease } from '@forgeax/engine-ecs/projection';
 import { createBoxGeometry } from '@forgeax/engine-geometry';
@@ -33,14 +33,11 @@ import {
   shadowArtifactForPreparedBatch,
 } from '../gpu-driven/production-raster-prepare';
 import { InstanceProjectionStore } from '../instances';
+import { MaterialResource } from '../material-resource';
+import { worldRenderResources } from '../publication/resource-scope';
 import { makeZeroCameraFallbackSnapshot } from '../record/frame-snapshot';
-import type {
-  DispatchEntry,
-  ExtractedFrame,
-  MaterialSnapshot,
-  RenderableSnapshot,
-  ShadowCasterMembership,
-} from '../render-system-extract';
+import type { DispatchEntry, ExtractedFrame, RenderableSnapshot } from '../render-system-extract';
+import { defaultMaterialSnapshot } from '../render-system-extract';
 import { extractFrames } from '../render-system-extract-tail';
 import {
   type PersistentRenderCandidateRequest,
@@ -55,7 +52,9 @@ function projected<T>(value: T): Exclude<T, Error> {
   return value as Exclude<T, Error>;
 }
 
-const material = {} as MaterialSnapshot;
+const assets = new AssetRegistry();
+const material = defaultMaterialSnapshot();
+const resource = MaterialResource.from(material);
 
 function emptyLights(): ExtractedFrame['lights'] {
   return {
@@ -102,8 +101,8 @@ function snapshot(entityKey: number, translationX: number): RenderableSnapshot {
   return {
     assetHandle: 1,
     transform: { world },
-    material,
-    materials: [material],
+    material: resource,
+    materials: [resource],
     materialBindingSources: ['engine-default'],
     worldId: 0,
     entityKey,
@@ -183,13 +182,29 @@ describe('RenderScene canonical owner', () => {
       topology: 'triangle-list' as const,
       pipelineClass: 'pbr',
       materialResourceClass: '',
+      geometry: {
+        receipt: {
+          identity: 'cube',
+          vertexInputs,
+          topology: 'triangle-list' as const,
+          indexed: true,
+        },
+        deformation: 'rigid' as const,
+        draw: {
+          kind: 'indexed' as const,
+          topology: 'triangle-list' as const,
+          first: 0,
+          count: 36,
+          baseVertex: 0,
+        },
+      },
       prepared,
     };
     projection.apply([updateSnapshot({ ...initial, gpuDrivenDraws: [draw] })]);
-    const owned = projection.materialize()[0]?.gpuDrivenDraws?.[0]?.prepared?.vertexInputs;
+    const owned = projection.materialize().at(0)?.gpuDrivenDraws?.[0]?.prepared?.vertexInputs;
     expect(owned).toEqual(vertexInputs);
     expect(owned).not.toBe(vertexInputs);
-    const ownedPrepared = projection.materialize()[0]?.gpuDrivenDraws?.[0]?.prepared;
+    const ownedPrepared = projection.materialize().at(0)?.gpuDrivenDraws?.[0]?.prepared;
     expect(Object.isFrozen(ownedPrepared)).toBe(true);
     expect(Object.isFrozen(ownedPrepared?.identity)).toBe(true);
     if (ownedPrepared === undefined) throw new Error('missing owned prepared draw');
@@ -258,17 +273,18 @@ describe('RenderScene canonical owner', () => {
     projection.apply([
       { kind: 'update', worldId: 0, entityKey: 7, world: initial.transform.world },
     ]);
-    expect(projection.materialize()[0]?.gpuDrivenDraws?.[0]?.prepared?.vertexInputs).toBe(owned);
+    expect(projection.materialize().at(0)?.gpuDrivenDraws?.[0]?.prepared?.vertexInputs).toBe(owned);
     expect(owned?.[0]?.location).not.toBe(17);
     projection.apply([updateSnapshot({ ...initial, gpuDrivenDraws: [draw] })]);
     expect(
-      projection.materialize()[0]?.gpuDrivenDraws?.[0]?.prepared?.vertexInputs[0]?.location,
+      projection.materialize().at(0)?.gpuDrivenDraws?.[0]?.prepared?.vertexInputs[0]?.location,
     ).toBe(17);
   });
 
   it('retains a visible equipment subtree on repeated same-value Visibility writes', () => {
-    const world = new World();
-    const mesh = world.allocSharedRef('MeshAsset', createBoxGeometry(1, 1, 1).unwrap());
+    const assets = new AssetRegistry();
+    const world = new World({ assets });
+    const mesh = assets.create(createBoxGeometry(1, 1, 1).unwrap()).unwrap();
     const parent = world
       .spawn(
         { component: Transform, data: {} },
@@ -297,17 +313,17 @@ describe('RenderScene canonical owner', () => {
       ),
     );
     const draw = () =>
-      persistent.extractComposition([world], { cameraOwner: 0, resourceOwner: 0 }, 0, build, [
+      persistent.extractComposition([world], { cameraOwner: 0, resourceOwner: 0 }, assets, build, [
         lease,
       ]);
     try {
       expect(draw().renderables).toHaveLength(1);
-      const retained = persistent.compositionSlots()[0]?.snapshot;
+      const retained = persistent.compositionSlots().at(0)?.snapshot;
       for (let frame = 0; frame < 3; frame++) {
         build.mockClear();
         world.set(parent, Visibility, { state: VisibilityStateValue.visible }).unwrap();
         expect(draw().renderables).toHaveLength(1);
-        expect(persistent.compositionSlots()[0]?.snapshot).toBe(retained);
+        expect(persistent.compositionSlots().at(0)?.snapshot).toBe(retained);
         expect(build.mock.calls.map(([request]) => request)).toEqual(['none']);
       }
       world.set(parent, Visibility, { state: VisibilityStateValue.hidden }).unwrap();
@@ -331,13 +347,13 @@ describe('RenderScene canonical owner', () => {
       hiddenEntityReports: [],
     } as unknown as ExtractedFrame;
     try {
-      scene.extractComposition([world], { cameraOwner: 0, resourceOwner: 0 }, 0, () => frame, [
+      scene.extractComposition([world], { cameraOwner: 0, resourceOwner: 0 }, assets, () => frame, [
         lease,
       ]);
       expect(scene.compositionGpuDrivenState()).toBeUndefined();
       const retained = scene.compositionRetainedScene();
       if (retained === undefined) throw new Error('missing retained composition');
-      expect(retained.worlds).toEqual([world]);
+      expect(retained.worlds).toEqual([worldRenderResources(world)]);
       expect(retained.isCurrent()).toBe(true);
       expect(retained.isSourceCurrent()).toBe(true);
       world.spawn({ component: Transform, data: {} }).unwrap();
@@ -397,12 +413,16 @@ describe('RenderScene canonical owner', () => {
       return frame;
     };
 
-    persistent.extractComposition([world], { cameraOwner: 0, resourceOwner: 0 }, 0, build, [lease]);
+    persistent.extractComposition([world], { cameraOwner: 0, resourceOwner: 0 }, assets, build, [
+      lease,
+    ]);
     expect(builds).toBe(1);
 
     world.removeComponent(camera, MotionBlur).unwrap();
     world.update().unwrap();
-    persistent.extractComposition([world], { cameraOwner: 0, resourceOwner: 0 }, 0, build, [lease]);
+    persistent.extractComposition([world], { cameraOwner: 0, resourceOwner: 0 }, assets, build, [
+      lease,
+    ]);
     expect(builds).toBe(2);
 
     world
@@ -412,7 +432,9 @@ describe('RenderScene canonical owner', () => {
       })
       .unwrap();
     world.update().unwrap();
-    persistent.extractComposition([world], { cameraOwner: 0, resourceOwner: 0 }, 0, build, [lease]);
+    persistent.extractComposition([world], { cameraOwner: 0, resourceOwner: 0 }, assets, build, [
+      lease,
+    ]);
     expect(builds).toBe(3);
     lease.dispose();
   });
@@ -440,14 +462,14 @@ describe('RenderScene canonical owner', () => {
     const first = persistent.extractComposition(
       [world],
       { cameraOwner: 0, resourceOwner: 0 },
-      0,
+      assets,
       build,
       [lease],
     );
     const stable = persistent.extractComposition(
       [world],
       { cameraOwner: 0, resourceOwner: 0 },
-      0,
+      assets,
       build,
       [lease],
     );
@@ -487,7 +509,7 @@ describe('RenderScene canonical owner', () => {
     expect(projection.inspect().records).toEqual([
       expect.objectContaining({ slot: 0, generation: 0, worldId: 0, entityKey: 7 }),
     ]);
-    expect(projection.materialize()[0]?.transform.world[12]).toBe(9);
+    expect(projection.materialize().at(0)?.transform.world[12]).toBe(9);
   });
 
   it('keeps mixed Instances and transform updates on the instance lane', () => {
@@ -512,8 +534,8 @@ describe('RenderScene canonical owner', () => {
       const result = projection.apply(operations);
       expect(result.instanceUpdatedSlots).toHaveLength(1);
       expect(result.contentUpdatedSlots).toHaveLength(0);
-      expect(projection.materialize()[0]?.transform.world[12]).toBe(9);
-      expect(projection.materialize()[0]?.instances?.transforms[12]).toBe(4);
+      expect(projection.materialize().at(0)?.transform.world[12]).toBe(9);
+      expect(projection.materialize().at(0)?.instances?.transforms[12]).toBe(4);
     }
   });
 
@@ -530,7 +552,9 @@ describe('RenderScene canonical owner', () => {
   });
 
   it('classifies an Instances-only collection revision without widening the content update', () => {
-    const world = new World();
+    const assets = new AssetRegistry();
+    const world = new World({ assets });
+    const mesh = assets.create(createBoxGeometry(1, 1, 1).unwrap()).unwrap();
     const instanceCollections = new InstanceProjectionStore();
     const initialTransforms = new Float32Array(16);
     initialTransforms[0] = 1;
@@ -543,7 +567,7 @@ describe('RenderScene canonical owner', () => {
           component: Transform,
           data: { pos: [0, 0, 0], quat: [0, 0, 0, 1], scale: [1, 1, 1] },
         },
-        { component: MeshFilter, data: { assetHandle: 1 as never } },
+        { component: MeshFilter, data: { assetHandle: mesh } },
         { component: MeshRenderer, data: { materials: [] } },
         { component: Instances, data: { transforms: initialTransforms } },
       )
@@ -561,10 +585,13 @@ describe('RenderScene canonical owner', () => {
       );
       return {
         cameras: [{ ...makeZeroCameraFallbackSnapshot(), worldId: 0, entityKey: 1 }],
+        auxiliaryCameras: [],
+        cubeCameras: [],
         lights: emptyLights(),
         renderables: [
           {
             ...snapshot(entity as number, 0),
+            assetHandle: mesh,
             instances: {
               ...detached,
               instanceCount: detached.count,
@@ -579,13 +606,13 @@ describe('RenderScene canonical owner', () => {
     };
     const persistent = new PersistentRenderScene({ instanceCollections });
     try {
-      persistent.extractComposition([world], { cameraOwner: 0, resourceOwner: 0 }, 0, build, [
+      persistent.extractComposition([world], { cameraOwner: 0, resourceOwner: 0 }, assets, build, [
         lease,
       ]);
       const nextTransforms = new Float32Array(initialTransforms);
       nextTransforms[12] = 4;
       world.set(entity, Instances, { transforms: nextTransforms }).unwrap();
-      persistent.extractComposition([world], { cameraOwner: 0, resourceOwner: 0 }, 0, build, [
+      persistent.extractComposition([world], { cameraOwner: 0, resourceOwner: 0 }, assets, build, [
         lease,
       ]);
 
@@ -612,14 +639,30 @@ describe('RenderScene canonical owner', () => {
     }
   });
 
-  it('updates cached dynamic world bounds without replacing the bounds object', () => {
+  it('replaces a changed transform snapshot while preserving the previous draw source', () => {
+    const projection = new RenderScene();
+    projection.apply([updateSnapshot(snapshot(7, 1))]);
+    const before = projection.materialize().at(0);
+    if (before === undefined) throw new Error('expected retained source');
+    const moved = new Float32Array(before.transform.world);
+    moved[12] = 9;
+    projection.apply([], [{ worldId: 0, entities: new Uint32Array([7]), worlds: moved }]);
+    const after = projection.materialize().at(0);
+    expect(after).not.toBe(before);
+    expect(before.transform.world[12]).toBe(1);
+    expect(after?.transform.world[12]).toBe(9);
+    projection.apply([], [{ worldId: 0, entities: new Uint32Array([7]), worlds: moved }]);
+    expect(projection.materialize().at(0)).toBe(after);
+  });
+
+  it('retains old bounds while a transform delta produces new bounds', () => {
     const projection = new RenderScene();
     const initial = {
       ...snapshot(7, 1),
       localAabb: new Float32Array([-1, -1, -1, 1, 1, 1]),
     };
     projection.apply([updateSnapshot(initial)]);
-    const retained = projection.materialize()[0];
+    const retained = projection.materialize().at(0);
     if (retained === undefined) throw new Error('expected retained snapshot');
     const first = projection.cullingWorldBounds(retained);
     const moved = new Float32Array(initial.transform.world);
@@ -628,7 +671,8 @@ describe('RenderScene canonical owner', () => {
     projection.apply([], [{ worldId: 0, entities: new Uint32Array([7]), worlds: moved }]);
 
     const next = projection.cullingWorldBounds(retained);
-    expect(next).toBe(first);
+    expect(next).not.toBe(first);
+    expect(first).toEqual({ min: [0, -1, -1], max: [2, 1, 1] });
     expect(next?.min[0]).toBe(8);
     expect(next?.max[0]).toBe(10);
   });
@@ -660,7 +704,7 @@ describe('RenderScene canonical owner', () => {
     expect(result).toMatchObject({ created: 0, updated: 0, removed: 0, recreated: 1 });
     expect(after?.slot).toBe(before?.slot);
     expect(after?.generation).toBe((before?.generation ?? -1) + 1);
-    expect(projection.materialize()[0]?.transform.world[12]).toBe(7);
+    expect(projection.materialize().at(0)?.transform.world[12]).toBe(7);
   });
 
   it('ignores an update that arrives after removal', () => {
@@ -686,29 +730,45 @@ describe('RenderScene canonical owner', () => {
     expect(projection.materialize().map((record) => record.transform.world[12])).toEqual([3, 8]);
   });
 
-  it('notifies the GPU residency owner for shared-ref payload mutations', () => {
-    const world = new World();
+  it('delivers owned Mesh changes directly to the GPU residency owner', () => {
+    const assets = new AssetRegistry();
+    const world = new World({ assets });
     const lease = createRenderReadLease(world);
-    const handle = world.allocSharedRef('MeshAsset', { kind: 'mesh' });
-    const onRuntimeAssetChange = vi.fn();
-    const persistent = new PersistentRenderScene({ onRuntimeAssetChange });
+    const mesh = createBoxGeometry(1, 1, 1).unwrap();
+    const handle = assets.create(mesh).unwrap();
+    const onAssetChange = vi.fn();
+    const persistent = new PersistentRenderScene({ onAssetChange });
     const frame = {
       cameras: [],
+      auxiliaryCameras: [],
+      cubeCameras: [],
       lights: emptyLights(),
       renderables: [],
       dispatch: [],
       hiddenEntityReports: [],
     } as unknown as ExtractedFrame;
 
-    persistent.extractComposition([world], { cameraOwner: 0, resourceOwner: 0 }, 0, () => frame, [
-      lease,
-    ]);
-    world.spawn({ component: RuntimeMeshVertices, data: { asset: handle, vertices: [] } }).unwrap();
-    persistent.extractComposition([world], { cameraOwner: 0, resourceOwner: 0 }, 0, () => frame, [
-      lease,
-    ]);
+    persistent.extractComposition(
+      [world],
+      { cameraOwner: 0, resourceOwner: 0 },
+      assets,
+      () => frame,
+      [lease],
+    );
+    onAssetChange.mockClear();
+    assets.update(handle, { vertices: new Float32Array(mesh.vertices) }).unwrap();
+    persistent.extractComposition(
+      [world],
+      { cameraOwner: 0, resourceOwner: 0 },
+      assets,
+      () => frame,
+      [lease],
+    );
 
-    expect(onRuntimeAssetChange).toHaveBeenCalledWith(0, handle);
+    expect(onAssetChange).toHaveBeenCalledWith(
+      worldRenderResources(world),
+      expect.objectContaining({ handle }),
+    );
     lease.dispose();
     persistent.dispose();
   });
@@ -749,8 +809,6 @@ describe('RenderScene canonical owner', () => {
         environmentReady: true,
         renderables: [candidate],
         dispatch: [],
-        shadowCasterEntityKeys: new Set<number>(),
-        shadowCasterDrawKeys: new Set<string>(),
         skylight: undefined,
         skylightCount: 0,
         skybox: undefined,
@@ -773,14 +831,14 @@ describe('RenderScene canonical owner', () => {
     persistent.extractComposition(
       [world],
       { cameraOwner: 0, resourceOwner: 0 },
-      0,
+      assets,
       buildCandidate,
       [lease],
     );
     persistent.extractComposition(
       [world],
       { cameraOwner: 0, resourceOwner: 0 },
-      0,
+      assets,
       buildCandidate,
       [lease],
     );
@@ -796,7 +854,7 @@ describe('RenderScene canonical owner', () => {
     persistent.extractComposition(
       [world],
       { cameraOwner: 0, resourceOwner: 0 },
-      0,
+      assets,
       buildCandidate,
       [lease],
     );
@@ -872,8 +930,6 @@ describe('RenderScene canonical owner', () => {
         environmentReady: true,
         renderables: [candidate],
         dispatch: [],
-        shadowCasterEntityKeys: new Set<number>(),
-        shadowCasterDrawKeys: new Set<string>(),
         skylight: undefined,
         skylightCount: 0,
         skybox: undefined,
@@ -892,18 +948,18 @@ describe('RenderScene canonical owner', () => {
       const initial = persistent.extractComposition(
         [world],
         { cameraOwner: 0, resourceOwner: 0 },
-        0,
+        assets,
         buildCandidate,
         [lease],
       );
-      const before = persistent.compositionSlots()[0];
+      const before = persistent.compositionSlots().at(0);
       expect(before).toBeDefined();
       world.set(light, Transform, { pos: [4, 2, 3] }).unwrap();
       propagateTransforms(world).unwrap();
       const moved = persistent.extractComposition(
         [world],
         { cameraOwner: 0, resourceOwner: 0 },
-        0,
+        assets,
         buildCandidate,
         [lease],
       );
@@ -915,15 +971,15 @@ describe('RenderScene canonical owner', () => {
       const cameraMoved = persistent.extractComposition(
         [world],
         { cameraOwner: 0, resourceOwner: 0 },
-        0,
+        assets,
         buildCandidate,
         [lease],
       );
       expect(cameraMoved.cameras[0]?.world[13]).toBeCloseTo(1);
-      const after = persistent.compositionSlots()[0];
+      const after = persistent.compositionSlots().at(0);
       expect(after).toMatchObject({ slot: before?.slot, generation: before?.generation });
       const projected = persistent.projectVisibility(
-        [world],
+        [world].map(worldRenderResources),
         cameraMoved.renderables,
         cameraMoved.dispatch,
       );
@@ -977,7 +1033,7 @@ describe('RenderScene canonical owner', () => {
       const previous = persistent.extractComposition(
         worlds,
         { cameraOwner: 0, resourceOwner: 0 },
-        0,
+        assets,
         build,
         leases,
       );
@@ -1000,7 +1056,7 @@ describe('RenderScene canonical owner', () => {
       const refreshed = persistent.extractComposition(
         worlds,
         { cameraOwner: 0, resourceOwner: 0 },
-        0,
+        assets,
         build,
         leases,
       );
@@ -1076,13 +1132,27 @@ describe('RenderScene canonical owner', () => {
         far: 100,
       };
     };
+    const shadowMaterial = MaterialResource.from({
+      ...defaultMaterialSnapshot(),
+      passes: [
+        {
+          name: 'shadow',
+          program: { module: 'forgeax::default-shadow-caster' },
+          renderState: { tags: { LightMode: 'ShadowCaster' } },
+        },
+      ],
+    });
     const renderables = [
       {
         ...snapshot(visibleEntity as number, 0),
+        material: shadowMaterial,
+        materials: [shadowMaterial],
         localAabb: new Float32Array([-1, -1, -1, 1, 1, 1]),
       },
       {
         ...snapshot(hiddenEntity as number, 100),
+        material: shadowMaterial,
+        materials: [shadowMaterial],
         localAabb: new Float32Array([-1, -1, -1, 1, 1, 1]),
       },
     ];
@@ -1104,15 +1174,6 @@ describe('RenderScene canonical owner', () => {
       materialShaderId: 'forgeax::default-shadow-caster',
       paramSnapshot: {},
     }));
-    const shadowCasterMembership: ShadowCasterMembership[] = renderables.map(
-      (entry, renderableIndex) => ({
-        worldEntity: entry.entityKey,
-        renderableIndex,
-        drawItemIndex: 0,
-        materialHandle: 0,
-        passIndex: 0,
-      }),
-    );
     const frame = (): ExtractedFrame =>
       ({
         cameras: [cameraSnapshot()],
@@ -1129,14 +1190,6 @@ describe('RenderScene canonical owner', () => {
         environmentReady: true,
         renderables,
         dispatch,
-        shadowCasterEntityKeys: new Set(renderables.map((entry) => entry.entityKey)),
-        shadowCasterDrawKeys: new Set(
-          shadowCasterMembership.map(
-            (entry) =>
-              `${entry.worldEntity}:${entry.materialHandle}:${entry.drawItemIndex}:${entry.passIndex}`,
-          ),
-        ),
-        shadowCasterMembership,
         skylight: undefined,
         skylightCount: 0,
         skybox: undefined,
@@ -1154,7 +1207,7 @@ describe('RenderScene canonical owner', () => {
     const initial = persistent.extractComposition(
       [world],
       { cameraOwner: 0, resourceOwner: 0 },
-      0,
+      assets,
       frame,
       [lease],
     );
@@ -1172,7 +1225,7 @@ describe('RenderScene canonical owner', () => {
     const moved = persistent.extractComposition(
       [world],
       { cameraOwner: 0, resourceOwner: 0 },
-      0,
+      assets,
       frame,
       [lease],
     );
@@ -1195,7 +1248,7 @@ describe('RenderScene canonical owner', () => {
     const mixed = persistent.extractComposition(
       [world],
       { cameraOwner: 0, resourceOwner: 0 },
-      0,
+      assets,
       frame,
       [lease],
     );
@@ -1300,11 +1353,11 @@ describe('RenderScene canonical owner', () => {
     const initial = persistent.extractComposition(
       [world],
       { cameraOwner: 0, resourceOwner: 0 },
-      0,
+      assets,
       buildFrame,
       [lease],
     );
-    const initialRecord = initial.renderables[0]?.probeBlendRecord;
+    const initialRecord = initial.renderables.at(0)?.probeBlendRecord;
     expect(initialRecord).toBeDefined();
 
     world.set(nearProbe, Transform, { pos: [4, 0, 0] }).unwrap();
@@ -1313,13 +1366,13 @@ describe('RenderScene canonical owner', () => {
     const moved = persistent.extractComposition(
       [world],
       { cameraOwner: 0, resourceOwner: 0 },
-      0,
+      assets,
       buildFrame,
       [lease],
     );
 
     expect(persistent.inspect()).toMatchObject({ fullRebuilds: 1 });
-    expect(moved.renderables[0]?.probeBlendRecord?.bytes).not.toEqual(initialRecord?.bytes);
+    expect(moved.renderables.at(0)?.probeBlendRecord?.bytes).not.toEqual(initialRecord?.bytes);
     lease.dispose();
     persistent.dispose();
   });
@@ -1351,18 +1404,18 @@ describe('RenderScene', () => {
     const projected = scene.extractComposition(
       [new World()],
       { cameraOwner: 0, resourceOwner: 0 },
-      0,
+      assets,
       () => frame,
     );
 
-    expect(projected.renderables[0]?.probeBlendRecord).toMatchObject({
+    expect(projected.renderables.at(0)?.probeBlendRecord).toMatchObject({
       objectKey: 0,
       localBlendFraction: 1,
       accepted: true,
     });
   });
 
-  it('keeps world identity slots stable across a composition reorder', () => {
+  it('keeps stable slot order and identity across a composition reorder', () => {
     const scene = new RenderScene();
     const first = snapshot(1, 3);
     const second = { ...snapshot(1, 8), worldId: 1 };
@@ -1372,8 +1425,8 @@ describe('RenderScene', () => {
     scene.reset([second, first]);
 
     expect(scene.slotsSnapshot().map((entry) => [entry.worldId, entry.entityKey])).toEqual([
-      [1, 1],
       [0, 1],
+      [1, 1],
     ]);
     expect(scene.slot(0, 1)).toMatchObject({
       slot: before?.slot,
@@ -1403,8 +1456,8 @@ describe('RenderScene', () => {
         ...updateSnapshot({
           ...snapshot(11, 4),
           localAabb: new Float32Array([-1, -1, -1, 1, 1, 1]),
-          material: { ...material, materialHandle: 42 },
-          materials: [{ ...material, materialHandle: 42 }],
+          material: MaterialResource.from({ ...material, materialHandle: 42 }),
+          materials: [MaterialResource.from({ ...material, materialHandle: 42 })],
         }),
       },
     ]);
@@ -1448,7 +1501,7 @@ describe('projected bounds query', () => {
     const frame = (renderables: RenderableSnapshot[]) =>
       ({ cameras: [], renderables, dispatch: [] }) as unknown as ExtractedFrame;
     expect(scene.bounds(worldA, 7)).toBeUndefined();
-    scene.extractComposition([worldA, worldB], { cameraOwner: 0, resourceOwner: 0 }, 0, () =>
+    scene.extractComposition([worldA, worldB], { cameraOwner: 0, resourceOwner: 0 }, assets, () =>
       frame([a, b]),
     );
     expect(scene.bounds(worldA, 7)).toEqual({ min: [110, -1, -2], max: [112, 1, 2] });
@@ -1470,11 +1523,11 @@ describe('projected bounds query', () => {
         archVersion: 1,
       },
     };
-    scene.extractComposition([worldA, worldB], { cameraOwner: 0, resourceOwner: 0 }, 1, () =>
+    scene.extractComposition([worldA, worldB], { cameraOwner: 0, resourceOwner: 0 }, assets, () =>
       frame([instanced, b]),
     );
     expect(scene.bounds(worldA, 7)).toEqual({ min: [110, -1, -2], max: [132, 1, 2] });
-    scene.extractComposition([worldB, worldA], { cameraOwner: 0, resourceOwner: 0 }, 2, () =>
+    scene.extractComposition([worldB, worldA], { cameraOwner: 0, resourceOwner: 0 }, assets, () =>
       frame([
         { ...b, worldId: 0 },
         { ...instanced, worldId: 1 },
@@ -1483,7 +1536,7 @@ describe('projected bounds query', () => {
     expect(scene.bounds(worldA, 7)?.max[0]).toBe(132);
     expect(scene.bounds(worldB, 7)?.max[0]).toBe(901);
     const { localAabb: _localAabb, ...withoutBounds } = a;
-    scene.extractComposition([worldA], { cameraOwner: 0, resourceOwner: 0 }, 3, () =>
+    scene.extractComposition([worldA], { cameraOwner: 0, resourceOwner: 0 }, assets, () =>
       frame([withoutBounds]),
     );
     expect(scene.bounds(worldA, 7)).toBeUndefined();

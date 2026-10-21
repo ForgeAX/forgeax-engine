@@ -6,7 +6,6 @@ import type {
   MaterialProgramAddress,
   MaterialStaticSwitches,
   MaterialSurfaceDeclaration,
-  MaterialTextureReference,
   MaterialTextureValue,
   MaterialValue,
   Result,
@@ -205,8 +204,10 @@ function guidText(value: string | Uint8Array): string {
   return typeof value === 'string' ? value : AssetGuid.format(value as AssetGuid);
 }
 
-function cookGuidText(value: MaterialTextureReference): string | undefined {
-  return typeof value === 'number' ? undefined : guidText(value);
+function cookGuidText(
+  value: MaterialTextureValue['texture'] | MaterialTextureValue['sampler'],
+): string | undefined {
+  return typeof value === 'string' || value instanceof Uint8Array ? guidText(value) : undefined;
 }
 
 function textureValues(

@@ -55,11 +55,11 @@ struct Surface {
       { id: 'raster-ray-fixture', imports },
     )
   ).unwrap().wgsl;
-  const { name, asset, program } = await prepareRayMaterialPublication(
+  const material = await prepareRayMaterialPublication(
     'emission',
     emissionRayMaterial(),
     createMaterialPackCooker([directory]),
   );
-  return { raster, material: { name, asset, program } };
+  return { raster, material };
 }
 export type RasterRayFixture = Awaited<ReturnType<typeof prepareRasterRayFixture>>;

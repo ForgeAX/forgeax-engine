@@ -6,7 +6,7 @@ import { fileURLToPath } from 'node:url';
 import { assembleRuntimePacks, createAssetRuntimeAssembly } from '@forgeax/engine-app';
 import { AssetRegistry, createCatalogSource } from '@forgeax/engine-assets-runtime';
 import { createWorldContext, World } from '@forgeax/engine-ecs';
-import { attachMeshDistanceField, createBoxGeometry } from '@forgeax/engine-geometry';
+import { decodeMeshDistanceFieldAttachment, createBoxGeometry } from '@forgeax/engine-geometry';
 import { cookMeshDistanceFieldProduct, prepareRuntimePackContent } from '@forgeax/engine-import';
 import { AssetGuid, definePackageId } from '@forgeax/engine-pack/source';
 import { ShaderRegistry } from '@forgeax/engine-shader';
@@ -34,11 +34,11 @@ globalThis.fetch = async (request, init) => {
   }
   return originalFetch(request, init);
 };
-const assets = new AssetRegistry(new ShaderRegistry({}));
+const assets = new AssetRegistry({ shaderRegistry: new ShaderRegistry({}) });
 const assembly = createAssetRuntimeAssembly(assets, {
   catalogSource: createCatalogSource({ url: '/pack-index.json' }),
 }).unwrap();
-const context = await createWorldContext(new World(), []);
+const context = await createWorldContext(new World({ assets: assets }), []);
 const runtime = assembleRuntimePacks(context, assembly, { scopeId: 'sdf-lifecycle-preparation' });
 assets.setCatalogSource(runtime.catalog, runtime.fetcher);
 const publication = (name, facts) => {
@@ -50,25 +50,28 @@ try {
   const packageId = '019fcaf0-0015-7000-8000-000000000002';
   const guid = AssetGuid.format(AssetGuid.derive(definePackageId(packageId), 'mesh/box'));
   const rows = [];
+  let handle;
   for (const [label, width] of [
     ['baseline', 2],
     ['replacement', 2.4],
   ]) {
     const plain = createBoxGeometry(width, 2, 2).unwrap();
     const cooked = await cookMeshDistanceFieldProduct(plain, guid, { resolution: 32 }, [0]);
-    const mesh = (
-      await attachMeshDistanceField(
+    const distanceField = (
+      await decodeMeshDistanceFieldAttachment(
         plain,
         cooked.payload,
         cooked.artifacts['distance-field.bin'].bytes,
       )
     ).unwrap();
+    const mesh = { ...plain, distanceField };
     const content = (await prepareRuntimePackContent(packageId, { 'mesh/box': mesh })).unwrap();
     if (label === 'replacement') runtime.producer.withdraw(packageId);
     const receipt = (await runtime.producer.admit(content)).unwrap();
     assert.equal(receipt.rows[0].guid, guid);
-    assets.invalidate(guid);
-    const loaded = (await assets.loadByGuid(assets.parseGuid(guid))).unwrap();
+    if (handle === undefined) handle = (await assets.load(guid, 'mesh')).unwrap();
+    else (await assets.reload(handle, {conflict: 'reject'})).unwrap();
+    const loaded = assets.read(handle).unwrap();
     assert(loaded.distanceField.values instanceof Float32Array);
     assert.equal(loaded.aabb[3], Math.fround(width / 2));
     rows.push(
@@ -125,10 +128,8 @@ try {
   const cooked = (
     await cookParticleCodeEffect(source, { 'depth-control.vfx.wgsl': { entry } })
   ).unwrap();
-  (await assets.loadByGuid(assets.parseGuid(material))).unwrap();
-  const materialRow = (await assets.enumerateCatalog())
-    .unwrap()
-    .find((row) => row.guid === material);
+  (await assets.load(assets.parseGuid(material), 'material')).unwrap();
+  const materialRow = assets.catalogEntry(material);
   assert(materialRow);
   const digest = materialRow.publication.outputs.find((row) => row.guid === material).digest;
   const content = (
@@ -140,7 +141,8 @@ try {
   ).unwrap();
   const receipt = (await runtime.producer.admit(content)).unwrap();
   const effectGuid = receipt.rows[0].guid;
-  const effect = (await loadVfxGpuEffect(assets, effectGuid)).unwrap();
+  const effectHandle = (await loadVfxGpuEffect(assets, effectGuid)).unwrap();
+  const effect = assets.read(effectHandle).unwrap();
   const requirements = effect.program.emitters[0].reflection.dataInterfaces;
   assert.deepEqual(
     requirements.map((row) => row.kind),

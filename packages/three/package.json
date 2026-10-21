@@ -19,7 +19,11 @@
       "types": "./dist/addons/loaders/GLTFLoader.d.ts",
       "import": "./dist/addons/loaders/GLTFLoader.mjs"
     },
-    "./package.json": "./package.json"
+    "./package.json": "./package.json",
+    "./build": {
+      "types": "./dist/build/materials.d.ts",
+      "import": "./dist/build/index.mjs"
+    }
   },
   "main": "./dist/index.mjs",
   "types": "./dist/index.d.ts",
@@ -53,11 +57,12 @@
     "@types/three": "0.184.0",
     "three": "0.184.0",
     "@forgeax/engine-assets-runtime": "workspace:*",
+    "@forgeax/engine-skinning": "workspace:*",
     "@forgeax/engine-codec": "workspace:*",
-    "@forgeax/engine-pack": "workspace:*"
+    "@forgeax/engine-pack": "workspace:*",
+    "@forgeax/engine-shader-compiler": "workspace:*"
   },
   "forgeax": {
-    "buildDependencies": ["@forgeax/engine-shader-compiler"],
     "metrics": {
       "bundle-size": {
         "enabled": true,
@@ -83,9 +88,8 @@
     }
   },
   "devDependencies": {
-    "esbuild": "0.28.2",
     "@forgeax/engine": "workspace:*",
     "@webgpu/types": "^0.1.74",
-    "@forgeax/engine-shader-compiler": "workspace:*"
+    "esbuild": "0.28.2"
   }
 }

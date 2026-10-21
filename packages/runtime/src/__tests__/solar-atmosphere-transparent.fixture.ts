@@ -17,6 +17,7 @@ import { scenePlugin, Transform } from '@forgeax/engine-scene';
 import { expect } from 'vitest';
 import { createWave1RenderingRecipe } from '../../../../scripts/dev-verify/wave1-rendering/recipe';
 import { createRenderer } from '../createRenderer';
+import { testAssets } from './helpers/runtime-assets';
 import {
   attachRenderer,
   type CameraProjectionConfig,
@@ -74,7 +75,10 @@ export async function verifyTransparentSolarComposition(
   const renderer = rendererResult.value;
   const world = new World();
   const scene = await createWorldContext(world, [scenePlugin()]);
-  const recipe = createWave1RenderingRecipe(world, { aspect: 1, includeAtmosphere: false });
+  const recipe = createWave1RenderingRecipe(world, testAssets(world), {
+    aspect: 1,
+    includeAtmosphere: false,
+  });
   recipe.destroy(recipe.entities.screen);
   recipe.destroy(recipe.entities.localLight);
   recipe.destroy(recipe.entities.skylight);
@@ -94,7 +98,7 @@ export async function verifyTransparentSolarComposition(
   // the production density remap, keeping the authored medium active instead
   // of turning the fog into a bypass.
   compositionDensity.data.fill(128);
-  const density = world.allocSharedRef('TextureAsset', compositionDensity);
+  const density = testAssets(world).create(compositionDensity).unwrap();
   const fog = world
     .spawn({
       component: VolumetricFog,
@@ -114,20 +118,21 @@ export async function verifyTransparentSolarComposition(
       },
     })
     .unwrap();
-  const transparentMaterial = world.allocSharedRef(
-    'MaterialAsset',
-    Materials.unlit([0.05, 0.95, 0.2, 0.72], {
-      queue: 3000,
-      renderState: {
-        cullMode: 'none',
-        depthWriteEnabled: false,
-        blend: {
-          color: { srcFactor: 'src-alpha', dstFactor: 'one-minus-src-alpha', operation: 'add' },
-          alpha: { srcFactor: 'one', dstFactor: 'one-minus-src-alpha', operation: 'add' },
+  const transparentMaterial = testAssets(world)
+    .create(
+      Materials.unlit([0.05, 0.95, 0.2, 0.72], {
+        queue: 3000,
+        renderState: {
+          cullMode: 'none',
+          depthWriteEnabled: false,
+          blend: {
+            color: { srcFactor: 'src-alpha', dstFactor: 'one-minus-src-alpha', operation: 'add' },
+            alpha: { srcFactor: 'one', dstFactor: 'one-minus-src-alpha', operation: 'add' },
+          },
         },
-      },
-    }),
-  );
+      }),
+    )
+    .unwrap();
   const transparent = world
     .spawn(
       { component: Transform, data: { pos: [0, 0, 1] } },
@@ -140,15 +145,16 @@ export async function verifyTransparentSolarComposition(
   // the scene has transmission demand. Keep that demand off-screen so the
   // visible authored unlit blend exercises the production lane without
   // changing the camera fixture.
-  const transmissionTriggerMaterial = world.allocSharedRef(
-    'MaterialAsset',
-    Materials.standard({
-      baseColor: [0, 0, 0, 0],
-      metallic: 0,
-      roughness: 1,
-      transmission: 1,
-    }),
-  );
+  const transmissionTriggerMaterial = testAssets(world)
+    .create(
+      Materials.standard({
+        baseColor: [0, 0, 0, 0],
+        metallic: 0,
+        roughness: 1,
+        transmission: 1,
+      }),
+    )
+    .unwrap();
   const transmissionTrigger = world
     .spawn(
       { component: Transform, data: { pos: TRANSPARENT_OFFSCREEN_POSITION } },
@@ -415,11 +421,11 @@ export async function verifyTransparentSolarComposition(
   } finally {
     await renderer.dispose();
     world.despawn(transparent).unwrap();
-    world.sharedRefs.release(transparentMaterial).unwrap();
+    testAssets(world).release(transparentMaterial).unwrap();
     world.despawn(transmissionTrigger).unwrap();
-    world.sharedRefs.release(transmissionTriggerMaterial).unwrap();
+    testAssets(world).release(transmissionTriggerMaterial).unwrap();
     world.despawn(fog).unwrap();
-    world.sharedRefs.release(density).unwrap();
+    testAssets(world).release(density).unwrap();
     recipe.dispose();
     await scene.fiber.dispose();
     canvas.remove();

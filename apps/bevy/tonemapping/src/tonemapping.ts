@@ -1,7 +1,8 @@
-import { HANDLE_SPHERE } from '@forgeax/engine-assets-runtime';
+import type { AssetHandle } from '@forgeax/engine-types';
+
 import type { EntityHandle, World } from '@forgeax/engine-ecs';
 import { quat } from '@forgeax/engine-math';
-import type { Handle, MaterialAsset } from '@forgeax/engine-types';
+
 import {
   Camera,
   DirectionalLight,
@@ -18,6 +19,10 @@ import {
   TONEMAP_REINHARD_EXTENDED,
 } from '@forgeax/engine-render';
 import { Transform } from '@forgeax/engine-scene';
+import { AssetRegistry } from '@forgeax/engine-assets-runtime';
+
+import { createPrimitiveMesh } from '@forgeax/engine-geometry';
+
 
 export const TONEMAP_MODES = [
   TONEMAP_NONE,
@@ -36,11 +41,19 @@ export interface TonemappingScene {
   readonly sphereCount: number;
 }
 
-function material(world: World, options: Parameters<typeof Materials.standard>[0]): Handle<'MaterialAsset', 'shared'> {
-  return world.allocSharedRef<'MaterialAsset', MaterialAsset>('MaterialAsset', Materials.standard(options));
+function material(world: World, options: Parameters<typeof Materials.standard>[0]): AssetHandle<'material'> {
+const sceneAssets = world.assets;
+if (!(sceneAssets instanceof AssetRegistry)) throw new Error('Scene requires its runtime asset owner');
+
+  return sceneAssets.create(Materials.standard(options)).unwrap();
 }
 
 export function buildTonemappingWorld(world: World, aspect: number): TonemappingScene {
+const sceneAssets = world.assets;
+if (!(sceneAssets instanceof AssetRegistry)) throw new Error('Scene requires its runtime asset owner');
+
+const primitiveSphere = sceneAssets.create(createPrimitiveMesh('sphere').unwrap()).unwrap();
+
   const neutral = material(world, { baseColor: [0.03, 0.03, 0.03, 1], roughness: 0.8 });
   const warm = material(world, {
     baseColor: [0.7, 0.12, 0.03, 1], emissive: [4, 0.08, 0.01], emissiveIntensity: 1,
@@ -75,7 +88,7 @@ export function buildTonemappingWorld(world: World, aspect: number): Tonemapping
             scale: [scale, scale, scale],
           },
         },
-        { component: MeshFilter, data: { assetHandle: HANDLE_SPHERE } },
+        { component: MeshFilter, data: { assetHandle: primitiveSphere } },
         { component: MeshRenderer, data: { materials: [selected] } },
       );
       sphereCount += 1;

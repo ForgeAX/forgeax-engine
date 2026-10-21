@@ -1,13 +1,16 @@
 import { World } from '@forgeax/engine-ecs';
 import { RhiNullRenderPassEncoder, rhi } from '@forgeax/engine-rhi-null';
 import { expect, it } from 'vitest';
+import { MaterialResource } from '../../material-resource';
+import type { MaterialSnapshot } from '../../render-system-extract';
 import { encodeMainPass } from '../main-pass';
 import type { _InternalRenderPipelineContext } from '../render-context';
 
 it.each([
-  'Forward',
-  'Deferred',
-] as const)('reads material contracts only when the %s selector actually selects geometry', async (lightMode) => {
+  ['Forward', false],
+  ['Deferred', false],
+  ['Deferred', true],
+] as const)('reads selected %s contracts with GPU-only=%s', async (lightMode, gpuOnly) => {
   const device = (await (await rhi.requestAdapter()).unwrap().requestDevice()).unwrap();
   const texture = device
     .createTexture({
@@ -32,13 +35,14 @@ it.each([
       throw new Error('selected material contract');
     },
   };
+  const resource = new MaterialResource(material as MaterialSnapshot);
   const entry = {
     renderableIndex: 0,
     source: {
       entityKey: 1,
       worldId: 0,
-      material,
-      materials: [material],
+      material: resource,
+      materials: [resource],
     },
   };
   const context = {
@@ -56,29 +60,38 @@ it.each([
       },
     },
     frameState: {},
-    validatedOrdered: [entry],
+    validatedOrdered: gpuOnly ? [] : [entry],
     hdrpClusterBindGroup: null,
     materialSlots: [material],
-    materialSlotOwners: [entry],
+    materialBindings: [{ material: resource, resourceClass: '', entityKey: 1 }],
     materialSlotIndices: [[0]],
     materialSlotCount: 1,
     skylightCount: 0,
-    dispatch: [
-      {
-        entityIndex: 0,
-        renderableIndex: 0,
-        materialHandle: 1,
-        passIndex: 0,
-        queue: 2000,
-        layer: 0,
-        tags: {
-          get LightMode() {
-            selectorReads++;
-            return 'Deferred';
+    dispatch: gpuOnly
+      ? {
+          get length(): never {
+            throw new Error('GPU accessed full dispatch');
           },
-        },
-      },
-    ],
+          [Symbol.iterator](): never {
+            throw new Error('GPU iterated full dispatch');
+          },
+        }
+      : [
+          {
+            entityIndex: 0,
+            renderableIndex: 0,
+            materialHandle: 1,
+            passIndex: 0,
+            queue: 2000,
+            layer: 0,
+            tags: {
+              get LightMode() {
+                selectorReads++;
+                return 'Deferred';
+              },
+            },
+          },
+        ],
   } as unknown as _InternalRenderPipelineContext;
   try {
     const record = () =>
@@ -89,6 +102,7 @@ it.each([
         {
           passKind: 'temporal',
           recordMode: 'opaque',
+          ...(gpuOnly ? { gpuDriven: {} as never } : {}),
         },
       );
     if (lightMode === 'Forward') {
@@ -104,7 +118,7 @@ it.each([
     }
     // Pair selection remains authoritative; the unrelated sprite-only set
     // must not perform another full selector scan before this geometry lane.
-    expect(selectorReads).toBe(lightMode === 'Forward' ? 2 : 1);
+    expect(selectorReads).toBe(gpuOnly ? 0 : lightMode === 'Forward' ? 2 : 1);
   } finally {
     pass.end();
     device.destroyBuffer(buffer).unwrap();

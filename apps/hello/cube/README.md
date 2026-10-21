@@ -3,13 +3,16 @@
 End-to-end ECS-driven binding exemplar for `@forgeax/engine-runtime`
 (feat-20260509-ecs-render-bridge-mvp / M4).
 
-`apps/hello/cube/src/main.ts` is the canonical four-step recipe
-AI users discover via `@forgeax/engine-runtime`:
+[src/main.ts](src/main.ts) creates the browser App and passes its World and asset owner to the shared `populateDemoWorld` helper. That helper admits Geometry's cube through `assets.create`, then spawns the cube, camera and light.
 
-1. `import` the 5-component schema set + `HANDLE_CUBE` from `@forgeax/engine-runtime`.
-2. `world.spawn(...)` cube + active Camera + active DirectionalLight.
-3. `await renderer.ready` (D-S3 three-step serial: manifest -> pipeline -> assets).
-4. `requestAnimationFrame` -> `renderer.draw(world)` (D-S2 RenderSystem).
+```ts
+const result = await createApp(canvas, {}, forgeaxBundlerAdapter());
+const app = result.unwrap();
+populateDemoWorld(app.world, app.assets);
+app.start();
+```
+
+App owns frame scheduling and Renderer assembly. The same asset handle remains valid across renderer recovery.
 
 ## Smoke gate (AC-12b)
 
@@ -19,8 +22,7 @@ four criteria (D-S10 / D-S6 / D-S7):
 - (a) `[hello-cube] backend=webgpu` console literal observed.
 - (b) frames observed >= `SMOKE_MIN_FRAMES` (default 60).
 - (c) NDC center pixel distance to black `[0, 0, 0]` > `SMOKE_PIXEL_THRESHOLD`
-      (default 0.05); cube `MeshRenderer.baseColor = [0.8, 0.4, 0.2]` keeps
-      the contrast comfortable (Euclidean distance ~0.93).
+      (default 0.05); the cube must remain visibly distinct from the clear color.
 - (d) `Renderer.onError` accumulated `RhiError` count == 0 (the four
       RenderSystem error codes from D-S6 / D-S7 stay silent on the happy path).
 

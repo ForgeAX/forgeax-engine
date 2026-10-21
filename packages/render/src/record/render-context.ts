@@ -19,7 +19,6 @@ import type {
   RhiDevice,
   RenderPipeline as RhiRenderPipeline,
   Sampler,
-  ShaderModule,
   Texture,
   TextureFormat,
   TextureView,
@@ -46,7 +45,6 @@ import type {
   MeshSsboGrowController,
 } from '../assembly/mesh-ssbo-grow';
 import type { DeviceScope } from '../device/device-scope';
-import type { MeshGpuHandles } from '../device/gpu-residency';
 import type { EngineMetrics } from '../engine-metrics';
 import type { RenderFeatureHost } from '../features/host';
 import type { RenderFeatureShaderModuleMode } from '../features/types';
@@ -81,6 +79,7 @@ import type {
   FrameObservationDomain,
   RenderPipelineObservationCaptureOwner,
 } from '../render-contract';
+import type { FrameList } from '../scene/frame-list';
 import type { PersistentShadowCasterProjection } from '../scene/render-scene';
 import type { SsrAdmissionIdentity } from '../ssr/identity';
 import type { GpuPassTimingReason } from './gpu-pass-timing/errors';
@@ -99,14 +98,10 @@ export interface PointsLinesRecordSubmission {
 }
 
 export interface ReflectionProbeRecordState {
+  readonly bindingClasses: ReadonlyMap<string, string>;
   readonly table: ReflectionProbeTable;
   readonly selections: ReadonlyMap<string, ReflectionProbeSelectionResult>;
   readonly graph: import('./typed-frame-graph').ReflectionProbeGraphState;
-  /** Detached committed fallback projections joined by main-pass renderable key. */
-  readonly fallbackProjections?: ReadonlyMap<
-    string,
-    import('../inspection-types').ReflectionFallbackReceipt
-  >;
   /** Demand is derived from this frame's renderable/source selection. */
   readonly fallbackDemand?: boolean;
   /** Non-neutral sources require a nonzero diagnostic sample when capture is enabled. */
@@ -143,7 +138,6 @@ export interface MaterialShaderPipelineEntry {
 
 import type {
   AtmosphereShaderSources,
-  CameraSnapshot,
   DepthPyramidShaderSources,
   RenderDebugOverlay,
   RenderPipelineContext,
@@ -153,9 +147,8 @@ import type {
 } from '../render-contract';
 import type { GpuDrivenStandardPbrFrameResources } from '../render-pipeline';
 import type {
-  DispatchEntry,
+  DispatchList,
   MaterialSnapshot,
-  ShadowCasterMembership,
   SkyboxSnapshot,
   SkylightSnapshot,
 } from '../render-system-extract';
@@ -172,6 +165,8 @@ import type {
 import type { FoldDispatchPlan } from './mesh-ssbo';
 
 export interface RenderSystemRuntime {
+  readonly growMeshSsbo?: MeshSsboGrowController['growMeshSsbo'] | undefined;
+  readonly meshSsboState?: Readonly<MeshSsboCapacity> | undefined;
   /** The accepted program registry used by material layout and binding preparation. */
   readonly shaderRegistry?: import('@forgeax/engine-shader').ShaderRegistry;
   /** Final display observations wait for the screen UI composition. */
@@ -207,7 +202,6 @@ export interface RenderSystemRuntime {
   readonly getMaterialProjectionForPayload?: (
     material: MaterialAsset,
   ) => MaterialRenderProjection | undefined;
-  readonly getMaterialProjection?: (materialGuid: string) => MaterialRenderProjection | undefined;
   readonly getMaterialArtifact?: (specializationKey: string) => MaterialRuntimeArtifact | undefined;
   /** Producer-owned cooked Standard PBR artifact used by GPU-driven projection. */
   readonly getMaterialShaderArtifact?: (
@@ -218,6 +212,7 @@ export interface RenderSystemRuntime {
           readonly deformation?: 'rigid' | 'skin';
           readonly variantSet?: string;
           readonly clustered?: boolean;
+          readonly probeBlend?: boolean;
           readonly reflectionFallback?: boolean;
           readonly pass?: 'forward' | 'shadow' | 'depth';
           readonly address?: 'direct' | 'scene-index';
@@ -267,37 +262,7 @@ export interface RenderSystemRuntime {
     constants?: Readonly<Record<string, number>>,
   ) => RhiRenderPipeline | null;
   readonly getMaterialShaderPipelineEntry?: (
-    materialShaderId: string,
-    isHdr: boolean,
-    renderState?: MaterialRenderState,
-    topology?: PrimitiveTopology,
-    indexFormat?: 'uint16' | 'uint32',
-    variantSet?: string,
-    passKind?: PassKind,
-    meshAttributes?: VertexAttributeMap,
-    sampleCount?: number,
-    colorFormatOverride?: GPUTextureFormat,
-    shaderUvSetCount?: number,
-    depthFormatOverride?: GPUTextureFormat | null,
-    vertexLayout?: string,
-    vertexLayoutProjection?: VertexLayoutProjection,
-    shaderModuleMode?: RenderFeatureShaderModuleMode,
-    layoutKindOverride?:
-      | 'pbr'
-      | 'pbr-skin'
-      | 'gpu-driven-pbr'
-      | 'gpu-driven-skin'
-      | 'gpu-driven-cluster-pbr'
-      | 'gpu-driven-cluster-skin'
-      | 'surface-direct-pbr'
-      | 'surface-direct-cluster-pbr',
-    /** Optional vertex entry override for receipt-owned scene-index passes. */
-    vertexEntryPoint?: string,
-    additionalColorFormats?: readonly GPUTextureFormat[],
-    vertexEntry?: string,
-    fragmentEntry?: string,
-    particleInputLanes?: number,
-    constants?: Readonly<Record<string, number>>,
+    ...args: Parameters<NonNullable<RenderSystemRuntime['getMaterialShaderPipeline']>>
   ) => MaterialShaderPipelineEntry | null;
   /** Reflection-derived UV count included in the material PipelineSpec cache key. */
   readonly getMaterialShaderUvSetCount?: (materialShaderId: string) => number | undefined;
@@ -311,6 +276,17 @@ export interface RenderSystemRuntime {
     materialShaderId: string,
     materialParamSchema?: readonly ParamSchemaEntry[],
   ) => BindGroupLayout | undefined;
+  /** Fixed renderer-owned resources for one shared material parameter. The owner
+   * retains the binding object while its content is unchanged, even across view reuse. */
+  readonly preparedMaterialTexture?: (
+    material: MaterialSnapshot,
+    parameter: string,
+  ) => { readonly textureView: TextureView; readonly sampler: Sampler } | undefined;
+  /** Complete immutable numeric parameters for a renderer-owned preparation.
+   * Preserve the object while addresses are unchanged; authored values remain on the snapshot. */
+  readonly preparedMaterialParameters?: (
+    material: MaterialSnapshot,
+  ) => MaterialSnapshot['paramSnapshot'];
   /** Handle-first factory for built-in same-frame GPU producers. */
   readonly immediateShaderModuleFactory?: PipelineBuilderShaderModuleFactory;
   readonly metrics: EngineMetrics;
@@ -341,38 +317,21 @@ export interface RenderSystemRuntime {
 
 /** Renderer-owned bridge from retained Points/Lines facts into main geometry. */
 export interface PointsLinesRecordOwner {
-  prepare(entry: ValidatedRenderable, clustered: boolean): PointsLinesRecordSubmission | undefined;
+  prepare(
+    entry: Pick<ValidatedRenderable, 'source'>,
+    clustered: boolean,
+  ): PointsLinesRecordSubmission | undefined;
   beginFrame(): void;
+  track(completed: Promise<unknown>): void;
   resetForDeviceLoss(): void;
   inspections(): readonly PointsLinesInspection[];
 }
 
 export interface PerPassResources {
-  depthTexture: Texture | null;
-  depthTextureView: TextureView | null;
-  depthTextureWidth: number;
-  depthTextureHeight: number;
   configured: boolean;
-  hdrColorTexture: Texture | null;
-  hdrColorView: TextureView | null;
-  hdrDepthTexture: Texture | null;
-  hdrDepthView: TextureView | null;
-  hdrTextureWidth: number;
-  hdrTextureHeight: number;
-  hdrDepthSampleCount: number;
   readonly fxaaPipeline: RhiRenderPipeline | null;
   readonly fxaaBindGroupLayout: BindGroupLayout | null;
   readonly fxaaSampler: Sampler | null;
-  msaaColorTexture: Texture | null;
-  msaaColorView: TextureView | null;
-  msaaSpriteColorTexture: Texture | null;
-  msaaSpriteColorView: TextureView | null;
-  msaaDepthTexture: Texture | null;
-  msaaDepthView: TextureView | null;
-  msaaTextureWidth: number;
-  msaaTextureHeight: number;
-  hdrColorMsaaTexture: Texture | null;
-  hdrColorMsaaView: TextureView | null;
   readonly skyboxPipeline: RhiRenderPipeline | null;
   readonly skyboxPipelineMsaa: RhiRenderPipeline | null;
   readonly skyboxBindGroupLayout: BindGroupLayout | null;
@@ -434,7 +393,6 @@ export interface BloomPersistentBundle {
 export interface PipelineState {
   /** Device that owns every opaque handle in this pipeline state. */
   readonly device: RhiDevice;
-  readonly meshes: ReadonlyMap<number, MeshGpuHandles>;
   readonly format: TextureFormat;
   readonly colorAttachmentFormat: TextureFormat;
   /** Surface route committed by configureSurface for inspection provenance. */
@@ -446,6 +404,7 @@ export interface PipelineState {
   readonly meshBindGroupLayout: BindGroupLayout;
   readonly viewUniformBuffer: Buffer;
   readonly pointsLinesViewBuffer?: Buffer;
+  readonly ensurePointsLinesViewCapacity?: (slots: number) => void;
   readonly shadowCasterCascadeBuffer: Buffer;
   readonly materialUniformBuffer: MeshSsboBufferWrapper;
   readonly meshStorageBuffer: MeshSsboBufferWrapper;
@@ -458,10 +417,6 @@ export interface PipelineState {
   readonly surfaceMediumDepthSampler?: Sampler;
   readonly fallbackTextureView: TextureView;
   readonly unlitPipeline: RhiRenderPipeline | null;
-  /** Producer-owned Standard PBR module for this device generation. */
-  readonly standardPbrShaderModule: ShaderModule | null;
-  /** Producer-owned skinned Standard PBR module for this device generation. */
-  readonly pbrSkinShaderModule: ShaderModule | null;
   /** Producer-resolved Standard PBR UV ABI count for geometry projection. */
   readonly standardPbrShaderUvSetCount: number;
   readonly unlitPipelineMsaa: RhiRenderPipeline | null;
@@ -550,6 +505,7 @@ export interface RenderSystemInternals extends RenderSystemRuntime {
   /** Host identity binding for the renderer-owned SSR dependency seam. */
   readonly ssrIdentity?: SsrAdmissionIdentity | undefined;
   readonly captureReflectionFallbackReadback?: boolean | undefined;
+  readonly shadowWorkload?: boolean | undefined;
   readonly standardProfile?: StandardProfile | undefined;
   readonly standardPipeline: RenderFrameState['activePipeline'];
   readonly featureHost?: RenderFeatureHost | undefined;
@@ -570,8 +526,6 @@ export interface RenderSystemInternals extends RenderSystemRuntime {
   readonly getPipelineState: () => PipelineState | null;
   readonly assets: AssetRegistry;
   readonly gpuStore: import('../device/gpu-residency').GpuResidencyCache;
-  readonly growMeshSsbo?: MeshSsboGrowController['growMeshSsbo'] | undefined;
-  readonly meshSsboState?: Readonly<MeshSsboCapacity> | undefined;
   readonly buildPostProcessPipeline?:
     | ((
         entry: import('../fullscreen-post-process-pass').PostProcessShaderEntry,
@@ -615,18 +569,24 @@ export interface RenderSystemInternals extends RenderSystemRuntime {
 }
 
 export interface _StandardForwardSceneView {
+  readonly cameraVisible?: (
+    source: import('../render-system-extract').RenderableSnapshot,
+  ) => boolean;
   readonly capturedAtmosphere?: import('../environment/storage').AtmosphereStorage | undefined;
   readonly visibleSurface?: import('../raytracing/visible-surface').VisibleSurfaceProjection;
   readonly environmentIbl?: { readonly irradiance: TextureView; readonly prefilter: TextureView };
-  readonly captureDispatch?: readonly DispatchEntry[];
+  readonly captureDispatch?: DispatchList;
   readonly assets: AssetRegistry;
   readonly store: import('../device/gpu-residency').GpuResidencyCache;
   readonly planarReflectionView?: TextureView;
   readonly pipelineState: PipelineState;
   readonly bloomResources?: BloomPersistentBundle | null;
   readonly runtime: RenderSystemRuntime;
-  readonly validated: readonly ValidatedRenderable[];
   readonly validatedOrdered: readonly ValidatedRenderable[];
+  readonly scenePassWork?: ReadonlyMap<
+    import('./scene-pass-work').ScenePassRequest,
+    import('./scene-pass-work').ScenePassDraws
+  >;
   /** Residency-validated explicit preparation rows, including hidden meshes. */
   readonly pipelinePreparationEntries?: readonly ValidatedRenderable[];
   /** Existing scene owner policy, also available before its first GPU batch. */
@@ -646,6 +606,17 @@ export interface _StandardForwardSceneView {
   readonly skybox: SkyboxSnapshot | undefined;
   readonly profilePhase?: <T>(phase: RenderRecordPhase, action: () => T) => T;
   /** Why the CPU directional cache cannot reuse its layers; undefined on reuse. */
+  readonly shadowUpdatePolicy?: (
+    identity: import('../gpu-driven/shadow-views').ShadowViewIdentity,
+  ) =>
+    | {
+        readonly blur?: { readonly radius: number; readonly samples: number };
+        readonly channels?: number;
+        readonly auto: boolean;
+        readonly revision: import('./shadow-raster-ledger').ShadowUpdateRevision;
+        readonly viewport?: readonly [number, number];
+      }
+    | undefined;
   readonly directionalShadowCacheMiss: ShadowViewInvalidationReason | undefined;
   /** Authored CPU cascade decision; absent preserves the whole-map policy. */
   readonly directionalShadowCascadeMiss?:
@@ -654,16 +625,13 @@ export interface _StandardForwardSceneView {
   readonly world: RenderResourceScope;
   readonly resourceScopes?: readonly RenderResourceScope[];
   readonly tonemapActive: boolean;
-  readonly geometryColorView: TextureView | null;
-  readonly geometryDepthView: TextureView | null;
   readonly geometryDepthKey: string | null;
   readonly skyboxActive: boolean;
   readonly splitLdrSprite: boolean;
-  readonly ldrSpritePassView: TextureView | null;
   readonly transparentColorFormat?: GPUTextureFormat;
   /** Second Standard main-pass attachment used by the fallback producer. */
   readonly reflectionFallbackColorFormat?: GPUTextureFormat;
-  readonly dispatch: readonly DispatchEntry[];
+  readonly dispatch: DispatchList;
   readonly hdrpClusterBindGroup: BindGroup | null;
   readonly hdrpClusterMembershipBindGroup: BindGroup | null;
   /** Prepared Standard lighting declaration accepted by this graph frame. */
@@ -671,51 +639,45 @@ export interface _StandardForwardSceneView {
   readonly foldDispatchPlan: FoldDispatchPlan | null;
   readonly materialSlotIndices: readonly (readonly number[])[];
   readonly materialSlots: readonly MaterialSnapshot[];
-  readonly materialSlotOwners: readonly ValidatedRenderable[];
+  readonly materialBindings: readonly import('./fold-buckets').MaterialBinding[];
   readonly materialSlotCount: number;
   /** Filled by main-pass material producers before the GPU-driven raster tail. */
   readonly gpuDrivenStandardPbrFrameResources?: GpuDrivenStandardPbrFrameResources;
-  /** Frame-local main-view culling, never capture or persistent admission. */
-  readonly gpuRasterCull?: {
-    readonly camera: CameraSnapshot;
-    readonly entityKeys: ReadonlySet<number>;
-  };
   /** Scene table retained by the renderer even when no draw is GPU-admitted. */
   readonly gpuDrivenSceneMaterialBuffer?: Buffer;
   /** Accepted main-pass ownership shared with the post-submit draw receipts. */
-  readonly gpuDrivenDrawReceipts?: import('./gpu-draw-receipts').GpuDrivenDrawReceipts;
+  readonly gpuDrivenSelection?: import('../gpu-driven/draw-selection').GpuDrawSelection;
   readonly gpuDrivenShadowViews?: ShadowViewStatePool;
+  readonly shadowDirectRequired?: boolean;
   readonly gpuDrivenShadowBatchProjections?: ReadonlyMap<
     string,
     ReadonlyMap<number, GpuDrivenShadowBatchProjection>
   >;
-  /** Concrete ShadowCaster keys already claimed by the capable GPU subset. */
-  readonly gpuDrivenShadowDrawKeys?: ReadonlySet<string>;
-  /** View-scoped ShadowCaster claims for exact CPU residual routing. */
-  readonly gpuDrivenShadowDrawKeysByView?: ReadonlyMap<string, ReadonlySet<string>>;
-  /** Per-shadow-view frusta shared by GPU compaction and CPU residual routing. */
+  readonly materialFrame?: import('../scene/material-dispatch').MaterialFrame;
+  readonly shadowSlotForEntity?: (
+    worldId: number,
+    entityKey: number,
+  ) => { readonly slot: number; readonly generation: number } | undefined;
+  /** Per-shadow-view frusta shared by GPU compaction and CPU draw routing. */
   readonly shadowViewPlanesByView?: ReadonlyMap<string, Float32Array>;
-  /** Extracted structured ShadowCaster ownership facts. */
-  readonly shadowCasterMembership?: readonly ShadowCasterMembership[];
   /** Capsule-ready casters leave the directional cascades (Deferred lane only). */
   readonly capsuleShadowDirectional?: boolean;
   /** Shading light for capsule shadows; present when admitted casters left the cascades. */
   readonly capsuleShadowLight?: {
     readonly direction: ArrayLike<number>;
     readonly coneHalfAngle: number;
-    /** Validated scene sources, including camera-culled casters. */
-    readonly renderables: readonly ValidatedRenderable[];
+    /** Accepted source roster, including camera-culled casters, independent of draw passes. */
+    readonly renderables: FrameList<import('../render-system-extract').RenderableSnapshot>;
   };
   /** Record-owned finalized dispatch facts shared by capture and shadow graph views. */
-  readonly shadowDispatchProjection?: import('./shadow-pass').ShadowDispatchProjectionOwner;
   /** Same-frame stock material admission shared by graph predicates and record passes. */
   readonly mainPassMaterialSelection?: import('./main-pass').MainPassMaterialSelectionOwner;
   /** Complete retained ShadowCaster rows, including camera-culled casters. */
   readonly shadowValidatedOrdered?: readonly ValidatedRenderable[];
   /** Dispatch entries remapped to the complete retained ShadowCaster rows. */
-  readonly shadowDispatch?: readonly DispatchEntry[];
-  /** Mesh-SSBO slot base reserved for the retained ShadowCaster rows. */
-  readonly shadowMeshSsboBase?: number;
+  readonly shadowDispatch?: DispatchList;
+  /** Shadow row base in materialSlotIndices; physical mesh addresses live on each draw. */
+  readonly shadowMaterialRowBase?: number;
   /** Renderer-stable world keys used by ShadowCaster ownership identities. */
   readonly shadowCasterWorldKeys?: readonly number[];
   readonly shadowCasterBounds?: PersistentShadowCasterProjection['worldBoundsOf'];
@@ -723,12 +685,11 @@ export interface _StandardForwardSceneView {
   readonly materialBgAssemblyCache: MaterialBgAssemblyCache;
   /** Record-stage proof callback; invoked only after a real draw command is encoded. */
   readonly onRenderableDraw?: (
-    entry: ValidatedRenderable,
+    entry: Pick<ValidatedRenderable, 'source'>,
     submeshIndex?: number,
     receipt?: import('./gpu-draw-receipts').RenderableDrawReceipt,
   ) => void;
   readonly reflectionProbes?: ReflectionProbeRecordState;
-  materialUboPayloadCache?: RenderFrameState['materialUboPayloadCache'];
   hdrpSsaoBlurredView?: TextureView;
 }
 
@@ -817,16 +778,6 @@ export function resolveSurfaceProfile(
   });
 }
 
-export type SurfaceBackendKind = 'webgpu' | 'wgpu-native' | 'wgpu-webgl2' | 'null';
-
-export function resolveSurfaceFormatPair(
-  _backendKind: SurfaceBackendKind,
-  storage: GPUTextureFormat,
-  view: GPUTextureFormat,
-): SwapChainFormatPair {
-  return { storage, view };
-}
-
 function surfaceCapabilityFacts(
   device: RhiDevice,
   storageFormat: GPUTextureFormat,
@@ -856,11 +807,7 @@ export function configureSurface(
 ): Result<OutputColorSpaceReport, RhiError> {
   const backendKind = device.caps?.backendKind ?? 'webgpu';
   const isWebGl2 = backendKind === 'wgpu-webgl2';
-  const surfaceFormats = resolveSurfaceFormatPair(
-    backendKind,
-    format as GPUTextureFormat,
-    colorAttachmentFormat as GPUTextureFormat,
-  );
+  const surfaceFormats: SwapChainFormatPair = { storage: format, view: colorAttachmentFormat };
   const profile = resolveSurfaceProfile(
     surfaceFormats.storage,
     surfaceFormats.view,

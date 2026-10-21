@@ -8,7 +8,7 @@ import {
   type TextureFormat,
   type TextureView,
 } from '@forgeax/engine-rhi';
-import { toShared } from '@forgeax/engine-types';
+import type { AssetHandle } from '@forgeax/engine-types';
 import { getIblProbeBackgroundSource } from '../ibl/IblPipelineCache';
 import { prepareMaterialSkylight } from '../record/main-pass-material';
 import type {
@@ -98,10 +98,10 @@ export function recordProbeBackground(
     source === undefined
       ? undefined
       : context.store.getCubemapGpuView(
-          toShared<'EquirectAsset'>(source.equirectHandle),
+          source.equirectHandle as AssetHandle<'equirect'>,
           context.world,
         );
-  const view = environmentCube ?? image ?? skylightResources.prefilterView;
+  const view = environmentCube ?? image ?? skylightResources.irradianceView;
   const rotation =
     environmentCube === undefined ? (source?.rotation ?? [0, 0, 0, 1]) : [0, 0, 0, 1];
   const scale =

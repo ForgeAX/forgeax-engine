@@ -18,6 +18,10 @@ import { drawReadyFrame } from '../../../../scripts/test/ready-render-frame.mjs'
 import { fileURLToPath } from 'node:url';
 import { dirname, resolve } from 'node:path';
 import { readFileSync } from 'node:fs';
+import { AssetRegistry } from '@forgeax/engine-assets-runtime';
+
+import { createPrimitiveMesh } from '@forgeax/engine-geometry';
+
 
 const SMOKE_DURATION_MS = Number.parseInt(process.env.SMOKE_DURATION_MS ?? '5000', 10);
 const SMOKE_MIN_FRAMES = Number.parseInt(process.env.SMOKE_MIN_FRAMES ?? '60', 10);
@@ -121,9 +125,7 @@ const { constructRuntimeRendererHost } = await import('@forgeax/engine-runtime/i
 const { Camera, DirectionalLight, MeshFilter, MeshRenderer, perspective } =
   await import('@forgeax/engine-render');
 const { Transform } = await import('@forgeax/engine-scene');
-const {
-  HANDLE_QUAD,
-} = await import('@forgeax/engine-assets-runtime');
+
 
 const here = dirname(fileURLToPath(import.meta.url));
 const distShaders = resolve(here, '..', 'dist', 'shaders', 'manifest.json');
@@ -171,7 +173,12 @@ for (let y = 0; y < TEX_H; y++) {
   }
 }
 
-const world = new World();
+const world = new World({ assets: assets });
+const sceneAssets = world.assets;
+if (!(sceneAssets instanceof AssetRegistry)) throw new Error('Scene requires its runtime asset owner');
+
+const primitiveQuad = sceneAssets.create(createPrimitiveMesh('quad').unwrap()).unwrap();
+
 const worldAttachment1 = renderer.attach(world);
 if (!worldAttachment1.ok) throw worldAttachment1.error;
 if (!assets) {
@@ -214,23 +221,23 @@ if (M27_RECOVERY) {
   };
 }
 
-// Register synthetic texture + mint handles.
-const texHandle = world.allocSharedRef('TextureAsset', m27TextureAsset ?? {
+// Create managed handles for the synthetic texture and material.
+const texHandle = world.assets.create(m27TextureAsset ?? {
   kind: 'texture',
   shape: { viewDimension: '2d', extent: { width: TEX_W, height: TEX_H } },
   format: 'rgba8unorm',
   data: checkerPixels,
   colorSpace: 'srgb',
   mips: { kind: 'none' },
-});
-const samplerHandle = world.allocSharedRef('SamplerAsset', {
+}).unwrap();
+const samplerHandle = world.assets.create({
   kind: 'sampler',
   magFilter: 'linear',
   minFilter: 'linear',
   addressModeU: 'repeat',
   addressModeV: 'repeat',
-});
-const matHandle = world.allocSharedRef('MaterialAsset', M27_RECOVERY ? {
+}).unwrap();
+const matHandle = world.assets.create(M27_RECOVERY ? {
   kind: 'material',
   passes: [
     {
@@ -262,7 +269,7 @@ const matHandle = world.allocSharedRef('MaterialAsset', M27_RECOVERY ? {
     baseColorTexture: texHandle,
     sampler: samplerHandle,
   },
-});
+}).unwrap();
 
 // 4 staggered quads.
 const quads = M27_RECOVERY
@@ -275,7 +282,7 @@ const quads = M27_RECOVERY
     ];
 for (const [px, py, pz, sx, sy, sz] of quads) {
   world.spawn(
-    { component: MeshFilter, data: { assetHandle: HANDLE_QUAD } },
+    { component: MeshFilter, data: { assetHandle: primitiveQuad } },
     { component: MeshRenderer, data: { materials: [matHandle] } },
     {
       component: Transform,

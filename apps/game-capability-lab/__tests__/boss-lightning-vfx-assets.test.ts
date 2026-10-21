@@ -63,7 +63,8 @@ describe('game-default Boss Lightning suite', () => {
     for (const file of ['boss-lightning-suite.pack.json', 'boss-lightning-telegraph.pack.json', 'boss-lightning-flight.pack.json', 'boss-lightning-contact.pack.json']) {
       for (const emitter of effect(file).value.emitters) {
         for (const renderer of emitter.renderers) {
-          expect(materialGuids.has(renderer.material), `${file}/${emitter.id}`).toBe(true);
+          expect(typeof renderer.material).toBe('string');
+          expect(materialGuids.has(String(renderer.material)), `${file}/${emitter.id}`).toBe(true);
         }
       }
     }

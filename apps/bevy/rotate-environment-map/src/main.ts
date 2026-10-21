@@ -2,7 +2,7 @@ import { configureRuntimeAssetCatalog, createRuntimeAssetImportTransport, runtim
 import { createApp } from '@forgeax/engine-app/browser';
 import { AssetGuid } from '@forgeax/engine-pack/guid';
 import { Time, Update } from '@forgeax/engine-ecs';
-import { type EquirectAsset } from '@forgeax/engine-types';
+
 import { EngineEnvironmentError } from '@forgeax/engine-runtime';
 import { forgeaxBundlerAdapter } from 'virtual:forgeax/bundler';
 import { buildEnvironmentWorld, stepEnvironmentRotation } from './rotate-environment-map';
@@ -26,9 +26,9 @@ async function bootstrap(target: HTMLCanvasElement): Promise<void> {
   const guid = AssetGuid.parse(NEWPORT_LOFT_GUID);
   if (!guid.ok) { console.error('[bevy-rotate-environment-map] HDR GUID failed:', guid.error.code); return; }
   configureRuntimeAssetCatalog(assets, runtimeBinding);
-  const hdr = await assets.loadByGuid<EquirectAsset>(guid.value);
+  const hdr = await assets.load(guid.value, 'equirect');
   if (!hdr.ok) { console.error('[bevy-rotate-environment-map] HDR load failed:', hdr.error.code); return; }
-  const equirect = app.world.allocSharedRef('EquirectAsset', hdr.value);
+  const equirect = hdr.value;
   const scene = buildEnvironmentWorld(app.world, equirect, target.width / Math.max(target.height, 1));
   app.world.addSystem(Update, {
     name: 'rotate-skybox-and-environment-map',

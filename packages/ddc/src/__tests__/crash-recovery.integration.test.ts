@@ -61,6 +61,7 @@ describe('DDC lease and crash recovery', () => {
     await expect(lifecycle.commit(lease, KEY_A)).resolves.toEqual({
       result: 'lease-lost',
       key: KEY_A,
+      revision: 1,
     });
   });
 
@@ -75,10 +76,11 @@ describe('DDC lease and crash recovery', () => {
     await expect(lifecycle.commit(oldLease, KEY_A)).resolves.toEqual({
       result: 'stale',
       key: KEY_A,
+      revision: 0,
     });
-    await expect(lifecycle.commit(newLease, KEY_B)).resolves.toEqual({
+    await expect(lifecycle.commit(newLease, KEY_B)).resolves.toMatchObject({
       result: 'current',
-      key: KEY_B,
+      head: { currentKey: KEY_B, revision: 1, generation: newLease.generation },
     });
   });
 });

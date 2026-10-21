@@ -34,13 +34,17 @@ import {
   type EntityHandle,
   type World,
 } from '@forgeax/engine-ecs';
-import { HANDLE_CUBE, HANDLE_SPHERE } from '@forgeax/engine-assets-runtime';
+
 import { Transform } from '@forgeax/engine-scene';
 import { Camera, DirectionalLight, MeshFilter, MeshRenderer } from '@forgeax/engine-render';
 import { perspective } from '@forgeax/engine-render';
 import { Materials } from '@forgeax/engine-render';
-import type { MaterialAsset } from '@forgeax/engine-runtime';
+
 import { quat, vec3 } from '@forgeax/engine-math';
+import { AssetRegistry } from '@forgeax/engine-assets-runtime';
+
+import { createPrimitiveMesh } from '@forgeax/engine-geometry';
+
 
 /**
  * Exponential decay constant (units 1/s) for the follower's smooth_nudge chase
@@ -84,38 +88,36 @@ export function targetPositionAt(t: number): [number, number, number] {
  * camera looking at the origin.
  */
 export function buildSmoothFollowWorld(world: World): void {
+const sceneAssets = world.assets;
+if (!(sceneAssets instanceof AssetRegistry)) throw new Error('Scene requires its runtime asset owner');
+
+const primitiveCube = sceneAssets.create(createPrimitiveMesh('cube').unwrap()).unwrap();
+
+const primitiveSphere = sceneAssets.create(createPrimitiveMesh('sphere').unwrap()).unwrap();
+
   // ── Ground plane (flat-scaled cube), dark purple like Bevy's ──────────
-  const groundMat = world.allocSharedRef<'MaterialAsset', MaterialAsset>(
-    'MaterialAsset',
-    Materials.standard({ baseColor: [0.3, 0.15, 0.3, 1] }),
-  );
+  const groundMat = sceneAssets.create(Materials.standard({ baseColor: [0.3, 0.15, 0.3, 1] })).unwrap();
   world.spawn(
     { component: Transform, data: { pos: [0, -2.5, 0], quat: [0, 0, 0, 1], scale: [16, 0.02, 16] } },
-    { component: MeshFilter, data: { assetHandle: HANDLE_CUBE } },
+    { component: MeshFilter, data: { assetHandle: primitiveCube } },
     { component: MeshRenderer, data: { materials: [groundMat] } },
   );
 
   // ── Target sphere (Bevy srgb(0.3,0.15,0.9) = blue), starts on its circle ──
-  const targetMat = world.allocSharedRef<'MaterialAsset', MaterialAsset>(
-    'MaterialAsset',
-    Materials.standard({ baseColor: [0.3, 0.15, 0.9, 1] }),
-  );
+  const targetMat = sceneAssets.create(Materials.standard({ baseColor: [0.3, 0.15, 0.9, 1] })).unwrap();
   const start = targetPositionAt(0);
   world.spawn(
     { component: Transform, data: { pos: start, quat: [0, 0, 0, 1], scale: [0.6, 0.6, 0.6] } },
-    { component: MeshFilter, data: { assetHandle: HANDLE_SPHERE } },
+    { component: MeshFilter, data: { assetHandle: primitiveSphere } },
     { component: MeshRenderer, data: { materials: [targetMat] } },
     { component: TargetSphere, data: { elapsed: 0 } },
   );
 
   // ── Follower sphere (Bevy srgb(0.9,0.3,0.3) = red), starts offset from target ──
-  const followMat = world.allocSharedRef<'MaterialAsset', MaterialAsset>(
-    'MaterialAsset',
-    Materials.standard({ baseColor: [0.9, 0.3, 0.3, 1] }),
-  );
+  const followMat = sceneAssets.create(Materials.standard({ baseColor: [0.9, 0.3, 0.3, 1] })).unwrap();
   world.spawn(
     { component: Transform, data: { pos: [0, 0, 0], quat: [0, 0, 0, 1], scale: [0.6, 0.6, 0.6] } },
-    { component: MeshFilter, data: { assetHandle: HANDLE_SPHERE } },
+    { component: MeshFilter, data: { assetHandle: primitiveSphere } },
     { component: MeshRenderer, data: { materials: [followMat] } },
     { component: FollowingSphere, data: { marker: 1 } },
   );

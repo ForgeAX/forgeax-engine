@@ -21,7 +21,8 @@ import type { EngineMetrics } from '@forgeax/engine-types';
 //     corner anchors at draw time (AC-16, w17 end-to-end test).
 //   - `nineslice.tile-needs-repeat-sampler` — sliceMode=1 (tile) bound to a
 //     sampler whose addressMode is not `'repeat'`; the visual silently
-//     degrades to clamp-stretch (D-9, w18 register-time soft-warn).
+//     degrades to clamp-stretch. Recorded during material preparation; cached
+//     consumers of the same revision do not emit additional warnings.
 //   - `render.instancing.foldedDraws`        — feat-20260622-chunk-gpu-
 //     instancing-sprite-tilemap M3 / D-3. Count of instanced drawIndexed
 //     calls the fold operator emits this frame; one increment per non-

@@ -1,3 +1,4 @@
+import type { AssetHandle } from '@forgeax/engine-types';
 /// <reference types="vite/client" />
 
 // LearnOpenGL section 6.4 carrier: one Engine App, one Renderer, and one
@@ -20,7 +21,7 @@ import { createPlaneGeometry, createSphereGeometry } from '@forgeax/engine-geome
 import { Camera, DirectionalLight, Materials, MeshFilter, MeshRenderer, perspective, TONEMAP_LINEAR } from '@forgeax/engine-render';
 import { EngineEnvironmentError } from '@forgeax/engine-runtime';
 import { Transform } from '@forgeax/engine-scene';
-import type { Handle, MaterialAsset } from '@forgeax/engine-types';
+import type { MaterialAsset } from '@forgeax/engine-types';
 import { forgeaxBundlerAdapter } from 'virtual:forgeax/bundler';
 import {
   exposeLearnRenderTestApp,
@@ -145,8 +146,8 @@ function makeTransmissionMaterial(testCase: TransmissionCase): MaterialAsset {
 
 function spawnMesh(
   world: World,
-  mesh: Handle<'MeshAsset', 'shared'>,
-  material: Handle<'MaterialAsset', 'shared'>,
+  mesh: AssetHandle<'mesh'>,
+  material: AssetHandle<'material'>,
   pos: readonly [number, number, number],
   scale: readonly [number, number, number] = [1, 1, 1],
 ): void {
@@ -207,6 +208,8 @@ async function bootstrap(target: HTMLCanvasElement): Promise<void> {
     return;
   }
   const app = appResult.value;
+if (app.assets === undefined) throw new Error('This scene requires the App asset owner');
+
   exposeLearnRenderTestApp(app, target);
   const world = app.world;
 
@@ -217,35 +220,29 @@ async function bootstrap(target: HTMLCanvasElement): Promise<void> {
 
   const backgroundGeometry = createPlaneGeometry(11, 7);
   if (!backgroundGeometry.ok) throw backgroundGeometry.error;
-  const backgroundMesh = world.allocSharedRef('MeshAsset', backgroundGeometry.value);
-  const backgroundMaterial = world.allocSharedRef(
-    'MaterialAsset',
-    Materials.standard({ baseColor: [0.03, 0.07, 0.14, 1], roughness: 0.82 }),
-  );
+  const backgroundMesh = app.assets.create(backgroundGeometry.value).unwrap();
+  const backgroundMaterial = app.assets.create(Materials.standard({ baseColor: [0.03, 0.07, 0.14, 1], roughness: 0.82 })).unwrap();
   spawnMesh(world, backgroundMesh, backgroundMaterial, [0, 0, -1.6], [1, 1, 1]);
 
   const sphereGeometry = createSphereGeometry(SPHERE_RADIUS, 32, 16);
   if (!sphereGeometry.ok) throw sphereGeometry.error;
-  const sphereMesh = world.allocSharedRef('MeshAsset', sphereGeometry.value);
+  const sphereMesh = app.assets.create(sphereGeometry.value).unwrap();
 
   for (const [index, testCase] of TRANSMISSION_CASES.entries()) {
     const x = (index - (TRANSMISSION_CASES.length - 1) / 2) * SPACING;
-    const material = world.allocSharedRef('MaterialAsset', makeTransmissionMaterial(testCase));
+    const material = app.assets.create(makeTransmissionMaterial(testCase)).unwrap();
     spawnMesh(world, sphereMesh, material, [x, 0.15, 0]);
   }
 
   // A regular Standard BLEND consumer is intentionally separate from the
   // transmission cases: the pipe must order transmission before transparency.
-  const blendMaterial = world.allocSharedRef(
-    'MaterialAsset',
-    Materials.standard({
+  const blendMaterial = app.assets.create(Materials.standard({
       baseColor: [0.15, 0.55, 1, 0.38],
       metallic: 0,
       roughness: 0.28,
       queue: 3000,
       renderState: { depthWriteEnabled: false, blend: ALPHA_BLEND },
-    }),
-  );
+    })).unwrap();
   spawnMesh(world, sphereMesh, blendMaterial, [0, 0.15, 0.18], [0.48, 0.48, 0.48]);
 
   world.spawn(

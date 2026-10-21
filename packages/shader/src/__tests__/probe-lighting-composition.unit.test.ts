@@ -18,7 +18,9 @@ describe('Probe diffuse shader composition', () => {
     expect(standard).toContain('#ifdef PROBE_BLEND_AVAILABLE');
     expect(standard).toContain('@group(3) @binding(1) var<storage, read> probeBlendRecords');
     expect(standard).not.toContain('@group(2) @binding(1) var<storage, read> probeBlendRecords');
-    expect(standard).toContain('fn composeProbeDiffuse(');
+    expect(standard).toContain('let environment = evaluateStandardEnvironment(');
+    expect(standard).toContain('probeShPreblend, probeLocalBlendFraction');
+    expect(standard).not.toContain('fn composeProbeDiffuse(');
     expect(lighting).toContain('evaluateProbeDiffuse(sh, localBlend');
     expect(probe).toContain('fn evaluateProbeDiffuse(');
     expect(skin).toContain('@group(3) @binding(1) var<storage, read> probeBlendRecords');

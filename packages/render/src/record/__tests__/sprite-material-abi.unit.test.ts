@@ -19,7 +19,7 @@ describe('sprite Standard material ABI', () => {
       defaultWhiteTextureView: white,
       defaultWhite3dTextureView: volume,
       defaultWhite2dArrayTextureView: layers,
-      skylightFallback: { prefilterView: cube },
+      skylightFallback: { irradianceView: cube, prefilterView: {} as TextureView },
     } as PipelineState;
     const owner = new ParamSchemaProjectionOwner();
     const { schema } = owner.admit({

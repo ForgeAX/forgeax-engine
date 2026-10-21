@@ -1,23 +1,38 @@
-import { AssetRegistry, HANDLE_CUBE } from '@forgeax/engine-assets-runtime';
+import { AssetRegistry } from '@forgeax/engine-assets-runtime';
 import { World } from '@forgeax/engine-ecs';
+import { createPrimitiveMesh } from '@forgeax/engine-geometry';
 import { RhiNullDevice, rhi } from '@forgeax/engine-rhi-null';
 import { propagateTransforms, Transform } from '@forgeax/engine-scene';
 import { ShaderRegistry } from '@forgeax/engine-shader';
-import { expect, it, vi } from 'vitest';
+import { assert, expect, it, vi } from 'vitest';
 import { renderLifecycleManifestUrl } from '../../__tests__/shader-manifest-fixture';
 import { createRenderer } from '../../assembly/factory';
 import { deriveStorageBufferCeiling } from '../../assembly/mesh-ssbo-grow';
 import { Camera, DirectionalLight, MeshFilter, MeshRenderer } from '../../components';
+import { GpuDrivenProduction } from '../../gpu-driven/production-raster';
+import type { GpuScene } from '../../gpu-scene';
 import { RhiErrorListenerRegistry } from '../../lifecycle';
+import { Materials } from '../../materials';
 import * as folds from '../../record/fold-buckets';
 import { renderPublicationTransfers } from '../contract';
 import { createRenderPublisher } from '../publisher';
 
-it('submits 50k published main and shadow rows without allocating 100k material slots', async () => {
-  // Same population and default-material lane as the App Render Worker stress
-  // case. Real publication ownership/transfer, validation, allocation, upload,
-  // shadow recording and submission run through the RhiNull backend here.
+it('submits 50k shared GPU main and shadow candidates with one material slot', async () => {
+  // The real Render Worker publication path admits 50k Mesh consumers.
+  // RhiNull observes preparation, physical allocations and encoded submissions;
+  // pixel/shader execution remains covered by the Dawn and browser suites.
   const plans: { main: number; shadow: number; materials: number }[] = [];
+  let gpu: GpuDrivenProduction | undefined;
+  let gpuScene: GpuScene | undefined;
+  const prepare = GpuDrivenProduction.prototype.prepare;
+  vi.spyOn(GpuDrivenProduction.prototype, 'prepare').mockImplementation(function (
+    this: GpuDrivenProduction,
+    input,
+  ) {
+    gpu = this;
+    gpuScene = input.scene?.scene;
+    return prepare.call(this, input);
+  });
   const allocations: { label: string | undefined; size: number | undefined }[] = [];
   const errors: unknown[] = [];
   const build = folds.buildDispatchPlan;
@@ -59,8 +74,12 @@ it('submits 50k published main and shadow rows without allocating 100k material 
     { rhi, publicationSource: identity },
     { shaderManifestUrl: renderLifecycleManifestUrl() },
   );
-  const world = new World();
-  const assets = new AssetRegistry(new ShaderRegistry({ manifestUrl: undefined }));
+  const assets = new AssetRegistry({
+    shaderRegistry: new ShaderRegistry({ manifestUrl: undefined }),
+  });
+  const world = new World({ assets });
+  const meshHandle = assets.create(createPrimitiveMesh('cube').unwrap()).unwrap();
+  const materialHandle = assets.create(Materials.standard({ baseColor: [1, 1, 1, 1] })).unwrap();
   const publisher = createRenderPublisher(world, assets, identity);
   try {
     const initialized = await renderer.initialization;
@@ -76,7 +95,7 @@ it('submits 50k published main and shadow rows without allocating 100k material 
         { component: Transform, data: {} },
         {
           component: DirectionalLight,
-          data: { castShadow: true, intensity: 3, direction: [-0.5, -1, -0.3] },
+          data: { castShadow: true, intensity: 3, direction: [-0.5, -1, -0.3], cascadeCount: 4 },
         },
       )
       .unwrap();
@@ -94,8 +113,8 @@ it('submits 50k published main and shadow rows without allocating 100k material 
               scale: [0.2, 0.2, 0.2],
             },
           },
-          { component: MeshFilter, data: { assetHandle: HANDLE_CUBE } },
-          { component: MeshRenderer, data: {} },
+          { component: MeshFilter, data: { assetHandle: meshHandle } },
+          { component: MeshRenderer, data: { materials: [materialHandle] } },
         )
         .unwrap();
     }
@@ -107,17 +126,65 @@ it('submits 50k published main and shadow rows without allocating 100k material 
     });
     candidate.accept();
     const result = renderer.draw({ publication: packet });
-    expect(plans).toEqual([{ main: 50000, shadow: 50000, materials: 1 }]);
+    if (errors.length)
+      throw (errors[0] as { detail?: { error?: unknown } }).detail?.error ?? errors[0];
     if (!result.ok) throw result.error;
+
     const receipt = result.value;
     if (receipt === undefined) throw new Error('Renderer did not submit a frame');
     const completed = await receipt.completed;
     if (!completed.ok) throw completed.error;
     expect(errors).toEqual([]);
-    expect(allocations.filter(({ label }) => label === 'pbr-material-ubo')).toHaveLength(1);
+    assert(gpu && gpuScene);
+    const execution = gpu.inspect();
+    expect(execution).toMatchObject({
+      submitted: true,
+      overflow: false,
+      gpuOwnedEntityCount: 50000,
+      batchCount: 1,
+      resourceClassCount: 1,
+    });
+    expect(execution.encodedIndirectDraws).toBeGreaterThan(0);
+    expect(
+      execution.channels.map((channel) => ({
+        pass: channel.viewPass,
+        index: channel.viewIndex,
+        lane: channel.lane,
+        total: channel.totalDrawCount,
+        owned: channel.claimedDrawCount,
+        residual: channel.residualDrawCount,
+      })),
+    ).toEqual([
+      { pass: 'main', index: 0, lane: 'gpu', total: 50000, owned: 50000, residual: 0 },
+      ...[0, 1, 2, 3].map((index) => ({
+        pass: 'directional-shadow',
+        index,
+        lane: 'gpu',
+        total: 50000,
+        owned: 50000,
+        residual: 0,
+      })),
+    ]);
+    const shadows = execution.shadowViews.filter((view) => view.candidateCount > 0);
+    expect(shadows).toHaveLength(4);
+    for (const view of shadows) {
+      expect(view).toMatchObject({ candidateCount: 50000, batchCount: 1 });
+      expect(view.shadowBundles?.commands).toBeGreaterThan(0);
+    }
+    expect(gpuScene.inspect().tables.instance.capacity).toBeGreaterThanOrEqual(50000);
+    expect(gpuScene.inspect().tables.material.bytes).toBeLessThanOrEqual(4096);
+    expect(
+      allocations
+        .filter(({ label }) => label === 'gpu-scene-material-table')
+        .every(({ size }) => size !== undefined && size <= 4096),
+    ).toBe(true);
+    expect(plans).toEqual([{ main: 0, shadow: 0, materials: 1 }]);
+    const materialAllocations = allocations.filter(({ label }) => label === 'pbr-material-ubo');
+    expect(materialAllocations).toHaveLength(1);
+    expect(materialAllocations[0]?.size).toBeLessThanOrEqual(2 * 1024 * 1024);
     expect(
       allocations.filter(({ label }) => label === 'pbr-mesh-ssbo').map(({ size }) => size),
-    ).toEqual([1024 * 256, 131072 * 256]);
+    ).toEqual([1024 * 256]);
   } finally {
     renderer.dispose();
     publisher.dispose();

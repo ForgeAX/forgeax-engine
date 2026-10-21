@@ -1,7 +1,8 @@
+import type { AssetHandle } from '@forgeax/engine-types';
 import type { GameHost, GameProjectionValue } from '@forgeax/engine-app';
 import type { EntityHandle, World } from '@forgeax/engine-ecs';
 import type { Context, Plugin } from '@forgeax/engine-plugin';
-import { HANDLE_CUBE, HANDLE_SPHERE } from '@forgeax/engine-assets-runtime';
+import { type AssetRegistry } from '@forgeax/engine-assets-runtime';
 import { quat } from '@forgeax/engine-math';
 import {
   ANTIALIAS_NONE,
@@ -15,7 +16,6 @@ import {
   Skylight,
   TONEMAP_NONE,
 } from '@forgeax/engine-render';
-import type { Handle, MaterialAsset } from '@forgeax/engine-types';
 import { Transform } from '@forgeax/engine-scene';
 import {
   installDepthOfField,
@@ -23,8 +23,12 @@ import {
   type DepthOfFieldHandle,
   type DepthOfFieldPreset,
 } from './plugins/depth-of-field';
+import { createPrimitiveMesh } from '@forgeax/engine-geometry';
+const BUILTIN_CUBE = createPrimitiveMesh('cube').unwrap();
+const BUILTIN_SPHERE = createPrimitiveMesh('sphere').unwrap();
 
-type MaterialHandle = Handle<'MaterialAsset', 'shared'>;
+
+type MaterialHandle = AssetHandle<'material'>;
 
 type Layer = {
   readonly id: 'near' | 'focus' | 'far';
@@ -98,22 +102,22 @@ function asProjection<T>(value: T): GameProjectionValue {
   return value as unknown as GameProjectionValue;
 }
 
-function material(world: World, color: readonly [number, number, number, number]): MaterialHandle {
-  return world.allocSharedRef('MaterialAsset', Materials.unlit(color) as MaterialAsset);
+function material(assets: AssetRegistry, color: readonly [number, number, number, number]): MaterialHandle {
+  return assets.create(Materials.unlit(color)).unwrap();
 }
 
-function spawnCube(world: World, mesh: MaterialHandle, pos: readonly [number, number, number], scale: readonly [number, number, number]): void {
+function spawnCube(world: World, geometry: AssetHandle<'mesh'>, mesh: MaterialHandle, pos: readonly [number, number, number], scale: readonly [number, number, number]): void {
   world.spawn(
     { component: Transform, data: { pos, scale } },
-    { component: MeshFilter, data: { assetHandle: HANDLE_CUBE } },
+    { component: MeshFilter, data: { assetHandle: geometry } },
     { component: MeshRenderer, data: { materials: [mesh] } },
   ).unwrap();
 }
 
-function spawnSphere(world: World, mesh: MaterialHandle, pos: readonly [number, number, number], radius: number): void {
+function spawnSphere(world: World, geometry: AssetHandle<'mesh'>, mesh: MaterialHandle, pos: readonly [number, number, number], radius: number): void {
   world.spawn(
     { component: Transform, data: { pos, scale: [radius, radius, radius] } },
-    { component: MeshFilter, data: { assetHandle: HANDLE_SPHERE } },
+    { component: MeshFilter, data: { assetHandle: geometry } },
     { component: MeshRenderer, data: { materials: [mesh] } },
   ).unwrap();
 }
@@ -121,21 +125,24 @@ function spawnSphere(world: World, mesh: MaterialHandle, pos: readonly [number, 
 type DemoScene = { readonly camera: EntityHandle; readonly dof: DepthOfFieldHandle };
 
 function buildScene(world: World, host: GameHost): DemoScene {
-  const background = material(world, [0.008, 0.012, 0.025, 1]);
-  const floor = material(world, [0.03, 0.045, 0.075, 1]);
-  const nearPanel = material(world, LAYERS[0]!.panel);
-  const focusPanel = material(world, LAYERS[1]!.panel);
-  const farPanel = material(world, LAYERS[2]!.panel);
-  const nearStripe = material(world, LAYERS[0]!.stripe);
-  const nearStripeAlt = material(world, LAYERS[0]!.stripeAlt);
-  const focusStripe = material(world, LAYERS[1]!.stripe);
-  const focusStripeAlt = material(world, LAYERS[1]!.stripeAlt);
-  const farStripe = material(world, LAYERS[2]!.stripe);
-  const farStripeAlt = material(world, LAYERS[2]!.stripeAlt);
-  const white = material(world, [0.95, 0.98, 1, 1]);
+  const assets = host.assets;
+  if (assets === undefined) throw new Error('Depth-of-field scene requires the host AssetRegistry');
+  const cube = assets.create(BUILTIN_CUBE).unwrap(), sphere = assets.create(BUILTIN_SPHERE).unwrap();
+  const background = material(assets, [0.008, 0.012, 0.025, 1]);
+  const floor = material(assets, [0.03, 0.045, 0.075, 1]);
+  const nearPanel = material(assets, LAYERS[0]!.panel);
+  const focusPanel = material(assets, LAYERS[1]!.panel);
+  const farPanel = material(assets, LAYERS[2]!.panel);
+  const nearStripe = material(assets, LAYERS[0]!.stripe);
+  const nearStripeAlt = material(assets, LAYERS[0]!.stripeAlt);
+  const focusStripe = material(assets, LAYERS[1]!.stripe);
+  const focusStripeAlt = material(assets, LAYERS[1]!.stripeAlt);
+  const farStripe = material(assets, LAYERS[2]!.stripe);
+  const farStripeAlt = material(assets, LAYERS[2]!.stripeAlt);
+  const white = material(assets, [0.95, 0.98, 1, 1]);
 
-  spawnCube(world, background, [0, 1.5, -8], [9, 5.5, 0.15]);
-  spawnCube(world, floor, [0, -1.45, 0], [9, 0.12, 12]);
+  spawnCube(world, cube, background, [0, 1.5, -8], [9, 5.5, 0.15]);
+  spawnCube(world, cube, floor, [0, -1.45, 0], [9, 0.12, 12]);
 
   const layerMaterials = [
     { panel: nearPanel, stripe: nearStripe, stripeAlt: nearStripeAlt },
@@ -144,25 +151,25 @@ function buildScene(world: World, host: GameHost): DemoScene {
   ] as const;
   for (const [index, layer] of LAYERS.entries()) {
     const palette = layerMaterials[index]!;
-    spawnCube(world, palette.panel, [layer.x, 0.15, layer.z], [layer.width, layer.height, 0.12]);
+    spawnCube(world, cube, palette.panel, [layer.x, 0.15, layer.z], [layer.width, layer.height, 0.12]);
     const barWidth = Math.max(0.08, layer.width * 0.065);
     const barHeight = layer.height * 0.82;
     const spacing = layer.width * 0.17;
     for (let bar = -2; bar <= 2; bar += 1) {
       spawnCube(
-        world,
+        world, cube,
         bar % 2 === 0 ? palette.stripe : palette.stripeAlt,
         [layer.x + bar * spacing, 0.18, layer.z + 0.15],
         [barWidth, barHeight, 0.08],
       );
     }
-    spawnCube(world, palette.stripeAlt, [layer.x, 0.18, layer.z + 0.17], [layer.width * 0.82, 0.07, 0.1]);
-    spawnSphere(world, white, [layer.x, layer.height + 0.55, layer.z + 0.18], Math.max(0.12, layer.width * 0.08));
+    spawnCube(world, cube, palette.stripeAlt, [layer.x, 0.18, layer.z + 0.17], [layer.width * 0.82, 0.07, 0.1]);
+    spawnSphere(world, sphere, white, [layer.x, layer.height + 0.55, layer.z + 0.18], Math.max(0.12, layer.width * 0.08));
   }
 
   // A foreground wire creates a controlled silhouette/occlusion edge across
   // the middle and far cards without adding animation or VFX noise.
-  spawnCube(world, white, [0.35, 0.1, 7.1], [0.07, 2.1, 0.07]);
+  spawnCube(world, cube, white, [0.35, 0.1, 7.1], [0.07, 2.1, 0.07]);
   world.spawn({ component: DirectionalLight, data: { castShadow: true, direction: [-0.35, -0.8, -0.45], color: [1, 0.95, 0.9], intensity: 1.2 } }).unwrap();
   world.spawn({ component: Skylight, data: { color: [0.12, 0.18, 0.3], intensity: 0.35 } }).unwrap();
 
@@ -185,6 +192,7 @@ function buildScene(world: World, host: GameHost): DemoScene {
       },
     },
   ).unwrap();
+  for (const asset of [cube, sphere, background, floor, nearPanel, focusPanel, farPanel, nearStripe, nearStripeAlt, focusStripe, focusStripeAlt, farStripe, farStripeAlt, white]) assets.release(asset).unwrap();
   const dof = installDepthOfField(world, camera, false);
   dof.setControls(DEFAULT_CONTROLS);
   dof.setPreset('off');

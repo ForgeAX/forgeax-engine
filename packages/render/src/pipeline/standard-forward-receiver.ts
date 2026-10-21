@@ -10,6 +10,7 @@ import type { TypedShadowTargets } from '../typed-shadow-passes';
 interface StandardForwardReceiverInputs {
   readonly sampled: readonly RenderPipelineTarget[];
   readonly directionalShadow?: RenderPipelineTarget;
+  readonly shadowMoments?: RenderPipelineTarget;
   readonly spotShadow: RenderPipelineTarget;
   readonly cloudShadow?: RenderPipelineTarget;
   readonly ssao?: RenderPipelineTarget;
@@ -23,14 +24,15 @@ export function standardForwardReceiverInputs(input: {
   readonly ssao?: RenderPipelineTarget | undefined;
   readonly clusterReads: readonly GraphAccess[];
 }): StandardForwardReceiverInputs {
-  const { directional, spot, point } = input.shadows;
+  const { directional, spot, point, moments } = input.shadows;
   const { cloudShadow, ssao } = input;
   return {
-    sampled: [directional, spot, point, cloudShadow, ssao].filter(
+    sampled: [directional, spot, point, moments, cloudShadow, ssao].filter(
       (target): target is RenderPipelineTarget => target !== undefined,
     ),
     ...(directional === undefined ? {} : { directionalShadow: directional }),
     spotShadow: spot,
+    ...(moments === undefined ? {} : { shadowMoments: moments }),
     ...(cloudShadow === undefined ? {} : { cloudShadow }),
     ...(ssao === undefined ? {} : { ssao }),
     extraAccesses: input.clusterReads,

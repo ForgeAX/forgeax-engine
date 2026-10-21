@@ -5,6 +5,7 @@ import {
   AssetError,
   type CatalogDelta,
   type CatalogEntry,
+  type CatalogRevisionPoint,
   type ImportTransport,
   type ResourceRevision,
   type RuntimeAssetBinding,
@@ -16,8 +17,17 @@ export type CatalogListener = (delta: CatalogDelta) => void;
 
 /** Read-only catalog source backed by static entries or a canonical URL. */
 export interface CatalogSource {
-  enumerate(): Promise<Result<readonly CatalogEntry[], AssetError>>;
-  /** Ask the producer for one GUID and its published siblings; enumeration remains navigation-only. */
+  /** Revisions, when supplied, describe exactly these rows, including empty roots. */
+  enumerate(): Promise<
+    Result<readonly CatalogEntry[], AssetError> & {
+      readonly revisions?: readonly CatalogRevisionPoint[];
+    }
+  >;
+  /**
+   * Ask for one GUID and its published siblings; enumeration remains navigation-only.
+   * Sequenced producers must publish the complete Catalog window before resolving,
+   * including first materialization. A partial demand response cannot advance a root.
+   */
   get?(guid: string): Promise<Result<readonly CatalogEntry[], AssetError>>;
   subscribe(listener: CatalogListener): () => void;
   /** Bind one immutable publication through Pack, artifacts and decode. The closure owns its bytes. */
@@ -27,7 +37,8 @@ export interface CatalogSource {
   readonly url?: string;
   /** Producer revision required before a source may expose its entries. */
   readonly expectedRevision?: ResourceRevision;
-  readonly expectedScope?: Pick<RuntimeAssetBinding, 'scopeId' | 'generation'>;
+  /** Explicit binding, or the first verified URL snapshot's immutable scope. */
+  readonly expectedScope?: Pick<RuntimeAssetBinding, 'scopeId' | 'generation'> | undefined;
 }
 
 /**
@@ -47,6 +58,7 @@ export function createCatalogSource(options: {
   readonly importTransport?: ImportTransport;
 }): CatalogSource {
   const entries = options.entries;
+  let expectedScope = options.expectedScope;
   const importTransport = options.importTransport;
   const resolveEntry = (entry: CatalogEntry): CatalogEntry =>
     options.url === undefined
@@ -97,7 +109,6 @@ export function createCatalogSource(options: {
       const url = options.url;
       const fetcher = options.fetch ?? globalThis.fetch;
       const expectedRevision = options.expectedRevision;
-      const expectedScope = options.expectedScope;
       const read = Promise.resolve().then(async () => {
         const result = await fetchCatalog(
           url,
@@ -107,8 +118,12 @@ export function createCatalogSource(options: {
           expectedScope,
         );
         if (!result.ok) return result;
+        expectedScope ??= result.value.scope;
         return ok(
-          [...result.value].map(([guid, entry]) => ({ guid, ...entry })) as readonly CatalogEntry[],
+          [...result.value.entries].map(([guid, entry]) => ({
+            guid,
+            ...entry,
+          })) as readonly CatalogEntry[],
         );
       });
       pending = read;
@@ -132,9 +147,7 @@ export function createCatalogSource(options: {
           async get(guid: string) {
             const imported = await importTransport.fetchPack(
               guid,
-              options.expectedScope === undefined
-                ? undefined
-                : { ...options.expectedScope, status: 'ready' },
+              expectedScope === undefined ? undefined : { ...expectedScope, status: 'ready' },
             );
             if (!imported.ok || imported.entries === undefined) {
               return err(
@@ -175,7 +188,9 @@ export function createCatalogSource(options: {
     ...(options.expectedRevision === undefined
       ? {}
       : { expectedRevision: options.expectedRevision }),
-    ...(options.expectedScope === undefined ? {} : { expectedScope: options.expectedScope }),
+    get expectedScope() {
+      return expectedScope;
+    },
   };
 }
 

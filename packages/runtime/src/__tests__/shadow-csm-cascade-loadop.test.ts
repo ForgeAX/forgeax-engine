@@ -13,8 +13,9 @@
 // 'render-system-shadow' command encoder, so the asserted truth table is the
 // engine's decision at the real call site.
 
-import { HANDLE_CUBE } from '@forgeax/engine-assets-runtime';
+import { AssetRegistry } from '@forgeax/engine-assets-runtime';
 import { World } from '@forgeax/engine-ecs';
+import { createPrimitiveMesh } from '@forgeax/engine-geometry';
 import { Camera, DirectionalLight, MeshFilter, MeshRenderer } from '@forgeax/engine-render';
 import { Transform } from '@forgeax/engine-scene';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -86,6 +87,7 @@ function makeRenderPassEncoder(): Record<string, unknown> {
     setIndexBuffer: () => undefined,
     setBindGroup: () => undefined,
     setViewport: () => undefined,
+    setScissorRect: () => undefined,
     draw: () => undefined,
     drawIndexed: () => undefined,
     setStencilReference: () => undefined,
@@ -204,7 +206,9 @@ async function drawCsmScene(cascadeCount: number): Promise<CaptureLog> {
     { shaderManifestUrl: buildManifestDataUrl() },
   );
   const renderer = created.unwrap();
-  const world = new World();
+  const assets = new AssetRegistry();
+  const world = new World({ assets });
+  const cube = assets.create(createPrimitiveMesh('cube').unwrap()).unwrap();
   world.spawn(
     {
       component: Camera,
@@ -227,7 +231,7 @@ async function drawCsmScene(cascadeCount: number): Promise<CaptureLog> {
     data: { castShadow: true, ...directionalLight(), cascadeCount, mapSize: 1024 },
   });
   world.spawn(
-    { component: MeshFilter, data: { assetHandle: HANDLE_CUBE } },
+    { component: MeshFilter, data: { assetHandle: cube } },
     { component: MeshRenderer, data: {} },
     { component: Transform, data: identityTransform() },
   );
@@ -250,6 +254,7 @@ async function drawCsmScene(cascadeCount: number): Promise<CaptureLog> {
   } finally {
     unsubscribe();
     disposed = await renderer.dispose();
+    assets.dispose();
   }
   if (!disposed.ok) throw disposed.error;
   return log;

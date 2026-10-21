@@ -1,7 +1,18 @@
+import { AssetRegistry } from '@forgeax/engine-assets-runtime';
+import { World } from '@forgeax/engine-ecs';
 import { mat4, vec3 } from '@forgeax/engine-math';
 import type { RhiDevice, RhiRenderPassEncoder, ShaderModule } from '@forgeax/engine-rhi';
+import { transmissionBackdropAvailable } from '../../assembly/device-feature-admission';
 import type { MeshGpuHandles } from '../../device/gpu-residency';
 import { GpuBuffer } from '../../gpu-resource';
+import {
+  assembleMaterialWithSkylightEntries,
+  createSkylightFallback,
+  skylightBindGroupResources,
+} from '../../ibl/skylight-bind-group';
+import { buildBindGroupLayoutDescriptor } from '../../pbr-pipeline';
+import { worldRenderResources } from '../../publication/resource-scope';
+import { MaterialFrame } from '../../scene/material-dispatch';
 import { selectCpuLodRows } from '../cpu-lod';
 import { makeZeroCameraFallbackSnapshot } from '../frame-snapshot';
 import { getOrCreateFromChain } from '../mesh-ssbo';
@@ -13,10 +24,33 @@ export type PhysicalRangePass = 'forward' | 'deferred' | 'temporal' | 'shadow';
 /** Two source meshes and one lower LOD share actual buffers, with independent index/base offsets. */
 export function cpuPhysicalRangesFixture(device: RhiDevice, shader: ShaderModule) {
   const f = cpuSetupFixture(device, shader);
+  const assets = new AssetRegistry();
+  const world = new World({ assets });
+  const skylightFallback = createSkylightFallback(device, device.queue);
+  Object.assign(f.c, { world: worldRenderResources(world), skylightCount: 0 });
+  Object.assign(f.c.frameState, { materialBgShared: new Map() });
   const first = f.add({ entity: 1, submeshes: 1 });
   const second = f.add({ entity: 2, submeshes: 1, claimed: [0] });
-  const secondClaim = [...f.claims];
-  f.claims.clear();
+  for (const entry of [first, second])
+    entry.source.material.adopt({
+      ...entry.source.material.snapshot,
+      materialHandle: undefined,
+      materialParamSchema: [],
+      passes: [
+        {
+          name: 'shadow',
+          program: { module: 'fixture::shadow' },
+          renderState: { tags: { LightMode: 'ShadowCaster' } },
+        },
+      ],
+    });
+  Object.assign(f.c, {
+    materialFrame: new MaterialFrame(undefined)
+      .with(first.source.material)
+      .with(second.source.material),
+  });
+  const secondClaim = [...f.selectedDraws];
+  f.selectedDraws.clear();
   const positions = Float32Array.of(
     -0.9,
     -0.7,
@@ -86,7 +120,56 @@ export function cpuPhysicalRangesFixture(device: RhiDevice, shader: ShaderModule
   });
   const sourceSubmeshes = secondMesh.submeshes;
   const sourceDraws = structuredClone(second.source.gpuDrivenDraws);
-  const shadowPipeline = f.createPipeline(shader, undefined, true);
+  const transmissionBackdrop = transmissionBackdropAvailable(
+    device.limits.maxSampledTexturesPerShaderStage,
+  );
+  const shadowMaterialLayout = device
+    .createBindGroupLayout(
+      buildBindGroupLayoutDescriptor(
+        {
+          shader: { id: 'fixture::shadow', passKind: 'forward', variantSet: undefined },
+          attachments: { colorFormats: [], depthFormat: 'depth32float', sampleCount: 1 },
+          geometry: { topology: 'triangle-list', vertexLayout: {} },
+          renderState: undefined,
+        },
+        {
+          kind: 'pbr-material-merged',
+          materialParamSchema: [],
+          caps: { ...device.caps, transmissionBackdrop },
+        },
+      ),
+    )
+    .unwrap();
+  const shadowPipeline = f.createPipeline(shader, undefined, true, shadowMaterialLayout);
+  const oracleMaterialEntries = assembleMaterialWithSkylightEntries(
+    [
+      {
+        binding: 0,
+        resource: {
+          kind: 'buffer',
+          value: {
+            buffer: f.c.pipelineState.materialUniformBuffer
+              .buffer as import('@forgeax/engine-rhi').Buffer,
+            size: 16,
+          },
+        },
+      },
+    ],
+    skylightBindGroupResources(skylightFallback),
+    transmissionBackdrop ? undefined : null,
+  );
+  oracleMaterialEntries.push({
+    binding: 46,
+    resource: { kind: 'buffer', value: { buffer: f.meshUniformBuffer } },
+  });
+  const oracleMaterialGroup = device
+    .createBindGroup({ layout: shadowMaterialLayout, entries: oracleMaterialEntries })
+    .unwrap();
+  Object.assign(f.c.runtime, {
+    getMaterialShaderPipeline: () => shadowPipeline,
+    getMaterialBindGroupLayout: () => shadowMaterialLayout,
+    getParamSchema: () => [],
+  });
   const materialLayout = {};
   const sampler = {};
   const normal = {};
@@ -95,7 +178,7 @@ export function cpuPhysicalRangesFixture(device: RhiDevice, shader: ShaderModule
   const materialBuffer = f.c.pipelineState.materialUniformBuffer.buffer;
   if (materialBuffer === null) throw new Error('Expected fixture material buffer');
   Object.assign(f.c.pipelineState, {
-    skylightFallback: null,
+    skylightFallback,
     materialBindGroupLayout: materialLayout,
     defaultSampler: sampler,
     defaultNormalTextureView: normal,
@@ -130,8 +213,8 @@ export function cpuPhysicalRangesFixture(device: RhiDevice, shader: ShaderModule
       });
     },
     claimSecond(claimed: boolean) {
-      f.claims.clear();
-      if (claimed) for (const claim of secondClaim) f.claims.add(claim);
+      f.selectedDraws.clear();
+      if (claimed) for (const claim of secondClaim) f.selectedDraws.add(claim);
     },
     recordRange(
       pass: RhiRenderPassEncoder,
@@ -147,16 +230,7 @@ export function cpuPhysicalRangesFixture(device: RhiDevice, shader: ShaderModule
       });
       if (kind === 'shadow') {
         pass.setPipeline(shadowPipeline);
-        recordShadowCasterDraws(
-          f.c,
-          pass,
-          shadowPipeline,
-          f.meshGroup,
-          null,
-          null,
-          new Map(),
-          undefined,
-        );
+        recordShadowCasterDraws(f.c, pass, shadowPipeline, f.meshGroup, undefined);
       } else f.record(pass, kind);
     },
     oracle(
@@ -166,7 +240,7 @@ export function cpuPhysicalRangesFixture(device: RhiDevice, shader: ShaderModule
       fault?: 'first' | 'base' | 'omit',
     ) {
       pass.setPipeline(kind === 'shadow' ? shadowPipeline : f.pipeline);
-      pass.setBindGroup(1, f.materialGroup, [0]);
+      pass.setBindGroup(1, kind === 'shadow' ? oracleMaterialGroup : f.materialGroup, [0]);
       pass.setBindGroup(2, f.meshGroup, [0]);
       pass.setBindGroup(3, identityGroup);
       pass.setVertexBuffer(0, vertex);
@@ -183,6 +257,14 @@ export function cpuPhysicalRangesFixture(device: RhiDevice, shader: ShaderModule
     },
     dispose() {
       f.dispose();
+      assets.dispose();
+      for (const texture of [
+        skylightFallback.irradianceTexture,
+        skylightFallback.prefilterTexture,
+        skylightFallback.brdfLutTexture,
+      ])
+        device.destroyTexture(texture);
+      device.destroyBuffer(skylightFallback.intensityBuffer);
       device.destroyBuffer(vertex).unwrap();
       device.destroyBuffer(index).unwrap();
     },

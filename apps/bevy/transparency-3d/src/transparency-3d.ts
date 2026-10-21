@@ -1,9 +1,9 @@
-import { RuntimeMaterialValue } from '@forgeax/engine-assets-runtime';
-import { type EntityHandle, type World } from '@forgeax/engine-ecs';
-import { HANDLE_CUBE } from '@forgeax/engine-assets-runtime';
+import type { AssetRegistry } from '@forgeax/engine-assets-runtime';
+import { type World } from '@forgeax/engine-ecs';
+import { createBoxGeometry } from '@forgeax/engine-geometry';
 import { createSphereGeometry } from '@forgeax/engine-geometry';
 import { quat } from '@forgeax/engine-math';
-import type { Handle } from '@forgeax/engine-types';
+import type { AssetHandle } from '@forgeax/engine-types';
 import {
   ANTIALIAS_MSAA,
   Camera,
@@ -22,16 +22,15 @@ const ALPHA_BLEND = {
 
 export interface TransparencyScene {
   readonly materials: readonly {
-    readonly handle: Handle<'MaterialAsset', 'shared'>;
-    readonly content: EntityHandle;
+    readonly handle: AssetHandle<'material'>;
     readonly color: readonly [number, number, number];
   }[];
 }
 
 function spawnMesh(
   world: World,
-  mesh: Handle<'MeshAsset', 'shared'> | typeof HANDLE_CUBE,
-  material: Handle<'MaterialAsset', 'shared'>,
+  mesh: AssetHandle<'mesh'>,
+  material: AssetHandle<'material'>,
   pos: readonly [number, number, number],
   scale: readonly [number, number, number] = [1, 1, 1],
 ): void {
@@ -42,52 +41,53 @@ function spawnMesh(
   );
 }
 
-export function buildTransparencyWorld(world: World, aspect: number): TransparencyScene {
-  const plane = world.allocSharedRef('MaterialAsset', Materials.standard({
+export function buildTransparencyWorld(world: World, assets: AssetRegistry, aspect: number): TransparencyScene {
+  const cube = assets.create(createBoxGeometry(1, 1, 1).unwrap()).unwrap();
+  const plane = assets.create(Materials.standard({
     baseColor: [0.18, 0.18, 0.18, 1],
     roughness: 1,
-  }));
-  spawnMesh(world, HANDLE_CUBE, plane, [0, -0.05, 0], [8, 0.05, 8]);
+  })).unwrap();
+  spawnMesh(world, cube, plane, [0, -0.05, 0], [8, 0.05, 8]);
 
   const sphereGeometry = createSphereGeometry(0.5, 32, 16);
   if (!sphereGeometry.ok) throw new Error(`transparency-3d sphere geometry failed: ${sphereGeometry.error.code}`);
-  const sphere = world.allocSharedRef('MeshAsset', sphereGeometry.value);
+  const sphere = assets.create(sphereGeometry.value).unwrap();
 
-  const opaqueRed = world.allocSharedRef('MaterialAsset', Materials.standard({
+  const opaqueRed = assets.create(Materials.standard({
     baseColor: [0.9, 0.05, 0.05, 1],
     roughness: 0.35,
-  }));
+  })).unwrap();
   spawnMesh(world, sphere, opaqueRed, [0, 0.5, -1.5]);
 
-  const maskedGreen = world.allocSharedRef('MaterialAsset', Materials.standard({
+  const maskedGreen = assets.create(Materials.standard({
     baseColor: [0.05, 0.8, 0.1, 1],
     roughness: 0.45,
     alphaCutoff: 0.5,
     queue: 2450,
-  }));
+  })).unwrap();
   spawnMesh(world, sphere, maskedGreen, [1, 0.5, -1.5]);
 
-  const maskedUnlitGreen = world.allocSharedRef('MaterialAsset', Materials.unlit([0.05, 0.8, 0.1, 1], {
+  const maskedUnlitGreen = assets.create(Materials.unlit([0.05, 0.8, 0.1, 1], {
     alphaCutoff: 0.1,
     queue: 2450,
-  }));
+  })).unwrap();
   spawnMesh(world, sphere, maskedUnlitGreen, [-1, 0.5, -1.5]);
 
-  const blendedBlue = world.allocSharedRef('MaterialAsset', Materials.standard({
+  const blendedBlue = assets.create(Materials.standard({
     baseColor: [0.05, 0.15, 0.9, 1],
     roughness: 0.35,
     renderState: { blend: ALPHA_BLEND, depthWriteEnabled: false },
     queue: 3000,
-  }));
-  spawnMesh(world, HANDLE_CUBE, blendedBlue, [0, 0.5, 0]);
+  })).unwrap();
+  spawnMesh(world, cube, blendedBlue, [0, 0.5, 0]);
 
-  const alphaCoverageGreen = world.allocSharedRef('MaterialAsset', Materials.standard({
+  const alphaCoverageGreen = assets.create(Materials.standard({
     baseColor: [0.05, 0.8, 0.1, 1],
     roughness: 0.45,
     renderState: { alphaToCoverageEnabled: true },
     queue: 2450,
-  }));
-  spawnMesh(world, HANDLE_CUBE, alphaCoverageGreen, [-1.5, 0.5, 0]);
+  })).unwrap();
+  spawnMesh(world, cube, alphaCoverageGreen, [-1.5, 0.5, 0]);
 
   world.spawn(
     { component: Transform, data: { pos: [4, 8, 4], quat: [0, 0, 0, 1], scale: [1, 1, 1] } },
@@ -102,18 +102,18 @@ export function buildTransparencyWorld(world: World, aspect: number): Transparen
 
   return {
     materials: [
-      { handle: maskedGreen, color: [0.05, 0.8, 0.1], content: world.spawn({ component: RuntimeMaterialValue, data: { asset: maskedGreen, parameter: 'baseColor', kind: 2, value: [...[0.05, 0.8, 0.1], 1] } }).unwrap() },
-      { handle: maskedUnlitGreen, color: [0.05, 0.8, 0.1], content: world.spawn({ component: RuntimeMaterialValue, data: { asset: maskedUnlitGreen, parameter: 'baseColor', kind: 2, value: [...[0.05, 0.8, 0.1], 1] } }).unwrap() },
-      { handle: blendedBlue, color: [0.05, 0.15, 0.9], content: world.spawn({ component: RuntimeMaterialValue, data: { asset: blendedBlue, parameter: 'baseColor', kind: 2, value: [...[0.05, 0.15, 0.9], 1] } }).unwrap() },
-      { handle: alphaCoverageGreen, color: [0.05, 0.8, 0.1], content: world.spawn({ component: RuntimeMaterialValue, data: { asset: alphaCoverageGreen, parameter: 'baseColor', kind: 2, value: [...[0.05, 0.8, 0.1], 1] } }).unwrap() },
+      { handle: maskedGreen, color: [0.05, 0.8, 0.1] },
+      { handle: maskedUnlitGreen, color: [0.05, 0.8, 0.1] },
+      { handle: blendedBlue, color: [0.05, 0.15, 0.9] },
+      { handle: alphaCoverageGreen, color: [0.05, 0.8, 0.1] },
     ],
   };
 }
 
-export function stepTransparencyAlpha(world: World, scene: TransparencyScene, elapsed: number): number {
+export function stepTransparencyAlpha(assets: AssetRegistry, scene: TransparencyScene, elapsed: number): number {
   const alpha = Math.sin(elapsed) / 2 + 0.5;
   for (const material of scene.materials) {
-    world.set(material.content, RuntimeMaterialValue, { value: [...material.color, alpha] }).unwrap();
+    assets.update(material.handle, { values: { baseColor: [...material.color, alpha] } }).unwrap();
   }
   return alpha;
 }

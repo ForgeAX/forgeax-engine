@@ -1,74 +1,33 @@
-// basis-catalog-dispatch.integration.test.ts -- feat-20260707 M6 fix regression.
-//
-// End-to-end witness for the catalog round-trip bug: the pack-index ROW must
-// carry the resolved `compression: 'basis-*'` discriminant so the runtime
-// `loadTextureAsset` dispatches its transcode arm. Before the fix, the build /
-// dev texture arms stamped the row with the STRATEGY_TABLE 'none' default (the
-// resolved basis-* lived only in `metadata.compression`), so loadTextureAsset
-// missed the transcode arm and the scheme=1 (BasisLZ / ETC1S) KTX2 fell through
-// to `ktx2LevelsToRGBA`, which rejects it with `ktx2-unsupported-scheme`.
-//
-// This test uses the REAL encoder + REAL transcoder WASM (no mocks) so it
-// exercises the exact scheme=1 payload the pipeline ships:
-//   (bug witness) row compression='none'         -> scheme=1 reject (load fails)
-//   (fix)         row compression='basis-etc1s'  -> transcode arm succeeds
-//
-// pkg/ (encoder + transcoder glue) is a gitignored emcc artefact (AC-12); CI's
-// build-artifacts job builds it. Skip when absent (contributor without emsdk).
-
+// Real portable Basis sources survive the publication / JSON / Catalog boundary.
+// Device-specific transcode selection is covered at the GPU residency owner.
+import { createHash } from 'node:crypto';
 import { existsSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
-import { AssetRegistry } from '@forgeax/engine-assets-runtime';
-// NOTE: @forgeax/engine-codec/encode is the build-time encoder subpath. The
-// image-pipeline isolation gate (path d) forbids a STATIC import of it from
-// packages/runtime/src (encode is build-time only). This test needs the real
-// encoder to mint a Basis KTX2 fixture, so it uses a DYNAMIC import inside the
-// pkg-gated beforeAll — build-time-only, never reached in shipped runtime code.
-import { AssetGuid } from '@forgeax/engine-pack/guid';
-import type { TranscodeCaps } from '@forgeax/engine-types';
-import { afterEach, beforeAll, beforeEach, describe, expect, it } from 'vitest';
+import { AssetRegistry, createCatalogSource } from '@forgeax/engine-assets-runtime';
+import { equirectContribution, textureContribution } from '@forgeax/engine-image';
+import { createRuntimePackPublication } from '@forgeax/engine-pack/runtime';
+import { beforeAll, describe, expect, it } from 'vitest';
 import type { BasisEncoderModule, BasisModuleFactory } from '../../../codec/src/wasm/basis-types';
-import { makeMockShaderRegistry } from './helpers/mock-shader-registry';
 
 const ENCODER_GLUE = new URL('../../../codec/pkg/encode/basis_encoder.mjs', import.meta.url);
 const TRANSCODER_GLUE = new URL('../../../codec/pkg/basis_transcoder.mjs', import.meta.url);
 const pkgBuilt =
   existsSync(fileURLToPath(ENCODER_GLUE)) && existsSync(fileURLToPath(TRANSCODER_GLUE));
-
 const GUID_TEX = 'c0000000-0000-4000-a000-0000626173a1';
-const PACK_INDEX_URL = '/basis-catalog-dispatch-pack-index.json';
-const PACK_URL = `/ddc/${GUID_TEX}.pack.json`;
+const PACK_URL = 'https://basis.invalid/source.pack.json';
 const W = 16;
 const H = 16;
-const CAPABILITY_CELLS = [
-  [{ bc: false, etc2: false, astc: false }, 'rgba'],
-  [{ bc: false, etc2: false, astc: true }, 'astc'],
-  [{ bc: true, etc2: false, astc: false }, 'bc'],
-  [{ bc: false, etc2: true, astc: false }, 'etc'],
-  [{ bc: true, etc2: true, astc: true }, 'all'],
-] as const;
-const NO_CAPS = CAPABILITY_CELLS[0][0];
-
 let basisKtx2: Uint8Array;
 let uastcLdrKtx2: Uint8Array;
 let uastcHdrKtx2: Uint8Array;
 let rawBasis: Uint8Array;
-let originalFetch: typeof globalThis.fetch;
 
 type TextureFixture = {
   readonly bytes: Uint8Array;
-  readonly extension: 'ktx2' | 'basis';
-  readonly mediaType: 'image/ktx2' | 'image/basis';
   readonly container: 'ktx2' | 'basis';
   readonly profile: 'etc1s' | 'uastc-ldr' | 'uastc-hdr';
   readonly colorSpace: 'srgb' | 'linear';
 };
-
-function parseGuid(g: string): AssetGuid {
-  const parsed = AssetGuid.parse(g);
-  if (!parsed.ok) throw new Error(`bad guid ${g}`);
-  return parsed.value;
-}
 
 // Build a deterministic RGBA gradient and encode it to a real ETC1S Basis KTX2
 // (scheme=1). The exact payload the vite-plugin-pack image arm ships for a
@@ -128,193 +87,147 @@ beforeAll(async () => {
   }
 });
 
-function wireFetch(
-  includeCodec: boolean,
-  fixture: TextureFixture = {
-    bytes: basisKtx2,
-    extension: 'ktx2',
-    mediaType: 'image/ktx2',
-    container: 'ktx2',
-    profile: 'etc1s',
-    colorSpace: 'srgb',
-  },
-): void {
-  globalThis.fetch = ((input: string) => {
-    const url = typeof input === 'string' ? input : String(input);
-    if (url === PACK_INDEX_URL) {
-      return Promise.resolve({
-        ok: true,
-        json: () =>
-          Promise.resolve([
-            {
-              guid: GUID_TEX,
-              packageUrl: PACK_URL,
-              kind: 'texture',
-            },
-          ]),
-      });
-    }
-    if (url === PACK_URL) {
-      return Promise.resolve({
-        ok: true,
-        json: () =>
-          Promise.resolve({
-            schemaVersion: '2.0.0',
-            kind: 'internal-text-package',
-            assets: [
-              {
-                guid: GUID_TEX,
-                kind: 'texture',
-                payload: {
-                  shape: { viewDimension: '2d', extent: { width: W, height: H } },
-                  format: fixture.colorSpace === 'srgb' ? 'rgba8unorm-srgb' : 'rgba16float',
-                  colorSpace: fixture.colorSpace,
-                  mips: { kind: 'none' },
-                },
-                refs: [],
-                artifacts: {
-                  body: {
-                    path: `${GUID_TEX}.${fixture.extension}`,
-                    mediaType: fixture.mediaType,
-                    ...(includeCodec
-                      ? {
-                          assetCodec: {
-                            name: 'basis',
-                            container: fixture.container,
-                            profile: fixture.profile,
-                          },
-                        }
-                      : {}),
-                  },
-                },
-              },
-            ],
-          }),
-      });
-    }
-    // Serve the real Basis KTX2 bytes for the artifact URL.
-    return Promise.resolve({
-      ok: true,
-      arrayBuffer: () =>
-        Promise.resolve(
-          fixture.bytes.buffer.slice(
-            fixture.bytes.byteOffset,
-            fixture.bytes.byteOffset + fixture.bytes.byteLength,
-          ),
-        ),
-    });
-  }) as unknown as typeof globalThis.fetch;
-}
-
-async function loadWith(
-  includeCodec: boolean,
-  fixture?: TextureFixture,
-  caps: TranscodeCaps = NO_CAPS,
+function registry(
+  fixture: TextureFixture,
+  includeCodec = true,
+  kind: 'texture' | 'equirect' = 'texture',
 ) {
-  wireFetch(includeCodec, fixture);
-  const reg = new AssetRegistry(makeMockShaderRegistry());
-  reg.configurePackIndex(PACK_INDEX_URL);
-  reg.setTranscodeCaps(caps);
-  return reg.loadByGuid(parseGuid(GUID_TEX));
+  const sourcePath = 'texture.pack';
+  const format =
+    fixture.profile === 'uastc-hdr'
+      ? 'rgba16float'
+      : fixture.colorSpace === 'srgb'
+        ? 'rgba8unorm-srgb'
+        : 'rgba8unorm';
+  const produced = createRuntimePackPublication({
+    scopeId: 'asset-runtime',
+    sourcePath,
+    sourceRevision: 'fixture',
+    packageUrl: PACK_URL,
+    pack: {
+      assets: [
+        {
+          guid: GUID_TEX,
+          kind,
+          refs: [],
+          payload: {
+            kind,
+            ...(kind === 'texture'
+              ? { shape: { viewDimension: '2d', extent: { width: W, height: H } } }
+              : { width: W, height: H }),
+            format,
+            colorSpace: fixture.colorSpace,
+            mips: { kind: 'none' },
+          },
+          artifacts: {
+            body: {
+              path: `texture.${fixture.container}`,
+              mediaType: `image/${fixture.container}`,
+              byteLength: fixture.bytes.byteLength,
+              contentEncoding: 'identity',
+              integrity: {
+                algorithm: 'sha256',
+                digest: `sha256:${createHash('sha256').update(fixture.bytes).digest('hex')}`,
+              },
+              ...(includeCodec
+                ? {
+                    assetCodec: {
+                      name: 'basis',
+                      container: fixture.container,
+                      profile: fixture.profile,
+                    },
+                  }
+                : {}),
+            },
+          },
+        },
+      ],
+    },
+  });
+  const assets = new AssetRegistry({
+    catalog: createCatalogSource({
+      entries: [
+        {
+          guid: GUID_TEX,
+          kind,
+          sourcePath,
+          packageUrl: PACK_URL,
+          publication: produced.publication,
+        },
+      ],
+      fetch: async (input) => {
+        const url = String(input);
+        if (url === PACK_URL) return Response.json(produced.pack);
+        if (url === `https://basis.invalid/texture.${fixture.container}`)
+          return new Response(fixture.bytes.slice().buffer);
+        throw new Error(`unexpected asset request: ${url}`);
+      },
+    }),
+  });
+  if (kind === 'texture')
+    assets.installDecoder(textureContribution.kind, textureContribution.decoder);
+  else assets.installDecoder(equirectContribution.kind, equirectContribution.decoder);
+  return assets;
 }
 
-describe.skipIf(!pkgBuilt)('Basis catalog dispatch round-trip (M6 fix)', () => {
-  beforeEach(() => {
-    originalFetch = globalThis.fetch;
-  });
-  afterEach(() => {
-    globalThis.fetch = originalFetch;
-  });
+function fixtures(): readonly TextureFixture[] {
+  return [
+    { bytes: basisKtx2, container: 'ktx2', profile: 'etc1s', colorSpace: 'srgb' },
+    { bytes: uastcLdrKtx2, container: 'ktx2', profile: 'uastc-ldr', colorSpace: 'srgb' },
+    { bytes: uastcHdrKtx2, container: 'ktx2', profile: 'uastc-hdr', colorSpace: 'linear' },
+    { bytes: rawBasis, container: 'basis', profile: 'uastc-ldr', colorSpace: 'srgb' },
+  ];
+}
 
-  it('loads a Basis texture when the artifact has no optional codec hint', async () => {
-    // Catalog v2 carries package navigation only. The optional codec hint is
-    // owned by the artifact descriptor, so a valid KTX2 artifact remains
-    // loadable when that hint is absent from the package row.
-    const result = await loadWith(false);
-    expect(result.ok).toBe(true);
-  });
-
-  it('artifact codec=basis-etc1s takes the transcode arm and loads', async () => {
-    const result = await loadWith(true);
-    expect(result.ok).toBe(true);
-    if (!result.ok) throw new Error(`load failed: ${result.error.code}`);
-    const tex = result.value as {
-      kind: string;
-      shape: { viewDimension: string; extent: { width: number; height: number } };
-      format: string;
-    };
-    expect(tex.kind).toBe('texture');
-    expect(tex.shape).toEqual({ viewDimension: '2d', extent: { width: W, height: H } });
-    // NO_CAPS -> the transcode arm degrades to the uncompressed sRGB fallback
-    // (section 8 P3), never a scheme=1 reject.
-    expect(tex.format).toBe('rgba8unorm-srgb');
-  });
-
-  it('loads every real KTX2/Basis profile through Catalog and loadByGuid', async () => {
-    const fixtures: readonly TextureFixture[] = [
-      {
-        bytes: basisKtx2,
-        extension: 'ktx2',
-        mediaType: 'image/ktx2',
-        container: 'ktx2',
-        profile: 'etc1s',
-        colorSpace: 'srgb',
-      },
-      {
-        bytes: uastcLdrKtx2,
-        extension: 'ktx2',
-        mediaType: 'image/ktx2',
-        container: 'ktx2',
-        profile: 'uastc-ldr',
-        colorSpace: 'srgb',
-      },
-      {
-        bytes: uastcHdrKtx2,
-        extension: 'ktx2',
-        mediaType: 'image/ktx2',
-        container: 'ktx2',
-        profile: 'uastc-hdr',
+describe.skipIf(!pkgBuilt)('Basis source Catalog round-trip', () => {
+  it.each([
+    false,
+    true,
+  ])('decodes HDR equirect source to renderable pixels (codec hint=%s)', async (includeCodec) => {
+    const assets = registry(
+      { bytes: uastcHdrKtx2, container: 'ktx2', profile: 'uastc-hdr', colorSpace: 'linear' },
+      includeCodec,
+      'equirect',
+    );
+    try {
+      const handle = (await assets.load(GUID_TEX, 'equirect')).unwrap();
+      const image = assets.read(handle).unwrap();
+      expect(image).toMatchObject({
+        kind: 'equirect',
+        width: W,
+        height: H,
+        format: 'rgba16float',
         colorSpace: 'linear',
-      },
-      {
-        bytes: rawBasis,
-        extension: 'basis',
-        mediaType: 'image/basis',
-        container: 'basis',
-        profile: 'uastc-ldr',
-        colorSpace: 'srgb',
-      },
-    ];
-
-    for (const fixture of fixtures) {
-      for (const [caps, arm] of CAPABILITY_CELLS) {
-        const result = await loadWith(true, fixture, caps);
-        expect(result.ok, `${fixture.container}:${fixture.profile}:${arm}`).toBe(true);
-        if (!result.ok) continue;
-        const texture = result.value as {
-          kind: string;
-          shape: { viewDimension: string; extent: { width: number; height: number } };
-          format: string;
-          data: Uint8Array;
-          colorSpace: string;
-        };
+      });
+      expect(image.data.byteLength).toBe(W * H * 8);
+    } finally {
+      assets.dispose();
+    }
+  });
+  it.each([
+    false,
+    true,
+  ])('retains every real encoded profile through Pack JSON (codec hint=%s)', async (includeCodec) => {
+    for (const fixture of fixtures()) {
+      const assets = registry(fixture, includeCodec);
+      try {
+        const result = await assets.load(GUID_TEX, 'texture');
+        expect(
+          result.ok,
+          `${fixture.container}:${fixture.profile}:${JSON.stringify(result.ok ? undefined : result.error)}`,
+        ).toBe(true);
+        const texture = assets.read(result.unwrap()).unwrap();
         expect(texture.kind).toBe('texture');
         expect(texture.shape).toEqual({ viewDimension: '2d', extent: { width: W, height: H } });
-        expect(texture.data.byteLength).toBeGreaterThan(0);
+        expect(texture.format).toBe(
+          fixture.profile === 'uastc-hdr' ? 'rgba16float' : 'rgba8unorm-srgb',
+        );
+        expect(texture.encoding).toBe(fixture.container);
+        expect(texture.data).toEqual(fixture.bytes);
         expect(texture.colorSpace).toBe(fixture.colorSpace);
-        const expected =
-          fixture.profile === 'uastc-hdr'
-            ? caps.bc
-              ? 'bc6h-rgb-ufloat'
-              : 'rgba16float'
-            : caps.bc
-              ? `bc7-rgba-unorm${fixture.colorSpace === 'srgb' ? '-srgb' : ''}`
-              : caps.astc
-                ? `astc-4x4-unorm${fixture.colorSpace === 'srgb' ? '-srgb' : ''}`
-                : caps.etc2
-                  ? `etc2-rgba8unorm${fixture.colorSpace === 'srgb' ? '-srgb' : ''}`
-                  : `rgba8unorm${fixture.colorSpace === 'srgb' ? '-srgb' : ''}`;
-        expect(texture.format, `${fixture.container}:${fixture.profile}:${arm}`).toBe(expected);
+        expect(texture.mips).toEqual({ kind: 'packed', levelCount: 1 });
+      } finally {
+        assets.dispose();
       }
     }
   });

@@ -1,4 +1,10 @@
-import { AssetRegistry, createCatalogSource } from '@forgeax/engine/assets-runtime';
+import {
+  AssetRegistry,
+  createCatalogSource,
+  defineAssetKind,
+} from '@forgeax/engine/assets-runtime';
+import { createRuntimePackPublication } from '@forgeax/engine/pack/runtime';
+import { ok } from '@forgeax/engine/types';
 import { defineFeature } from '../../lab/feature';
 
 const GUID = '019f1a00-0000-7000-8000-0000000000b1';
@@ -19,26 +25,40 @@ interface Script {
 
 async function load(statuses: readonly number[]) {
   const script: Script = { statuses, calls: [] };
+  const { pack, publication } = createRuntimePackPublication({
+    pack: PACK,
+    scopeId: 'asset-runtime',
+    sourcePath: 'retry',
+    sourceRevision: 'fixture',
+    packageUrl: PACKAGE_URL,
+  });
   const fetcher = (async (_input: RequestInfo | URL, init?: RequestInit) => {
     const status = script.statuses[script.calls.length] ?? 200;
     script.calls.push({ cache: init?.cache });
-    return status === 200 ? new Response(JSON.stringify(PACK)) : new Response('', { status });
+    return status === 200 ? new Response(JSON.stringify(pack)) : new Response('', { status });
   }) as typeof fetch;
-  const registry = new AssetRegistry({} as never);
-  registry.loaders.registerPackLoader({
-    kind: 'lab-retry',
-    load: (input) => ({ kind: 'lab-retry', ...input.payload }),
-  });
+  const registry = new AssetRegistry();
+  const kind = defineAssetKind<{ kind: string; label: string }>('lab-retry');
+  registry.installDecoder(kind, { decode: async ({ envelope }) => ok(envelope.payload) });
   registry.setCatalogSource(
     createCatalogSource({
-      entries: [{ guid: GUID, kind: 'lab-retry', packageUrl: PACKAGE_URL, sourcePath: 'retry' }],
+      entries: [
+        {
+          guid: GUID,
+          kind: 'lab-retry',
+          packageUrl: PACKAGE_URL,
+          sourcePath: 'retry',
+          publication,
+        },
+      ],
     }),
     fetcher,
   );
   const started = performance.now();
-  const result = await registry.loadByGuid<{ label: string }>(registry.parseGuid(GUID));
+  const loaded = await registry.load(GUID, kind);
+  const result = loaded.ok ? registry.read(loaded.value) : loaded;
   const elapsed = performance.now() - started;
-  registry.clearCatalogSource();
+  registry.dispose();
   return { result, calls: script.calls, elapsed };
 }
 
@@ -81,7 +101,7 @@ export default defineFeature({
     checks.equal('404 is not retried', missing.calls.length, 1);
     if (!missing.result.ok) {
       const error = describeError(missing.result.error);
-      checks.equal('404 code', error.code, 'asset-not-imported');
+      checks.equal('404 code', error.code, 'asset-fetch-failed');
       checks.ok(
         '404 hint names one request',
         error.hint.includes('HTTP 404 after 1 request(s)'),

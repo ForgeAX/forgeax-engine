@@ -1,5 +1,6 @@
 import { expect, it, vi } from 'vitest';
 import { boxPoints } from '../../../../scripts/test/convex-geometry-fixture.mjs';
+import { queryContactManifolds } from '../contact-query.js';
 import { createRapier3DPhysicsWorld } from '../rapier-physics-world-3d.js';
 import { loadRapier3D } from '../wasm-loader.js';
 
@@ -569,6 +570,125 @@ it.each([
     physics.step(1 / 60);
     expect(physics.getCurrentContacts(2).unwrap().fixedStep).toBe(2);
     expect(physics.getCurrentContactNeighbors(2).unwrap().entities).toEqual([1]);
+  } finally {
+    physics.dispose();
+  }
+});
+
+it('rejects masked-out contact partners before resolving their ECS owners', async () => {
+  const { physics, raw, body } = await fixture();
+  try {
+    for (let step = 0; step < 60; step++) physics.step(1 / 60);
+    expect(physics.getCurrentContacts(2).unwrap().manifolds.length).toBeGreaterThan(0);
+    const resolve = vi.fn((collider: ReturnType<typeof body.collider>) => {
+      const parent = collider.parent();
+      return parent && typeof parent.userData === 'number'
+        ? { entity: parent.userData, body: parent }
+        : undefined;
+    });
+    expect(queryContactManifolds(raw, body, resolve, 2, 0)).toEqual([]);
+    // The query body remains validated. Every excluded partner avoids Native
+    // parent reads and ECS liveness/Disabled lookups, without caching owners.
+    expect(resolve).toHaveBeenCalledTimes(body.numColliders());
+  } finally {
+    physics.dispose();
+  }
+});
+
+it('checks the smaller collider roster for a symmetric native contact miss', async () => {
+  const { physics, raw, body, floor } = await fixture();
+  const module = await loadRapier3D();
+  if ('code' in module) throw module;
+  try {
+    for (let index = 0; index < 127; index++)
+      raw.createCollider(
+        module.ColliderDesc.cuboid(0.1, 0.1, 0.1).setTranslation(index + 10, 0, 10),
+        floor,
+      );
+    body.setTranslation({ x: 1000, y: 10, z: 1000 }, true);
+    physics.step(1 / 60);
+    const intersections = vi.spyOn(raw, 'intersectionPairsWith');
+    const contacts = vi.spyOn(raw, 'contactPairsWith');
+    expect(physics.hasManagedContactPair(1, 2)).toBe(false);
+    expect(intersections).toHaveBeenCalledTimes(1);
+    expect(contacts).toHaveBeenCalledTimes(1);
+    intersections.mockClear();
+    contacts.mockClear();
+    expect(physics.hasManagedContactPair(2, 1)).toBe(false);
+    expect(intersections).toHaveBeenCalledTimes(1);
+    expect(contacts).toHaveBeenCalledTimes(1);
+    body.setTranslation({ x: 0, y: 1.1, z: 0 }, true);
+    for (let step = 0; step < 180; step++) physics.step(1 / 60);
+    intersections.mockClear();
+    contacts.mockClear();
+    expect(physics.hasManagedContactPair(1, 2)).toBe(true);
+    expect(intersections).toHaveBeenCalledTimes(1);
+    expect(contacts).toHaveBeenCalledTimes(1);
+    expect(physics.hasManagedContactPair(2, 1)).toBe(true);
+  } finally {
+    physics.dispose();
+  }
+});
+
+it('checks contact existence only once after a compound body pair fully separates', async () => {
+  const { physics, raw, body, floor } = await fixture();
+  const module = await loadRapier3D();
+  if ('code' in module) throw module;
+  try {
+    for (let index = 0; index < 128; index++)
+      raw.createCollider(
+        module.ColliderDesc.cuboid(0.2, 0.2, 0.2)
+          .setTranslation(0, 3, 0)
+          .setSensor(true)
+          .setActiveEvents(module.ActiveEvents.COLLISION_EVENTS),
+        floor,
+      );
+    body.setTranslation({ x: 0, y: 3, z: 0 }, true);
+    physics.step(1 / 60);
+    expect(physics.getCollisionPairs().get(1)?.has(2)).toBe(true);
+    physics.drainCollisionEvents();
+    const contacts = vi.spyOn(raw, 'contactPairsWith');
+    body.setTranslation({ x: 1000, y: 3, z: 1000 }, true);
+    physics.step(1 / 60);
+    expect(physics.getCollisionPairs().get(1)?.has(2)).not.toBe(true);
+    expect(physics.drainCollisionEvents().filter((event) => event.type === 'stopped')).toHaveLength(
+      1,
+    );
+    expect(contacts).toHaveBeenCalledTimes(1);
+  } finally {
+    physics.dispose();
+  }
+});
+
+it('retains a Body pair until its last sensor contact stops', async () => {
+  const { physics, raw, body, floor } = await fixture();
+  const module = await loadRapier3D();
+  if ('code' in module) throw module;
+  try {
+    const sensors = Array.from({ length: 2 }, () =>
+      raw.createCollider(
+        module.ColliderDesc.cuboid(0.2, 0.2, 0.2)
+          .setTranslation(0, 3, 0)
+          .setSensor(true)
+          .setActiveEvents(module.ActiveEvents.COLLISION_EVENTS),
+        floor,
+      ),
+    );
+    body.setTranslation({ x: 0, y: 3, z: 0 }, true);
+    physics.step(1 / 60);
+    physics.drainCollisionEvents();
+    sensors[0]?.setEnabled(false);
+    physics.step(1 / 60);
+    expect(physics.getCollisionPairs().get(1)?.has(2)).toBe(true);
+    expect(physics.drainCollisionEvents().filter((event) => event.type === 'stopped')).toHaveLength(
+      0,
+    );
+    sensors[1]?.setEnabled(false);
+    physics.step(1 / 60);
+    expect(physics.getCollisionPairs().get(1)?.has(2)).not.toBe(true);
+    expect(physics.drainCollisionEvents().filter((event) => event.type === 'stopped')).toHaveLength(
+      1,
+    );
   } finally {
     physics.dispose();
   }

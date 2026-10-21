@@ -1,5 +1,6 @@
+import { basisImages } from './render-worker-basis-data';
 import { rendererCrashProbe } from './render-worker-recovery-fixture';
-import { HANDLE_CUBE, HANDLE_QUAD } from '@forgeax/engine-assets-runtime';
+
 import {
   Camera,
   DirectionalLight,
@@ -13,21 +14,16 @@ import {
   type RenderFeature,
   type Renderer,
 } from '@forgeax/engine-render';
-import { GlyphText, TileLayer, Tilemap } from '@forgeax/engine-render/authoring';
+import { GlyphText, Tilemap } from '@forgeax/engine-render/authoring';
 import { VIDEO_SOURCE_PROVIDER_KEY } from '@forgeax/engine-graphics-extras';
-import { AssetGuid } from '@forgeax/engine-pack/guid';
-import { ChildOf, Transform } from '@forgeax/engine-scene';
+import { Transform } from '@forgeax/engine-scene';
 import { ok, type FontAsset, type TextureAsset } from '@forgeax/engine-types';
 import type { ExecutionBootstrapEntry } from '../src/execution/bootstrap-entry';
+import { createPrimitiveMesh } from '@forgeax/engine-geometry';
+const BUILTIN_CUBE = createPrimitiveMesh('cube').unwrap();
+const BUILTIN_QUAD = createPrimitiveMesh('quad').unwrap();
 
-function parseGuid(value: string) {
-  const result = AssetGuid.parse(value);
-  if (!result.ok) throw result.error;
-  return result.value;
-}
-const atlasGuid = '12345678-1234-1234-1234-123456789abc';
-const tilesetGuid = '12345678-1234-1234-1234-123456789abd';
-const samplerGuid = '12345678-1234-1234-1234-123456789abe';
+
 const camera = {
   ...perspective({ fov: Math.PI / 3, aspect: 1, near: 0.1, far: 20 }),
   tonemap: 0,
@@ -100,13 +96,13 @@ const entry: ExecutionBootstrapEntry = (data) => {
           };
           let update: () => void;
           if (mode === 'lighting-channels') {
-            const material = world.allocSharedRef('MaterialAsset', Materials.standard({
+            const material = assets.create(Materials.standard({
               baseColor: [0.5, 0.5, 0.5, 1], roughness: 0.7,
               emissive: [0.02, 0.02, 0.02], emissiveIntensity: 1,
-            }));
+            })).unwrap();
             const receiver = world.spawn(
               { component: Transform, data: { scale: [3, 3, 0.2] } },
-              { component: MeshFilter, data: { assetHandle: HANDLE_CUBE } },
+              { component: MeshFilter, data: { assetHandle: assets.create(BUILTIN_CUBE).unwrap() } },
               { component: MeshRenderer, data: { materials: [material], lightingChannels: 2 } },
             ).unwrap();
             world.spawn({ component: DirectionalLight, data: { direction: [0, 0, -1],
@@ -114,8 +110,21 @@ const entry: ExecutionBootstrapEntry = (data) => {
             world.spawn({ component: Transform, data: { pos: [0, 2, 4] } },
               { component: PointLight, data: { intensity: 0.2, range: 10 } }).unwrap();
             update = () => world.set(receiver, MeshRenderer, { lightingChannels: 0x80000000 }).unwrap();
+          } else if (mode === 'basis') {
+            const image = (index: number): TextureAsset => ({ kind: 'texture', encoding: 'ktx2',
+              shape: { viewDimension: '2d', extent: { width: 16, height: 16 } },
+              format: 'rgba8unorm-srgb', colorSpace: 'srgb',
+              mips: { kind: 'packed', levelCount: 5 }, data: basisImages[index]! });
+            const texture = assets.create(image(0)).unwrap();
+            const material = assets.create(Materials.standard({ baseColor: [1,1,1,1],
+              baseColorTexture: { texture } })).unwrap();
+            world.spawn({ component: Skylight, data: {} }).unwrap();
+            world.spawn({ component: Transform, data: {} },
+              { component: MeshFilter, data: { assetHandle: assets.create(BUILTIN_CUBE).unwrap() } },
+              { component: MeshRenderer, data: { materials: [material] } }).unwrap();
+            update = () => assets.replace(texture, image(1)).unwrap();
           } else if (mode === 'video') {
-            assets.catalog(atlasGuid, { kind: 'video', url: 'native-frame-fixture.webm' }).unwrap();
+            const video=assets.create({ kind: 'video', url: 'native-frame-fixture.webm' }).unwrap();
             const source = new OffscreenCanvas(16, 16);
             const context = source.getContext('2d');
             if (context === null) throw new Error('Video fixture has no 2D context');
@@ -129,26 +138,23 @@ const entry: ExecutionBootstrapEntry = (data) => {
             paint('red');
             world.insertResource(VIDEO_SOURCE_PROVIDER_KEY, { getSource: () => frame });
             ctx.effect(() => () => frame?.close());
-            const material = world.allocSharedRef(
-              'MaterialAsset',
-              Materials.standard({
+            const material = assets.create(Materials.standard({
                 baseColor: [1, 1, 1, 1],
-                baseColorTexture: { texture: atlasGuid },
-              }),
-            );
+                baseColorTexture: { texture: video },
+              })).unwrap();
             world.spawn({ component: Skylight, data: {} }).unwrap();
             world
               .spawn(
                 { component: Transform, data: {} },
-                { component: MeshFilter, data: { assetHandle: HANDLE_CUBE } },
+                { component: MeshFilter, data: { assetHandle: assets.create(BUILTIN_CUBE).unwrap() } },
                 { component: MeshRenderer, data: { materials: [material] } },
               )
               .unwrap();
             update = () => paint('lime');
           } else if (mode === 'text') {
-            assets.catalog(atlasGuid, atlas).unwrap();
-            assets
-              .catalog(samplerGuid, {
+            const texture=assets.create(atlas).unwrap();
+            const sampler=assets
+              .create({
                 kind: 'sampler',
                 minFilter: 'linear',
                 magFilter: 'linear',
@@ -157,10 +163,10 @@ const entry: ExecutionBootstrapEntry = (data) => {
                 addressModeV: 'clamp-to-edge',
               })
               .unwrap();
-            const font = world.allocSharedRef('FontAsset', {
+            const font = assets.create({
               kind: 'font',
-              atlas: parseGuid(atlasGuid),
-              sampler: parseGuid(samplerGuid),
+              atlas: texture,
+              sampler,
               glyphs: {
                 65: {
                   advance: 10,
@@ -178,7 +184,7 @@ const entry: ExecutionBootstrapEntry = (data) => {
                 atlasWidth: 8,
                 atlasHeight: 8,
               },
-            } satisfies FontAsset);
+            } satisfies FontAsset).unwrap();
             const label = world
               .spawn(
                 { component: Transform, data: {} },
@@ -192,11 +198,11 @@ const entry: ExecutionBootstrapEntry = (data) => {
               world.set(label, GlyphText, { text: 'AAA', color: [0, 1, 0, 1] }).unwrap();
             };
           } else if (mode === 'tile-layer' || mode === 'tile-cell') {
-            assets.catalog(atlasGuid, atlas).unwrap();
-            assets
-              .catalog(tilesetGuid, {
+            const texture=assets.create(atlas).unwrap();
+            const tileset=assets
+              .create({
                 kind: 'tileset',
-                atlases: [atlasGuid],
+                atlases: [texture],
                 tileWidth: 8,
                 tileHeight: 8,
                 columns: 1,
@@ -210,53 +216,32 @@ const entry: ExecutionBootstrapEntry = (data) => {
                 { component: Transform, data: { pos: [-1, -1, 0] } },
                 {
                   component: Tilemap,
-                  data: { cols: 2, rows: 2, tileSize: [1, 1], chunkSize: 2, tileset: tilesetGuid },
+                  data: { cols: 2, rows: 2, tileSize: [1, 1], chunkSize: 2, tileset, tiles: [1,0,0,0], sortScope: mode === 'tile-cell' ? 1 : 0 },
                 },
               )
               .unwrap();
-            const layer = world
-              .spawn(
-                { component: Transform, data: {} },
-                { component: ChildOf, data: { parent: map } },
-                {
-                  component: TileLayer,
-                  data: {
-                    tiles: new Uint32Array([1, 0, 0, 0]),
-                    dirty: 1,
-                    sortScope: mode === 'tile-cell' ? 1 : 0,
-                  },
-                },
-              )
-              .unwrap();
-            update = () => {
-              world
-                .set(layer, TileLayer, { tiles: new Uint32Array([0, 1, 1, 1]), dirty: 1 })
-                .unwrap();
-            };
+            update = () => {world.set(map,Tilemap,{tiles:[0,1,1,1]}).unwrap();};
           } else if (mode === 'environment') {
             world.set(cameraEntity, Camera, { tonemap: 1 }).unwrap();
             const hdr = new Uint16Array(8 * 4 * 4);
             for (let i = 0; i < hdr.length; i += 4) hdr.set([0x3c00, 0x3800, 0x3400, 0x3c00], i);
-            const environment = world.allocSharedRef('EquirectAsset', {
+            const environment = assets.create({
               kind: 'equirect',
               width: 8,
               height: 4,
               format: 'rgba16float',
               data: new Uint8Array(hdr.buffer),
               colorSpace: 'linear',
-            });
+            }).unwrap();
             const light = world
               .spawn({ component: Skylight, data: { equirect: environment } })
               .unwrap();
             world.spawn({ component: SkyboxBackground, data: { equirect: environment } }).unwrap();
-            const material = world.allocSharedRef(
-              'MaterialAsset',
-              Materials.standard({ baseColor: [1, 1, 1, 1] }),
-            );
+            const material = assets.create(Materials.standard({ baseColor: [1, 1, 1, 1] })).unwrap();
             world
               .spawn(
                 { component: Transform, data: {} },
-                { component: MeshFilter, data: { assetHandle: HANDLE_CUBE } },
+                { component: MeshFilter, data: { assetHandle: assets.create(BUILTIN_CUBE).unwrap() } },
                 { component: MeshRenderer, data: { materials: [material] } },
               )
               .unwrap();
@@ -285,7 +270,7 @@ const entry: ExecutionBootstrapEntry = (data) => {
             });
             if (!source.ok) throw source.error;
             const targetRef = world.allocSharedRef('RenderTarget', target.value);
-            const sourceRef = world.allocSharedRef('RenderTargetTextureSource', source.value);
+            const sourceRef = { source: source.value };
             const auxiliary = world
               .spawn(
                 { component: Transform, data: { pos: [10, 0, 6] } },
@@ -295,29 +280,23 @@ const entry: ExecutionBootstrapEntry = (data) => {
                 },
               )
               .unwrap();
-            const capturedMaterial = world.allocSharedRef(
-              'MaterialAsset',
-              Materials.unlit([0, 0, 1, 1]),
-            );
+            const capturedMaterial = assets.create(Materials.unlit([0, 0, 1, 1])).unwrap();
             world
               .spawn(
                 { component: Transform, data: { pos: [10, 0, 0], scale: [3, 3, 3] } },
-                { component: MeshFilter, data: { assetHandle: HANDLE_CUBE } },
+                { component: MeshFilter, data: { assetHandle: assets.create(BUILTIN_CUBE).unwrap() } },
                 { component: MeshRenderer, data: { materials: [capturedMaterial] } },
               )
               .unwrap();
-            const material = world.allocSharedRef(
-              'MaterialAsset',
-              Materials.standard({
+            const material = assets.create(Materials.standard({
                 baseColor: [1, 1, 1, 1],
                 baseColorTexture: sourceRef,
-              }),
-            );
+              })).unwrap();
             world.spawn({ component: Skylight, data: {} }).unwrap();
             world
               .spawn(
                 { component: Transform, data: { scale: [2, 2, 2] } },
-                { component: MeshFilter, data: { assetHandle: HANDLE_QUAD } },
+                { component: MeshFilter, data: { assetHandle: assets.create(BUILTIN_QUAD).unwrap() } },
                 { component: MeshRenderer, data: { materials: [material] } },
               )
               .unwrap();

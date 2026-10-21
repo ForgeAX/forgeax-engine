@@ -43,7 +43,7 @@ export interface NativePreviewOptions {
 interface NativePreviewCatalogRow {
   readonly guid?: unknown;
   readonly lifecycle?: unknown;
-  readonly operations?: unknown;
+  readonly projection?: unknown;
   readonly publication?: unknown;
 }
 
@@ -113,7 +113,9 @@ function previewCatalogFailure(
   guid: string,
   row: NativePreviewCatalogRow,
 ): { readonly code: string; readonly detail: Record<string, unknown> } | undefined {
-  const operations = isRecord(row.operations) ? row.operations : undefined;
+  const projection = isRecord(row.projection) ? row.projection : undefined;
+  const operations =
+    projection !== undefined && isRecord(projection.operations) ? projection.operations : undefined;
   const preview =
     operations !== undefined && isRecord(operations.preview) ? operations.preview : undefined;
   if (preview?.enabled === false) {
@@ -348,7 +350,8 @@ export async function runNativePreviewTool(
   }
   const browser = browserRace.value.value;
   const backendFallbackReason = browserRace.value.fallbackReason;
-  if (!browser.ok || browser.value.resource === undefined) {
+  const resourceAsset = browser.ok ? browser.value.resource?.asset : undefined;
+  if (!browser.ok || browser.value.resource === undefined || !isRecord(resourceAsset)) {
     const failure = browser.ok
       ? {
           code: 'tool-preview-bootstrap-failed',
@@ -436,13 +439,11 @@ export async function runNativePreviewTool(
       projectRoot,
       backend: 'webgpu',
       signal: options.signal ?? new AbortController().signal,
-      assets: {
-        loadByGuid: async <TAsset>() => ({
-          ok: true as const,
-          value: resource.asset as TAsset,
-          ...(resource.digest === undefined ? {} : { digest: resource.digest }),
-          ...(resource.ownerFacts === undefined ? {} : { ownerFacts: resource.ownerFacts }),
-        }),
+      subject: {
+        guid,
+        asset: resourceAsset,
+        ...(resource.digest === undefined ? {} : { digest: resource.digest }),
+        ...(resource.ownerFacts === undefined ? {} : { ownerFacts: resource.ownerFacts }),
       },
       renderer: {
         rendererReady: browser.value.trace.events.includes('renderer-created'),

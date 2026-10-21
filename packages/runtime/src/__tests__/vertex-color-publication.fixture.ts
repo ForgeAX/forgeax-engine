@@ -1,11 +1,14 @@
+import { runtimeAssets } from '@forgeax/engine-assets-runtime/internal';
 import { World } from '@forgeax/engine-ecs';
 import { createBoxGeometry, createMeshBuilder } from '@forgeax/engine-geometry';
 import { AssetGuid } from '@forgeax/engine-pack';
 import { ANTIALIAS_NONE, Camera, MeshFilter, MeshRenderer } from '@forgeax/engine-render';
 import { registerPropagateTransforms, Transform } from '@forgeax/engine-scene';
+import type { MaterialAsset } from '@forgeax/engine-types';
 import { expect } from 'vitest';
 import { drawReadyFrame } from '../../../../scripts/test/ready-render-frame.mjs';
 import { constructRuntimeRendererHost } from '../renderer-host';
+import { testAssets } from './helpers/runtime-assets';
 
 export async function verifyVertexColorPublication(options: {
   url: string;
@@ -48,30 +51,29 @@ export async function verifyVertexColorPublication(options: {
   const unsubscribe = renderer.subscribe((event) => {
     if (event.kind === 'error') errors.push(event.error);
   });
-  const world = new World();
+  const world = new World({ assets });
   const transforms = registerPropagateTransforms(world);
   try {
     assets.configurePackIndex(options.url);
     const guid = AssetGuid.parse(options.guid);
     if (!guid.ok) throw guid.error;
-    const loaded = await assets.loadByGuid(guid.value);
+    const loaded = await assets.load(guid.value, 'material');
     if (!loaded.ok) throw loaded.error;
-    if (loaded.value.kind !== 'material') throw new Error('expected cooked material');
-    const readiness = assets.getMaterialReadiness(options.guid);
-    expect(readiness?.status, JSON.stringify(readiness)).toBe('Ready');
-    expect(assets.getMaterialProjectionForPayload(loaded.value)).toBeDefined();
-    const material = world.internSharedRef('MaterialAsset', loaded.value);
+    const content = runtimeAssets(assets).borrow<MaterialAsset>(loaded.value).unwrap();
+    expect(assets.getMaterialProjectionForPayload(content)).toBeDefined();
+    const material = loaded.value;
     const mesh = createBoxGeometry(1, 1, 1).unwrap();
-    const plain = world.internSharedRef('MeshAsset', mesh);
+    const plain = testAssets(world).create(mesh).unwrap();
     const colorMesh = (rgb: readonly number[]) => {
       const color = new Float32Array((mesh.attributes.position.length / 3) * 4);
       for (let index = 0; index < color.length; index += 4) color.set([...rgb, 1], index);
-      return world.internSharedRef(
-        'MeshAsset',
-        createMeshBuilder({ ...mesh, attributes: { ...mesh.attributes, color } })
-          .build()
-          .unwrap(),
-      );
+      return testAssets(world)
+        .create(
+          createMeshBuilder({ ...mesh, attributes: { ...mesh.attributes, color } })
+            .build()
+            .unwrap(),
+        )
+        .unwrap();
     };
     const red = colorMesh([1, 0, 0]);
     const green = colorMesh([0, 1, 0]);

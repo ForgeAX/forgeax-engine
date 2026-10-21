@@ -8,11 +8,11 @@ import { cpus, platform } from 'node:os';
 import { resolve } from 'node:path';
 import { performance } from 'node:perf_hooks';
 import { World } from '@forgeax/engine-ecs';
-import { createMaterialLoader, installMaterialReadyShaders } from '@forgeax/engine-assets-runtime';
+import { createCatalogSource } from '@forgeax/engine-assets-runtime';
 import { createBoxGeometry, packInterleavedVertexAttributes } from '@forgeax/engine-geometry';
 import { buildProfileModel, createProfiler } from '@forgeax/engine-profiler';
 import { Camera, DirectionalLight, Materials, MeshFilter, MeshRenderer } from '@forgeax/engine-render';
-import { constructRendererHost } from '@forgeax/engine-render/internal/construct-renderer';
+import { constructRuntimeRendererHost } from '@forgeax/engine-runtime/internal/renderer-host';
 import { summarizeGpuPassTimingIntervals } from '@forgeax/engine-render/internal';
 import { rhi } from '@forgeax/engine-rhi-webgpu';
 import { MorphWeights, propagateTransforms, Transform } from '@forgeax/engine-scene';
@@ -30,6 +30,19 @@ export const value = (result) => {
   if (!result?.ok) throw new Error(JSON.stringify(result?.error ?? 'operation unavailable'));
   return result.value;
 };
+// Cold pipeline preparation may return a pending receipt. Sample completed
+// rendering only, keeping the same World input and bounded startup work.
+export async function drawReady(renderer, input) {
+  const deadline = performance.now() + 30_000;
+  for (;;) {
+    const receipt = value(renderer.draw(input));
+    if (receipt.presentation !== 'pending') return receipt;
+    value(await receipt.completed);
+    if (performance.now() >= deadline) throw new Error('Renderer preparation did not complete within 30 seconds');
+    await new Promise(resolve => setTimeout(resolve, 1));
+  }
+}
+
 const quantile = (values, fraction) => {
   const sorted = values.filter(Number.isFinite).sort((a, b) => a - b);
   return sorted.length === 0 ? null : sorted[Math.max(0, Math.ceil(sorted.length * fraction) - 1)];
@@ -68,26 +81,28 @@ export function makeCanvas(devices, textures, errors = []) {
 }
 
 export function spawnScene(world, count, mixed, customMaterial) {
+  const assets = world.assets;
+  if (assets === undefined) throw new Error('benchmark World needs its runtime asset owner');
   const base = value(createBoxGeometry(0.14, 0.14, 0.14));
-  const rigid = world.allocSharedRef('MeshAsset', base);
+  const rigid = value(assets.create(base));
   const vertices = base.attributes.position.length / 3;
   const skinWeight = new Float32Array(vertices * 4);
   for (let i = 0; i < vertices; i++) skinWeight[i * 4] = 1;
   const attributes = { ...base.attributes, skinIndex: new Uint16Array(vertices * 4), skinWeight };
   const packed = value(packInterleavedVertexAttributes(attributes, vertices));
-  const skinned = world.allocSharedRef('MeshAsset', { ...base, attributes, vertices: packed.vertices });
+  const skinned = value(assets.create({ ...base, attributes, vertices: packed.vertices }));
   const delta = new Float32Array(vertices * 3);
   for (let i = 0; i < vertices; i++) delta[i * 3 + 1] = 0.04;
-  const morph = world.allocSharedRef('MeshAsset', { ...base, morphTargets: [{ position: delta }] });
+  const morph = value(assets.create({ ...base, morphTargets: [{ position: delta }] }));
   const skeletonAsset = { kind: 'skeleton', jointCount: 1, inverseBindMatrices: new Float32Array([1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1]) };
-  const skeleton = world.allocSharedRef('SkeletonAsset', skeletonAsset);
-  const boundedSkeleton = world.allocSharedRef('SkeletonAsset', { ...skeletonAsset, bounds: new Float32Array([-0.1, -0.1, -0.1, 0.1, 0.1, 0.1]) });
-  const opaque = world.allocSharedRef('MaterialAsset', Materials.standard({ baseColor: [0.2, 0.6, 0.3, 1], roughness: 0.7 }));
+  const skeleton = value(assets.create(skeletonAsset));
+  const boundedSkeleton = value(assets.create({ ...skeletonAsset, bounds: new Float32Array([-0.1, -0.1, -0.1, 0.1, 0.1, 0.1]) }));
+  const opaque = value(assets.create(Materials.standard({ baseColor: [0.2, 0.6, 0.3, 1], roughness: 0.7 })));
   const skinAsset = Materials.standard({ baseColor: [0.2, 0.6, 0.3, 1], roughness: 0.7 });
-  const skinMaterial = world.allocSharedRef('MaterialAsset', { ...skinAsset, passes: skinAsset.passes.filter(pass => pass.name !== 'deferred').map(pass => pass.name === 'forward' ? { ...pass, program: { module: 'forgeax::pbr-skin', fragmentEntry: 'fs_main' } } : pass) });
-  const unlit = world.allocSharedRef('MaterialAsset', Materials.unlit([0.3, 0.4, 0.8, 1]));
-  const transparent = world.allocSharedRef('MaterialAsset', Materials.unlit([0.8, 0.3, 0.2, 0.5], { renderState: { blend: { color: { srcFactor: 'src-alpha', dstFactor: 'one-minus-src-alpha', operation: 'add' }, alpha: { srcFactor: 'one', dstFactor: 'one-minus-src-alpha', operation: 'add' } } } }));
-  const custom = customMaterial === undefined ? undefined : world.allocSharedRef('MaterialAsset', customMaterial);
+  const skinMaterial = value(assets.create({ ...skinAsset, passes: skinAsset.passes.filter(pass => pass.name !== 'deferred').map(pass => pass.name === 'forward' ? { ...pass, program: { module: 'forgeax::pbr-skin', fragmentEntry: 'fs_main' } } : pass) }));
+  const unlit = value(assets.create(Materials.unlit([0.3, 0.4, 0.8, 1])));
+  const transparent = value(assets.create(Materials.unlit([0.8, 0.3, 0.2, 0.5], { renderState: { blend: { color: { srcFactor: 'src-alpha', dstFactor: 'one-minus-src-alpha', operation: 'add' }, alpha: { srcFactor: 'one', dstFactor: 'one-minus-src-alpha', operation: 'add' } } } })));
+  const custom = customMaterial;
   const entities = [];
   const categories = { rigid: 0, skin: 0, morph: 0, custom: 0, unlit: 0, transparent: 0 };
   const side = Math.ceil(Math.sqrt(count));
@@ -118,28 +133,19 @@ export function rgba(observation) {
   return pixels;
 }
 
-async function loadCustomMaterial(world, assets) {
-  // Reuse the actual custom-shader carrier's cooked publication and loader.
-  // Build that app first; no benchmark-side WGSL or fake scene-index ABI.
-  const packagePath = resolve(root, 'apps/hello/custom-shader/dist/assets/01935b00-7d8c-7c4e-9f12-345678abcd02.pack.json');
-  const pack = JSON.parse(await readFile(packagePath, 'utf8'));
-  const record = pack.assets.find(asset => asset.payload?.cooked)?.payload.cooked;
-  if (record === undefined) throw new Error('custom-shader cooked publication unavailable');
-  const texturePayload = { kind: 'texture', shape: { viewDimension: '2d', extent: { width: 1, height: 1 } }, format: 'rgba8unorm-srgb', data: new Uint8Array([192, 192, 192, 255]), colorSpace: 'srgb', mips: { kind: 'none' } };
-  for (const guid of record.refs.textures) value(assets.catalog(assets.parseGuid(guid), texturePayload));
-  const loaded = await createMaterialLoader({
-    loadPublication: async guid => guid === record.guid ? { guid, record, artifacts: Object.fromEntries(record.programs.map(({ artifact }) => [artifact.path, { bytes: new Uint8Array(artifact.bytes), digest: artifact.digest }])) } : undefined,
-    // Module references are already in the validated cooked source closure;
-    // texture references resolve through the actual runtime catalog.
-    loadReference: async reference => record.refs.modules.includes(reference)
-      ? record.programs.some(program => program.artifact.bytes.length > 0)
-      : (await assets.loadByGuid(assets.parseGuid(reference))).ok,
-  }).load({ guid: record.guid, specializationKey: record.specializationKey });
-  if (loaded.status !== 'Ready') throw new Error(`custom material not ready: ${JSON.stringify(loaded)}`);
-  installMaterialReadyShaders(assets.shaderRegistry, loaded, assets.materialArtifactRegistry);
-  const texture = world.allocSharedRef('TextureAsset', texturePayload);
-  return { kind: 'material', passes: record.resolved.passes, parameters: record.resolved.parameters,
-    values: { ...record.resolved.values, time: 0, baseColorTexture: { texture }, normalTexture: { texture }, baseColorUvTransform: [0, 0, 1, 1], normalUvTransform: [0, 0, 1, 1] } };
+async function loadCustomMaterial(assets) {
+  // Consume the actual custom-shader app's complete cooked publication through
+  // the same source, decoder and asset owner used by a running game.
+  const directory = resolve(root, 'apps/hello/custom-shader/dist');
+  const url = 'https://scene-material-benchmark.invalid/pack-index.json';
+  assets.setCatalogSource(createCatalogSource({
+    url,
+    fetch: async resource => new Response(await readFile(resolve(directory, new URL(resource, url).pathname.slice(1)))),
+  }));
+  const material = value(await assets.load('01935b00-7d8c-7c4e-9f12-345678abcd02', 'material'));
+  const texture = value(assets.create({ kind: 'texture', shape: { viewDimension: '2d', extent: { width: 1, height: 1 } }, format: 'rgba8unorm-srgb', data: new Uint8Array([192, 192, 192, 255]), colorSpace: 'srgb', mips: { kind: 'none' } }));
+  value(assets.update(material, { values: { time: 0, baseColorTexture: { texture }, normalTexture: { texture }, baseColorUvTransform: [0, 0, 1, 1], normalUvTransform: [0, 0, 1, 1] } }));
+  return material;
 }
 
 const workloadId = ({ count, mixed, dirtyRatio }) => `${count}-${mixed ? 'mixed' : 'rigid'}-${dirtyRatio === 0 ? 'stable' : dirtyRatio === 1 ? 'churn' : 'local-dirty'}`;
@@ -151,10 +157,10 @@ async function workload({ count, mixed, dirtyRatio }) {
   const errors = [];
   const restoreDiagnostics = trackDiagnosticErrors(errors);
   const profiler = profiling ? createProfiler() : undefined;
-  const host = value(await constructRendererHost(makeCanvas(devices, textures, errors), { rhi, gpuPassTiming: {}, ...(profiler === undefined ? {} : { profiler }) }, { shaderManifestUrl: `data:application/json,${encodeURIComponent(manifest)}` }));
+  const host = value(await constructRuntimeRendererHost(makeCanvas(devices, textures, errors), { rhi, gpuPassTiming: {}, ...(profiler === undefined ? {} : { profiler }) }, { shaderManifestUrl: `data:application/json,${encodeURIComponent(manifest)}` }));
   const renderer = host.renderer;
-  const world = new World();
-  const customMaterial = mixed ? await loadCustomMaterial(world, host.assets) : undefined;
+  const world = new World({ assets: host.assets });
+  const customMaterial = mixed ? await loadCustomMaterial(host.assets) : undefined;
   const { entities, categories } = spawnScene(world, count, mixed, customMaterial);
   const lease = value(renderer.attach(world));
   value(renderer.setProfile({ ...renderer.inspect().profile, gpuOcclusion: false }));
@@ -175,7 +181,7 @@ async function workload({ count, mixed, dirtyRatio }) {
     const cpuWorldMs = performance.now() - cpuStart;
     if (color) value(renderer.requestObservation(['final-display']));
     const drawStart = performance.now();
-    const receipt = value(renderer.draw({ leases: [lease], camera: { lease }, environment: { lease }, geometryLane: mode === 'A' ? 'direct' : 'automatic' }));
+    const receipt = await drawReady(renderer, { leases: [lease], camera: { lease }, environment: { lease }, geometryLane: mode === 'A' ? 'direct' : 'automatic' });
     const cpuDrawMs = performance.now() - drawStart;
     const waitStart = performance.now();
     value(await receipt.completed);

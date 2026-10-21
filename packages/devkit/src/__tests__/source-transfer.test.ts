@@ -299,7 +299,7 @@ it('resolves already locked dependencies before evaluating candidate pack.ts sou
     resolve(source, 'assets/behavior.pack.ts'),
     `
 import { speed } from '@transfer-fixture/author-helper';
-export default { schemaVersion: '2.0.0',
+export default { schemaVersion: '2.0.0', plugins: true,
   packageId: new Uint8Array([1,144,0,0,0,0,112,0,128,0,0,0,0,0,1,113]),
   build: () => ({ ok: true, value: { 'plugin/root': {
     kind: 'plugin', module: { specifier: './child.ts' }, config: { speed },

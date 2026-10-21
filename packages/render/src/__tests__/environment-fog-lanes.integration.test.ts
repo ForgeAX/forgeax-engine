@@ -28,10 +28,9 @@ const frame = selectEnvironment({
     },
   ],
   suns: [{ entityKey: 9, direction: [0, -1, 0], color: [1, 1, 1], intensity: 2 }],
-  lane: 'direct',
 });
 
-describe('Environment and Fog lane graph contract', () => {
+describe('Environment and Fog frame contract', () => {
   it('extracts all Atmosphere parameters and normalized Sun facts from ECS rows', () => {
     const world = new World();
     world
@@ -102,25 +101,11 @@ describe('Environment and Fog lane graph contract', () => {
     expect(changed.fog?.color[2]).toBeCloseTo(0.4);
   });
 
-  it('uses one signature and generation for direct and clustered consumers', async () => {
-    expect(frame.ok).toBe(true);
-    if (!frame.ok) return;
-    const lifecycle = new EnvironmentLifecycle(DeviceScope.create(3, 'environment-lanes'));
-    const direct = await lifecycle.ensure(frame.value, 'direct');
-    const clustered = await lifecycle.ensure(frame.value, 'clustered');
-    expect(direct.ok).toBe(true);
-    expect(clustered.ok).toBe(true);
-    if (!direct.ok || !clustered.ok) return;
-    expect(clustered.value.generation).toBe(direct.value.generation);
-    expect(clustered.value.signature).toBe(direct.value.signature);
-    expect(clustered.value.liveHandle).toBe(direct.value.liveHandle);
-  });
-
   it('keeps failed candidate receipts structured and active/LKG unchanged', async () => {
     expect(frame.ok).toBe(true);
     if (!frame.ok) return;
     const lifecycle = new EnvironmentLifecycle(DeviceScope.create(4, 'environment-recovery'));
-    const published = await lifecycle.ensure(frame.value, 'direct');
+    const published = await lifecycle.ensure(frame.value);
     expect(published.ok).toBe(true);
     if (!published.ok) return;
     lifecycle.publish(published.value);

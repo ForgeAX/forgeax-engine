@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+import { HDR_EFFECT_WGSL, HDR_EXPOSURE_POSTPROCESS_ID } from '../src/hdr-pipeline.ts';
 // apps/learn-render/5.advanced-lighting/6.hdr/scripts/smoke-dawn.mjs
 //
 // LearnOpenGL section 5.6 - HDR dawn-node smoke.
@@ -39,6 +40,10 @@
 import { existsSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { AssetRegistry } from '@forgeax/engine-assets-runtime';
+
+import { createPrimitiveMesh } from '@forgeax/engine-geometry';
+
 
 const SMOKE_MIN_FRAMES = Number.parseInt(process.env.SMOKE_MIN_FRAMES ?? '60', 10);
 const PER_MODE_FRAMES = Math.max(150, Math.ceil(SMOKE_MIN_FRAMES / 2));
@@ -74,9 +79,10 @@ const HDR_FALSIFY = process.env.FORGEAX_HDR_FALSIFY === '1';
 const HDR_PARAMS_BINDING = HDR_FALSIFY ? 1 : 2;
 
 // 16 B params: [exposure(f32), pad, pad, pad] — mirrors src/index.ts.
-function packExposureBytes(exposure) {
+function packExposureBytes(exposure, mode = 0) {
   const buf = new ArrayBuffer(16);
   new Float32Array(buf)[0] = exposure;
+  new Float32Array(buf)[1] = mode;
   return new Uint8Array(buf);
 }
 
@@ -103,65 +109,6 @@ async function readPixelRGBA8(device, texture, px, py) {
   readbackBuffer.destroy?.();
   return out;
 }
-const HDR_LO_EXPOSURE_WGSL = `
-struct FullscreenOutput {
-  @builtin(position) position : vec4<f32>,
-  @location(0) uv : vec2<f32>,
-};
-@vertex
-fn vs_main(@builtin(vertex_index) i : u32) -> FullscreenOutput {
-  var x : f32 = -1.0; var y : f32 = -1.0;
-  if (i == 1u) { x = 3.0; }
-  if (i == 2u) { y = 3.0; }
-  let u : f32 = (x + 1.0) * 0.5;
-  let v : f32 = 1.0 - (y + 1.0) * 0.5;
-  var out : FullscreenOutput;
-  out.position = vec4<f32>(x, y, 0.0, 1.0);
-  out.uv = vec2<f32>(u, v);
-  return out;
-}
-struct ExposureParams {
-  exposure : f32,
-  pad0 : f32,
-  pad1 : f32,
-  pad2 : f32,
-};
-@group(1) @binding(0) var hdrTexture : texture_2d<f32>;
-@group(1) @binding(1) var hdrSampler : sampler;
-@group(1) @binding(${HDR_PARAMS_BINDING}) var<uniform> params : ExposureParams;
-@fragment
-fn fs_main(in : FullscreenOutput) -> @location(0) vec4<f32> {
-  let hdrColor = textureSample(hdrTexture, hdrSampler, in.uv).rgb;
-  let mapped = vec3<f32>(1.0, 1.0, 1.0) - exp(-hdrColor * params.exposure);
-  return vec4<f32>(mapped, 1.0);
-}
-`;
-const HDR_PASSTHROUGH_WGSL = `
-struct FullscreenOutput {
-  @builtin(position) position : vec4<f32>,
-  @location(0) uv : vec2<f32>,
-};
-@vertex
-fn vs_main(@builtin(vertex_index) i : u32) -> FullscreenOutput {
-  var x : f32 = -1.0; var y : f32 = -1.0;
-  if (i == 1u) { x = 3.0; }
-  if (i == 2u) { y = 3.0; }
-  let u : f32 = (x + 1.0) * 0.5;
-  let v : f32 = 1.0 - (y + 1.0) * 0.5;
-  var out : FullscreenOutput;
-  out.position = vec4<f32>(x, y, 0.0, 1.0);
-  out.uv = vec2<f32>(u, v);
-  return out;
-}
-@group(1) @binding(0) var hdrTexture : texture_2d<f32>;
-@group(1) @binding(1) var hdrSampler : sampler;
-@fragment
-fn fs_main(in : FullscreenOutput) -> @location(0) vec4<f32> {
-  let hdrColor = textureSample(hdrTexture, hdrSampler, in.uv).rgb;
-  return vec4<f32>(hdrColor, 1.0);
-}
-`;
-
 // --- 1. dawn.node binding setup ---
 
 let create;
@@ -270,9 +217,7 @@ const { constructRuntimeRendererHost } = await import('@forgeax/engine-runtime/i
 const { Camera, MeshFilter, MeshRenderer, PointLight, PostProcessParams, TONEMAP_NONE } = await import('@forgeax/engine-render');
 const { createFullscreenRenderFeature } = await import('@forgeax/engine-app');
 const { Transform } = await import('@forgeax/engine-scene');
-const {
-  HANDLE_CUBE,
-} = await import('@forgeax/engine-assets-runtime');
+
 
 // Mirror src/index.ts invertMesh: turn a box inside-out (negate normals + re-wind
 // triangles) so its INTERIOR walls light under the single-sided PBR shader. The
@@ -326,12 +271,12 @@ let assets;
 try {
   const feature = createFullscreenRenderFeature({
     identity: 'learn-render::5-6-hdr-lo-exposure',
-    source: HDR_LO_EXPOSURE_WGSL,
+    source: HDR_EFFECT_WGSL.replace('@binding(2) var<uniform>', `@binding(${HDR_PARAMS_BINDING}) var<uniform>`),
     params: { byteSize: 16, defaultValue: packExposureBytes(1.0) },
   });
   const constructed = await constructRuntimeRendererHost(
     mockCanvas,
-    { features: [feature] },
+    { features: FALSIFY ? [] : [feature] },
     { shaderManifestUrl: MANIFEST_URL },
   );
   if (!constructed.ok) throw constructed.error;
@@ -369,16 +314,20 @@ const woodTexAsset = {
   colorSpace: woodDecoded.colorSpace,
   mips: woodDecoded.mipmap ? { kind: 'generate' } : { kind: 'none' },
 };
-const world = new World();
+const world = new World({ assets: assets });
+const sceneAssets = world.assets;
+if (!(sceneAssets instanceof AssetRegistry)) throw new Error('Scene requires its runtime asset owner');
+
+const primitiveCube = sceneAssets.create(createPrimitiveMesh('cube').unwrap()).unwrap();
+
 const worldAttachment1 = renderer.attach(world);
 if (!worldAttachment1.ok) throw worldAttachment1.error;
 const lease = worldAttachment1.value;
 
 // Catalogue the wood texture under its GUID, then mint a shared-ref column handle.
-assets.catalog(woodGuidRes.value, woodTexAsset);
-const woodHandle = world.allocSharedRef('TextureAsset', woodTexAsset);
+const woodHandle = world.assets.create(woodTexAsset).unwrap();
 
-const tunnelMat = world.allocSharedRef('MaterialAsset', {
+const tunnelMat = world.assets.create({
   kind: 'material',
   passes: [
     {
@@ -393,9 +342,9 @@ const tunnelMat = world.allocSharedRef('MaterialAsset', {
     roughness: 0.85,
     baseColorTexture: unwrapHandle(woodHandle),
   },
-});
+}).unwrap();
 
-const strongMat = world.allocSharedRef('MaterialAsset', {
+const strongMat = world.assets.create({
   kind: 'material',
   passes: [
     {
@@ -413,7 +362,7 @@ const strongMat = world.allocSharedRef('MaterialAsset', {
     emissive: [1.0, 1.0, 1.0],
     emissiveIntensity: 0.4,
   },
-});
+}).unwrap();
 
 // Tunnel: inward-facing box so the interior walls light (mirrors src/index.ts).
 // WALL_FALSIFY uses the OUTWARD box -> black walls -> criterion (e) FAILs.
@@ -423,7 +372,7 @@ if (!tunnelMeshRes.ok) {
   process.exit(1);
 }
 const tunnelMesh = WALL_FALSIFY ? tunnelMeshRes.value : invertMesh(tunnelMeshRes.value);
-const tunnelMeshHandle = world.allocSharedRef('MeshAsset', tunnelMesh);
+const tunnelMeshHandle = world.assets.create(tunnelMesh).unwrap();
 if (WALL_FALSIFY) {
   console.warn(
     '[learn-render-6-hdr] WALL_FALSIFY mode: outward-normal tunnel (interior walls render black)',
@@ -449,7 +398,7 @@ world
       data: {
         pos: [0, 0, -45], quat: [0, 0, 0, 1], scale: [0.25, 0.25, 0.25],},
     },
-    { component: MeshFilter, data: { assetHandle: HANDLE_CUBE } },
+    { component: MeshFilter, data: { assetHandle: primitiveCube } },
     { component: MeshRenderer, data: { materials: [strongMat] } },
   )
   .unwrap();
@@ -488,72 +437,10 @@ world.spawn(
 
 // --- 5. Register two custom RenderPipelines + their assets ---
 
-const HDR_EXPOSURE_POSTPROCESS_ID = 'learn-render::5-6-hdr-lo-exposure';
-const HDR_PASSTHROUGH_POSTPROCESS_ID = 'learn-render::5-6-hdr-passthrough';
-const HDR_PIPELINE_ID = 'learn-render-5-6-hdr::hdr';
-const LDR_PIPELINE_ID = 'learn-render-5-6-hdr::ldr';
-
-const OFFSCREEN_HDR_KEY = 'offscreenHdr';
-const OFFSCREEN_DEPTH_KEY = 'hdrDepth';
-
-// feat-20260621 M-B2: data-driven exposure params entity (drives the HDR
-// exposure shader's @group(1) @binding(2) UBO via the unified channel).
-world.spawn({
+const exposureEntity = world.spawn({
   component: PostProcessParams,
   data: { shader: HDR_EXPOSURE_POSTPROCESS_ID, data: packExposureBytes(1.0) },
-});
-
-function makeHdrPipeline(mode) {
-  return {
-    build(context, topology) {
-      const graph = context.graph;
-      const color = createRenderPipelineTarget(graph, OFFSCREEN_HDR_KEY, {
-        format: 'rgba16float',
-        size: 'surface',
-      });
-      if (!color.ok) return color;
-      const depth = createRenderPipelineTarget(graph, OFFSCREEN_DEPTH_KEY, {
-        format: 'depth24plus-stencil8',
-        size: 'surface',
-      });
-      if (!depth.ok) return depth;
-      const surface = importRenderPipelineSurface(graph, topology);
-      if (!surface.ok) return surface;
-      const scene = addTypedScenePass(graph, {
-        name: 'main',
-        color: color.value,
-        depth: depth.value,
-        selector: { LightMode: ['Forward'] },
-      });
-      if (!scene.ok) return scene;
-      const features = context.contributeFeatures([
-        {
-          kind: 'scene-color',
-          texture: color.value.texture,
-          view: color.value.view,
-          format: color.value.format,
-          sampleCount: 1,
-        },
-        {
-          kind: 'scene-depth',
-          texture: depth.value.texture,
-          view: depth.value.view,
-          format: depth.value.format,
-          sampleCount: 1,
-        },
-      ]);
-      if (!features.ok) return features;
-      const postShaderId =
-        mode === 'hdr' ? HDR_EXPOSURE_POSTPROCESS_ID : HDR_PASSTHROUGH_POSTPROCESS_ID;
-      return addTypedFullscreenPass(graph, {
-        name: 'postHdr',
-        shader: postShaderId,
-        input: color.value,
-        output: surface.value.display,
-      });
-    },
-  };
-}
+}).unwrap();
 
 const frameStart = Date.now();
 let framesObserved = 0;
@@ -573,8 +460,8 @@ for (let i = 0; i < PER_MODE_FRAMES; i++) {
   } else {
     const completed = await r.value.completed;
     if (!completed.ok) errors.push({ code: completed.error.code, hint: completed.error.hint });
+    else framesObserved++;
   }
-  framesObserved++;
   await sharedDevice.queue.onSubmittedWorkDone();
 }
 
@@ -596,6 +483,7 @@ console.log(
   `[smoke] tunnel floor-wall pixel (${wallSampleX},${wallSampleY}) rgba=[${wallPixel.join(', ')}] (sum=${wallLuma})`,
 );
 
+world.set(exposureEntity, PostProcessParams, {data: packExposureBytes(1.0, 1)}).unwrap();
 for (let i = 0; i < PER_MODE_FRAMES; i++) {
   world.update(1 / 60).unwrap();
   const r = renderer.draw({
@@ -608,8 +496,8 @@ for (let i = 0; i < PER_MODE_FRAMES; i++) {
   } else {
     const completed = await r.value.completed;
     if (!completed.ok) errors.push({ code: completed.error.code, hint: completed.error.hint });
+    else framesObserved++;
   }
-  framesObserved++;
 }
 
 const device = sharedDevice;
@@ -627,9 +515,12 @@ console.log(
 
 const wallTotalMs = Date.now() - frameStart;
 console.log(`[smoke] wallTotalMs=${wallTotalMs}`);
-console.log('[smoke] Standard pipeline completed both mode samples');
+const ldrWallPixel = await readPixelRGBA8(device, renderTarget, wallSampleX, wallSampleY);
+const modeDifference = Math.max(...wallPixel.slice(0, 3).map((channel, i) => Math.abs(channel - ldrWallPixel[i])));
+console.log(`[smoke] HDR/LDR wall difference=${modeDifference}`);
 
 const failures = [];
+if (modeDifference === 0) failures.push('HDR and LDR must produce different wall pixels through the shared fullscreen feature');
 if (framesObserved < SMOKE_MIN_FRAMES)
   failures.push(`(a) frames=${framesObserved} < ${SMOKE_MIN_FRAMES}`);
 if (errors.length > 0) {

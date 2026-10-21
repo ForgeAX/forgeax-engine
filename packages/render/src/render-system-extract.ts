@@ -1,15 +1,25 @@
-import { isFiniteAabb } from '@forgeax/engine-geometry';
+import type { FrameList } from './scene/frame-list';
+import type { DispatchList } from './scene/material-dispatch';
+import { spriteUvRegion } from './sprite-region';
+
+export type { DispatchList } from './scene/material-dispatch';
+
+import { runtimeAssetRegistry, runtimeAssets } from '@forgeax/engine-assets-runtime/internal';
 import {
   type MaterialCookRasterContext,
   materialProgramContextForPass,
 } from '@forgeax/engine-pack/material-cook';
-import type { MeshAsset } from '@forgeax/engine-types';
+import type { AssetHandle, MeshAsset } from '@forgeax/engine-types';
 import { buildPlanarReflectionView } from './capture/planar-view';
 import { LensEffects, resolveLensEffects } from './components/lens-effects';
 import { LensFlare, resolveLensFlare } from './components/lens-flare';
 import { Outline, resolveOutline } from './components/outline';
 import { PlanarReflection, PlanarReflectionInvalidError } from './components/planar-reflection';
-import { supportsGpuShadowRenderState } from './material-render-state';
+import {
+  MaterialResource,
+  materialResource,
+  runtimeMaterialShaderIdForMaterial,
+} from './material-resource';
 import type { LightTextureSource } from './prepare/extended-lighting/spot-modifiers';
 import { computeProjectionMatrix } from './record/helpers';
 import { textureDigest } from './texture-digest';
@@ -106,11 +116,8 @@ import {
   assertMaterialStaticSelection,
   findMaterialPassProgram,
   materialParametersToParamSchema as projectMaterialParametersToParamSchema,
-  resolveAssetHandle,
-  runtimeContentRevision,
   runtimeMaterialShaderId,
   selectMaterialPassProgram,
-  walkMaterialPassesOverSharedRefs,
 } from '@forgeax/engine-assets-runtime';
 import {
   type Component,
@@ -138,8 +145,6 @@ import {
   TONEMAP_PARAMS_LAYOUT,
 } from '@forgeax/engine-shader';
 import type {
-  Asset,
-  Handle,
   MaterialAsset,
   MaterialColorParameterSchema,
   MaterialParameter,
@@ -153,13 +158,7 @@ import type {
   ParamSchemaEntry,
   TextureAsset,
 } from '@forgeax/engine-types';
-import {
-  BUILTIN_BASE,
-  derive,
-  materialGuidText,
-  materialValuesToLinearRuntime,
-  toShared,
-} from '@forgeax/engine-types';
+import { derive, materialValuesToLinearRuntime, toShared } from '@forgeax/engine-types';
 import { buildCubeCameraFaceViews } from './capture/cube-views';
 import {
   AmbientOcclusion,
@@ -228,10 +227,10 @@ import type {
 } from './mesh-material-bindings';
 import {
   isCanonicalStandardPbrMaterialShader,
-  isStandardPbrMaterialShader,
   isStandardPbrSkinMaterialShader,
 } from './pbr-pipeline';
 import type { PointsLinesRetainedSnapshot } from './points-lines/snapshot';
+import { type RenderResourceScope, renderAssetRevision } from './publication/resource-scope';
 import type { ReflectionProbeFact } from './reflection/projection';
 import type { CameraSnapshot, CubeCameraSnapshot, PhysicalViewExtent } from './render-contract';
 import { getActiveCamera, selectActiveCameraIndex } from './systems/active-camera';
@@ -239,10 +238,9 @@ import { selectPasses } from './systems/pass-selector';
 import type { SkinPaletteAllocator } from './systems/skin-palette-allocator';
 import type { SkinPaletteReceipt } from './systems/skin-palette-types';
 import type { RenderTarget } from './targets/contracts';
-import { resolveRenderTargetMaterialSource } from './targets/material-source';
-import { isCanvasTextureSource, type MaterialTextureSource } from './textures/canvas-texture';
-import { isExternalTextureSource } from './textures/external-texture';
-import { resolveSelectedVolumetricLight } from './volume/capability';
+import type { MaterialTextureSource } from './textures/canvas-texture';
+import { isRenderTextureSourceToken } from './textures/source-token';
+import { resolveSelectedVolumetricLight, type VolumetricFogLightKind } from './volume/capability';
 import {
   type ValidatedVolumetricFog,
   type VolumeDensityBinding,
@@ -325,6 +323,8 @@ export interface PointLightSnapshot extends IesProfileSnapshot {
    * shadow-parameter buffer; DirectLightSlot carries only the layer identity.
    */
   readonly shadowFar?: number;
+  /** Vogel footprint diameter; 1 selects hardware PCF, 3 defaults to radius 1. */
+  readonly pcfKernelSize?: number;
 }
 
 /**
@@ -349,6 +349,9 @@ export interface PointLightSnapshot extends IesProfileSnapshot {
  * downstream DirectLightSlot packing carries no invalid layer identity.
  */
 export interface PointShadowSnapshot {
+  readonly shadowCasterChannels?: number;
+  readonly shadowAutoUpdate?: boolean;
+  readonly shadowRevision?: number;
   /** Spawning entity index (joins PointLight + PointLightShadow + Transform). */
   readonly entity: number;
   /** World identity stamped by the composited extract owner. */
@@ -361,6 +364,11 @@ export interface PointShadowSnapshot {
   readonly farPlane: number;
   readonly depthBias: number;
   readonly normalBias: number;
+  readonly pcfKernelSize?: number;
+  readonly shadowFilter?: number;
+  readonly shadowBiasMode?: number;
+  readonly shadowIntensity?: number;
+  readonly shadowBlurSamples?: number;
   /**
    * Atlas layer assigned by extract in spawn order while capacity remains.
    * Sentinel -1 is used for a request that cannot be admitted and is
@@ -393,6 +401,10 @@ export interface PointShadowSnapshot {
  * radiance.
  */
 export interface SpotLightSnapshot extends IesProfileSnapshot {
+  readonly shadowMapAspect?: number;
+  readonly shadowCasterChannels?: number;
+  readonly shadowAutoUpdate?: boolean;
+  readonly shadowRevision?: number;
   readonly kind: 'spot';
   /** Validated u32 surface direct-light channels. */
   readonly lightingChannels?: number;
@@ -434,11 +446,14 @@ export interface SpotLightSnapshot extends IesProfileSnapshot {
   readonly shadowAtlasTile: number;
   /** Fraction of sampled shadow visibility to retain; 1 = fully opaque shadow. */
   readonly shadowIntensity?: number;
+  readonly shadowBlurSamples?: number;
   readonly depthBias?: number;
   readonly normalBias?: number;
   readonly pcfKernelSize?: number;
+  readonly shadowFilter?: number;
+  readonly shadowBiasMode?: number;
   /** Authoritative TextureAsset projector resolved from the SpotLight handle. */
-  readonly projectorHandle?: Handle<'TextureAsset', 'shared'>;
+  readonly projectorHandle?: AssetHandle<'texture'>;
   readonly projectorAsset?: TextureAsset;
   readonly projectorGuid?: string;
   readonly projectorGeneration?: number;
@@ -743,7 +758,7 @@ export interface ExtractedVolumetricFog {
   readonly additional?: readonly ExtractedVolumetricFog[];
   readonly status: 'off' | 'available' | 'degraded';
   readonly fog?: ValidatedVolumetricFog;
-  readonly densityHandle?: Handle<'TextureAsset', 'shared'>;
+  readonly densityHandle?: AssetHandle<'texture'>;
   readonly densityAsset?: TextureAsset;
   readonly guid?: string;
   readonly generation?: number;
@@ -753,22 +768,34 @@ export interface ExtractedVolumetricFog {
   readonly worldTimeSeconds?: number;
   /** Required same-World light selected by the authoring component. */
   readonly lightEntity?: EntityHandle;
-  readonly lightKind?: 'directional' | 'point' | 'spot';
+  readonly lightKind?: VolumetricFogLightKind;
   /** Optional Point+Spot pair identities consumed by the volume integrator. */
   readonly pointLightEntity?: EntityHandle;
   readonly spotLightEntity?: EntityHandle;
   /** Accepted projector tuple shared by surface and volume when authored. */
   readonly projector?: VolumeProjectorTuple;
   /** The resolved projector payload shared with the surface light snapshot. */
-  readonly projectorHandle?: Handle<'TextureAsset', 'shared'>;
+  readonly projectorHandle?: AssetHandle<'texture'>;
   readonly projectorAsset?: TextureAsset;
 }
 
 export interface RenderableSnapshot {
+  readonly glyph?: import('./glyph-source').GlyphRenderSource;
+  readonly tilemap?: import('./tilemap-geometry').TilemapRenderSource;
+  /** Source-local identity for an actual native child draw, without a derived entity. */
+  readonly nativeDraw?: { readonly key: string };
+  /** Fixed renderer-owned layout geometry; it has no asset identity. */
+  readonly generatedMesh?: import('@forgeax/engine-types').MeshAsset;
+  /** Instance animation UVs, composed with the accepted shared material only when drawn. */
+  readonly spriteRegion?: import('./sprite-region').SpriteRegion;
+  readonly layer?: number;
+  /** Authored participation, independent of the current material Pass roster. */
+  readonly shadowCaster?: false;
   /** Explicit non-drawing material pass preparation, independent of visibility. */
   readonly pipelinePreparation?: readonly Omit<DispatchEntry, 'entityIndex' | 'renderableIndex'>[];
   readonly terrain?: import('./terrain/source.js').TerrainRenderSource;
   readonly terrainSection?: {
+    readonly source: import('./terrain/source.js').TerrainDrawSource;
     readonly index: number;
     readonly lod: number;
     readonly neighbors: readonly number[];
@@ -776,7 +803,7 @@ export interface RenderableSnapshot {
 
   /** Authored hierarchical visibility; retained hidden rows remain addressable. */
   readonly authorVisible?: boolean;
-  readonly assetHandle: number;
+  readonly assetHandle?: number;
   readonly transform: TransformSnapshot;
   /** Producer-authored lower-detail references projected from MeshAsset. */
   readonly lods?: readonly MeshLodLevel[];
@@ -785,30 +812,11 @@ export interface RenderableSnapshot {
   readonly localAabb?: Float32Array;
   /** Indexed single-submesh facts consumed by the first GPU-driven rigid lane. */
   readonly gpuDrivenDraws?: readonly GpuDrivenDrawSnapshot[];
-  /**
-   * feat-20260608 M5 amend / w11-a: the entity's representative (first)
-   * material snapshot, kept as a same-name shorthand for `materials[0]`.
-   * Per-entity dispatch (shading model routing, sprite-vs-mesh split, the
-   * D-1/D-3 pipeline-tag pick) is uniform across the entity's submeshes
-   * today, so the existing 20+ `entry.source.material.X` consumers in the
-   * record stage stay unchanged. Per-submesh material data (baseColor /
-   * UBO payload / paramSnapshot) lives in `materials[i]`.
-   */
-  readonly material: MaterialSnapshot;
-  /**
-   * feat-20260608 M5 amend / w11-a: per-submesh MaterialSnapshot[]
-   * positionally aligned with `MeshAsset.submeshes[]` (plan §3.2 sequence
-   * step 6 + AC-08). Length always equals the entity's submesh count once
-   * the extract stage's count-mismatch validator (M2 / w12) has filtered
-   * misaligned spawns. The record stage reads `materials[i]` to upload the
-   * i-th material UBO slot before drawing the i-th submesh.
-   *
-   * Backward-compat: `materials[0] === material` (the legacy mid-grey
-   * default-material case-B path also routes through `materials = [default]`,
-   * keeping the legacy single-mesh-no-material spawn shape working without
-   * a special branch in record).
-   */
-  readonly materials: readonly MaterialSnapshot[];
+  /** Shared renderer resource bindings. Recording reads their accepted snapshots. */
+  readonly material: MaterialResource;
+  readonly materials: readonly MaterialResource[];
+  /** Authored entity overrides; zero or absent entries inherit the current Mesh slot. */
+  readonly materialOverrides?: readonly (MaterialResource | undefined)[];
   /** Per-slot provenance trace from the shared mesh-material resolver. */
   readonly materialBindingSources: readonly MeshMaterialBindingSource[];
   /** Active structured override diagnostics for this renderable. */
@@ -892,13 +900,9 @@ export interface RenderableSnapshot {
   readonly mobility?: 'static';
   /** Present when `ShadowParticipation.receive` is false: surface skips shadow sampling. */
   readonly shadowReceiver?: false;
+  readonly shadowChannels?: number;
   /** Validated receiver mask, shared by every material section and instance. */
   readonly lightingChannels?: number;
-  /** Source pass ownership retained with the scene record across view changes. */
-  readonly shadowCasterPasses?: readonly Omit<
-    ShadowCasterMembership,
-    'worldEntity' | 'renderableIndex'
-  >[];
   /**
    * ECS-owned morph weights. Presence selects the Standard Pipeline CPU
    * specialized deformation lane; the asset remains the source of target
@@ -1036,6 +1040,14 @@ export interface TransformSnapshot {
  * {@link materialShaderId} is the single source of truth for material dispatch.
  */
 export interface MaterialSnapshot {
+  /** Inputs of this shared preparation; publications preserve the selected resource identity. */
+  readonly materialContext?: Pick<MaterialSnapshotContext, 'geometry' | 'vertexColor'>;
+  /** Reflected entry contracts of the exact accepted programs, shared with their registry. */
+  readonly materialEntryPoints?: Readonly<
+    Record<string, readonly import('@forgeax/engine-types').ShaderEntryPointReads[]>
+  >;
+  /** Complete accepted pass set, shared by every binding of this material. */
+  readonly passes: readonly MaterialPass[];
   /** The producer owns immutable numeric values and their parameter ABI for this snapshot. */
   readonly immutableValues?: true;
   readonly baseColor: Vec3;
@@ -1118,7 +1130,7 @@ export interface MaterialSnapshot {
    * Standard user-region fields; the production layout does not duplicate
    * them in an engine injection region.
    */
-  readonly textureHandles?: ReadonlyMap<string, Handle<'TextureAsset', 'shared'>> | undefined;
+  readonly textureHandles?: ReadonlyMap<string, AssetHandle<'texture'>> | undefined;
   /** Explicitly authored texture fields that must resolve before GPU admission. */
   readonly authoredTextureFields?: ReadonlySet<string> | undefined;
   /** Runtime target or Canvas sources; never projected as TextureAsset handles. */
@@ -1138,12 +1150,12 @@ export interface MaterialSnapshot {
    * asset->snapshot translation; record consumes this POD field only — it never
    * reaches back into the MaterialAsset to learn a field is video-sourced.
    */
-  readonly videoTextureFields?: ReadonlyMap<string, Handle<'VideoAsset', 'shared'>> | undefined;
+  readonly videoTextureFields?: ReadonlyMap<string, AssetHandle<'video'>> | undefined;
   /** Authored sampler handles keyed by their matching texture parameter. */
-  readonly samplerHandles?: ReadonlyMap<string, Handle<'SamplerAsset', 'shared'>> | undefined;
+  readonly samplerHandles?: ReadonlyMap<string, AssetHandle<'sampler'>> | undefined;
   /** Explicitly authored sampler fields that must resolve before GPU admission. */
   readonly authoredSamplerFields?: ReadonlySet<string> | undefined;
-  readonly baseColorTexture?: Handle<'TextureAsset', 'shared'> | undefined;
+  readonly baseColorTexture?: AssetHandle<'texture'> | undefined;
   /**
    * PBR metallic-roughness texture handle (present for PBR/sprite/skin
    * shaders). Undefined for the default-unlit shader
@@ -1156,7 +1168,7 @@ export interface MaterialSnapshot {
    * textures from Sponza glTF materials (M3 writes the handle into
    * SchemaDrivenMaterialAsset values; M4 extract carries it through to the snapshot).
    */
-  readonly metallicRoughnessTexture?: Handle<'TextureAsset', 'shared'> | undefined;
+  readonly metallicRoughnessTexture?: AssetHandle<'texture'> | undefined;
   /**
    * PBR tangent-space normal texture handle (present for PBR/sprite/skin
    * shaders). Undefined for the default-unlit shader
@@ -1168,13 +1180,13 @@ export interface MaterialSnapshot {
    * field added symmetrically with metallicRoughnessTexture so the record
    * stage can wire real normal textures from Sponza glTF materials.
    */
-  readonly normalTexture?: Handle<'TextureAsset', 'shared'> | undefined;
+  readonly normalTexture?: AssetHandle<'texture'> | undefined;
   /** Scalar applied to tangent-space normal XY after the normal texture sample. */
   readonly normalScale?: readonly [number, number] | undefined;
   readonly emissive?: readonly [number, number, number] | undefined;
   readonly emissiveIntensity?: number | undefined;
-  readonly emissiveTexture?: Handle<'TextureAsset', 'shared'> | undefined;
-  readonly occlusionTexture?: Handle<'TextureAsset', 'shared'> | undefined;
+  readonly emissiveTexture?: AssetHandle<'texture'> | undefined;
+  readonly occlusionTexture?: AssetHandle<'texture'> | undefined;
   readonly occlusionStrength?: number | undefined;
   /**
    * Transparent composition flag derived from the first pass's
@@ -1209,27 +1221,35 @@ export interface MaterialSceneIndexProgramKey {
   readonly pass: 'forward' | 'shadow' | 'depth';
 }
 
-export interface MaterialCacheChainIdentity {
-  readonly asset: MaterialAsset;
-  readonly parentGuid: string | undefined;
-}
-
 export interface MaterialSnapshotCacheEntry {
   readonly snapshot: MaterialSnapshot;
-  readonly passes: readonly MaterialPass[];
   readonly programSelections?: readonly MaterialProgramSelection[];
-  /** Root/chain identities are present only on cross-frame-safe entries. */
-  readonly chain?: readonly MaterialCacheChainIdentity[];
-  /** AssetRegistry epoch at which the root/parent chain was last validated. */
-  readonly catalogEpoch?: number;
-  /** World runtime-content epoch at which projected material values were read. */
-  readonly runtimeContentRevision?: string;
-  /** True only when every object reachable from the authored chain is frozen. */
-  readonly crossFrameSafe: boolean;
+  readonly assetRevision: number;
 }
 
 export type MaterialSnapshotCache = Map<number, MaterialSnapshotCacheEntry>;
-export type MaterialSnapshotCachesByWorld = WeakMap<World, MaterialSnapshotCache>;
+export interface MaterialSnapshotContext {
+  readonly geometry: MaterialCookRasterContext['geometry'];
+  readonly vertexColor: boolean;
+  readonly cache: MaterialSnapshotCache;
+}
+
+export type MaterialSnapshotContexts = Map<string, MaterialSnapshotContext>;
+export type MaterialSnapshotCachesByWorld = WeakMap<RenderResourceScope, MaterialSnapshotContexts>;
+
+export function materialSnapshotContext(
+  contexts: MaterialSnapshotContexts,
+  geometry: MaterialCookRasterContext['geometry'],
+  vertexColor: boolean,
+): MaterialSnapshotCache {
+  const key = `${geometry}:${vertexColor}`;
+  let context = contexts.get(key);
+  if (context === undefined) {
+    context = { geometry, vertexColor, cache: new Map() };
+    contexts.set(key, context);
+  }
+  return context.cache;
+}
 
 export function gpuDrivenMaterialResourceClass(material: MaterialSnapshot): string {
   const textures = [...(material.textureHandles?.entries() ?? [])]
@@ -1271,7 +1291,6 @@ export interface DispatchEntry {
   readonly vertexEntry: string | undefined;
   readonly fragmentEntry: string | undefined;
   readonly materialShaderId: string | undefined;
-  readonly paramSnapshot: Readonly<Record<string, number | number[] | string>> | undefined;
   /**
    * Stencil reference value from {@link MaterialPass.stencilReference}
    * (draw-call dynamic state). Folded during extract for per-draw consumption
@@ -1306,7 +1325,6 @@ export function appendMaterialDispatchEntries(
   materialHandle: number,
   renderableIndex: number,
   layer: number,
-  paramSnapshot: Readonly<Record<string, number | number[] | string>> | undefined,
   passIndexOffset = 0,
   materialProgramKeys?: Readonly<Record<string, string>>,
 ): void {
@@ -1355,7 +1373,6 @@ export function appendMaterialDispatchEntries(
       vertexEntry: pass.program.vertexEntry,
       fragmentEntry: pass.program.fragmentEntry,
       materialShaderId: dispatchShaderId,
-      paramSnapshot,
       ...(passState.stencilReference !== undefined && {
         stencilReference: passState.stencilReference,
       }),
@@ -1381,18 +1398,13 @@ export interface ExtractedFrame {
   readonly volumetricFog?: ExtractedVolumetricFog;
   /** Resource-owner CloudLayer facts selected once at the extract boundary. */
   readonly cloudLayer?: import('./cloud/extract').ExtractedCloudLayer;
-  readonly renderables: RenderableSnapshot[];
+  readonly renderables: FrameList<RenderableSnapshot>;
   /**
    * Single dispatch list sorted by queue value (ascending, stable sort).
    * Replaces the old opaqueDispatch / transparentDispatch / overlayDispatch
    * three-bucket model per plan-strategy D-3.
    */
-  readonly dispatch: DispatchEntry[];
-  readonly shadowCasterEntityKeys: ReadonlySet<number>;
-  /** ShadowCaster ownership keyed by concrete draw item and pass. */
-  readonly shadowCasterDrawKeys: ReadonlySet<string>;
-  /** Structured ShadowCaster ownership facts retained for exact residual routing. */
-  readonly shadowCasterMembership?: readonly ShadowCasterMembership[];
+  readonly dispatch: DispatchList;
   readonly skylight: SkylightSnapshot | undefined;
   readonly skylightCount: number;
   /** World-local diffuse probe candidates; never a direct-light slot. */
@@ -1411,7 +1423,7 @@ export interface ExtractedFrame {
    */
   readonly frustumStats: { readonly culled: number; readonly total: number };
   /** Current camera-frustum rejects kept in persistent GPU admission. */
-  readonly gpuRasterCulledEntityKeys?: ReadonlySet<number> | undefined;
+  readonly cameraVisible?: ((source: RenderableSnapshot) => boolean) | undefined;
   /** Candidate entities rejected by author visibility before resource parsing. */
   readonly visibilityStats: { readonly explicitlyHidden: number };
   /** Detached material-source probe accounting for this extraction. */
@@ -1431,35 +1443,6 @@ export interface ExtractedFrame {
   /** Built-in hidden candidates, retained for host-side producer deduplication. */
   readonly hiddenEntityReports: readonly RenderFeatureHiddenEntityReport[];
 }
-
-/** Extracted ownership fact for one concrete ShadowCaster pass. */
-export interface ShadowCasterMembership {
-  readonly worldEntity: number;
-  readonly renderableIndex: number;
-  readonly drawItemIndex: number;
-  readonly materialHandle: number;
-  readonly passIndex: number;
-  readonly materialShaderId?: string;
-  /** Selected authored ShadowCaster entry points, when published. */
-  readonly vertexEntry?: string;
-  readonly fragmentEntry?: string;
-  readonly renderState?: MaterialRenderState;
-  readonly cpuReason?: ShadowCasterCpuReason;
-  /** Producer-owned result of the complete ShadowCaster admission check. */
-  readonly gpuDrivenEligible?: boolean;
-}
-
-/** Producer evidence for a concrete ShadowCaster pass that remains on CPU. */
-export type ShadowCasterCpuReason =
-  | 'transparent'
-  | 'morph'
-  | 'unsupported-shader'
-  | 'unsupported-render-state'
-  | 'missing-skin-bounds'
-  | 'missing-gpu-draw'
-  | 'unprepared'
-  | 'prepared-contract'
-  | 'multi-pass';
 
 export type CameraTargetUpdate = 'once' | 'on-demand' | 'continuous';
 
@@ -1695,7 +1678,7 @@ export function materialSurfaceProgramsForMaterial(
   )
     return undefined;
   const projection = materialProjectionForSelection(material, assets);
-  const pass = projection?.passes.find((entry) => entry.name.toLowerCase() === 'forward');
+  const pass = material.passes?.find((entry) => entry.name.toLowerCase() === 'forward');
   if (projection === undefined || pass === undefined) return undefined;
   const programs: NonNullable<MaterialSnapshot['materialSurfacePrograms']> = {};
   for (const surfaceContext of ['ray-hit', 'card-capture'] as const) {
@@ -1762,7 +1745,7 @@ export function materialProgramSelectionsForMaterial(
   if (projection === undefined) return undefined;
   if (context === undefined)
     throw new Error('Published material selection requires renderer-owned compiler context');
-  return projection.passes.map((pass) => {
+  return (material.passes ?? []).map((pass) => {
     const mode = String(
       (pass.renderState?.tags as Record<string, unknown> | undefined)?.LightMode ?? pass.name,
     );
@@ -1831,7 +1814,7 @@ export function materialSceneIndexProgramKeysForMaterial(
   if (context === undefined)
     throw new Error('Published material selection requires renderer-owned compiler context');
   const entries: Record<string, MaterialSceneIndexProgramKey> = {};
-  for (const pass of projection.passes) {
+  for (const pass of material.passes ?? []) {
     const mode = String(
       (pass.renderState?.tags as Record<string, unknown> | undefined)?.LightMode ?? pass.name,
     );
@@ -1883,25 +1866,6 @@ function materialProgramKeysForAddress(
     : Object.fromEntries(
         selections.map(({ pass, specializationKey }) => [pass, specializationKey]),
       );
-}
-
-export function runtimeMaterialShaderIdForMaterial(
-  passes: readonly MaterialPass[],
-  programs: Readonly<Record<string, string>> | undefined,
-): string | undefined {
-  const pass =
-    passes.find(
-      (pass) =>
-        !/shadow|depth/i.test(
-          String(
-            (pass.renderState?.tags as Record<string, unknown> | undefined)?.LightMode ?? pass.name,
-          ),
-        ),
-    ) ?? passes[0];
-  if (pass === undefined) return undefined;
-  return programs === undefined
-    ? runtimeMaterialShaderId(pass.program.module, pass.name)
-    : programs[pass.name];
 }
 
 /** The authored Surface/root defines semantics; cooked program hashes do not. */
@@ -1983,141 +1947,34 @@ export function pipelineRenderState(
   };
 }
 
-export function shadowCasterCpuReason(
-  material: MaterialSnapshot,
-  draw: GpuDrivenDrawSnapshot | undefined,
-  shadowEntries: readonly { readonly renderState?: DispatchEntry['renderState'] }[],
-  morph: MorphSnapshot | undefined,
-  skin: SkinPaletteReceipt | undefined,
-): ShadowCasterCpuReason | undefined {
-  if (shadowEntries.length !== 1) return 'multi-pass';
-  if (material.transparent === true || material.renderState?.blend !== undefined) {
-    return 'transparent';
+export function resolveRuntimeAssetReference<K extends string>(
+  world: RenderResourceScope,
+  reference: string | import('@forgeax/engine-types').AssetGuid | AssetHandle<K>,
+  kind: K,
+): AssetHandle<K> | undefined {
+  if (typeof reference === 'number') {
+    const asset = world.resolveAsset(reference);
+    return asset.ok && asset.value.kind === kind ? reference : undefined;
   }
-  if (morph !== undefined) return 'morph';
-  const shadowEntry = shadowEntries[0];
-  if (!supportsGpuShadowRenderState(shadowEntry?.renderState)) return 'unsupported-render-state';
-  if (draw === undefined) return 'missing-gpu-draw';
-  if (draw.prepared === undefined) return 'unprepared';
-  const preparedMaterial = draw.prepared.identity.material;
-  const preparedDeformation = draw.prepared.identity.deformation;
-  const materialContractMatches = preparedMaterial === material.materialShaderId;
-  const deformationContractMatches =
-    (skin === undefined && preparedDeformation === 'rigid') ||
-    (skin !== undefined && preparedDeformation === 'skin');
-  if (!materialContractMatches || !deformationContractMatches) return 'prepared-contract';
-  if (preparedDeformation === 'skin' && !isFiniteAabb(skin?.bounds)) {
-    return 'missing-skin-bounds';
-  }
-  return undefined;
+  const guid = typeof reference === 'string' ? reference : AssetGuid.format(reference);
+  const handle = world.handleForGuid(guid);
+  if (handle === undefined) return undefined;
+  const asset = world.resolveAsset(handle);
+  return asset.ok && asset.value.kind === kind ? (handle as AssetHandle<K>) : undefined;
 }
 
-/**
- * tweak-20260627-model-loading-smoke-build-perf M4: per-World intern cache for
- * the loadByGuid texture/sampler resolution path. A MaterialAsset's
- * texture/sampler values remain embedded GUID strings (dash-form) after
- * loadByGuid; the extract stage re-resolves each GUID to a column handle every
- * frame. Before this cache each resolution called `world.allocSharedRef`, which
- * mints a NEW monotonically-increasing slot id per call. Because the GPU
- * residency cache (`GpuResidencyCache.textureGpuHandles`) is keyed on
- * `handleSlot(handle)`, a fresh slot every frame meant the residency check
- * ALWAYS missed -> all textures re-uploaded to the GPU every frame, old GPU
- * textures never freed (refcount never hits 0). Unbounded GPU memory +
- * unbounded per-frame upload cost (628ms -> 2764ms over 12 frames, SIGKILL).
- *
- * The fix interns the GUID-string -> column-handle resolution: each unique
- * `(guid, brand)` pair mints EXACTLY ONE stable shared handle per World, reused
- * across frames (architecture-principle §6 idempotency: same GUID resolved N
- * times yields the same handle). The handle is intentionally long-lived -- it
- * lives as long as the World references the material, which is exactly the
- * desired lifetime; the `onLastRelease` -> `gpuStore.evictTexture` wiring stays
- * coherent because the handle is no longer churned per frame.
- *
- * Invariant boundary (asset-registry.ts:1958-1962): the AssetRegistry is a
- * GUID -> payload catalogue with NO handle/World concept -- it cannot mint a
- * column handle. So this intern cache lives in the extract/render layer, keyed
- * per-World via a WeakMap (the World owns the SharedRefStore that mints slots).
- *
- * Inner key is `${lowercasedGuid}\u0000${brand}` -- a GUID catalogues to a
- * single asset kind in practice, but the brand keeps the key correct if the
- * same GUID is ever resolved under two brands.
- *
- * Cache hits are validated against the registry's current payload identity.
- * Re-cataloguing the same GUID therefore retires the cache's allocation grant
- * and mints a handle for the replacement payload. An invalidated GUID retires
- * the entry immediately instead of keeping a stale payload alive.
- */
-interface GuidHandleInternEntry {
-  readonly handle: number;
-  readonly payload: Asset;
-}
-
-const guidHandleInternByWorld = new WeakMap<World, Map<string, GuidHandleInternEntry>>();
-
-export function internSharedRefFromGuid<B extends string>(
-  world: World,
-  assetsRef: AssetRegistry,
-  guid: string,
-  brand: B,
-): Handle<B, 'shared'> | undefined {
-  let perWorld = guidHandleInternByWorld.get(world);
-  if (perWorld === undefined) {
-    perWorld = new Map<string, GuidHandleInternEntry>();
-    guidHandleInternByWorld.set(world, perWorld);
-  }
-  const key = `${guid.toLowerCase()}\u0000${brand}`;
-  const cached = perWorld.get(key);
-  const payload = assetsRef.lookup(guid);
-  if (cached !== undefined && cached.payload === payload) {
-    const cachedHandle = toShared<B>(cached.handle);
-    if (world.sharedRefs.resolve(cachedHandle).ok) return cachedHandle;
-  }
-  if (cached !== undefined) {
-    world.sharedRefs.release(toShared<B>(cached.handle));
-    perWorld.delete(key);
-  }
-  if (payload === undefined) return undefined;
-  // Mint exactly once per (world, guid, brand). ECS owns the allocation grant
-  // and publishes release evidence through SharedRefStore; render does not
-  // attach a second deleter lifecycle to the World.
-  const handle = world.internSharedRef(brand, payload);
-  perWorld.set(key, { handle, payload });
-  return handle;
-}
-
-/**
- * feat-20260623-world-space-video-asset M4 / w14 (D-5): if a user-region
- * texture field's paramValue is an embedded GUID string that catalogues to a
- * VideoAsset (`kind === 'video'`), mint a `VideoAsset`-branded column handle for
- * it and return that handle; otherwise return undefined (the field is a static
- * texture / sampler / scalar and flows through the normal TextureAsset path).
- *
- * The video GUID occupies the same texture2d values slot a static texture
- * would (P4: identical binding shape) — extract just routes it to a different
- * GPU lifecycle (the transient DynamicTextureStore, D-3) instead of the static
- * `ensureResident` cache, whose switch has no `video` arm (AC-08). Minting a
- * brand-`VideoAsset` handle keeps the snapshot self-describing: the record stage
- * sees a video handle and resolves the per-frame view without reaching back into
- * the asset (charter P5).
- *
- * A `number` paramValue (already a minted column handle) is not a GUID string so
- * it cannot be a freshly-catalogued video; it passes through as undefined here.
- */
+/** Select the bound VideoAsset; frame ownership stays with VideoSourceProvider. */
 export function resolveVideoFieldHandle(
   value: unknown,
-  world: World,
-  assetsRef: AssetRegistry,
-): Handle<'VideoAsset', 'shared'> | undefined {
+  world: RenderResourceScope,
+  _assetsRef: AssetRegistry,
+): AssetHandle<'video'> | undefined {
   const texture = materialTextureValue(value);
-  const textureGuid = assetReferenceText(texture?.texture ?? value);
-  if (textureGuid === undefined) return undefined;
-  const payload = assetsRef.lookup(textureGuid);
-  if (payload === undefined || payload.kind !== 'video') return undefined;
-  // M4: intern so a video GUID mints one stable VideoAsset handle per World
-  // instead of a fresh slot every frame. The transient per-frame view is
-  // resolved downstream by this handle (DynamicTextureStore); minting the
-  // handle once does not freeze the view (P5: handle != frame data).
-  return internSharedRefFromGuid(world, assetsRef, textureGuid, 'VideoAsset');
+  const reference = texture?.texture ?? value;
+  if (typeof reference === 'number')
+    return resolveRuntimeAssetReference(world, reference as AssetHandle<'video'>, 'video');
+  const guid = assetReferenceText(reference);
+  return guid === undefined ? undefined : resolveRuntimeAssetReference(world, guid, 'video');
 }
 
 export function materialTextureValue(value: unknown): MaterialTextureValue | undefined {
@@ -2125,7 +1982,8 @@ export function materialTextureValue(value: unknown): MaterialTextureValue | und
   const textureValue = value as Partial<MaterialTextureValue>;
   return typeof textureValue.texture === 'number' ||
     typeof textureValue.texture === 'string' ||
-    textureValue.texture instanceof Uint8Array
+    textureValue.texture instanceof Uint8Array ||
+    isRenderTextureSourceToken(textureValue.source)
     ? (textureValue as MaterialTextureValue)
     : undefined;
 }
@@ -2242,85 +2100,34 @@ export function materialTextureSourceFields(
 
 export interface MaterialTextureSourceStats {
   sourceFieldsVisited: number;
-  numericSharedRefProbes: number;
-  sourceCacheHits: number;
-  sourceCacheMisses: number;
   producerRoutes: Record<string, number>;
 }
 
-/**
- * Extract-local cache for numeric shared references. `null` is a deliberate
- * negative entry: a handle that is not a runtime texture source must not be
- * resolved repeatedly for every material field in the same frame.
- */
-export type MaterialTextureSourceCache = Map<number, MaterialTextureSource | null>;
-
+/** Read only declared material source slots; no World handles or consumer lookup. */
 export function collectMaterialTextureSources(
   values: Readonly<Record<string, unknown>>,
-  world: World,
   textureFields?: ReadonlySet<string>,
   stats?: MaterialTextureSourceStats,
-  cache?: MaterialTextureSourceCache,
 ): Map<string, MaterialTextureSource> {
   const out = new Map<string, MaterialTextureSource>();
   for (const [field, value] of Object.entries(values)) {
-    const structured = materialTextureValue(value);
-    const schemaKnown = textureFields !== undefined;
-    const schemaAdmitted = textureFields?.has(field) === true;
-    // With a known schema, only producer-admitted texture fields may carry a
-    // source handle. Without a schema, retain the historical numeric parse so
-    // an older producer can still publish a direct shared-ref value; its
-    // structured form is accepted on the same conservative path.
-    if (schemaKnown && !schemaAdmitted) continue;
-    const reference = structured?.texture ?? value;
+    if (textureFields !== undefined && !textureFields.has(field)) continue;
     if (stats !== undefined) stats.sourceFieldsVisited += 1;
-    if (typeof reference !== 'number') continue;
-    if (stats !== undefined) stats.numericSharedRefProbes += 1;
-    let source: MaterialTextureSource | undefined;
-    if (cache?.has(reference) === true) {
-      if (stats !== undefined) stats.sourceCacheHits += 1;
-      source = cache.get(reference) ?? undefined;
-    } else {
-      if (stats !== undefined) stats.sourceCacheMisses += 1;
-      // Builtin texture slots never belong to SharedRefStore. Default maps
-      // need no exception allocation to prove they are not runtime sources.
-      if (reference < BUILTIN_BASE) {
-        cache?.set(reference, null);
-        continue;
-      }
-      const resolved = world.sharedRefs.resolve<'MaterialTextureSource', MaterialTextureSource>(
-        toShared<'MaterialTextureSource'>(reference),
-      );
-      if (!resolved.ok) {
-        cache?.set(reference, null);
-      } else {
-        const binding =
-          isCanvasTextureSource(resolved.value) || isExternalTextureSource(resolved.value)
-            ? resolved.value
-            : resolveRenderTargetMaterialSource(resolved.value);
-        cache?.set(reference, binding === undefined ? null : resolved.value);
-        source = binding === undefined ? undefined : resolved.value;
-      }
-    }
-    if (source === undefined) continue;
+    const source = materialTextureValue(value)?.source;
+    if (!isRenderTextureSourceToken(source)) continue;
     if (stats !== undefined) {
-      const route = isCanvasTextureSource(source)
-        ? 'canvas'
-        : isExternalTextureSource(source)
-          ? 'external'
-          : 'renderTarget';
-      stats.producerRoutes[route] = (stats.producerRoutes[route] ?? 0) + 1;
+      stats.producerRoutes[source.source] = (stats.producerRoutes[source.source] ?? 0) + 1;
     }
-    out.set(field, source);
+    out.set(field, source as MaterialTextureSource);
   }
   return out;
 }
 
 export function collectMaterialTextureSamplers(
   values: Readonly<Record<string, unknown>>,
-  resolveSampler: (value: unknown) => Handle<'SamplerAsset', 'shared'> | undefined,
-): Map<string, Handle<'SamplerAsset', 'shared'>> {
-  const out = new Map<string, Handle<'SamplerAsset', 'shared'>>();
+  resolveSampler: (value: unknown) => AssetHandle<'sampler'> | undefined,
+): Map<string, AssetHandle<'sampler'>> {
+  const out = new Map<string, AssetHandle<'sampler'>>();
   for (const [field, value] of Object.entries(values)) {
     const sampler = resolveSampler(materialTextureValue(value)?.sampler);
     if (sampler !== undefined) out.set(field, sampler);
@@ -2358,13 +2165,10 @@ export function collectUserRegionTextureHandles(
   shaderId: string | undefined,
   paramSchema: readonly ParamSchemaEntry[] | undefined,
   assetsRef: AssetRegistry,
-  world: World,
-  resolveTex: (
-    value: unknown,
-    brand: 'TextureAsset',
-  ) => Handle<'TextureAsset', 'shared'> | undefined,
-  videoOut: Map<string, Handle<'VideoAsset', 'shared'>>,
-): Map<string, Handle<'TextureAsset', 'shared'>> {
+  world: RenderResourceScope,
+  resolveTex: (value: unknown, brand: 'texture') => AssetHandle<'texture'> | undefined,
+  videoOut: Map<string, AssetHandle<'video'>>,
+): Map<string, AssetHandle<'texture'>> {
   const fields =
     materialTextureFields(
       shaderId,
@@ -2374,7 +2178,7 @@ export function collectUserRegionTextureHandles(
           ? assetsRef.materialShaderTextureFieldNames(shaderId)
           : undefined,
     ) ?? BUILTIN_MATERIAL_TEXTURE_FIELDS;
-  const out = new Map<string, Handle<'TextureAsset', 'shared'>>();
+  const out = new Map<string, AssetHandle<'texture'>>();
   for (const field of fields) {
     // D-5: a video-kind paramValue is routed to the transient path (videoOut),
     // NOT minted as a TextureAsset (which would crash the record-stage
@@ -2384,19 +2188,10 @@ export function collectUserRegionTextureHandles(
       videoOut.set(field, videoHandle);
       continue;
     }
-    const handle = resolveTex(materialTextureRef(pv[field]), 'TextureAsset');
+    const handle = resolveTex(materialTextureRef(pv[field]), 'texture');
     if (handle !== undefined) out.set(field, handle);
   }
   return out;
-}
-
-const ENGINE_INJECTED_TEXTURE_FIELDS = new Set(['emissiveTexture', 'occlusionTexture']);
-
-export function isEngineInjectedTextureField(
-  shaderId: string | undefined,
-  fieldName: string,
-): boolean {
-  return isStandardPbrMaterialShader(shaderId) && ENGINE_INJECTED_TEXTURE_FIELDS.has(fieldName);
 }
 
 interface StandardSampleInputs {
@@ -2427,7 +2222,13 @@ export function materialStandardTextureMask(
   values: Readonly<Record<string, unknown>>,
   sampling?: StandardSampleInputs,
 ): number | undefined {
-  if (!isCanonicalStandardPbrMaterialShader(shaderId)) return undefined;
+  // The stock depth writer consumes the same Standard texture override even
+  // when it is the material's only pass (for example a camera-layer caster).
+  if (
+    !isCanonicalStandardPbrMaterialShader(shaderId) &&
+    shaderId !== 'forgeax::default-shadow-caster'
+  )
+    return undefined;
   const presence = standardTextureMask(
     // Canonical materials may provide values without redeclaring the root
     // schema. Pruning must agree with the texture binder in that route too.
@@ -2480,9 +2281,11 @@ export function materialParametersToParamSchema(
   // the same layout on every value update.
   if (registeredParamSchema !== undefined && registeredParamSchema.length > 0)
     return registeredParamSchema;
+  // Built-in programs keep their compiled ABI even when authoring declarations
+  // reorder texture fields or include CPU-only inputs such as sprite flips.
+  if (shaderId === 'forgeax::sprite' || shaderId === 'forgeax::sprite-lit')
+    return DEFAULT_SPRITE_PARAM_SCHEMA;
   if (parameters.length === 0) {
-    if (shaderId === 'forgeax::sprite' || shaderId === 'forgeax::sprite-lit')
-      return DEFAULT_SPRITE_PARAM_SCHEMA;
     if (registeredParamSchema !== undefined) return registeredParamSchema;
   }
   return projectMaterialParametersToParamSchema(parameters);
@@ -2536,16 +2339,17 @@ export function materialColorParameterSchema(
 ): readonly MaterialColorParameterSchema[] {
   if (shaderId === undefined) return parameters;
   const shader = assets.shaderRegistry.materialArtifact(shaderId);
-  if (shader === undefined) return parameters;
+  // Source Workers prepare values before a GPU owner installs built-in programs.
+  // Color semantics use the same canonical fallback as their parameter ABI.
+  const schema = materialParametersToParamSchema([], shaderId, shader?.paramSchema);
+  if (schema.length === 0) return parameters;
 
   const byName = new Map<string, MaterialColorParameterSchema>(
-    shader.paramSchema.map((parameter) => [parameter.name, parameter]),
+    schema.map((parameter) => [parameter.name, parameter]),
   );
   for (const parameter of parameters) byName.set(parameter.name, parameter);
   return [...byName.values()];
 }
-
-const MATERIAL_PARENT_CHAIN_LIMIT = 128;
 
 export function isDeepFrozen(value: unknown, seen = new Set<object>()): boolean {
   if (typeof value !== 'object' || value === null) return true;
@@ -2558,178 +2362,75 @@ export function isDeepFrozen(value: unknown, seen = new Set<object>()): boolean 
   return true;
 }
 
-/**
- * Capture the object identities that make a resolved material stable. The
- * renderer owns this cache, but the AssetRegistry owns parent GUID lookup, so
- * validation must walk the same chain on every cross-frame read. A malformed
- * or cyclic chain is deliberately not cacheable.
- */
-export function captureMaterialCacheChain(
-  root: MaterialAsset,
-  assets: AssetRegistry,
-): readonly MaterialCacheChainIdentity[] | undefined {
-  const chain: MaterialCacheChainIdentity[] = [];
-  const visitedParentGuids = new Set<string>();
-  let current = root;
-  for (let depth = 0; depth < MATERIAL_PARENT_CHAIN_LIMIT; depth += 1) {
-    const parentRef = current.parent;
-    const parentGuid = parentRef === undefined ? undefined : materialGuidText(parentRef);
-    chain.push({ asset: current, parentGuid });
-    if (parentGuid === undefined) return chain;
-    if (parentRef === undefined) return undefined;
-    if (visitedParentGuids.has(parentGuid)) return undefined;
-    visitedParentGuids.add(parentGuid);
-    const parent = assets.lookup<Asset>(parentRef);
-    if (parent?.kind !== 'material') return undefined;
-    current = parent;
-  }
-  return undefined;
-}
-
-/** Value writes and entity retirement use the existing World mutation clocks. */
-function materialSnapshotRevision(world: World): string {
-  return `${runtimeContentRevision(world)}:${world.getStructureEpoch()}`;
-}
-
-function currentPersistentMaterialSnapshot(
-  cache: MaterialSnapshotCache | undefined,
-  handleRaw: number,
-  assets: AssetRegistry,
-  world: World,
-): MaterialSnapshotCacheEntry | undefined {
-  const entry = cache?.get(handleRaw);
-  if (
-    entry?.crossFrameSafe !== true ||
-    entry.chain === undefined ||
-    entry.catalogEpoch !== assets.catalogEpoch
-  )
-    return undefined;
-  const revision = materialSnapshotRevision(world);
-  if (entry.runtimeContentRevision === revision) return entry;
-  // The asset producer already invalidates only the changed assets payload.
-  // A World-wide material edit need not reconstruct every other frozen root.
-  const projected = resolveAssetHandle<MaterialAsset>(world, toShared<'MaterialAsset'>(handleRaw));
-  if (!projected.ok || projected.value !== entry.chain[0]?.asset) return undefined;
-  const refreshed = { ...entry, runtimeContentRevision: revision };
-  cache?.set(handleRaw, refreshed);
-  return refreshed;
-}
-
+/** Asset revisions validate the complete shared material without resolving its contents again. */
 export function readPersistentMaterialSnapshot(
   cache: MaterialSnapshotCache | undefined,
   handleRaw: number,
-  assets: AssetRegistry,
-  world: World,
+  world: RenderResourceScope,
 ): MaterialSnapshotCacheEntry | undefined {
-  const entry = currentPersistentMaterialSnapshot(cache, handleRaw, assets, world);
-  if (entry !== undefined) return entry;
-  // Mutable author data and replaced catalog/asset roots still re-project.
-  cache?.delete(handleRaw);
-  return undefined;
-}
-
-/** Stable epochs avoid root resolution; changed epochs consult the existing asset owner. */
-export function readStablePersistentMaterialSnapshot(
-  cache: MaterialSnapshotCache | undefined,
-  handleRaw: number,
-  assets: AssetRegistry,
-  world: World,
-): MaterialSnapshotCacheEntry | undefined {
-  return currentPersistentMaterialSnapshot(cache, handleRaw, assets, world);
+  const entry = cache?.get(handleRaw);
+  return entry !== undefined && renderAssetRevision(world, handleRaw) === entry.assetRevision
+    ? entry
+    : undefined;
 }
 
 export function storeMaterialSnapshot(
   cache: MaterialSnapshotCache,
   handleRaw: number,
   snapshot: MaterialSnapshot,
-  passes: readonly MaterialPass[],
-  root: MaterialAsset,
-  assets: AssetRegistry,
-  world: World,
+  world: RenderResourceScope,
   programSelections?: readonly MaterialProgramSelection[],
 ): MaterialSnapshotCacheEntry {
-  const chain = captureMaterialCacheChain(root, assets);
-  const crossFrameSafe = chain?.every(({ asset }) => isDeepFrozen(asset)) === true;
+  const accepted = { ...snapshot, immutableValues: true as const };
+  const previous = cache.get(handleRaw);
+  const resource = previous === undefined ? undefined : materialResource(previous.snapshot);
+  if (resource === undefined) new MaterialResource(accepted);
+  else resource.adopt(accepted);
   const entry: MaterialSnapshotCacheEntry = {
-    snapshot: crossFrameSafe ? { ...snapshot, immutableValues: true } : snapshot,
-    passes,
+    snapshot: accepted,
     ...(programSelections === undefined ? {} : { programSelections }),
-    crossFrameSafe,
-    ...(chain === undefined ? {} : { chain }),
-    ...(chain === undefined ? {} : { catalogEpoch: assets.catalogEpoch }),
-    runtimeContentRevision: materialSnapshotRevision(world),
+    assetRevision: renderAssetRevision(world, handleRaw) ?? 0,
   };
   cache.set(handleRaw, entry);
   return entry;
 }
 
-/**
- * feat-20260608 M5 amend / w11-a: resolve a single MaterialAsset handle into
- * a per-submesh MaterialSnapshot. Used by the extractFrame archetype loop to
- * build `RenderableSnapshot.materials[]` for indices >= 1 (the entity-level
- * snapshot at index 0 is built inline because it also drives multi-pass
- * DispatchEntry creation + sprite-region overrides; per-submesh secondary
- * materials are non-sprite + single-pass-equivalent for the record stage's
- * UBO upload, so this helper produces a plain MaterialSnapshot only).
- *
- * Returns `defaultMaterialSnapshot()` (mid-grey unlit) for handle=0 (case-B
- * sentinel, mirroring the inline path) and on each unresolved / non-material
- * asset (so a partially-mis-registered multi-material entity still renders
- * the resolvable submeshes; the count-mismatch validator already filtered
- * the count-disagreement case earlier).
- */
-export function resolveMaterialSnapshot(
-  handleRaw: number,
-  world: World,
-  assetsRef: AssetRegistry,
-  materialSnapshotCache?: MaterialSnapshotCache,
-  persistentMaterialSnapshotCache?: MaterialSnapshotCache,
-  materialContext?: MaterialCookRasterContext,
-  materialTextureSourceStats?: MaterialTextureSourceStats,
-  materialTextureSourceCache?: MaterialTextureSourceCache,
+/** Shared preparation for first use, submesh bindings and asset-only adoption. */
+export function prepareMaterialSnapshot({
+  handle: handleRaw,
+  world,
+  assets: assetsRef,
+  material: programOwner,
+  programSelections,
+  materialContext,
+  textureSourceStats: materialTextureSourceStats,
   vertexColorAvailable = false,
-): MaterialSnapshot {
-  if (handleRaw === 0) return defaultMaterialSnapshot(handleRaw);
-  const cached = materialSnapshotCache?.get(handleRaw);
-  if (cached !== undefined) return cached.snapshot;
-  const stablePersistentCached = readStablePersistentMaterialSnapshot(
-    persistentMaterialSnapshotCache,
-    handleRaw,
-    assetsRef,
-    world,
-  );
-  if (stablePersistentCached !== undefined) {
-    materialSnapshotCache?.set(handleRaw, stablePersistentCached);
-    return stablePersistentCached.snapshot;
-  }
-  const tagged = toShared<'MaterialAsset'>(handleRaw);
-  const res = resolveAssetHandle(world, tagged);
-  if (!res.ok) return defaultMaterialSnapshot(handleRaw);
-  const asset = res.value;
-  if (asset.kind !== 'material') return defaultMaterialSnapshot(handleRaw);
-  const persistentCached = readPersistentMaterialSnapshot(
-    persistentMaterialSnapshotCache,
-    handleRaw,
-    assetsRef,
-    world,
-  );
-  if (persistentCached !== undefined) {
-    materialSnapshotCache?.set(handleRaw, persistentCached);
-    return persistentCached.snapshot;
-  }
-  const resolvedResult = walkMaterialPassesOverSharedRefs(world, tagged, assetsRef);
-  if (!resolvedResult.ok) return defaultMaterialSnapshot(handleRaw);
-  const resolved = resolvedResult.value;
+  geometry = materialContext?.geometry ?? 'mesh',
+}: {
+  readonly handle: number;
+  readonly world: RenderResourceScope;
+  readonly assets: AssetRegistry;
+  readonly material: MaterialAsset;
+  readonly programSelections: readonly MaterialProgramSelection[] | undefined;
+  readonly materialContext?: MaterialCookRasterContext | undefined;
+  readonly textureSourceStats?: MaterialTextureSourceStats | undefined;
+  readonly vertexColorAvailable?: boolean;
+  readonly geometry?: MaterialCookRasterContext['geometry'];
+}): MaterialSnapshot {
+  const resolved = {
+    passes: programOwner.passes ?? [],
+    parameters: programOwner.parameters ?? [],
+    values: programOwner.values ?? {},
+    colorSpace: programOwner.colorSpace,
+    surface: programOwner.surface,
+  };
   const allPasses = resolved.passes;
-  // Numeric World content changes values, never the immutable program owner.
-  const source = world.sharedRefs.resolve<string, Asset>(tagged);
-  const programOwner = source.ok && source.value.kind === 'material' ? source.value : asset;
-  const materialProgramKeys = materialProgramKeysForMaterial(
-    programOwner,
-    assetsRef,
-    materialContext,
-    vertexColorAvailable,
-  );
+  const materialProgramKeys =
+    programSelections === undefined
+      ? undefined
+      : Object.fromEntries(
+          programSelections.map(({ pass, specializationKey }) => [pass, specializationKey]),
+        );
   const materialSceneIndexProgramKeys = materialSceneIndexProgramKeysForMaterial(
     programOwner,
     assetsRef,
@@ -2749,6 +2450,7 @@ export function resolveMaterialSnapshot(
     resolved.colorSpace,
   ) as Readonly<Record<string, unknown>>;
   const valueSnapshot = materialValueSnapshot(pv);
+  const paramSnap = valueSnapshot.paramSnapshot;
 
   const materialParamSchema = materialParamSchemaForMaterial(
     resolved.parameters ?? [],
@@ -2756,22 +2458,37 @@ export function resolveMaterialSnapshot(
     allPasses,
     assetsRef,
   );
-  // Catalog materials can retain byte GUIDs; loaded materials carry strings.
-  // Use the same reference admission as the primary material, and intern
-  // both representations into the existing World-owned shared handle.
   const resolveTexLike = <B extends string>(
     value: unknown,
     brand: B,
-  ): Handle<B, 'shared'> | undefined => {
-    if (typeof value === 'number') return toShared<B>(value);
+  ): AssetHandle<B> | undefined => {
+    if (typeof value === 'number') {
+      const asset = world.resolveAsset(value);
+      return asset.ok && asset.value.kind === brand ? (value as AssetHandle<B>) : undefined;
+    }
     const guid = assetReferenceText(value);
-    return guid === undefined ? undefined : internSharedRefFromGuid(world, assetsRef, guid, brand);
+    return guid === undefined ? undefined : resolveRuntimeAssetReference(world, guid, brand);
   };
-  // feat-20260621-learn-render-5-5-parallax M2 / w7 (D-3): iterate the
-  // shader's derive(paramSchema).textureFieldNames SSOT instead of a hardcoded
-  // user-region field list, so an Nth texture (e.g. parallax heightTexture)
-  // resolves through the same path, including emissive/occlusion fields.
-  const videoTextureFields = new Map<string, Handle<'VideoAsset', 'shared'>>();
+  const authoredTextureFields = collectAuthoredMaterialTextureFields(
+    resolved.values,
+    firstPassShader,
+    materialParamSchema.length > 0 ? materialParamSchema : undefined,
+    assetsRef,
+  );
+  const authoredSamplerFields = collectAuthoredMaterialSamplerFields(
+    resolved.values,
+    authoredTextureFields,
+  );
+  const authoredShader = runtimeMaterialShaderIdForMaterial(allPasses, undefined);
+  if (authoredShader === 'forgeax::sprite' || authoredShader === 'forgeax::sprite-lit') {
+    const region = paramSnap.region;
+    const values = typeof region === 'object' ? region : undefined;
+    paramSnap.region = spriteUvRegion(values, 0, 0);
+    paramSnap.flipX = typeof pv.flipX === 'number' ? pv.flipX : 0;
+    paramSnap.flipY = typeof pv.flipY === 'number' ? pv.flipY : 0;
+    paramSnap.slicesAndMode ??= [0, 0, 0, 0];
+  }
+  const videoTextureFields = new Map<string, AssetHandle<'video'>>();
   const textureHandles = collectUserRegionTextureHandles(
     pv,
     firstPassShader,
@@ -2782,23 +2499,28 @@ export function resolveMaterialSnapshot(
     videoTextureFields,
   );
   const samplerHandles = collectMaterialTextureSamplers(pv, (value) =>
-    resolveTexLike(materialTextureRef(value), 'SamplerAsset'),
+    resolveTexLike(materialTextureRef(value), 'sampler'),
   );
+  if (authoredShader === 'forgeax::sprite' || authoredShader === 'forgeax::sprite-lit') {
+    const slices = paramSnap.slicesAndMode;
+    if (Array.isArray(slices) && (slices[3] ?? 0) < 0) {
+      const handle = samplerHandles.get('baseColorTexture');
+      const sampler = handle === undefined ? undefined : world.resolveAsset(handle);
+      if (
+        sampler?.ok &&
+        sampler.value.kind === 'sampler' &&
+        (sampler.value.addressModeU !== 'repeat' || sampler.value.addressModeV !== 'repeat')
+      )
+        assetsRef.metrics?.increment('nineslice.tile-needs-repeat-sampler');
+    }
+  }
   const textureSources = collectMaterialTextureSources(
     pv,
-    world,
     materialTextureSourceFields(materialParamSchema.length > 0 ? materialParamSchema : undefined),
     materialTextureSourceStats,
-    materialTextureSourceCache,
   );
-  const emissiveTextureHandle = resolveTexLike(
-    materialTextureRef(pv.emissiveTexture),
-    'TextureAsset',
-  );
-  const occlusionTextureHandle = resolveTexLike(
-    materialTextureRef(pv.occlusionTexture),
-    'TextureAsset',
-  );
+  const emissiveTextureHandle = textureHandles.get('emissiveTexture');
+  const occlusionTextureHandle = textureHandles.get('occlusionTexture');
   const textureCoordinates = collectMaterialTextureCoordinates(pv);
   // Named user-region fields are derived from the map (sprite + legacy reads).
   const baseColorTextureHandle = textureHandles.get('baseColorTexture');
@@ -2807,6 +2529,8 @@ export function resolveMaterialSnapshot(
 
   const surfaceModel = materialSurfaceModel(allPasses, resolved.surface?.model);
   const snapshot: MaterialSnapshot = {
+    materialContext: { geometry, vertexColor: vertexColorAvailable },
+    passes: allPasses,
     ...valueSnapshot,
     ...(surfaceModel === undefined ? {} : { surfaceModel }),
     deferredPass: allPasses.some(
@@ -2817,16 +2541,21 @@ export function resolveMaterialSnapshot(
     ),
     materialShaderId: firstPassShader,
     materialProgramKeys,
+    materialEntryPoints: Object.fromEntries(
+      allPasses.flatMap((pass) => {
+        const key =
+          materialProgramKeys?.[pass.name] ??
+          runtimeMaterialShaderId(pass.program.module, pass.name);
+        if (key === undefined) return [];
+        const shader = assetsRef.shaderRegistry.findMaterialArtifact(key);
+        const reads = shader.ok ? shader.value.program.entryPoints : undefined;
+        return reads === undefined ? [] : [[pass.name, reads]];
+      }),
+    ),
     materialPublication: materialPublicationForMaterial(
       programOwner,
       assetsRef,
-      materialProgramSelectionsForMaterial(
-        programOwner,
-        assetsRef,
-        materialContext,
-        'direct',
-        vertexColorAvailable,
-      ),
+      programSelections,
       vertexColorAvailable,
     ),
     materialSceneIndexProgramKeys,
@@ -2840,6 +2569,8 @@ export function resolveMaterialSnapshot(
       textureCoordinates,
     }),
     ...(textureCoordinates.size > 0 && { textureCoordinates }),
+    ...(authoredTextureFields === undefined ? {} : { authoredTextureFields }),
+    ...(authoredSamplerFields === undefined ? {} : { authoredSamplerFields }),
     ...(textureHandles.size > 0 && { textureHandles }),
     ...(textureSources.size > 0 && { textureSources }),
     ...(videoTextureFields.size > 0 && { videoTextureFields }),
@@ -2860,33 +2591,64 @@ export function resolveMaterialSnapshot(
     // their alpha=0 texels composite as black.
     transparent: allPasses[0]?.renderState?.blend !== undefined,
   };
-  const stored =
-    materialSnapshotCache !== undefined
-      ? storeMaterialSnapshot(
-          materialSnapshotCache,
-          handleRaw,
-          snapshot,
-          allPasses,
-          asset,
-          assetsRef,
-          world,
-        )
-      : undefined;
+  return snapshot;
+}
+
+/** Resolve one accepted material through the renderer's context-local cache. */
+export function resolveMaterialSnapshot(
+  handleRaw: number,
+  world: RenderResourceScope,
+  assetsRef: AssetRegistry,
+  materialSnapshotCache?: MaterialSnapshotCache,
+  persistentMaterialSnapshotCache?: MaterialSnapshotCache,
+  materialContext?: MaterialCookRasterContext,
+  materialTextureSourceStats?: MaterialTextureSourceStats,
+  vertexColorAvailable = false,
+  geometry: MaterialCookRasterContext['geometry'] = materialContext?.geometry ?? 'mesh',
+): MaterialSnapshot {
+  if (world.world?.assets !== undefined) assetsRef = runtimeAssetRegistry(world.world.assets);
+  if (handleRaw === 0) return defaultMaterialSnapshot(handleRaw);
+  const cached = materialSnapshotCache?.get(handleRaw);
+  if (cached !== undefined) return cached.snapshot;
+  const stablePersistentCached = readPersistentMaterialSnapshot(
+    persistentMaterialSnapshotCache,
+    handleRaw,
+    world,
+  );
+  if (stablePersistentCached !== undefined) {
+    materialSnapshotCache?.set(handleRaw, stablePersistentCached);
+    return stablePersistentCached.snapshot;
+  }
+  const tagged = handleRaw as AssetHandle<'material'>;
+  const res = world.resolveAsset(tagged);
+  if (!res.ok) return defaultMaterialSnapshot(handleRaw);
+  const asset = res.value;
+  if (asset.kind !== 'material') return defaultMaterialSnapshot(handleRaw);
+  const programSelections = materialProgramSelectionsForMaterial(
+    asset,
+    assetsRef,
+    materialContext,
+    'direct',
+    vertexColorAvailable,
+  );
+  const snapshot = prepareMaterialSnapshot({
+    handle: handleRaw,
+    world,
+    assets: assetsRef,
+    material: asset,
+    programSelections,
+    materialContext,
+    textureSourceStats: materialTextureSourceStats,
+    vertexColorAvailable,
+    geometry,
+  });
+  const cache = persistentMaterialSnapshotCache ?? materialSnapshotCache;
   const cacheEntry =
-    stored ??
-    (persistentMaterialSnapshotCache !== undefined
-      ? storeMaterialSnapshot(
-          persistentMaterialSnapshotCache,
-          handleRaw,
-          snapshot,
-          allPasses,
-          asset,
-          assetsRef,
-          world,
-        )
-      : undefined);
-  if (cacheEntry?.crossFrameSafe === true) {
-    persistentMaterialSnapshotCache?.set(handleRaw, cacheEntry);
+    cache === undefined
+      ? undefined
+      : storeMaterialSnapshot(cache, handleRaw, snapshot, world, programSelections);
+  if (cacheEntry !== undefined) {
+    materialSnapshotCache?.set(handleRaw, cacheEntry);
   }
   return cacheEntry?.snapshot ?? snapshot;
 }
@@ -2937,7 +2699,11 @@ export function pssmSplit(
 ): Float32Array {
   const EPS = 1e-6;
   if (farPlane <= nearPlane + EPS) {
-    throw new ShadowInvalidConfigError('shadowDistance', farPlane, nearPlane + EPS);
+    throw new ShadowInvalidConfigError('shadowDistance', farPlane, {
+      kind: 'lower-bound',
+      value: nearPlane + EPS,
+      operator: '>=',
+    });
   }
 
   const result = new Float32Array(cascadeCount);
@@ -3016,6 +2782,16 @@ export type CsmCameraData = Pick<
  * the *computed* outputs (lightViewProj / splitPlanes) also on ExtractedLights.
  */
 export interface DirectionalCsmConfig {
+  readonly shadowMapAspect?: number;
+  readonly shadowCasterChannels?: number;
+  readonly shadowAutoUpdate?: boolean;
+  readonly shadowRevision?: number;
+  /** Explicit reverse-Z world-to-clip projection, otherwise camera-fitted CSM. */
+  readonly shadowViewProjection?: Float32Array;
+  readonly shadowBiasMode?: number;
+  readonly shadowRadius?: number;
+  readonly shadowIntensity?: number;
+  readonly shadowBlurSamples?: number;
   /** Authored CPU cascade cadence; absent means disabled. */
   readonly staggerCascades?: boolean;
   readonly cascadeCount: number;
@@ -3176,6 +2952,26 @@ export function computeDirectionalCsm(
     config.maxPenumbraTexels ?? (DirectionalLight.fields.maxPenumbraTexels.default as number),
   );
   if (quality === undefined) return null;
+  if (config.shadowViewProjection !== undefined) {
+    const matrix = config.shadowViewProjection;
+    const rowLength = (row: number) =>
+      Math.hypot(matrix[row] ?? 0, matrix[row + 4] ?? 0, matrix[row + 8] ?? 0);
+    const splitPlanes = new Float32Array(16);
+    splitPlanes[0] = 3.4028234663852886e38;
+    splitPlanes[1] = 2 / rowLength(0) / config.mapSize;
+    splitPlanes[2] = 1 / rowLength(2);
+    return {
+      lightViewProj: [
+        new Float32Array(matrix),
+        ...Array.from({ length: 3 }, () => new Float32Array(16)),
+      ],
+      splitPlanes,
+      cascadeCount: 1,
+      cascadeBlend: 0,
+      shadowMapSize: config.mapSize,
+      directionalShadowQuality: quality,
+    };
+  }
   const filterRadius = directionalShadowFilterRadiusTexels(quality);
   // Coverage range: near from the active camera near (no separate near knob);
   // far is capped by both the component's shadowDistance and camera far. Fallback near (0.1) only when no
@@ -3308,7 +3104,7 @@ export interface PreparedExtractContext {
   readonly materialContext?: MaterialCookRasterContext | undefined;
   readonly assets: AssetRegistry | null | undefined;
   readonly pipelineState: ExtractPipelineSurface | null | undefined;
-  readonly materialSnapshotCache: MaterialSnapshotCache | undefined;
+  readonly materialSnapshotContexts: MaterialSnapshotContexts;
   /** `undefined` keeps direct extractFrame's local Fog semantics; `null` means
    * the frame owner already selected that no Fog is present for this world. */
   readonly resourceOwnerFog: FogFrame | null | undefined;
@@ -3322,7 +3118,7 @@ export interface PreparedExtractContext {
   readonly retainHidden: boolean;
   readonly preparationMesh?: {
     readonly entity: number;
-    readonly meshHandle: Handle<'MeshAsset', 'shared'>;
+    readonly meshHandle: AssetHandle<'mesh'>;
     readonly mesh: MeshAsset;
   };
   /** World identity used to form cross-world producer ownership keys. */
@@ -3775,7 +3571,7 @@ export function prepareExtractContext(
     readonly materialContext?: MaterialCookRasterContext;
     readonly assets?: AssetRegistry | null;
     readonly pipelineState?: ExtractPipelineSurface | null;
-    readonly materialSnapshotCache?: MaterialSnapshotCache;
+    readonly materialSnapshotContexts?: MaterialSnapshotContexts;
     readonly resourceOwnerFog?: FogFrame | null;
     readonly cull?: 'self' | 'none' | 'external';
     readonly cullCameras?: readonly CameraSnapshot[];
@@ -3786,7 +3582,7 @@ export function prepareExtractContext(
     readonly retainHidden?: boolean;
     readonly preparationMesh?: {
       readonly entity: number;
-      readonly meshHandle: Handle<'MeshAsset', 'shared'>;
+      readonly meshHandle: AssetHandle<'mesh'>;
       readonly mesh: MeshAsset;
     };
     readonly worldId?: number;
@@ -3808,7 +3604,7 @@ export function prepareExtractContext(
     materialContext: options.materialContext,
     assets: options.assets,
     pipelineState: options.pipelineState,
-    materialSnapshotCache: options.materialSnapshotCache,
+    materialSnapshotContexts: options.materialSnapshotContexts ?? new Map(),
     resourceOwnerFog: options.resourceOwnerFog,
     cull: options.cull ?? 'self',
     cullCameras: options.cullCameras,
@@ -3866,7 +3662,6 @@ export function selectFogFrame(world: World): FogFrame | undefined {
     environments: [],
     fogs: fogCandidates,
     suns: [],
-    lane: 'direct',
   });
   const state = fogState(world);
   if (fogSelection.ok) {
@@ -3900,7 +3695,7 @@ export function extractVolumeSnapshot(
   let selectedLight:
     | {
         readonly entity: EntityHandle;
-        readonly kind: 'directional' | 'point' | 'spot';
+        readonly kind: VolumetricFogLightKind;
         readonly pointLightEntity?: EntityHandle;
         readonly spotLightEntity?: EntityHandle;
       }
@@ -3920,8 +3715,8 @@ export function extractVolumeSnapshot(
         ...(pairSpot === undefined ? {} : { spotLightEntity: pairSpot }),
       };
     }
-    const densityHandle = toShared<'TextureAsset'>(Math.round(Number(source.density)));
-    const resolved = resolveAssetHandle<TextureAsset>(world, densityHandle);
+    const densityHandle = Math.round(Number(source.density)) as AssetHandle<'texture'>;
+    const resolved = runtimeAssets(world.assets).resolveAsset<TextureAsset>(densityHandle);
     if (!resolved.ok || resolved.value.kind !== 'texture') {
       worldInternal._routeError(
         resolved.ok
@@ -3937,7 +3732,7 @@ export function extractVolumeSnapshot(
       return { status: 'degraded', worldTimeSeconds };
     }
     const densityAsset = resolved.value;
-    const guid = assets?.guidOf(densityAsset) ?? `handle:${Number(densityHandle)}`;
+    const guid = assets?.guidOf(densityHandle) ?? `handle:${Number(densityHandle)}`;
     const shape = densityAsset.shape;
     const density: VolumeDensityBinding =
       shape.viewDimension === '3d'
@@ -4035,6 +3830,14 @@ export function extractVolumeSnapshot(
 
 /** Immutable author-independent default; extraction retains its producer identity. */
 const DEFAULT_MATERIAL_SNAPSHOT: MaterialSnapshot = Object.freeze({
+  passes: Object.freeze([
+    {
+      name: 'shadow-caster',
+      program: { module: 'forgeax::default-shadow-caster', vertexEntry: 'vs_main' },
+      renderState: { tags: { LightMode: 'ShadowCaster' }, queue: 2000 },
+    },
+    DEFAULT_FORWARD_PASS,
+  ]),
   baseColor: vec3.create(0.5, 0.5, 0.5),
   metallic: 0,
   roughness: 1,

@@ -3,7 +3,6 @@
 import { createApp } from '@forgeax/engine-app/browser';
 import { Update } from '@forgeax/engine-ecs';
 import { EngineEnvironmentError } from '@forgeax/engine-runtime';
-import { unwrapHandle } from '@forgeax/engine-types';
 import { forgeaxBundlerAdapter } from 'virtual:forgeax/bundler';
 import { buildSpriteSheetWorld, makeSpriteSheetPixels, SHEET_HEIGHT, SHEET_WIDTH, tickSpriteSheet } from './sprite-sheet';
 
@@ -22,6 +21,8 @@ async function bootstrap(target: HTMLCanvasElement): Promise<void> {
     return;
   }
   const app = appResult.value;
+  const assets = app.assets;
+  if (assets === undefined) throw new Error('App asset service is unavailable');
   console.warn(`[bevy-sprite-sheet] backend=${app.renderer.inspect().capabilities.backendKind}`);
   const pixels = makeSpriteSheetPixels();
   const texture = {
@@ -32,8 +33,8 @@ async function bootstrap(target: HTMLCanvasElement): Promise<void> {
     colorSpace: 'srgb' as const,
     mips: { kind: 'none' as const },
   };
-  const textureHandle = app.world.allocSharedRef('TextureAsset', texture);
-  buildSpriteSheetWorld(app.world, unwrapHandle(textureHandle));
+  const textureHandle = assets.create(texture).unwrap();
+  buildSpriteSheetWorld(app.world, textureHandle);
   const system = app.world.addSystem(Update, {
     name: 'sprite-sheet-tick',
     queries: [],

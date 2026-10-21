@@ -1,6 +1,8 @@
+import { AssetRegistry } from '@forgeax/engine/assets-runtime';
+import { createPrimitiveMesh } from '@forgeax/engine/geometry';
 import { ShadowParticipation, Visibility, VisibilityStateValue } from '@forgeax/engine/render';
 import { CheckList, defineFeature } from '../../lab/feature';
-import { MESH, spawnMesh, spawnStage, standard } from '../../lab/stage';
+import { spawnMesh, spawnStage, standard } from '../../lab/stage';
 import { serial } from './support/serial';
 
 export default defineFeature({
@@ -12,18 +14,24 @@ export default defineFeature({
   expect:
     'ON: the tall purple pillar casts a long shadow across the floor. OFF: its ShadowParticipation has cast: false, the pillar still renders but its shadow is gone.',
   setup({ app, world, frames }) {
+    const primitiveAssets = world.assets;
+    if (!(primitiveAssets instanceof AssetRegistry))
+      throw new Error('Scene requires its runtime asset owner');
+
+    const stageCube = primitiveAssets.create(createPrimitiveMesh('cube').unwrap()).unwrap();
+
     spawnStage(world, { eye: [0, 4, 7], target: [0, 0.5, 0] });
     const casting = standard(world, { baseColor: [0.6, 0.2, 0.9, 1] });
     const pillar = spawnMesh(
       world,
-      MESH.cube,
+      stageCube,
       casting,
       { pos: [0, 1.5, -1], scale: [0.6, 3, 0.6] },
       { component: ShadowParticipation, data: { cast: true, receive: true } },
     );
     spawnMesh(
       world,
-      MESH.cube,
+      stageCube,
       casting,
       { pos: [2, 1.5, -1], scale: [0.6, 3, 0.6] },
       {

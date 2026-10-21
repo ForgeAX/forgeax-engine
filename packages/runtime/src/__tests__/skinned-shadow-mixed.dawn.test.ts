@@ -1,3 +1,6 @@
+import { createPrimitiveMesh } from '@forgeax/engine-geometry';
+import type { AssetHandle } from '@forgeax/engine-types';
+import { testAssets } from './helpers/runtime-assets';
 import { shaderManifestUrl } from './shader-manifest-url.fixture';
 // Real Dawn regression for the static/skinned shadow pipeline transition.
 //
@@ -6,14 +9,12 @@ import { shaderManifestUrl } from './shader-manifest-url.fixture';
 // in one production render so the pipeline layout and group-2 bind group must
 // change at the same command-recording boundary.
 
-import { HANDLE_CUBE } from '@forgeax/engine-assets-runtime';
 import { World } from '@forgeax/engine-ecs';
 import { packInterleavedVertexAttributes } from '@forgeax/engine-geometry';
 import type { Renderer } from '@forgeax/engine-render';
 import { Camera, DirectionalLight, MeshFilter, MeshRenderer } from '@forgeax/engine-render';
 import { Transform } from '@forgeax/engine-scene';
 import { Skin } from '@forgeax/engine-skinning';
-import type { Handle, MaterialAsset, MeshAsset, SkeletonAsset } from '@forgeax/engine-types';
 import { describe, expect, it } from 'vitest';
 import { constructRuntimeRendererHost } from '../renderer-host';
 import { drawPublished } from './draw-published';
@@ -38,87 +39,93 @@ type MixedCapture = {
   readonly errors: readonly unknown[];
 };
 
-function staticMaterial(world: World): Handle<'MaterialAsset', 'shared'> {
-  return world.allocSharedRef<'MaterialAsset', MaterialAsset>('MaterialAsset', {
-    kind: 'material',
-    passes: [
-      {
-        name: 'Forward',
-        program: { module: 'forgeax::default-standard-pbr' },
-        renderState: { tags: { LightMode: 'Forward' }, queue: 2000 },
-      },
-      {
-        name: 'ShadowCaster',
-        program: { module: 'forgeax::default-shadow-caster' },
-        renderState: {
-          tags: { LightMode: 'ShadowCaster' },
-          passKind: 'shadow-caster',
+function staticMaterial(world: World): AssetHandle<'material'> {
+  return testAssets(world)
+    .create({
+      kind: 'material',
+      passes: [
+        {
+          name: 'Forward',
+          program: { module: 'forgeax::default-standard-pbr' },
+          renderState: { tags: { LightMode: 'Forward' }, queue: 2000 },
         },
-      },
-    ],
-    values: {
-      baseColor: [0.8, 0.35, 0.15, 1],
-      metallic: 0.1,
-      roughness: 0.55,
-      emissive: [0, 0, 0],
-      emissiveIntensity: 0,
-      occlusionStrength: 1,
-    },
-  });
-}
-
-function skinnedMaterial(world: World, masked: boolean): Handle<'MaterialAsset', 'shared'> {
-  return world.allocSharedRef<'MaterialAsset', MaterialAsset>('MaterialAsset', {
-    kind: 'material',
-    passes: [
-      {
-        name: 'Forward',
-        program: { module: 'forgeax::pbr-skin' },
-        renderState: { tags: { LightMode: 'Forward' }, queue: 2000 },
-      },
-      {
-        name: 'ShadowCaster',
-        program: { module: 'forgeax::default-shadow-caster' },
-        renderState: {
-          tags: { LightMode: 'ShadowCaster' },
-          passKind: 'shadow-caster',
+        {
+          name: 'ShadowCaster',
+          program: { module: 'forgeax::default-shadow-caster' },
+          renderState: {
+            tags: { LightMode: 'ShadowCaster' },
+            passKind: 'shadow-caster',
+          },
         },
+      ],
+      values: {
+        baseColor: [0.8, 0.35, 0.15, 1],
+        metallic: 0.1,
+        roughness: 0.55,
+        emissive: [0, 0, 0],
+        emissiveIntensity: 0,
+        occlusionStrength: 1,
       },
-    ],
-    values: {
-      baseColor: [0.15, 0.45, 0.9, masked ? 0 : 1],
-      alphaCutoff: masked ? 0.5 : 0,
-      metallic: 0.1,
-      roughness: 0.55,
-      emissive: [0, 0, 0],
-      emissiveIntensity: 0,
-      occlusionStrength: 1,
-    },
-  });
+    })
+    .unwrap();
 }
 
-function floorMaterial(world: World): Handle<'MaterialAsset', 'shared'> {
-  return world.allocSharedRef<'MaterialAsset', MaterialAsset>('MaterialAsset', {
-    kind: 'material',
-    passes: [
-      {
-        name: 'Forward',
-        program: { module: 'forgeax::default-standard-pbr' },
-        renderState: { tags: { LightMode: 'Forward' }, queue: 2000 },
+function skinnedMaterial(world: World, masked: boolean): AssetHandle<'material'> {
+  return testAssets(world)
+    .create({
+      kind: 'material',
+      passes: [
+        {
+          name: 'Forward',
+          program: { module: 'forgeax::pbr-skin' },
+          renderState: { tags: { LightMode: 'Forward' }, queue: 2000 },
+        },
+        {
+          name: 'ShadowCaster',
+          program: { module: 'forgeax::default-shadow-caster' },
+          renderState: {
+            tags: { LightMode: 'ShadowCaster' },
+            passKind: 'shadow-caster',
+          },
+        },
+      ],
+      values: {
+        baseColor: [0.15, 0.45, 0.9, masked ? 0 : 1],
+        alphaCutoff: masked ? 0.5 : 0,
+        metallic: 0.1,
+        roughness: 0.55,
+        emissive: [0, 0, 0],
+        emissiveIntensity: 0,
+        occlusionStrength: 1,
       },
-    ],
-    values: {
-      baseColor: [0.75, 0.75, 0.75, 1],
-      metallic: 0,
-      roughness: 0.9,
-      emissive: [0, 0, 0],
-      emissiveIntensity: 0,
-      occlusionStrength: 1,
-    },
-  });
+    })
+    .unwrap();
 }
 
-function skinnedMesh(world: World): Handle<'MeshAsset', 'shared'> {
+function floorMaterial(world: World): AssetHandle<'material'> {
+  return testAssets(world)
+    .create({
+      kind: 'material',
+      passes: [
+        {
+          name: 'Forward',
+          program: { module: 'forgeax::default-standard-pbr' },
+          renderState: { tags: { LightMode: 'Forward' }, queue: 2000 },
+        },
+      ],
+      values: {
+        baseColor: [0.75, 0.75, 0.75, 1],
+        metallic: 0,
+        roughness: 0.9,
+        emissive: [0, 0, 0],
+        emissiveIntensity: 0,
+        occlusionStrength: 1,
+      },
+    })
+    .unwrap();
+}
+
+function skinnedMesh(world: World): AssetHandle<'mesh'> {
   // Canonical interleaved order: position, normal, uv, tangent, skinIndex,
   // skinWeight (72 bytes / vertex). All vertices use joint zero.
   const attributes = {
@@ -132,37 +139,41 @@ function skinnedMesh(world: World): Handle<'MeshAsset', 'shared'> {
   const packed = packInterleavedVertexAttributes(attributes, 3);
   if (!packed.ok) throw packed.error;
   const vertices = packed.value.vertices;
-  return world.allocSharedRef<'MeshAsset', MeshAsset>('MeshAsset', {
-    kind: 'mesh',
-    vertices,
-    indices: new Uint16Array([0, 1, 2]),
-    attributes,
-    aabb: new Float32Array([-0.75, 0, 0, 0.75, 1.2, 0]),
-    materialSlots: [{ slotName: 'Default' }],
-    submeshes: [
-      {
-        indexOffset: 0,
-        indexCount: 3,
-        vertexCount: 3,
-        materialSlot: 0,
-        topology: 'triangle-list',
-      },
-    ],
-  });
+  return testAssets(world)
+    .create({
+      kind: 'mesh',
+      vertices,
+      indices: new Uint16Array([0, 1, 2]),
+      attributes,
+      aabb: new Float32Array([-0.75, 0, 0, 0.75, 1.2, 0]),
+      materialSlots: [{ slotName: 'Default' }],
+      submeshes: [
+        {
+          indexOffset: 0,
+          indexCount: 3,
+          vertexCount: 3,
+          materialSlot: 0,
+          topology: 'triangle-list',
+        },
+      ],
+    })
+    .unwrap();
 }
 
-function skeleton(world: World, missingBounds: boolean): Handle<'SkeletonAsset', 'shared'> {
+function skeleton(world: World, missingBounds: boolean): AssetHandle<'skeleton'> {
   const inverseBindMatrices = new Float32Array(16);
   inverseBindMatrices[0] = 1;
   inverseBindMatrices[5] = 1;
   inverseBindMatrices[10] = 1;
   inverseBindMatrices[15] = 1;
-  return world.allocSharedRef<'SkeletonAsset', SkeletonAsset>('SkeletonAsset', {
-    kind: 'skeleton',
-    inverseBindMatrices,
-    jointCount: 1,
-    ...(missingBounds ? {} : { bounds: new Float32Array([-1, -1, -1, 1, 1, 1]) }),
-  });
+  return testAssets(world)
+    .create({
+      kind: 'skeleton',
+      inverseBindMatrices,
+      jointCount: 1,
+      ...(missingBounds ? {} : { bounds: new Float32Array([-1, -1, -1, 1, 1, 1]) }),
+    })
+    .unwrap();
 }
 
 function identityTransform(pos: readonly [number, number, number] = [0, 0, 0]) {
@@ -183,7 +194,12 @@ function spawnMixedScene(
 
   world.spawn(
     { component: Transform, data: { ...identityTransform([0, 5, 5]), scale: [10, 0.1, 10] } },
-    { component: MeshFilter, data: { assetHandle: HANDLE_CUBE } },
+    {
+      component: MeshFilter,
+      data: {
+        assetHandle: testAssets(world).create(createPrimitiveMesh('cube').unwrap()).unwrap(),
+      },
+    },
     { component: MeshRenderer, data: { materials: [floorMat] } },
   );
   world.spawn(
@@ -219,7 +235,12 @@ function spawnMixedScene(
   const spawnStaticCaster = (x: number): void => {
     world.spawn(
       { component: Transform, data: { ...identityTransform([x, 7, 5]), scale: [0.8, 0.8, 0.8] } },
-      { component: MeshFilter, data: { assetHandle: HANDLE_CUBE } },
+      {
+        component: MeshFilter,
+        data: {
+          assetHandle: testAssets(world).create(createPrimitiveMesh('cube').unwrap()).unwrap(),
+        },
+      },
       { component: MeshRenderer, data: { materials: [staticMat] } },
     );
   };

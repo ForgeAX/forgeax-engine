@@ -2,13 +2,16 @@ import { World } from '@forgeax/engine-ecs';
 import { vec3 } from '@forgeax/engine-math';
 import {
   Collider,
+  type DerivedPhysicsCandidate,
   type DerivedPhysicsCandidateInput,
+  type PhysicsConstraintInput,
   RigidBody,
+  type RigidBodyType,
   RigidBodyTypeValue,
   registerPhysicsComponents,
 } from '@forgeax/engine-physics';
 import { GlobalTransform, Transform } from '@forgeax/engine-scene';
-import { err, ok, toShared } from '@forgeax/engine-types';
+import { type AssetHandle, err, ok } from '@forgeax/engine-types';
 import { describe, expect, it, vi } from 'vitest';
 import { boxPoints } from '../../../../scripts/test/convex-geometry-fixture.mjs';
 import { createRapier3DPhysicsWorld } from '../rapier-physics-world-3d';
@@ -71,7 +74,7 @@ function addBody(
     },
     {
       shape: 0,
-      mesh: toShared<'MeshAsset'>(0),
+      mesh: 0 as AssetHandle<'mesh'>,
       halfExtents: [0.25, 0.25, 0.25],
       radius: 0.25,
       halfHeight: 0.25,
@@ -84,6 +87,202 @@ function addBody(
     },
   );
 }
+
+describe('complete derived admission projection', () => {
+  it.each([
+    'publish',
+    'cancel',
+    'dispose',
+  ] as const)('copies candidate geometry only when inspected, independently of %s', async (finish) => {
+    const module = await loadRapier3D();
+    if ('code' in module) throw module;
+    const physics = createRapier3DPhysicsWorld(module);
+    const writes = vi.spyOn(Float32Array.prototype, 'set');
+    try {
+      addBody(physics, 7, [0, 0, 0]);
+      const source = compoundCandidate(7, 1);
+      const expected = source.shapes.map((shape) => shape.pieces.map((piece) => Array.from(piece)));
+      const candidate = physics.prepareDerivedShapeCandidate(source).unwrap();
+      for (const shape of source.shapes) for (const piece of shape.pieces) piece.fill(999);
+      const preparedWrites = writes.mock.calls.length;
+      expect(candidate.input.entity).toBe(7);
+      expect(candidate.input.revision).toBe(1);
+      expect(writes.mock.calls.length).toBe(preparedWrites);
+      if (finish === 'publish') {
+        physics.admitDerivedShapeCandidate(candidate).unwrap();
+        physics.step(1 / 60);
+      } else if (finish === 'cancel') physics.cancelDerivedShapeCandidate(candidate).unwrap();
+      else physics.dispose();
+      const beforeInspection = writes.mock.calls.length;
+      const inspected = candidate.input.shapes;
+      expect(writes.mock.calls.length).toBeGreaterThan(beforeInspection);
+      const inspectedWrites = writes.mock.calls.length;
+      expect(candidate.input.shapes).toBe(inspected);
+      expect(writes.mock.calls.length).toBe(inspectedWrites);
+      expect(
+        inspected.map((shape) =>
+          shape.kind === 'convex-compound' ? shape.pieces.map((piece) => Array.from(piece)) : [],
+        ),
+      ).toEqual(expected);
+      for (const shape of inspected)
+        if (shape.kind === 'convex-compound') for (const piece of shape.pieces) piece.fill(-999);
+      if (finish === 'publish') {
+        const saved = physics.captureDerivedPhysicsState().bodies[0];
+        expect(
+          saved?.shapes.map((shape) =>
+            shape.kind === 'convex-compound' ? shape.pieces.map((piece) => Array.from(piece)) : [],
+          ),
+        ).toEqual(expected);
+      }
+    } finally {
+      writes.mockRestore();
+      physics.dispose();
+    }
+  });
+
+  async function fixture() {
+    const module = await loadRapier3D();
+    if ('code' in module) throw module;
+    const physics = createRapier3DPhysicsWorld(module);
+    for (const entity of [1, 2, 3]) addBody(physics, entity, [entity * 10, 0, 0]);
+    const initial = physics
+      .prepareDerivedShapeCandidates([1, 2, 3].map((entity) => compoundCandidate(entity, 1)))
+      .unwrap();
+    physics.admitDerivedShapeCandidates(initial).unwrap();
+    physics.step(1 / 60);
+    return physics;
+  }
+
+  function dependency(
+    bodyA: number,
+    bodyB: number,
+    revisionA: number,
+    revisionB: number,
+  ): PhysicsConstraintInput {
+    return {
+      id: `link:${bodyA}:${bodyB}`,
+      revision: 1,
+      kind: 'spring',
+      bodyA,
+      bodyB,
+      bodyASource: { sourceKey: `body:${bodyA}`, revision: revisionA },
+      bodyBSource: { sourceKey: `body:${bodyB}`, revision: revisionB },
+      anchorA: [0, 0, 0],
+      anchorB: [0, 0, 0],
+      restLength: 10,
+      stiffness: 10,
+      damping: 1,
+    };
+  }
+
+  it.each([
+    false,
+    true,
+  ])('publishes dependencies on a later member in either batch order (%s)', async (reverse) => {
+    const physics = await fixture();
+    try {
+      const inputs = [
+        { ...compoundCandidate(1, 2), constraints: [dependency(1, 2, 2, 2)] },
+        compoundCandidate(2, 2),
+      ];
+      if (reverse) inputs.reverse();
+      const prepared = physics.prepareDerivedShapeCandidates(inputs).unwrap();
+      const commit = vi.fn(() => ok(undefined));
+      physics.admitDerivedShapeCandidates(prepared, commit).unwrap();
+      expect(commit).not.toHaveBeenCalled();
+      physics.step(1 / 60);
+      expect(commit).toHaveBeenCalledTimes(1);
+      expect(physics.getDerivedPublication(1)?.revision).toBe(2);
+      expect(physics.getDerivedPublication(2)?.revision).toBe(2);
+      expect(physics.getDerivedConstraintStates()).toHaveLength(1);
+    } finally {
+      physics.dispose();
+    }
+  });
+
+  it('rejects the entire incoming batch when removing an old queue group invalidates a later member', async () => {
+    const physics = await fixture();
+    try {
+      const before = [1, 2, 3].map((entity) => physics.getDerivedPublication(entity));
+      const nativeSize = physics.raw.colliders.len();
+      const old = physics
+        .prepareDerivedShapeCandidate({
+          ...compoundCandidate(1, 2),
+          constraints: [dependency(1, 3, 2, 1)],
+        })
+        .unwrap();
+      physics.admitDerivedShapeCandidate(old).unwrap();
+      const incoming = physics
+        .prepareDerivedShapeCandidates([
+          compoundCandidate(3, 2),
+          { ...compoundCandidate(2, 2), constraints: [dependency(2, 1, 2, 2)] },
+        ])
+        .unwrap();
+      const commit = vi.fn(() => ok(undefined));
+      expect(physics.admitDerivedShapeCandidates(incoming, commit)).toMatchObject({
+        ok: false,
+        error: { code: 'derived-constraint-stale' },
+      });
+      physics.step(1 / 60);
+      expect(commit).not.toHaveBeenCalled();
+      expect([1, 2, 3].map((entity) => physics.getDerivedPublication(entity))).toEqual(before);
+      expect(physics.raw.colliders.len()).toBe(nativeSize);
+      expect(physics.getDerivedRecoveryState()).toBe('ready');
+    } finally {
+      physics.dispose();
+    }
+  });
+
+  it('retains a newer queued revision when a complete batch submits an older member', async () => {
+    const physics = await fixture();
+    try {
+      const incoming = physics
+        .prepareDerivedShapeCandidates([compoundCandidate(1, 2), compoundCandidate(2, 2)])
+        .unwrap();
+      const newer = physics.prepareDerivedShapeCandidate(compoundCandidate(2, 3)).unwrap();
+      physics.admitDerivedShapeCandidate(newer).unwrap();
+      const commit = vi.fn(() => ok(undefined));
+      expect(physics.admitDerivedShapeCandidates(incoming, commit)).toMatchObject({
+        ok: false,
+        error: { code: 'derived-candidate-stale' },
+      });
+      physics.step(1 / 60);
+      expect(commit).not.toHaveBeenCalled();
+      expect(physics.getDerivedPublication(1)?.revision).toBe(1);
+      expect(physics.getDerivedPublication(2)?.revision).toBe(3);
+    } finally {
+      physics.dispose();
+    }
+  });
+
+  it('refuses a batch invalidated while resolving a later caller credential', async () => {
+    const physics = await fixture();
+    try {
+      const nativeSize = physics.raw.colliders.len();
+      const prepared = physics
+        .prepareDerivedShapeCandidates([compoundCandidate(1, 2), compoundCandidate(2, 2)])
+        .unwrap();
+      const callerTokens = prepared.map(
+        (token, index): DerivedPhysicsCandidate => ({
+          ...token,
+          get owner() {
+            if (index === 1) physics.invalidateDerivedShapeCandidates('caller invalidation');
+            return token.owner;
+          },
+        }),
+      );
+      const commit = vi.fn(() => ok(undefined));
+      expect(physics.admitDerivedShapeCandidates(callerTokens, commit).ok).toBe(false);
+      physics.step(1 / 60);
+      expect(commit).not.toHaveBeenCalled();
+      expect(physics.getDerivedPublication(1)?.revision).toBe(1);
+      expect(physics.getDerivedPublication(2)?.revision).toBe(1);
+      expect(physics.raw.colliders.len()).toBe(nativeSize);
+    } finally {
+      physics.dispose();
+    }
+  });
+});
 
 /** Public-module fixture: inject a failure only after native mass mutation. */
 function rapierWithMassFailure(RAPIER: Rapier3DModule): Rapier3DModule {
@@ -172,7 +371,7 @@ describe('Rapier 3D derived convex candidates', () => {
     }
   });
 
-  it('still retires an owned terrain source after its World components disappear', async () => {
+  it('explicit derived sources retain their own lifecycle even when named terrain', async () => {
     const RAPIER = await loadRapier3D();
     if ('code' in RAPIER) throw RAPIER;
     const pw = createRapier3DPhysicsWorld(RAPIER);
@@ -195,6 +394,18 @@ describe('Rapier 3D derived convex candidates', () => {
       pw.step(1 / 60);
       expect(pw.getDerivedPublication(7)?.shapeIds).toEqual(['terrain:7']);
       pw._syncFromEcs(world, Transform);
+      pw.step(1 / 60);
+      expect(pw.getDerivedPublication(7)?.shapeIds).toEqual(['terrain:7']);
+      const retirement = pw
+        .prepareDerivedShapeCandidate({
+          entity: 7,
+          sourceKey: 'terrain:7',
+          revision: 2,
+          bodyType: 'static',
+          shapes: [],
+        })
+        .unwrap();
+      pw.admitDerivedShapeCandidate(retirement).unwrap();
       pw.step(1 / 60);
       expect(pw.getDerivedPublication(7)).toMatchObject({ revision: 2, shapeIds: [] });
     } finally {
@@ -2045,7 +2256,7 @@ describe('type-only derived body preparations', () => {
       pw.admitDerivedShapeCandidate(candidate).unwrap();
     }
     pw.step(1 / 60);
-    const inputs = (bodyType: 'static' | 'dynamic' | 'kinematic') =>
+    const inputs = (bodyType: RigidBodyType) =>
       entities.map((entity) => {
         const publication = pw.getDerivedPublication(entity);
         if (!publication) throw Error('missing accepted body');

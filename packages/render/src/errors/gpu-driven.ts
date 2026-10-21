@@ -1,4 +1,4 @@
-import type { MaterialShaderArtifactReceipt } from '@forgeax/engine-shader';
+import type { MaterialProgramAbi } from '@forgeax/engine-types';
 
 export type GpuDrivenPreparationErrorCode =
   | 'missing-material-receipt'
@@ -125,9 +125,9 @@ export class GpuDrivenPreparationError extends Error {
 }
 
 export interface GpuDrivenPreparedMaterial {
-  readonly receipt: MaterialShaderArtifactReceipt;
-  readonly resourceSlots: MaterialShaderArtifactReceipt['resourceSlots'];
-  readonly uvSets: MaterialShaderArtifactReceipt['uvSets'];
-  readonly vertexInputs: MaterialShaderArtifactReceipt['vertexInputs'];
-  readonly alphaMask: MaterialShaderArtifactReceipt['alphaMask'];
+  readonly receipt: MaterialProgramAbi;
+  readonly resourceSlots: MaterialProgramAbi['resourceSlots'];
+  readonly uvSets: MaterialProgramAbi['uvSets'];
+  readonly vertexInputs: MaterialProgramAbi['vertexInputs'];
+  readonly alphaMask: MaterialProgramAbi['alphaMask'];
 }

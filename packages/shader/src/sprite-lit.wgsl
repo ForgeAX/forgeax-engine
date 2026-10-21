@@ -69,6 +69,8 @@ struct Material {
   region        : vec4<f32>,
   pivotAndSize  : vec4<f32>,
   slicesAndMode : vec4<f32>,
+  flipX : f32,
+  flipY : f32,
   baseColorTextureCoordinatesTransform : vec4<f32>,
   baseColorTextureCoordinatesMetadata : vec4<f32>,
   baseColorTextureCoordinatesRotation : vec4<f32>,
@@ -114,6 +116,19 @@ fn resolveSpriteVertex(in : VsIn, vertex_index : u32, idx : u32) -> SpriteVertex
   // 9-slice early-out via slicesAndMode == 0 sentinel keeps the legacy
   // single-quad path byte-identical so sprite-lit demos that do not enable
   // slicing pay zero perf for the slicing branch.
+  var selectedRegion = material.region;
+  if (meshes[0].surface.w != 0u) { selectedRegion = meshes[0].spriteRegion; }
+#if PER_INSTANCE_REGION == true
+  selectedRegion = instances[idx].region;
+#endif
+  if (material.flipX != 0.0) {
+    selectedRegion.x += selectedRegion.z;
+    selectedRegion.z = -selectedRegion.z;
+  }
+  if (material.flipY != 0.0) {
+    selectedRegion.y += selectedRegion.w;
+    selectedRegion.w = -selectedRegion.w;
+  }
   let pivot = material.pivotAndSize.xy;
   let size  = material.pivotAndSize.zw;
   let useSlices = any(material.slicesAndMode != vec4<f32>(0.0));
@@ -143,15 +158,11 @@ fn resolveSpriteVertex(in : VsIn, vertex_index : u32, idx : u32) -> SpriteVertex
     let uv_u = u_uv_arr[i];
     let uv_v_top = v_uv_arr[j];
     let uv_v_eff = 1.0 - uv_v_top;
-    uv_atlas = vec2<f32>(uv_u, uv_v_eff) * material.region.zw + material.region.xy;
+    uv_atlas = vec2<f32>(uv_u, uv_v_eff) * selectedRegion.zw + selectedRegion.xy;
   } else {
     let uv_eff = vec2<f32>(in.uv.x, 1.0 - in.uv.y);
     pos_local = vec3<f32>((uv_eff - pivot) * size, 0.0);
-    var region = material.region;
-#ifdef PER_INSTANCE_REGION
-    region = instances[idx].region;
-#endif
-    uv_atlas = uv_eff * region.zw + region.xy;
+    uv_atlas = uv_eff * selectedRegion.zw + selectedRegion.xy;
   }
   var out : SpriteVertex;
   out.posLocal = pos_local;
@@ -201,6 +212,7 @@ fn spriteLitShadeAccum(
   albedo : vec3<f32>,
   worldPos : vec3<f32>,
   ndc : vec3<f32>,
+  pixel : vec2<f32>,
   viewZ : f32,
 ) -> vec3<f32> {
   // Directional contribution (1 light, View UBO).
@@ -208,7 +220,7 @@ fn spriteLitShadeAccum(
 #ifdef CLUSTER_FORWARD_AVAILABLE
   let viewDir = normalize(view.cameraPos - worldPos);
   lit = lit + evaluateStandardClusterLights(
-    ndc, viewZ, worldPos, vec3<f32>(0.0, 0.0, 1.0),
+    ndc, pixel, viewZ, worldPos, vec3<f32>(0.0, 0.0, 1.0),
     viewDir, albedo, 0.0, 1.0, vec3<f32>(0.04), vec3<f32>(0.0), true, true, 0xffffffffu,
 
     false,
@@ -222,7 +234,7 @@ fn fs_main(in : VsOut) -> @location(0) vec4<f32> {
   applyViewClipping(in.worldPos, false);
   let texel = sampleMaterialTexture(baseColorTexture, baseColorSampler, in.uv_atlas, material.baseColorTextureCoordinatesMetadata.zw);
   let albedo4 = texel * material.colorTint;
-  let lit = spriteLitShadeAccum(albedo4.rgb, in.worldPos, in.ndc, in.viewZ);
+  let lit = spriteLitShadeAccum(albedo4.rgb, in.worldPos, in.ndc, in.clip.xy, in.viewZ);
   // Strict clamp 0..1 before premultiplied alpha multiply keeps the LDR
   // path bounded even when a scene stacks many lights.
   let lit_rgba = clamp(vec4<f32>(lit, albedo4.a), vec4<f32>(0.0), vec4<f32>(1.0));
@@ -244,7 +256,7 @@ fn fs_main_hdr(in : VsOut) -> @location(0) vec4<f32> {
   applyViewClipping(in.worldPos, false);
   let texel = sampleMaterialTexture(baseColorTexture, baseColorSampler, in.uv_atlas, material.baseColorTextureCoordinatesMetadata.zw);
   let albedo4 = texel * material.colorTint;
-  let lit = spriteLitShadeAccum(albedo4.rgb, in.worldPos, in.ndc, in.viewZ);
+  let lit = spriteLitShadeAccum(albedo4.rgb, in.worldPos, in.ndc, in.clip.xy, in.viewZ);
   // HDR variant: do NOT clamp the lit output to [0, 1]; let the tonemap
   // pass absorb HDR values > 1. Alpha stays clamped because the premult
   // math requires alpha in [0, 1].

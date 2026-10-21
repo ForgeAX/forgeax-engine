@@ -1,6 +1,8 @@
+import { AssetRegistry } from '@forgeax/engine/assets-runtime';
+import { createPrimitiveMesh } from '@forgeax/engine/geometry';
 import { Transform } from '@forgeax/engine/scene';
 import { defineFeature } from '../../lab/feature';
-import { MESH, spawnMesh, spawnStage, standard } from '../../lab/stage';
+import { spawnMesh, spawnStage, standard } from '../../lab/stage';
 import { evalInApp } from './_shared/eval';
 
 export default defineFeature({
@@ -12,8 +14,14 @@ export default defineFeature({
   expect:
     'A script despawns a live entity and reads globalThis; no method blacklist refuses either.',
   async setup({ app, world, frames }) {
+    const primitiveAssets = world.assets;
+    if (!(primitiveAssets instanceof AssetRegistry))
+      throw new Error('Scene requires its runtime asset owner');
+
+    const stageCube = primitiveAssets.create(createPrimitiveMesh('cube').unwrap()).unwrap();
+
     spawnStage(world);
-    const victim = spawnMesh(world, MESH.cube, standard(world, { baseColor: [1, 0.2, 0.2, 1] }), {
+    const victim = spawnMesh(world, stageCube, standard(world, { baseColor: [1, 0.2, 0.2, 1] }), {
       pos: [0, 0.5, 0],
     });
     const aliveBefore = world.get(victim, Transform).ok;

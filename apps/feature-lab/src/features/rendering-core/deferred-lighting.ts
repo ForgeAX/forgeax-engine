@@ -1,6 +1,8 @@
+import { AssetRegistry } from '@forgeax/engine/assets-runtime';
+import { createPrimitiveMesh } from '@forgeax/engine/geometry';
 import { DEFAULT_STANDARD_PROFILE } from '@forgeax/engine/render';
 import { CheckList, defineFeature } from '../../lab/feature';
-import { MESH, spawnMesh, spawnStage, standard } from '../../lab/stage';
+import { spawnMesh, spawnStage, standard } from '../../lab/stage';
 
 const DEFERRED_PASS = /deferred|g-?buffer/i;
 
@@ -13,13 +15,21 @@ export default defineFeature({
   expect:
     "All checks pass: Forward records no G-buffer pass, Deferred reports renderPath 'deferred' and records G-buffer/deferred passes, and returning to Forward removes them again (or the device reports the explicit Forward lane).",
   async setup({ app, world, frames }) {
+    const primitiveAssets = world.assets;
+    if (!(primitiveAssets instanceof AssetRegistry))
+      throw new Error('Scene requires its runtime asset owner');
+
+    const stageCube = primitiveAssets.create(createPrimitiveMesh('cube').unwrap()).unwrap();
+
+    const stageSphere = primitiveAssets.create(createPrimitiveMesh('sphere').unwrap()).unwrap();
+
     spawnStage(world);
-    spawnMesh(world, MESH.cube, standard(world, { baseColor: [0.2, 0.8, 0.3, 1] }), {
+    spawnMesh(world, stageCube, standard(world, { baseColor: [0.2, 0.8, 0.3, 1] }), {
       pos: [-0.8, 0.5, 0],
     });
     spawnMesh(
       world,
-      MESH.sphere,
+      stageSphere,
       standard(world, { baseColor: [0.9, 0.9, 0.9, 1], metallic: 1, roughness: 0.2 }),
       {
         pos: [0.8, 0.6, 0],

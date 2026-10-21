@@ -1,3 +1,5 @@
+import { createPrimitiveMesh } from '@forgeax/engine-geometry';
+import { testAssets } from '../helpers/runtime-assets';
 import { shaderManifestUrl } from '../shader-manifest-url.fixture';
 // hello-sprite-nineslice-section.dawn.test.ts -- feat-20260527-sprite-nineslice
 // M3 / w14. dawn-node pixel-readback fixture asserting that the sprite 9-slice
@@ -45,12 +47,12 @@ import { shaderManifestUrl } from '../shader-manifest-url.fixture';
 // Each scene captures the rendered RGBA, then the comparator across the two
 // captured byte arrays asserts mid-band divergence.
 
-import { AssetRegistry, HANDLE_QUAD } from '@forgeax/engine-assets-runtime';
+import { AssetRegistry } from '@forgeax/engine-assets-runtime';
 import { World } from '@forgeax/engine-ecs';
 import { Camera, MeshFilter, MeshRenderer } from '@forgeax/engine-render';
 import { SPRITE_PREMULTIPLIED_ALPHA_BLEND } from '@forgeax/engine-render/authoring';
 import { Transform } from '@forgeax/engine-scene';
-import type { MaterialAsset, TextureAsset } from '@forgeax/engine-types';
+import type { TextureAsset } from '@forgeax/engine-types';
 import { describe, expect, it } from 'vitest';
 import { constructRuntimeRendererHost } from '../../renderer-host';
 import { drawPublished } from '../draw-published';
@@ -197,42 +199,44 @@ async function renderOneFrame(opts: {
   const world = new World();
 
   const texAsset = makeCornerCheckerTexture();
-  const texHandle = world.allocSharedRef<'TextureAsset', TextureAsset>('TextureAsset', texAsset);
+  const texHandle = testAssets(world).create(texAsset).unwrap();
   // D-4 explicit constraint: tile mode uses the sprite pipeline's shared
   // renderer-owned repeat sampler, so vertex-shader-emitted uv > 1 wraps via
   // the hardware sampler. Both scenes use that same configuration; the only
   // material-level difference is `sliceMode`.
-  const matHandle = world.allocSharedRef<'MaterialAsset', MaterialAsset>('MaterialAsset', {
-    kind: 'material',
-    passes: [
-      {
-        name: 'Sprite',
-        program: { module: 'forgeax::sprite' },
-        renderState: {
-          ...{ blend: SPRITE_PREMULTIPLIED_ALPHA_BLEND },
-          queue: 3000,
-          tags: { LightMode: 'Forward' },
+  const matHandle = testAssets(world)
+    .create({
+      kind: 'material',
+      passes: [
+        {
+          name: 'Sprite',
+          program: { module: 'forgeax::sprite' },
+          renderState: {
+            ...{ blend: SPRITE_PREMULTIPLIED_ALPHA_BLEND },
+            queue: 3000,
+            tags: { LightMode: 'Forward' },
+          },
         },
+      ],
+      parameters: [
+        { name: 'colorTint', type: 'color', default: [1, 1, 1, 1] },
+        { name: 'region', type: 'vec4', default: [0, 0, 1, 1] },
+        { name: 'pivotAndSize', type: 'vec4', default: [0.5, 0.5, 1, 1] },
+        { name: 'slicesAndMode', type: 'vec4', default: [0, 0, 0, 0] },
+        { name: 'baseColorTexture', type: 'texture', optional: true },
+      ],
+      values: {
+        // feat-20260625 M3 / w11 (D-4): UBO-aligned field names. The
+        // extract-stage backwards-compat fold (render-system-extract.ts
+        // L2344) keeps the legacy `slices` + `sliceMode` split working for
+        // unmigrated demos, but new tests declare the UBO-aligned
+        // `slicesAndMode` vec4 directly: `.xyz` = [left, top, right] in UV,
+        // `.w` carries the sliceMode sentinel (>=0 stretch, <0 tile).
+        baseColorTexture: { texture: texHandle as unknown as never },
+        slicesAndMode: [0.25, 0.25, 0.25, opts.sliceMode === 1 ? -0.25 : 0.25],
       },
-    ],
-    parameters: [
-      { name: 'colorTint', type: 'color', default: [1, 1, 1, 1] },
-      { name: 'region', type: 'vec4', default: [0, 0, 1, 1] },
-      { name: 'pivotAndSize', type: 'vec4', default: [0.5, 0.5, 1, 1] },
-      { name: 'slicesAndMode', type: 'vec4', default: [0, 0, 0, 0] },
-      { name: 'baseColorTexture', type: 'texture', optional: true },
-    ],
-    values: {
-      // feat-20260625 M3 / w11 (D-4): UBO-aligned field names. The
-      // extract-stage backwards-compat fold (render-system-extract.ts
-      // L2344) keeps the legacy `slices` + `sliceMode` split working for
-      // unmigrated demos, but new tests declare the UBO-aligned
-      // `slicesAndMode` vec4 directly: `.xyz` = [left, top, right] in UV,
-      // `.w` carries the sliceMode sentinel (>=0 stretch, <0 tile).
-      baseColorTexture: { texture: texHandle as unknown as never },
-      slicesAndMode: [0.25, 0.25, 0.25, opts.sliceMode === 1 ? -0.25 : 0.25],
-    },
-  });
+    })
+    .unwrap();
 
   const errors: unknown[] = [];
   renderer.subscribe((event) => {
@@ -253,7 +257,12 @@ async function renderOneFrame(opts: {
         scale: [opts.scaleX, opts.scaleY, 1],
       },
     },
-    { component: MeshFilter, data: { assetHandle: HANDLE_QUAD } },
+    {
+      component: MeshFilter,
+      data: {
+        assetHandle: testAssets(world).create(createPrimitiveMesh('quad').unwrap()).unwrap(),
+      },
+    },
     { component: MeshRenderer, data: { materials: [matHandle] } },
   );
   world.spawn(

@@ -18,6 +18,7 @@
 import type { CodecResult } from './errors.js';
 import { codecError } from './errors.js';
 import type { Ktx2Parsed } from './ktx2.js';
+import { transcodeTargetSpecs } from './transcode.js';
 import type {
   BasisFile,
   BasisModuleFactory,
@@ -156,14 +157,6 @@ export interface BasisSourceInspection {
   readonly imageCount: number;
 }
 
-/** Result of transcoding a raw Basis file into one engine texture format. */
-export interface TranscodedBasisTexture {
-  readonly format: GPUTextureFormat;
-  readonly width: number;
-  readonly height: number;
-  readonly mips: readonly TranscodedMip[];
-}
-
 /** Inspect a raw Basis source without inferring color from the binary payload. */
 export function inspectBasisSource(
   file: BasisFile,
@@ -191,41 +184,16 @@ export function inspectBasisSource(
   };
 }
 
-/**
- * Map a selected `GPUTextureFormat` to a basis `transcoder_texture_format` enum
- * value. sRGB variants share the transcode target (sRGB is a view/DFD concern,
- * not a distinct transcode format). Uncompressed single/dual-channel fallbacks
- * (r8/rg8) route through RGBA32 -- basis has no r8/rg8 uncompressed target; the
- * runtime upload path (M5) reconciles channel selection.
- */
-function basisTargetFor(mod: BasisTranscoderModule, format: GPUTextureFormat): number | null {
-  const e = mod.transcoder_texture_format;
-  switch (format) {
-    case 'bc7-rgba-unorm':
-    case 'bc7-rgba-unorm-srgb':
-      return e.cTFBC7_RGBA.value;
-    case 'bc5-rg-unorm':
-      return e.cTFBC5_RG.value;
-    case 'bc4-r-unorm':
-      return e.cTFBC4_R.value;
-    case 'bc6h-rgb-ufloat':
-      return e.cTFBC6H.value;
-    case 'etc2-rgba8unorm':
-    case 'etc2-rgba8unorm-srgb':
-      return e.cTFETC2_RGBA.value;
-    case 'astc-4x4-unorm':
-    case 'astc-4x4-unorm-srgb':
-      return e.cTFASTC_4x4_RGBA.value;
-    case 'rgba16float':
-      return e.cTFRGBA_HALF.value;
-    case 'rgba8unorm':
-    case 'rgba8unorm-srgb':
-    case 'rg8unorm':
-    case 'r8unorm':
-      return e.cTFRGBA32.value;
-    default:
-      return null;
+/** Keep raw Basis and KTX2 output bytes faithful to the selected GPU format. */
+function projectChannels(data: Uint8Array, channels: 1 | 2 | undefined): Uint8Array {
+  if (channels === undefined) return data;
+  const packed = new Uint8Array((data.length / 4) * channels);
+  for (let pixel = 0; pixel < data.length / 4; pixel++) {
+    for (let channel = 0; channel < channels; channel++) {
+      packed[pixel * channels + channel] = data[pixel * 4 + channel] as number;
+    }
   }
+  return packed;
 }
 
 /**
@@ -247,14 +215,15 @@ export async function transcodeKtx2(
     return codecError('codec-init-failed', { stage: 'dynamic-import-basis-transcoder' });
   }
 
-  const targetEnum = basisTargetFor(mod, targetFormat);
-  if (targetEnum === null) {
+  const target = transcodeTargetSpecs[targetFormat];
+  if (target === undefined) {
     return codecError('transcode-failed', {
       sourceFormat: `dfd-model-${parsed.dfd?.colorModel ?? 'unknown'}`,
       targetFormat,
     });
   }
 
+  const targetEnum = mod.transcoder_texture_format[target.basis].value;
   const file = new mod.KTX2File(parsed.rawBytes);
   try {
     traceBasisPhase('ktx2.file.start');
@@ -286,7 +255,12 @@ export async function transcodeKtx2(
         });
       }
       traceBasisPhase('ktx2.mip.complete', { level });
-      mips.push({ level, width: info.origWidth, height: info.origHeight, data: dst });
+      mips.push({
+        level,
+        width: info.origWidth,
+        height: info.origHeight,
+        data: projectChannels(dst, target.channels),
+      });
     }
 
     return {
@@ -307,20 +281,21 @@ export async function transcodeKtx2(
 export async function transcodeBasis(
   bytes: Uint8Array,
   targetFormat: GPUTextureFormat,
-): Promise<CodecResult<TranscodedBasisTexture>> {
+): Promise<CodecResult<TranscodedTexture>> {
   let mod: BasisTranscoderModule;
   try {
     mod = await initBasisTranscoder();
   } catch {
     return codecError('codec-init-failed', { stage: 'dynamic-import-basis-transcoder' });
   }
-  const targetEnum = basisTargetFor(mod, targetFormat);
-  if (targetEnum === null || mod.BasisFile === undefined) {
+  const target = transcodeTargetSpecs[targetFormat];
+  if (target === undefined || mod.BasisFile === undefined) {
     return codecError('transcode-failed', {
       sourceFormat: 'raw-basis',
       targetFormat,
     });
   }
+  const targetEnum = mod.transcoder_texture_format[target.basis].value;
   const file = new mod.BasisFile(bytes);
   try {
     if (file.getNumImages() <= 0 || file.getNumLevels(0) <= 0) {
@@ -344,7 +319,7 @@ export async function transcodeBasis(
           targetFormat,
         });
       }
-      mips.push({ level, width, height, data });
+      mips.push({ level, width, height, data: projectChannels(data, target.channels) });
     }
     return {
       ok: true,

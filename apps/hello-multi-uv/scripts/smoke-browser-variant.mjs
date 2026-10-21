@@ -8,7 +8,8 @@ import { chromium } from 'playwright';
 import browserLaunch from '../../../scripts/ci/browser-launch.json' with { type: 'json' };
 import { spawn } from 'node:child_process';
 import { inflateSync } from 'node:zlib';
-import { mkdirSync, writeFileSync } from 'node:fs';
+import { copyFileSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { createHash } from 'node:crypto';
 import { resolve, dirname } from 'node:path';
 import { setTimeout as sleep } from 'node:timers/promises';
 import { fileURLToPath } from 'node:url';
@@ -135,12 +136,19 @@ async function capture(page, label) {
     });
   }
   if (process.env.FORGEAX_M3_VARIANT_TAPES === '1') {
-    const bytes = await page.evaluate(async () => {
-      const capture = await globalThis.__forgeax.captureFrame();
+    const artifact = await page.evaluate(async ({ moduleUrl, label }) => {
+      const { uploadTape } = await import(moduleUrl);
+      const signal = AbortSignal.timeout(60_000);
+      const capture = await globalThis.__forgeax.captureFrame({ signal });
       if (!capture.ok) throw new Error(JSON.stringify(capture.error));
-      return Array.from(capture.value.bytes);
-    });
-    writeFileSync(resolve(ARTIFACT_DIR, `${label}.rhitape`), Buffer.from(bytes));
+      const uploaded = await uploadTape(capture.value, { runId: `multi-uv-${label}`, signal });
+      if (!uploaded.ok) throw new Error(JSON.stringify(uploaded.error));
+      return uploaded.value;
+    }, { moduleUrl: `/@fs${REPO_ROOT}/packages/rhi-debug/dist/browser.mjs`, label });
+    if (typeof artifact.path !== 'string') throw new Error('capture upload returned no artifact path');
+    const file = resolve(ARTIFACT_DIR, `${label}.rhitape`);
+    copyFileSync(artifact.path, file);
+    if (`sha256:${createHash('sha256').update(readFileSync(file)).digest('hex')}` !== artifact.digest) throw new Error('capture transfer digest mismatch');
   }
   return decodePngStats(png);
 }
@@ -198,6 +206,7 @@ try {
   browser = await chromium.launch({
     ...browserLaunch,
     headless: process.env.FORGEAX_BROWSER_HEADLESS !== '0',
+    args: [...browserLaunch.args, ...(process.platform === 'linux' ? ['--use-angle=swiftshader'] : [])],
     chromiumSandbox: true,
   });
   const page = await browser.newPage({ viewport: { width: 800, height: 600 } });
@@ -207,10 +216,14 @@ try {
     pageErrors.push(error.message);
     console.error(`[browser-pageerror] ${error.message}`);
   });
-  page.on('console', (message) => {
+  page.on('console', async (message) => {
     if (message.type() === 'error' && !message.text().includes('404')) {
       consoleErrors.push(message.text());
       console.error(`[browser-console] ${message.text()}`);
+      for (const arg of message.args()) {
+        const detail = await arg.evaluate(value => value && typeof value === 'object' ? JSON.stringify(value, (_key, item) => item instanceof Error ? { ...item, name: item.name, message: item.message } : item) : undefined).catch(() => undefined);
+        if (detail) console.error(`[browser-error-detail] ${detail}`);
+      }
     }
   });
 

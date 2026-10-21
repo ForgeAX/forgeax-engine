@@ -10,12 +10,13 @@ interface PendingDynamicGeometryBinding {
 }
 
 /** Capture the render-stage mesh binding used by the current submitted frame. */
-export function createDynamicGeometryConsumptionRecorder(
+function createDynamicGeometryConsumptionRecorder(
   worlds: readonly RenderResourceScope[],
   bindings: WeakMap<RenderResourceScope, Map<number, PendingDynamicGeometryBinding>>,
 ): (entry: Pick<ValidatedRenderable, 'source'>, lane?: RecordStageDrawLane) => void {
   return (entry, lane = 'cpu') => {
     const renderable = entry.source;
+    if (renderable.assetHandle === undefined) return;
     const world = worlds[renderable.worldId];
     if (world === undefined) return;
     let worldBindings = bindings.get(world);
@@ -35,7 +36,7 @@ export function createDynamicGeometryConsumptionRecorder(
   };
 }
 
-export interface DynamicGeometryFrameBindings {
+interface DynamicGeometryFrameBindings {
   begin(): void;
   onRenderableDraw(
     worlds: readonly RenderResourceScope[],

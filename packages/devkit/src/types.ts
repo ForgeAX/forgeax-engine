@@ -24,6 +24,7 @@ export interface ProjectFacts {
   readonly name: string;
   readonly roots: GameProjectRoots;
   readonly startupTimeoutMs?: number | null;
+  readonly frameTimeoutMs?: number | null;
   readonly assetRoots: readonly string[];
   readonly packageJson: Readonly<Record<string, unknown>>;
 }
@@ -81,6 +82,8 @@ export interface PackageOptions extends ProjectCommandOptions {
 export type PackageFormat = 'web-zip' | 'single-html';
 
 export type CaptureBackend = 'auto' | 'software' | 'hardware';
+/** Adapter lane observed in the browser; `unknown` when no adapter is reported. */
+export type CaptureBackendObserved = Exclude<CaptureBackend, 'auto'> | 'unknown';
 
 export interface BrowserCaptureOptions extends ProjectCommandOptions {
   /** Prefer a rendering lane, or let the browser choose and report it. */
@@ -117,6 +120,7 @@ export interface AssetListOptions extends ProjectCommandOptions {
 }
 
 export interface AssetInspectOptions extends ProjectCommandOptions {
+  readonly parametersOnly?: boolean;
   readonly subject: string;
   /** Select one output when subject is a Pack source path. */
   readonly sourceKey?: string;

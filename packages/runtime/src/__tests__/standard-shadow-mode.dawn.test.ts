@@ -20,6 +20,7 @@ import { drawReadyFrame } from '../../../../scripts/test/ready-render-frame.mjs'
 import { constructRuntimeRendererHost } from '../renderer-host';
 import { luminanceRgba16f } from './contact-shadow.fixture';
 import { offscreenCanvas } from './hdr-evidence.fixture';
+import { testAssets } from './helpers/runtime-assets';
 import { shaderManifestUrl } from './shader-manifest-url.fixture';
 
 const SIZE = 128;
@@ -37,10 +38,9 @@ function unwrap<T>(result: RenderResult<T, unknown> | undefined): T {
  * No ambient term, so the ratio to the `off` frame is pure direct visibility.
  */
 function buildScene(world: World) {
-  const material = world.allocSharedRef(
-    'MaterialAsset',
-    Materials.standard({ baseColor: [0.7, 0.7, 0.7, 1], metallic: 0, roughness: 0.9 }),
-  );
+  const material = testAssets(world)
+    .create(Materials.standard({ baseColor: [0.7, 0.7, 0.7, 1], metallic: 0, roughness: 0.9 }))
+    .unwrap();
   const box = (pos: [number, number, number], size: [number, number, number]) =>
     world
       .spawn(
@@ -48,7 +48,9 @@ function buildScene(world: World) {
         {
           component: MeshFilter,
           data: {
-            assetHandle: world.allocSharedRef('MeshAsset', createBoxGeometry(...size).unwrap()),
+            assetHandle: testAssets(world)
+              .create(createBoxGeometry(...size).unwrap())
+              .unwrap(),
           },
         },
         { component: MeshRenderer, data: { materials: [material] } },

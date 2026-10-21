@@ -13,7 +13,7 @@ import { configureRuntimeAssetCatalog, createRuntimeAssetImportTransport, runtim
 import { type App } from '@forgeax/engine-app';
 import { createApp } from '@forgeax/engine-app/browser';
 import { AssetGuid } from '@forgeax/engine-pack/guid';
-import { HANDLE_CUBE } from '@forgeax/engine-assets-runtime';
+
 import { Transform } from '@forgeax/engine-scene';
 
 import { Camera, DirectionalLight, MeshFilter, MeshRenderer } from '@forgeax/engine-render';
@@ -22,11 +22,13 @@ import { perspective } from '@forgeax/engine-render';
 import { Materials } from '@forgeax/engine-render';
 
 import { createPlaneGeometry } from '@forgeax/engine-geometry';
-import type { MaterialAsset, TextureAsset } from '@forgeax/engine-types';
-import { unwrapHandle } from '@forgeax/engine-types';
+
+
 import { forgeaxBundlerAdapter } from 'virtual:forgeax/bundler';
 import { addFirstPersonSystem } from '../../../../../shared/src/learn-render-first-person';
 import { captureCanvasPixels } from '../../../../../shared/src/canvas-capture';
+import { createPrimitiveMesh } from '@forgeax/engine-geometry';
+
 
 // 2. scene constants
 
@@ -90,7 +92,11 @@ async function bootstrap(target: HTMLCanvasElement): Promise<void> {
     return;
   }
   const app = appRes.value;
+if (app.assets === undefined) throw new Error('This scene requires the App asset owner');
+
   const world = app.world;
+const primitiveCube = app.assets.create(createPrimitiveMesh('cube').unwrap()).unwrap();
+
 
   app.onError((error) => {
     console.error('[learn-render 5.3.1 directional shadow] app.onError:', error.code, error.hint);
@@ -112,7 +118,7 @@ async function bootstrap(target: HTMLCanvasElement): Promise<void> {
     console.error('[learn-render 5.3.1 directional shadow] GUID parse failed');
     return;
   }
-  const texRes = await assets.loadByGuid<TextureAsset>(woodGuidRes.value);
+  const texRes = await assets.load(woodGuidRes.value, 'texture');
   if (!texRes.ok) {
     const bus = (globalThis as unknown as { __learnRenderErrors?: Array<{ code: string; hint?: string }> }).__learnRenderErrors;
     if (bus !== undefined) bus.push({ code: texRes.error.code, hint: texRes.error.hint });
@@ -122,16 +128,16 @@ async function bootstrap(target: HTMLCanvasElement): Promise<void> {
   const woodTex = texRes.value;
 
   // Construct wood floor material POJO.
-  const floorMat = world.allocSharedRef<'MaterialAsset', MaterialAsset>('MaterialAsset', {
+  const floorMat = assets.create({
     kind: 'material',
     passes: [
       { name: 'Forward', program: { module: 'forgeax::default-standard-pbr', fragmentEntry: 'fs_main' }, renderState: { tags: { LightMode: 'Forward' }, passKind: 'forward' } },
       { name: 'ShadowCaster', program: { module: 'forgeax::default-shadow-caster' }, renderState: { tags: { LightMode: 'ShadowCaster' }, passKind: 'shadow-caster' } },
     ],
     values: {
-      baseColorTexture: unwrapHandle(world.allocSharedRef('TextureAsset', woodTex)),
+      baseColorTexture: Number(woodTex),
     },
-  });
+  }).unwrap();
 
   // Floor plane: 20x20 on XZ plane at y=-0.5, normal +Y.
   const floorRes = createPlaneGeometry(FLOOR_SIZE, FLOOR_SIZE);
@@ -139,7 +145,7 @@ async function bootstrap(target: HTMLCanvasElement): Promise<void> {
     console.error('[learn-render 5.3.1 directional shadow] createPlaneGeometry failed:', floorRes.error);
     return;
   }
-  const floorMesh = world.allocSharedRef('MeshAsset', floorRes.value);
+  const floorMesh = assets.create(floorRes.value).unwrap();
   world.spawn(
     {
       component: Transform,
@@ -153,7 +159,7 @@ async function bootstrap(target: HTMLCanvasElement): Promise<void> {
   for (const c of CUBES) {
     const [r, g, b] = c.color;
     const mat = Materials.standard({ baseColor: [r, g, b, 1] });
-    const matHandle = world.allocSharedRef('MaterialAsset', mat);
+    const matHandle = assets.create(mat).unwrap();
     world.spawn(
       {
         component: Transform,
@@ -163,7 +169,7 @@ async function bootstrap(target: HTMLCanvasElement): Promise<void> {
           scale: c.scale,
         },
       },
-      { component: MeshFilter, data: { assetHandle: HANDLE_CUBE } },
+      { component: MeshFilter, data: { assetHandle: primitiveCube } },
       { component: MeshRenderer, data: { materials: [matHandle] } },
     ).unwrap();
   }

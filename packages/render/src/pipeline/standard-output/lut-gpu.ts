@@ -1,5 +1,3 @@
-import type { AssetRegistry } from '@forgeax/engine-assets-runtime';
-import { resolveAssetHandle } from '@forgeax/engine-assets-runtime';
 import type { RenderGraphBuilder, RenderGraphError } from '@forgeax/engine-render-graph';
 import type {
   BindGroup,
@@ -9,7 +7,8 @@ import type {
   Texture,
   TextureView,
 } from '@forgeax/engine-rhi';
-import { err, type Handle, ok, type Result, type TextureAsset } from '@forgeax/engine-types';
+import type { AssetHandle } from '@forgeax/engine-types';
+import { err, ok, type Result, type TextureAsset } from '@forgeax/engine-types';
 import type { GpuResidencyCache, TextureGpuEntry } from '../../device/gpu-residency';
 import type { RenderResourceScope } from '../../publication/resource-scope';
 import type { RenderPipelineFrame, RenderPipelineTarget } from '../../render-pipeline';
@@ -21,7 +20,7 @@ import {
   type StandardLutAdmissionErrorCode,
 } from './lut-admission';
 
-/** Device-lifetime binding cached per sourceKey; per-camera facts extend it. */
+/** Device-lifetime binding cached per managed reference; per-camera facts extend it. */
 interface CachedLutBinding {
   readonly texture: Texture;
   readonly view: TextureView;
@@ -38,17 +37,14 @@ export interface StandardLutGpuResources extends CachedLutBinding {
 
 export interface StandardLutGraphProjection {
   readonly view: import('@forgeax/engine-render-graph').GraphTextureView;
-  readonly sampler: Sampler;
   readonly strength: number;
-  readonly bindGroupLayout: BindGroupLayout;
-  readonly bindGroup: BindGroup;
+  bind(frame: RenderPipelineFrame): Pick<CachedLutBinding, 'bindGroupLayout' | 'bindGroup'>;
 }
 
 export interface StandardLutGpuPreparationInput {
   readonly world: RenderResourceScope;
-  readonly handle: Handle<'TextureAsset', 'shared'>;
+  readonly handle: AssetHandle<'texture'>;
   readonly strength: number;
-  readonly assets: AssetRegistry;
   readonly gpuStore: GpuResidencyCache;
   readonly device: RhiDevice;
 }
@@ -64,7 +60,6 @@ export function retireStandardLutGpuResources(_resources: StandardLutGpuResource
 export type StandardLutGpuErrorCode =
   | StandardLutAdmissionErrorCode
   | 'standard-lut-strength-invalid'
-  | 'standard-lut-catalog-source-missing'
   | 'standard-lut-residency-failed'
   | 'standard-lut-not-resident'
   | 'standard-lut-3d-view-unavailable'
@@ -116,7 +111,7 @@ export function prepareStandardLutGpu(
       { strength: String(input.strength) },
     );
   }
-  const asset = resolveAssetHandle<TextureAsset>(input.world, input.handle);
+  const asset = input.world.resolveAsset<TextureAsset>(input.handle);
   if (!asset.ok) {
     return failure(
       'standard-lut-residency-failed',
@@ -125,22 +120,10 @@ export function prepareStandardLutGpu(
       causeDetail(asset.error),
     );
   }
-  const guid = input.assets.guidOf(asset.value);
-  const catalogEntry =
-    'sourceForAsset' in input.world
-      ? input.world.sourceForAsset(input.handle)
-      : guid === undefined
-        ? undefined
-        : { guid, sourceKey: input.assets.sourceKeyOf(guid) };
-  const sourceKey = catalogEntry?.sourceKey;
-  if (sourceKey === undefined) {
-    return failure(
-      'standard-lut-catalog-source-missing',
-      'the authoritative asset catalog provides a stable sourceKey for the LUT GUID',
-      'repair the producer-owned catalog entry and retry the same GUID/sourceKey',
-      { guid: String(catalogEntry?.guid ?? guid) },
-    );
-  }
+  const source = input.world.sourceForAsset(input.handle);
+  const guid = source?.guid;
+  const reference = `${input.world.identity}:${input.handle}`;
+  const sourceKey = source?.sourceKey ?? reference;
   const resident = input.gpuStore.getTextureGpuView(input.handle, input.world);
   let entry: TextureGpuEntry | undefined;
   if (resident === undefined) {
@@ -182,7 +165,7 @@ export function prepareStandardLutGpu(
       lutBindingCache.set(input.device, created);
       return created;
     })();
-  const cached = cache.get(sourceKey);
+  const cached = cache.get(reference);
   if (cached !== undefined && cached.texture === texture) {
     return ok({ ...cached, sourceKey, strength: input.strength });
   }
@@ -198,7 +181,10 @@ export function prepareStandardLutGpu(
       causeDetail(liveView.error),
     );
   }
-  const sampler = input.device.createSampler(createStandardLutSamplerDescriptor());
+  const sampler =
+    cached === undefined
+      ? input.device.createSampler(createStandardLutSamplerDescriptor())
+      : ok(cached.sampler);
   if (!sampler.ok) {
     return failure(
       'standard-lut-sampler-failed',
@@ -207,12 +193,15 @@ export function prepareStandardLutGpu(
       causeDetail(sampler.error),
     );
   }
-  const bindGroupLayout = input.device.createBindGroupLayout({
-    entries: [
-      { binding: 0, visibility: 2, texture: { sampleType: 'float', viewDimension: '3d' } },
-      { binding: 1, visibility: 2, sampler: { type: 'filtering' } },
-    ],
-  });
+  const bindGroupLayout =
+    cached === undefined
+      ? input.device.createBindGroupLayout({
+          entries: [
+            { binding: 0, visibility: 2, texture: { sampleType: 'float', viewDimension: '3d' } },
+            { binding: 1, visibility: 2, sampler: { type: 'filtering' } },
+          ],
+        })
+      : ok(cached.bindGroupLayout);
   if (!bindGroupLayout.ok) {
     return failure(
       'standard-lut-bind-group-layout-failed',
@@ -274,7 +263,7 @@ export function prepareStandardLutGpu(
     bindGroup: liveBindGroup.value,
     size: admission.value.extent.width,
   };
-  cache.set(sourceKey, binding);
+  cache.set(reference, binding);
   return ok({ ...binding, sourceKey, strength: input.strength });
 }
 
@@ -302,7 +291,10 @@ export function addStandardColorLutPass(
     LUT_STAGE_WGSL.replace('LUT_STRENGTH', String(lut.strength)),
     {
       accesses: [{ resource: lut.view, usage: 'sampled-read' }],
-      bind: () => ({ layout: lut.bindGroupLayout, bindGroup: lut.bindGroup }),
+      bind: (_device, _resources, frame) => {
+        const binding = lut.bind(frame);
+        return { layout: binding.bindGroupLayout, bindGroup: binding.bindGroup };
+      },
     },
   );
 }

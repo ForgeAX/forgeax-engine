@@ -9,7 +9,7 @@ describe('VFX render inspect projection', () => {
       produced: 6,
       dropped: 1,
       stageReadiness: [{ id: 'turbulence', state: 'ready', generation: 3 }],
-      providerReadiness: { readiness: 'ready', generation: 3 },
+      providerReadiness: { ok: true, value: { generation: 3, resources: [] } },
       gpuTiming: { frameMs: 0.8, samples: 8 },
     });
 
@@ -18,7 +18,7 @@ describe('VFX render inspect projection', () => {
         topology: 'beam',
         counters: { capacity: 12, produced: 6, dropped: 1 },
         stageReadiness: expect.arrayContaining([expect.objectContaining({ id: 'turbulence' })]),
-        providerReadiness: { readiness: 'ready', generation: 3 },
+        providerReadiness: { ok: true, value: { generation: 3, resources: [] } },
         gpuTiming: { frameMs: 0.8, samples: 8 },
       }),
     );

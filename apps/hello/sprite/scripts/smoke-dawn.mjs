@@ -1,5 +1,6 @@
 #!/usr/bin/env node
 import { encodePng } from '@forgeax/engine-image/png';
+import { samplerContribution } from '@forgeax/engine-render';
 // hello-sprite headless smoke (feat-20260520-2d-sprite-layer-mvp / M-4 /
 // w30; AC-13).
 //
@@ -43,6 +44,10 @@ import { fileURLToPath } from 'node:url';
 import { dirname, resolve } from 'node:path';
 import { readReferencePng } from '../../../shared/png-codec.mjs';
 import { rasterizeSpriteReference } from './reference-raster.mjs';
+import { AssetRegistry } from '@forgeax/engine-assets-runtime';
+
+import { createPrimitiveMesh } from '@forgeax/engine-geometry';
+
 
 const SMOKE_DURATION_MS = Number.parseInt(process.env.SMOKE_DURATION_MS ?? '5000', 10);
 const SMOKE_MIN_FRAMES = Number.parseInt(process.env.SMOKE_MIN_FRAMES ?? '60', 10);
@@ -69,7 +74,7 @@ const SPRITE_PARAMETERS = [
   { name: 'colorTint', type: 'vec4' },
   { name: 'region', type: 'vec4' },
   { name: 'pivotAndSize', type: 'vec4' },
-  { name: 'slicesAndMode', type: 'vec4' },
+  { name: 'slicesAndMode', type: 'vec4', default: [0, 0, 0, 0] },
   { name: 'baseColorTexture', type: 'texture' },
 ];
 const CLEAR_RGBA = [0.07, 0.07, 0.09, 1];
@@ -208,9 +213,7 @@ const { constructRuntimeRendererHost } = await import('@forgeax/engine-runtime/i
 const { TransparentSort, SPRITE_PREMULTIPLIED_ALPHA_BLEND } = await import('@forgeax/engine-render/authoring');
 const { Camera, Layer, MeshFilter, MeshRenderer, TONEMAP_NONE, TONEMAP_REINHARD_EXTENDED } = await import('@forgeax/engine-render');
 const { Transform } = await import('@forgeax/engine-scene');
-const {
-  HANDLE_QUAD,
-} = await import('@forgeax/engine-assets-runtime');
+
 
 // Mirror the CAMERA_PROJECTION_ORTHOGRAPHIC constant inline (the runtime
 // barrel does not re-export it today; the demo's main.ts inlines the
@@ -332,14 +335,14 @@ const synthPod = {
 // Mints the texture, default repeat sampler, and the 3
 // per-scene sprite materials into `world`. Returns the material handle array.
 async function mintSpriteAssets(world, layout) {
-  const textureHandle = world.allocSharedRef('TextureAsset', synthPod);
-  const samplerHandle = world.allocSharedRef('SamplerAsset', {
+  const textureHandle = world.assets.create(synthPod).unwrap();
+  const samplerHandle = world.assets.create({
     kind: 'sampler',
     magFilter: 'linear',
     minFilter: 'linear',
     addressModeU: 'repeat',
     addressModeV: 'repeat',
-  });
+  }).unwrap();
   const materialHandles = [];
   // feat-20260626 M5-T1 (plan-strategy D-5): FALSIFY=missing-sprite-blend
   // omits `renderState.blend` from the pass descriptor (renderState empty)
@@ -351,7 +354,7 @@ async function mintSpriteAssets(world, layout) {
     : { blend: SPRITE_PREMULTIPLIED_ALPHA_BLEND };
   for (let i = 0; i < 3; i++) {
     materialHandles.push(
-      world.allocSharedRef('MaterialAsset', {
+      world.assets.create({
         kind: 'material',
         passes: [
           // feat-20260626-sprite-transparent-collapse M3 — post M1/M2
@@ -369,7 +372,7 @@ async function mintSpriteAssets(world, layout) {
           region: [0, 0, 1, 1],
           pivotAndSize: [layout.pivot[0], layout.pivot[1], 1, 1],
         },
-      }),
+      }).unwrap(),
     );
   }
   return { ok: true, textureHandle, samplerHandle, materialHandles };
@@ -381,7 +384,13 @@ const failures = [];
 for (const matrixCase of MATRIX) {
   const { scene, tonemap, refFile } = matrixCase;
   const layout = SCENE_LAYOUTS[scene];
-  const world = new World();
+  const world = new World({ assets: new AssetRegistry({ shaderRegistry: assets.shaderRegistry }) });
+  world.assets.installDecoder(samplerContribution.kind, samplerContribution.decoder);
+const sceneAssets = world.assets;
+if (!(sceneAssets instanceof AssetRegistry)) throw new Error('Scene requires its runtime asset owner');
+
+const primitiveQuad = sceneAssets.create(createPrimitiveMesh('quad').unwrap()).unwrap();
+
   const worldAttachment1 = renderer.attach(world);
   if (!worldAttachment1.ok) throw worldAttachment1.error;
   const mint = await mintSpriteAssets(world, layout);
@@ -414,7 +423,7 @@ for (const matrixCase of MATRIX) {
           data: {
             pos: [slot.pos[0], slot.pos[1], slot.pos[2]], quat: [0, 0, 0, 1], scale: [SPRITE_SCALE, SPRITE_SCALE, 1],},
         },
-        { component: MeshFilter, data: { assetHandle: HANDLE_QUAD } },
+        { component: MeshFilter, data: { assetHandle: primitiveQuad } },
         { component: MeshRenderer, data: { materials: [matHandle] } },
         { component: Layer, data: { value: slot.layer } },
       ),
@@ -631,59 +640,41 @@ console.log(
   `[smoke] nineslice section start; FALSIFY=${FALSIFY === '' ? '<unset>' : FALSIFY}`,
 );
 
-// Assertion #1: HANDLE_NINESLICE_QUAD shape.
-const { HANDLE_NINESLICE_QUAD } = await import('@forgeax/engine-assets-runtime');
-if (HANDLE_NINESLICE_QUAD === undefined) {
-  failures.push('nineslice: HANDLE_NINESLICE_QUAD missing from @forgeax/engine-runtime barrel');
-}
-// Handle is a u32 brand; the unwrapped numeric form is HANDLE_NINESLICE_QUAD
-// + 0 (any cast back to number works).
-const ninesliceHandleId = Number(HANDLE_NINESLICE_QUAD);
-if (ninesliceHandleId !== 5) {
-  failures.push(
-    `nineslice: HANDLE_NINESLICE_QUAD id=${ninesliceHandleId}, expected 5 (D-2 builtin slot)`,
-  );
-}
+// The primitive factory owns the nine-slice geometry; asset identity is runtime-local.
+const ninesliceGeometry = createPrimitiveMesh('nine-slice-quad').unwrap();
+if (ninesliceGeometry.indices.length !== 54 || ninesliceGeometry.attributes.position.length !== 48)
+  failures.push('nineslice: canonical 4x4 grid must contain nine indexed quads');
 
-// Assertion #2 + #3: D-9 soft-warn path. Build a fresh world + register a
-// sliceMode=1 material with addressMode='clamp-to-edge' sampler so the D-9
-// branch fires. All handles are minted into this World (D-15 per-World refs).
+// Assertion #2 + #3: D-9 soft-warn at material preparation. The scene owns
+// its assets, including the tiled material and its clamp sampler.
 let ninesliceDrawErrors = 0;
 let softWarnDelta = 0;
 const ninesliceFrames = Math.max(30, Math.floor(SMOKE_MIN_FRAMES / 10));
 {
-  const world = new World();
+  const world = new World({ assets: new AssetRegistry({ shaderRegistry: assets.shaderRegistry }) });
+  world.assets.installDecoder(samplerContribution.kind, samplerContribution.decoder);
+const sceneAssets = world.assets;
+if (!(sceneAssets instanceof AssetRegistry)) throw new Error('Scene requires its runtime asset owner');
+
+const primitiveNineSliceQuad = sceneAssets.create(createPrimitiveMesh('nine-slice-quad').unwrap()).unwrap();
+
   const ninesliceAttachment = renderer.attach(world);
   if (!ninesliceAttachment.ok) throw ninesliceAttachment.error;
-  const ninesliceTextureHandle = world.allocSharedRef('TextureAsset', synthPod);
+  const ninesliceTextureHandle = world.assets.create(synthPod).unwrap();
   const ninesliceMetrics = assets._getMetrics?.();
   if (ninesliceMetrics === undefined || ninesliceMetrics === null) {
     failures.push('nineslice: AssetRegistry owner metrics are unavailable');
   }
+  if (ninesliceMetrics !== undefined && ninesliceMetrics !== null) sceneAssets.setMetrics(ninesliceMetrics);
   const ninesliceMetricsBefore = ninesliceMetrics?.snapshot() ?? {};
   const beforeCount = ninesliceMetricsBefore['nineslice.tile-needs-repeat-sampler'] ?? 0;
-  // D-9 soft-warn fires at AssetRegistry.catalog time: it reads values.sampler
-  // as an embedded GUID string (D-19) and resolves it against the catalogue. So
-  // catalog the clamp sampler under a GUID, then catalog the sliceMode=1 material
-  // referencing that GUID -- allocSharedRef stores the POD verbatim and never runs
-  // detectTileNeedsRepeatSampler, so the column handle alone would not fire it.
-  const clampSamplerGuid = '00000000-0000-4000-8000-0000000000c1';
-  okResult(
-    assets.catalog(clampSamplerGuid, {
-      kind: 'sampler',
-      magFilter: 'linear',
-      minFilter: 'linear',
-      addressModeU: 'clamp-to-edge',
-      addressModeV: 'clamp-to-edge',
-    }),
-  );
-  const clampSamplerHandle = world.allocSharedRef('SamplerAsset', {
+  const clampSamplerHandle = world.assets.create({
     kind: 'sampler',
     magFilter: 'linear',
     minFilter: 'linear',
     addressModeU: 'clamp-to-edge',
     addressModeV: 'clamp-to-edge',
-  });
+  }).unwrap();
   const ninesliceSlices = FALSIFY_NINESLICE_ANCHOR
     ? [0, 0, 0, 0] // falsifier: degenerate sentinel; soft-warn should still fire on sliceMode=1
     : [0.25, 0.25, 0.25, 0.25];
@@ -691,28 +682,7 @@ const ninesliceFrames = Math.max(30, Math.floor(SMOKE_MIN_FRAMES / 10));
   // numerically zero and would silently select stretch mode instead of
   // exercising the D-9 tile sampler warning.
   const ninesliceMode = FALSIFY_NINESLICE_ANCHOR ? -1 : -ninesliceSlices[3];
-  // Catalog a material whose sampler is the clamp GUID string -> trips the D-9
-  // soft-warn counter. The rendered entity below uses the column-handle variant.
-  const debugCatalogResult = assets.catalog('00000000-0000-4000-8000-0000000000c2', {
-      kind: 'material',
-      passes: [
-        // feat-20260626 M3: renderState.blend SSOT.
-        { name: 'Forward', program: { module: 'forgeax::sprite' }, renderState: { blend: SPRITE_PREMULTIPLIED_ALPHA_BLEND, tags: { LightMode: 'Forward' }, queue: 3000 } },
-      ],
-      parameters: SPRITE_PARAMETERS,
-      values: {
-        // feat-20260625 M3/w11 (D-4): UBO-aligned. slicesAndMode merges legacy
-        // slices[4] (LTRB) + sliceMode sign (mode>=0 stretch, <0 tile) into
-        // one vec4 (sprite.material.json paramSchema).
-        colorTint: [1, 1, 1, 1],
-        sampler: clampSamplerGuid,
-        region: [0, 0, 1, 1],
-        pivotAndSize: [0.5, 0.5, 1, 1],
-        slicesAndMode: [ninesliceSlices[0], ninesliceSlices[1], ninesliceSlices[2], ninesliceMode],
-      },
-    });
-  okResult(debugCatalogResult);
-  const ninesliceMatHandle = world.allocSharedRef('MaterialAsset', {
+  const ninesliceMatHandle = world.assets.create({
     kind: 'material',
     passes: [
       // feat-20260626 M3: renderState.blend SSOT.
@@ -723,24 +693,12 @@ const ninesliceFrames = Math.max(30, Math.floor(SMOKE_MIN_FRAMES / 10));
       // feat-20260625 M3/w11 (D-4): UBO-aligned. slicesAndMode merges legacy
       // slices[4] (LTRB) + sliceMode (mode>=0 stretch, <0 tile) into vec4.
       colorTint: [1, 1, 1, 1],
-      baseColorTexture: ninesliceTextureHandle,
+      baseColorTexture: { texture: ninesliceTextureHandle, sampler: clampSamplerHandle },
       region: [0, 0, 1, 1],
       pivotAndSize: [0.5, 0.5, 1, 1],
       slicesAndMode: [ninesliceSlices[0], ninesliceSlices[1], ninesliceSlices[2], ninesliceMode],
     },
-  });
-  const ninesliceMetricsAfter = ninesliceMetrics?.snapshot() ?? {};
-  const afterCount = ninesliceMetricsAfter['nineslice.tile-needs-repeat-sampler'] ?? 0;
-  softWarnDelta = afterCount - beforeCount;
-  console.log(
-    `[smoke] nineslice tile-needs-repeat-sampler delta=${softWarnDelta} (before=${beforeCount} after=${afterCount})`,
-  );
-  if (softWarnDelta < 1) {
-    failures.push(
-      `nineslice: D-9 soft-warn did not fire (delta=${softWarnDelta}); sliceMode=1 + clamp-sampler must increment 'nineslice.tile-needs-repeat-sampler' counter`,
-    );
-  }
-
+  }).unwrap();
   // Assertion #4: render a fresh World containing 1 nineslice entity for >=30
   // frames; assert no draw errors. We reuse the activeRenderTarget mock canvas
   // machinery already wired above -- a new World rebuilds the camera + entity
@@ -759,7 +717,7 @@ const ninesliceFrames = Math.max(30, Math.floor(SMOKE_MIN_FRAMES / 10));
           data: {
             pos: [0, 0, 0], quat: [0, 0, 0, 1], scale: [0.6, 0.4, 1],},
         },
-        { component: MeshFilter, data: { assetHandle: HANDLE_NINESLICE_QUAD } },
+        { component: MeshFilter, data: { assetHandle: primitiveNineSliceQuad } },
         { component: MeshRenderer, data: { materials: [ninesliceMatHandle] } },
         { component: Layer, data: { value: 0 } },
       ),
@@ -801,6 +759,19 @@ const ninesliceFrames = Math.max(30, Math.floor(SMOKE_MIN_FRAMES / 10));
       if (!r.ok) ninesliceDrawErrors++;
     }
     await sharedDevice?.queue.onSubmittedWorkDone();
+  const ninesliceMetricsAfter = ninesliceMetrics?.snapshot() ?? {};
+  const afterCount = ninesliceMetricsAfter['nineslice.tile-needs-repeat-sampler'] ?? 0;
+  softWarnDelta = afterCount - beforeCount;
+  console.log(
+    `[smoke] nineslice tile-needs-repeat-sampler delta=${softWarnDelta} (before=${beforeCount} after=${afterCount})`,
+  );
+  if (softWarnDelta < 1) {
+    failures.push(
+      `nineslice: D-9 soft-warn did not fire (delta=${softWarnDelta}); sliceMode=1 + clamp-sampler must increment 'nineslice.tile-needs-repeat-sampler' counter`,
+    );
+  }
+
+
   }
 }
 console.log(
@@ -897,7 +868,7 @@ if (failures.length > 0) {
 }
 
 console.log(
-  `[smoke] PASS - 4 PNG cases + nineslice section GREEN: backend=webgpu, scene-A/none + scene-A/reinhard + scene-B/none + scene-B/reinhard within eps=${SMOKE_PIXEL_THRESHOLD}; HANDLE_NINESLICE_QUAD id=${ninesliceHandleId}; D-9 soft-warn delta=${softWarnDelta}; AC-12 grep clean`,
+  `[smoke] PASS - 4 PNG cases + nineslice section GREEN: backend=webgpu, scene-A/none + scene-A/reinhard + scene-B/none + scene-B/reinhard within eps=${SMOKE_PIXEL_THRESHOLD}; nine-slice grid=4x4; D-9 soft-warn delta=${softWarnDelta}; AC-12 grep clean`,
 );
 console.log(`[smoke] frames observed=${TARGET_FRAMES}`);
 console.log(

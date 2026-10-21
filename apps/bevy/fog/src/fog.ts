@@ -12,6 +12,8 @@ import {
 import { quat } from '@forgeax/engine-math';
 import { Transform } from '@forgeax/engine-scene';
 import fogSceneJson from './fog-scene.json';
+import { AssetRegistry } from '@forgeax/engine-assets-runtime';
+
 
 type Vec3 = readonly [number, number, number];
 type Color4 = readonly [number, number, number, number];
@@ -108,6 +110,9 @@ const fogColor = fogScene.fogColor;
 const fogParameters = fogScene.fog;
 
 export function buildFogWorld(world: World, aspect = 16 / 9): FogWorldController {
+const sceneAssets = world.assets;
+if (!(sceneAssets instanceof AssetRegistry)) throw new Error('Scene requires its runtime asset owner');
+
   let fogWorld = world;
   let activeFogData: (typeof fogParameters)[keyof typeof fogParameters] | undefined =
     fogParameters.height;
@@ -157,28 +162,13 @@ export function buildFogWorld(world: World, aspect = 16 / 9): FogWorldController
     return true;
   };
 
-  const ground = world.allocSharedRef(
-    'MaterialAsset',
-    Materials.standard({ baseColor: fogScene.materials.ground, roughness: 0.92 }),
-  );
-  const tick = world.allocSharedRef(
-    'MaterialAsset',
-    Materials.standard({ baseColor: fogScene.materials.tick, roughness: 0.88 }),
-  );
-  const gate = world.allocSharedRef(
-    'MaterialAsset',
-    Materials.standard({ baseColor: fogScene.materials.gate, roughness: 0.72 }),
-  );
-  const marker = world.allocSharedRef(
-    'MaterialAsset',
-    Materials.standard({ baseColor: fogScene.materials.marker, metallic: 0.1, roughness: 0.28 }),
-  );
-  const structure = world.allocSharedRef(
-    'MaterialAsset',
-    Materials.standard({ baseColor: fogScene.materials.structure, roughness: 0.86 }),
-  );
-  const cubeMesh = world.internSharedRef('MeshAsset', createBoxGeometry(1, 1, 1).unwrap());
-  const sphereMesh = world.internSharedRef('MeshAsset', createSphereGeometry(1).unwrap());
+  const ground = sceneAssets.create(Materials.standard({ baseColor: fogScene.materials.ground, roughness: 0.92 })).unwrap();
+  const tick = sceneAssets.create(Materials.standard({ baseColor: fogScene.materials.tick, roughness: 0.88 })).unwrap();
+  const gate = sceneAssets.create(Materials.standard({ baseColor: fogScene.materials.gate, roughness: 0.72 })).unwrap();
+  const marker = sceneAssets.create(Materials.standard({ baseColor: fogScene.materials.marker, metallic: 0.1, roughness: 0.28 })).unwrap();
+  const structure = sceneAssets.create(Materials.standard({ baseColor: fogScene.materials.structure, roughness: 0.86 })).unwrap();
+  const cubeMesh = sceneAssets.create(createBoxGeometry(1, 1, 1).unwrap()).unwrap();
+  const sphereMesh = sceneAssets.create(createSphereGeometry(1).unwrap()).unwrap();
 
   world.spawn(
     { component: Transform, data: { pos: fogScene.lighting.position } },

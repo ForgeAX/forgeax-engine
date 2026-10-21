@@ -1,9 +1,8 @@
-import { RuntimeMeshVertices } from '@forgeax/engine-assets-runtime';
-import type { EntityHandle, World } from '@forgeax/engine-ecs';
+import type { AssetHandle } from '@forgeax/engine-types';
+import type { AssetRegistry } from '@forgeax/engine-assets-runtime';
 import { Materials } from '@forgeax/engine-render';
 import { SPRITE_PREMULTIPLIED_ALPHA_BLEND } from '@forgeax/engine-render/authoring';
-import type { Handle, MaterialAsset, MeshAsset, TextureAsset } from '@forgeax/engine-types';
-import { unwrapHandle } from '@forgeax/engine-types';
+import type { MeshAsset, TextureAsset } from '@forgeax/engine-types';
 
 const FLOATS_PER_VERTEX = 12;
 const TEXTURE_SIZE = 32;
@@ -38,28 +37,20 @@ const INDICES = new Uint16Array([
 ]);
 
 export interface CustomProjectileMesh {
-  readonly world: World;
-  readonly meshContent: EntityHandle;
-  readonly meshHandle: Handle<'MeshAsset', 'shared'>;
-  readonly materialHandle: Handle<'MaterialAsset', 'shared'>;
-  readonly spriteMaterialHandle: Handle<'MaterialAsset', 'shared'>;
-  readonly spriteLitMaterialHandle: Handle<'MaterialAsset', 'shared'>;
-  readonly baseVertices: Float32Array;
-  readonly alternateVertices: Float32Array;
+  readonly assets: AssetRegistry;
+  dispose(): void;
+  readonly meshHandle: AssetHandle<'mesh'>;
+  readonly materialHandle: AssetHandle<'material'>;
+  readonly spriteMaterialHandle: AssetHandle<'material'>;
+  readonly spriteLitMaterialHandle: AssetHandle<'material'>;
+  readonly baseUV: Float32Array;
+  readonly alternateUV: Float32Array;
   uvMode: 'upper' | 'lower';
   toggles: number;
   readonly textureSource: 'procedural';
   readonly textureFormat: TextureAsset['format'];
 }
 
-function publishMesh(
-  world: World,
-  content: EntityHandle,
-  vertices: Float32Array,
-  indices: Uint16Array,
-): void {
-  world.set(content, RuntimeMeshVertices, { vertices, indices: new Uint32Array(indices) }).unwrap();
-}
 
 function verticesFor(half: 'upper' | 'lower'): Float32Array {
   const vertices = new Float32Array(POSITIONS.length * FLOATS_PER_VERTEX);
@@ -81,6 +72,15 @@ function verticesFor(half: 'upper' | 'lower'): Float32Array {
     vertices[offset + 11] = 1;
   }
   return vertices;
+}
+
+function uvFor(half: 'upper' | 'lower'): Float32Array {
+  return Float32Array.from({ length: POSITIONS.length * 2 }, (_, index) => {
+    const vertex = Math.floor(index / 2);
+    return index % 2 === 0
+      ? (vertex % 4 === 0 || vertex % 4 === 3 ? 0 : 1)
+      : (vertex % 4 < 2 ? 0 : 0.2) + (half === 'lower' ? 0.5 : 0);
+  });
 }
 
 function meshFrom(vertices: Float32Array): MeshAsset {
@@ -137,24 +137,22 @@ function makeTexture(): TextureAsset {
 }
 
 export async function createCustomProjectileMesh(
-  world: World,
-): Promise<CustomProjectileMesh | undefined> {
+  assets: AssetRegistry,
+): Promise<CustomProjectileMesh> {
   const texture = makeTexture();
-  const textureHandle = world.allocSharedRef('TextureAsset', texture);
+  const textureHandle = assets.create(texture).unwrap();
   const baseVertices = verticesFor('upper');
-  const alternateVertices = verticesFor('lower');
   const meshAsset = meshFrom(baseVertices);
-  const meshHandle = world.allocSharedRef('MeshAsset', meshAsset);
-  const meshContent = world.spawn({ component: RuntimeMeshVertices, data: { asset: meshHandle, vertices: meshAsset.vertices } }).unwrap();
+  const meshHandle = assets.create(meshAsset).unwrap();
   const material = Materials.standard({
     baseColor: [1, 1, 1, 1],
-    baseColorTexture: unwrapHandle(textureHandle),
+    baseColorTexture: textureHandle,
     roughness: 0.4,
     emissive: [1, 0.7, 0.15],
     emissiveIntensity: 5,
   });
-  const materialHandle = world.allocSharedRef<'MaterialAsset', MaterialAsset>('MaterialAsset', material);
-  const spriteMaterial = world.allocSharedRef<'MaterialAsset', MaterialAsset>('MaterialAsset', {
+  const materialHandle = assets.create(material).unwrap();
+  const spriteMaterial = assets.create({
     kind: 'material',
     passes: [
       {
@@ -168,9 +166,11 @@ export async function createCustomProjectileMesh(
       colorTint: [1, 0.7, 0.15, 1],
       baseColorTexture: textureHandle,
       pivotAndSize: [0.5, 0.5, 1, 1],
+      region: [0, 0, 1, 1],
+      slicesAndMode: [0, 0, 0, 0],
     },
-  });
-  const spriteLitMaterial = world.allocSharedRef<'MaterialAsset', MaterialAsset>('MaterialAsset', {
+  }).unwrap();
+  const spriteLitMaterial = assets.create({
     kind: 'material',
     passes: [
       {
@@ -184,17 +184,21 @@ export async function createCustomProjectileMesh(
       colorTint: [1, 0.7, 0.15, 1],
       baseColorTexture: textureHandle,
       pivotAndSize: [0.5, 0.5, 1, 1],
+      region: [0, 0, 1, 1],
+      slicesAndMode: [0, 0, 0, 0],
     },
-  });
+  }).unwrap();
   return {
-    world,
+    assets,
     meshHandle,
-    meshContent,
+    dispose: () => {
+      for (const handle of [meshHandle, materialHandle, spriteMaterial, spriteLitMaterial, textureHandle]) assets.release(handle).unwrap();
+    },
     materialHandle,
     spriteMaterialHandle: spriteMaterial,
     spriteLitMaterialHandle: spriteLitMaterial,
-    baseVertices,
-    alternateVertices,
+    baseUV: uvFor('upper'),
+    alternateUV: uvFor('lower'),
     uvMode: 'upper',
     toggles: 0,
     textureSource: 'procedural',
@@ -205,11 +209,11 @@ export async function createCustomProjectileMesh(
 export function toggleCustomProjectileMesh(mesh: CustomProjectileMesh): void {
   mesh.uvMode = mesh.uvMode === 'upper' ? 'lower' : 'upper';
   mesh.toggles += 1;
-  publishMesh(mesh.world, mesh.meshContent, mesh.uvMode === 'upper' ? mesh.baseVertices : mesh.alternateVertices, INDICES);
+  mesh.assets.writeRange(mesh.meshHandle, { attribute: 'uv', first: 0, values: mesh.uvMode === 'upper' ? mesh.baseUV : mesh.alternateUV }).unwrap();
 }
 
 export function resetCustomProjectileMesh(mesh: CustomProjectileMesh): void {
   if (mesh.uvMode === 'upper') return;
   mesh.uvMode = 'upper';
-  publishMesh(mesh.world, mesh.meshContent, mesh.baseVertices, INDICES);
+  mesh.assets.writeRange(mesh.meshHandle, { attribute: 'uv', first: 0, values: mesh.baseUV }).unwrap();
 }

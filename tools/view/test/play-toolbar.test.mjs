@@ -30,12 +30,24 @@ function fixture({ state = { project: { id: 'project' }, play: null }, call } = 
   const toolbar = element.children[0];
   return {
     mounted,
+    toolbar,
+    element,
     button: label => toolbar.children.find(child => child.attributes['aria-label'] === label && child.style.display !== 'none'),
     status: toolbar.children.at(-1),
     get signal() { return signal; },
     get released() { return released; },
   };
 }
+
+it('places the shared viewport toolbar before the independently sized render surface', () => {
+  const view = fixture();
+  assert.equal(view.toolbar.className, 'fx-toolbar fx-toolbar--viewport');
+  assert.equal(view.toolbar.attributes.role, 'toolbar');
+  assert.equal(view.toolbar.attributes['aria-label'], 'Scene execution');
+  assert.deepEqual(view.element.children, [view.toolbar, view.mounted.surface]);
+  assert.equal(view.toolbar.style.position, undefined);
+  view.mounted.dispose();
+});
 
 it('allows Stop to cancel preparation before Engine has published a Play target', async () => {
   const view = fixture();

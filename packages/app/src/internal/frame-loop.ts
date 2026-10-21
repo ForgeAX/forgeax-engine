@@ -15,7 +15,7 @@ import { AppError } from '../errors';
 import type { ExecutionFrameInspection } from '../execution';
 import { APP_PHASE_CATALOG, type DrawSource } from '../types';
 
-export type FrameState = 'idle' | 'running' | 'paused' | 'stopped';
+type FrameState = 'idle' | 'running' | 'paused' | 'stopped';
 
 export interface FrameLoopOptions {
   readonly world: World;

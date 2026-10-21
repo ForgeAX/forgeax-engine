@@ -1,5 +1,11 @@
+import { AssetRegistry } from '@forgeax/engine/assets-runtime';
 import type { AudioBackend } from '@forgeax/engine/audio';
-import { AUDIO_ENGINE_RESOURCE_KEY, AudioSource, audioPlugin } from '@forgeax/engine/audio';
+import {
+  AUDIO_ENGINE_RESOURCE_KEY,
+  AudioSource,
+  audioContribution,
+  audioPlugin,
+} from '@forgeax/engine/audio';
 import { webAudioPlugin } from '@forgeax/engine/audio-webaudio';
 import { createWorldContext, World } from '@forgeax/engine/ecs';
 import { scenePlugin } from '@forgeax/engine/scene';
@@ -19,7 +25,10 @@ export default defineFeature({
     const checks = new CheckList();
     spawnCamera(appWorld);
     const trace = traceAudioGraph();
-    const world = new World();
+    const sceneAssets = new AssetRegistry();
+    sceneAssets.installDecoder(audioContribution.kind, audioContribution.decoder);
+    const world = new World({ assets: sceneAssets });
+
     const ctx = await createWorldContext(world, [scenePlugin(), webAudioPlugin(), audioPlugin()]);
     try {
       const backend = world.getResource<AudioBackend>(AUDIO_ENGINE_RESOURCE_KEY);
@@ -27,11 +36,14 @@ export default defineFeature({
         checks.ok('AudioEngine resource present', false);
         return { checks: () => checks.items };
       }
-      const clip = world.allocSharedRef('AudioClipAsset', {
-        kind: 'audio',
-        sourceKey: 'cleanup',
-        bytes: makeWav(400, 0.5),
-      });
+      const clip = sceneAssets
+        .create({
+          kind: 'audio',
+          mediaType: 'audio/wav',
+          sourceKey: 'cleanup',
+          bytes: makeWav(400, 0.5),
+        })
+        .unwrap();
       const entity = world
         .spawn({ component: AudioSource, data: { clip, playing: true, loop: true, volume: 0.02 } })
         .unwrap();
@@ -69,6 +81,9 @@ export default defineFeature({
       checks.equal('no active source after destroy', backend.getActiveSourceCount(), 0);
       checks.ok('AudioEngine resource removed', !world.hasResource(AUDIO_ENGINE_RESOURCE_KEY));
     } finally {
+      await ctx.fiber.dispose();
+      world.despawnAll().unwrap();
+      sceneAssets.dispose();
       trace.restore();
     }
     return { checks: () => checks.items };

@@ -2,8 +2,8 @@ import { createHash } from 'node:crypto';
 import { chmod, mkdir, mkdtemp, readdir, readFile, rename, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { DdcEntryStore, ddcOutputDigest } from '@forgeax/engine-ddc';
-import { afterEach, describe, expect, it } from 'vitest';
+import { DdcEntryStore, DdcLifecycle, ddcOutputDigest } from '@forgeax/engine-ddc';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
   commitImportPublication,
   discardImportPublication,
@@ -67,7 +67,104 @@ describe('source package publication concurrency', () => {
   const roots: string[] = [];
 
   afterEach(async () => {
+    vi.restoreAllMocks();
     await Promise.all(roots.splice(0).map((root) => rm(root, { recursive: true, force: true })));
+  });
+
+  it('returns the accepted head without rereading the committed artifact closure', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'forgeax-source-publication-'));
+    roots.push(root);
+    const pack = closurePack();
+    const staged = await stageImportPublication({
+      ...input(root),
+      pack,
+      transport: {
+        path: join(root, 'runtime', `${GUID}.pack.json`),
+        body: JSON.stringify(pack),
+        artifacts: [validArtifact],
+      },
+    });
+    expect(staged.ok).toBe(true);
+    if (!staged.ok) return;
+    const read = vi.spyOn(DdcEntryStore.prototype, 'read');
+    const readChecked = vi.spyOn(DdcEntryStore.prototype, 'readChecked');
+
+    const result = await commitImportPublication(staged.candidate);
+
+    expect(result).toMatchObject({
+      ok: true,
+      head: {
+        guid: GUID,
+        desiredKey: KEY,
+        state: 'current',
+        currentKey: KEY,
+        revision: 1,
+        generation: staged.candidate.ddc.lease.generation,
+      },
+      revision: { digest: KEY, rootId: root },
+      transportPersisted: true,
+    });
+    expect(read).toHaveBeenCalledExactlyOnceWith(KEY);
+    expect(readChecked).not.toHaveBeenCalled();
+    expect(await readFile(join(root, 'runtime', `${GUID}.pack.json`), 'utf8')).toBe(
+      JSON.stringify(pack),
+    );
+  });
+
+  it('keeps a later writer out of the head and revision returned for this publication', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'forgeax-source-publication-'));
+    roots.push(root);
+    const staged = await stageImportPublication({
+      ...input(root),
+      nextCatalog: [
+        {
+          guid: GUID,
+          kind: 'fixture',
+          sourcePath: 'fixture.meta.json',
+          packageUrl: '/fixture.pack.json',
+        },
+      ],
+    });
+    expect(staged.ok).toBe(true);
+    if (!staged.ok) return;
+    const nextKey = 'b'.repeat(64);
+    const commit = DdcLifecycle.prototype.commit;
+    vi.spyOn(DdcLifecycle.prototype, 'commit').mockImplementation(async function (
+      this: DdcLifecycle,
+      lease,
+      key,
+    ) {
+      const result = await commit.call(this, lease, key);
+      if (result.result === 'current' && key === KEY) {
+        // Another producer wins after this CAS, before Import receives its result.
+        const next = await stageImportPublication(input(root, nextKey));
+        expect(next.ok).toBe(true);
+        if (next.ok)
+          expect(await commitImportPublication(next.candidate)).toMatchObject({ ok: true });
+      }
+      return result;
+    });
+
+    const result = await commitImportPublication(staged.candidate);
+
+    expect(result).toMatchObject({
+      ok: true,
+      head: {
+        state: 'current',
+        desiredKey: KEY,
+        currentKey: KEY,
+        revision: 1,
+        generation: staged.candidate.ddc.lease.generation,
+      },
+      revision: { digest: KEY },
+      catalog: [{ guid: GUID, revision: { digest: KEY } }],
+    });
+    await expect(new DdcLifecycle(root).inspect(GUID, nextKey)).resolves.toMatchObject({
+      state: 'current',
+      currentKey: nextKey,
+      lastKnownGoodKey: KEY,
+      revision: 2,
+    });
   });
 
   it('waits for an equivalent newer owner after a strict stale commit', async () => {
@@ -396,27 +493,32 @@ describe('source package publication concurrency', () => {
       artifacts: [validArtifact],
     },
   ] as const)('rejects $label before advancing the DDC head', async ({ pack, artifacts, body }) => {
-    const root = await mkdtemp(join(tmpdir(), 'forgeax-source-publication-'));
-    roots.push(root);
-    const publicationInput: ImportPublicationInput = {
-      ...input(root),
-      pack,
-      transport: {
-        path: join(root, 'runtime', `${GUID}.pack.json`),
-        body: body ?? JSON.stringify(pack),
-        artifacts,
-      },
-    };
+    for (const wire of [false, true]) {
+      const publishedPack = wire
+        ? { schemaVersion: 'pack-material-programs/1', pack, programs: [] }
+        : pack;
+      const root = await mkdtemp(join(tmpdir(), 'forgeax-source-publication-'));
+      roots.push(root);
+      const publicationInput: ImportPublicationInput = {
+        ...input(root),
+        pack: publishedPack,
+        transport: {
+          path: join(root, 'runtime', `${GUID}.pack.json`),
+          body: body ?? JSON.stringify(publishedPack),
+          artifacts,
+        },
+      };
 
-    const staged = await stageImportPublication(publicationInput);
+      const staged = await stageImportPublication(publicationInput);
 
-    expect(staged).toMatchObject({
-      ok: false,
-      error: {
-        code: 'source-package-publication-invalid',
-      },
-      head: { state: 'missing' },
-    });
-    expect(await new DdcEntryStore(root).listKeys()).toEqual([]);
+      expect(staged).toMatchObject({
+        ok: false,
+        error: {
+          code: 'source-package-publication-invalid',
+        },
+        head: { state: 'missing' },
+      });
+      expect(await new DdcEntryStore(root).listKeys()).toEqual([]);
+    }
   });
 });

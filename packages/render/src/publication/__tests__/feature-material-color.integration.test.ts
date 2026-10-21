@@ -1,4 +1,5 @@
 import { AssetRegistry } from '@forgeax/engine-assets-runtime';
+import { runtimeAssets } from '@forgeax/engine-assets-runtime/internal';
 import { World } from '@forgeax/engine-ecs';
 import { createMaterialArtifactDigest, createMaterialProgramSetDigest } from '@forgeax/engine-pack';
 import { RhiNullAdapter } from '@forgeax/engine-rhi-null';
@@ -6,6 +7,7 @@ import { ShaderRegistry } from '@forgeax/engine-shader';
 import { type MaterialAsset, type MaterialProgramAbi, ok } from '@forgeax/engine-types';
 import { expect, it } from 'vitest';
 import { materialRecordFixture } from '../../../../assets-runtime/src/__tests__/fixtures/material-publication';
+import { publishRuntimeAssets } from '../../../../assets-runtime/src/__tests__/fixtures/runtime-publication';
 import { renderMaterialContext } from '../../extract/material-context';
 import type { RenderFeature } from '../../features/types';
 import { materialProgramSelectionsForMaterial } from '../../render-system-extract';
@@ -13,8 +15,10 @@ import { createRenderPublisher } from '../publisher';
 import { RenderPublicationReceiver } from '../receiver';
 
 async function fixture(includePlain: boolean) {
-  const world = new World();
-  const assets = new AssetRegistry(new ShaderRegistry({ manifestUrl: undefined }));
+  const assets = new AssetRegistry({
+    shaderRegistry: new ShaderRegistry({ manifestUrl: undefined }),
+  });
+  const world = new World({ assets });
   const device = (await new RhiNullAdapter().requestDevice()).unwrap();
   const context = renderMaterialContext(device.caps).materialContext;
   if (context === undefined) throw new Error('Missing structural material context');
@@ -70,17 +74,20 @@ async function fixture(includePlain: boolean) {
   const artifactDigest = createMaterialProgramSetDigest(programs, record.resolved.passes);
   const [firstPass, ...remainingPasses] = record.resolved.passes;
   if (firstPass === undefined) throw Error('Missing fixture material pass');
-  const material: MaterialAsset = { kind: 'material', passes: [firstPass, ...remainingPasses] };
-  assets.catalog(record.guid, material).unwrap();
-  assets.recordMaterialReadiness(record.guid, {
-    status: 'Ready',
-    record: {
-      ...record,
-      programs,
-      artifactDigest,
-      receipt: { ...record.receipt, identity: { ...record.receipt.identity, artifactDigest } },
+  const cooked = {
+    ...record,
+    programs,
+    artifactDigest,
+    receipt: { ...record.receipt, identity: { ...record.receipt.identity, artifactDigest } },
+  };
+  publishRuntimeAssets(assets, [
+    {
+      guid: record.guid,
+      asset: { kind: 'material', passes: [firstPass, ...remainingPasses], cooked } as MaterialAsset,
     },
-  });
+  ]);
+  const handle = (await assets.load(record.guid, 'material')).unwrap();
+  const material = runtimeAssets(assets).resolveAsset<MaterialAsset>(handle).unwrap();
   expect(
     assets
       .getMaterialProjectionForPayload(material)
@@ -105,7 +112,9 @@ it.each([
 ])('transports the feature material ABI closure without guessing a Mesh binding (plain=%s)', async (includePlain) => {
   const f = await fixture(includePlain);
   const receiver = new RenderPublicationReceiver(f.identity);
-  const receiving = new AssetRegistry(new ShaderRegistry({ manifestUrl: undefined }));
+  const receiving = new AssetRegistry({
+    shaderRegistry: new ShaderRegistry({ manifestUrl: undefined }),
+  });
   try {
     const candidate = f.publisher.prepare(0).unwrap();
     const packet = structuredClone(candidate.packet);

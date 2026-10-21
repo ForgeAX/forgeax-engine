@@ -5,27 +5,30 @@
 > TRS target needs `Transform`, but does not need `Skin` or a renderer component.
 > Explicit object/component property tracks do not need `Transform`.
 
-Engine profiles install `animationPayloadsPlugin(lookup)` as the resolver
-Provider and `animationRuntimePlugin()` as the World consumer. Their
-`provide/inject` edge makes the dependency explicit. `animationPlugin(lookup?)`
-remains the direct standalone composition for a World that does not need a
-separately replaceable resolver.
+`animationPlugin()` consumes the runtime asset owner attached to its World.
+Clips and graphs created or loaded by that owner bind directly to `AnimationPlayer`.
+Edits are sampled at the next playback step; player clocks and weights remain World state.
+There is no separately injected payload lookup or World asset registration.
 
 ## Quick start
 
 ```ts
 import {
   AnimationPlayer,
+  animationClipContribution,
   AnimationTargetId,
   animationPlugin,
   bindAnimationTargets,
   deriveAnimationTargetId,
 } from '@forgeax/engine-animation';
+import { AssetRegistry } from '@forgeax/engine-assets-runtime';
 import { createWorldContext, World } from '@forgeax/engine-ecs';
 import { ChildOf, Name, Transform } from '@forgeax/engine-scene';
 import type { AnimationClip } from '@forgeax/engine-types';
 
-const world = new World();
+const assets = new AssetRegistry();
+assets.installDecoder(animationClipContribution.kind, animationClipContribution.decoder);
+const world = new World({ assets });
 const context = await createWorldContext(world, [animationPlugin()]);
 
 const targetId = deriveAnimationTargetId(['Root', 'Planet']);
@@ -42,7 +45,7 @@ const clip = {
     },
   }],
 } satisfies AnimationClip;
-const clipHandle = world.allocSharedRef('AnimationClip', clip);
+const clipHandle = assets.create(clip).unwrap();
 const slots = {
   clips: [clipHandle],
   times: [0],
@@ -255,12 +258,11 @@ the current package surface.
 
 ## Managed spring and physical bone motion
 
-Install `animationPlugin(lookup, { cadence: 'fixed' })` and
+Install `animationPlugin({ cadence: 'fixed' })` and
 `skeletalMotionPlugin({ physics: true })` from `@forgeax/engine/animation/skeletal-motion` in the same World as Scene and Rapier3D. The focused subpath keeps this optional Physics dependency out of ordinary animation playback and App Worker bundles.
 Omit the Physics option for spring-only characters. Default animation playback
 remains `Update`; motion admission rejects that cadence rather than integrating
-an Update pose with a second clock. `animationRuntimePlugin` accepts the same
-cadence option. Canvas Apps select `animation: { cadence: 'fixed' }` in
+an Update pose with a second clock. Canvas Apps select `animation: { cadence: 'fixed' }` in
 `createApp` options; App forwards this same POD to Host and Engine Worker profiles
 and retains it across rebuilds.
 
@@ -413,7 +415,8 @@ prototype traversal and readonly leaves. Keep and call the disposer before
 destroying/replacing the object or player; replacing a parent requires rebinding.
 Native array replacement or native/component array resizing becomes a stale-target
 diagnostic before writing; rebind after changing the intended vector width.
-A graph/clip is immutable after publication. Unbound, stale or malformed property
+An adopted graph/clip version is immutable; managed edits are sampled at the next
+playback step while player clocks and property bindings retain their existing policy. Unbound, stale or malformed property
 channels skip with `animation-property-invalid`, retaining valid sibling channels.
 Plugin disposal releases the World's bindings. Bindings themselves do not cross
 Workers: transport clips as POD and bind at the component/object owner.
@@ -518,7 +521,8 @@ key names an explicit target ID and one closed action: `method` (name and scalar
 arguments), `audio` (clip GUID or null stop, start position), or `animation`
 (clip GUID or null stop, start position). It shares the existing direct/graph
 clock; no controller asset, native method name lookup or second animation player
-is introduced. Clip assets remain immutable after publication. The Import
+is introduced. Adopted clip versions remain immutable; managed edits take effect
+at the next playback step without replaying past timeline events. The Import
 producer includes audio and child-clip GUIDs in the ordinary asset closure;
 Pack JSON restoration preserves keys and numeric sampler arrays.
 

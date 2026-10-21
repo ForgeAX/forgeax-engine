@@ -6,7 +6,6 @@ import type {
   ToolContribution,
   ToolDescriptor,
   ToolExecutionOwner,
-  ToolRealm,
   ToolRun,
   ToolRunOptions,
   ToolRuntimeError,
@@ -16,15 +15,8 @@ import { TOOL_REALMS } from './types.js';
 
 export type ToolApiProviderState = 'pending' | 'active' | 'revoking' | 'revoked' | 'failed';
 
-export interface ToolApiProviderInput {
-  /** Stable provider identity within one source. */
-  readonly providerId: string;
-  /** Host/source identity. Different sources may expose the same operation id. */
-  readonly sourceId: string;
-  readonly realm: ToolRealm;
-  readonly generation?: number;
-  readonly fiberId?: string | number;
-  readonly module?: string;
+export interface ToolApiProviderInput extends Omit<ToolExecutionOwner, 'generation'> {
+  readonly generation?: ToolExecutionOwner['generation'];
   readonly fiberState?: string;
   /** Async plugin activation stays non-callable until explicitly activated. */
   readonly initialState?: 'pending' | 'active';
@@ -94,6 +86,7 @@ interface ProviderRecord {
   state: ToolApiProviderState;
   fiberState?: string;
   reason?: string;
+  retirement?: Promise<void>;
 }
 
 function assertName(value: string, label: string): void {
@@ -191,6 +184,7 @@ export function createToolApi(): ToolApi {
   const listeners = new Set<(snapshot: ToolApiSnapshot) => void>();
   let providerGeneration = 0;
   let disposed = false;
+  let disposal: Promise<void> | undefined;
 
   const notify = (): void => {
     const value = api.snapshot();
@@ -237,11 +231,38 @@ export function createToolApi(): ToolApi {
     return { providers: providerSnapshots, operations };
   };
 
+  const retireProvider = (record: ProviderRecord, reason: string): Promise<void> => {
+    if (record.retirement !== undefined) return record.retirement;
+    // Publish completion before observation can re-enter. Snapshot the runs
+    // after the current admission stack: an executor can synchronously revoke
+    // its own provider before runtime.run has returned its ToolRun handle.
+    record.retirement = Promise.resolve().then(async () => {
+      for (const run of record.runs) run.cancel(record.reason ?? reason);
+      await Promise.all([...record.runs].map((run) => run.executorExited));
+      if (record.state !== 'failed') {
+        record.state = 'revoked';
+        record.fiberState = 'disposed';
+      }
+      notify();
+    });
+    if (record.state === 'active' || record.state === 'pending') {
+      record.state = 'revoking';
+      record.reason = reason;
+      record.fiberState = 'unloading';
+      notify();
+    }
+    return record.retirement;
+  };
+
   const registerProvider = (input: ToolApiProviderInput): ToolApiProviderHandle => {
     if (disposed) throw new Error('Tool API is disposed');
     validateProvider(input);
     const key = providerKey(input.sourceId, input.providerId);
-    if (['pending', 'active', 'revoking'].includes(providers.get(key)?.state ?? '')) {
+    const previous = providers.get(key);
+    if (
+      previous !== undefined &&
+      (['pending', 'active', 'revoking'].includes(previous.state) || previous.runs.size > 0)
+    ) {
       throw new TypeError(
         `Tool API provider ${input.sourceId}/${input.providerId} is already registered`,
       );
@@ -284,22 +305,6 @@ export function createToolApi(): ToolApi {
       for (const run of record.runs) run.cancel(reason);
       notify();
     };
-    const revoke = async (reason = 'provider revoked'): Promise<void> => {
-      if (record.state === 'revoked') return;
-      if (record.state === 'active' || record.state === 'pending') {
-        record.state = 'revoking';
-        record.reason = reason;
-        record.fiberState = 'unloading';
-        notify();
-        for (const run of record.runs) run.cancel(reason);
-      }
-      await Promise.all([...record.runs].map((run) => run.executorExited));
-      if (record.state !== 'failed') {
-        record.state = 'revoked';
-        record.fiberState = 'disposed';
-      }
-      notify();
-    };
     return Object.freeze({
       owner,
       activate,
@@ -311,7 +316,7 @@ export function createToolApi(): ToolApi {
         callable: record.state === 'active',
         operationIds: record.input.tools.map(({ descriptor }) => descriptor.id),
       }),
-      revoke,
+      revoke: (reason = 'provider revoked') => retireProvider(record, reason),
     });
   };
 
@@ -447,25 +452,18 @@ export function createToolApi(): ToolApi {
       listeners.add(listener);
       return () => listeners.delete(listener);
     },
-    async dispose() {
-      if (disposed) return;
+    dispose() {
+      if (disposal !== undefined) return disposal;
       disposed = true;
-      const pending = [...providers.values()].map((record) => {
-        if (record.state === 'active' || record.state === 'pending') {
-          record.state = 'revoking';
-          record.fiberState = 'unloading';
-          for (const run of record.runs) run.cancel('Tool API owner disposed');
-        }
-        return Promise.all([...record.runs].map((run) => run.executorExited)).then(() => {
-          if (record.state !== 'failed') {
-            record.state = 'revoked';
-            record.fiberState = 'disposed';
-          }
-        });
+      const pending: Promise<void>[] = [];
+      // Publish API completion before synchronous withdrawal notifications.
+      disposal = Promise.resolve().then(async () => {
+        await Promise.all(pending);
+        listeners.clear();
       });
-      await Promise.all(pending);
-      notify();
-      listeners.clear();
+      for (const record of providers.values())
+        pending.push(retireProvider(record, 'Tool API owner disposed'));
+      return disposal;
     },
   };
   return api;

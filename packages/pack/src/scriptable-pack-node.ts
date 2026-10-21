@@ -1,15 +1,11 @@
 import { existsSync } from 'node:fs';
-import { mkdir, mkdtemp, rm } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { Worker } from 'node:worker_threads';
 import type { AssetGuid, Result } from '@forgeax/engine-types';
 import { AssetError, err, ImportError, ok } from '@forgeax/engine-types';
-import {
-  type ProducerSemanticIdentityInput,
-  producerRelativeDdcKey,
-} from './evidence/producer-identity.js';
 import { PackageId } from './guid.js';
 import {
   type AnyScriptablePackDefinition,
@@ -18,6 +14,12 @@ import {
   type PackBuildResult,
   validatePackDefinition,
 } from './pack-authoring.js';
+import {
+  type PackAuthoringDeclaration,
+  packSourceFailure,
+  readPackAuthoringDeclaration,
+} from './pack-authoring-literals.js';
+import { projectPackGenerationModules } from './pack-generation-projection.js';
 import type { AssetReader, ScriptablePackSourceClosureEntry } from './scriptable-pack.js';
 import {
   createScriptablePackSourceSnapshot,
@@ -76,29 +78,6 @@ export interface ScriptablePackModuleExecutorPool {
 export interface ScriptablePackModuleExecutorPoolOptions {
   readonly maxWorkers?: number;
   readonly maxTasksPerWorker?: number;
-}
-
-export function scriptablePackDdcKey(input: ProducerSemanticIdentityInput): string {
-  return producerRelativeDdcKey(input);
-}
-
-export interface OptionalBuildCache<T> {
-  readonly read: () => Promise<T | null>;
-  readonly coldCook: () => Promise<T>;
-}
-
-/** Build CAS is a performance hint; source cold cook remains the correctness path. */
-export async function readOptionalBuildCache<T>(cache: OptionalBuildCache<T>): Promise<{
-  readonly value: T;
-  readonly fromCache: boolean;
-}> {
-  try {
-    const cached = await cache.read();
-    if (cached !== null) return { value: cached, fromCache: true };
-  } catch {
-    // Cache deletion, read-only storage, and corrupt optional objects fail open.
-  }
-  return { value: await cache.coldCook(), fromCache: false };
 }
 
 /** A standalone inventory has a fresh snapshot; build owners may share one explicitly. */
@@ -164,156 +143,6 @@ function hydrateFailure(value: unknown): unknown {
   return value;
 }
 
-class WorkerScriptablePackExecutor
-  implements ScriptablePackModuleExecutor, WorkerBackedScriptablePackExecutor
-{
-  readonly supportsPackParameters = true as const;
-  private worker: Worker | undefined;
-  private compileRoot: string | undefined;
-  private nextBuildId = 0;
-  private disposal: Promise<void> | undefined;
-  private build:
-    | {
-        readonly id: number;
-        readonly reader: AssetReader;
-        readonly resolve: (value: unknown) => void;
-        readonly reject: (reason: unknown) => void;
-      }
-    | undefined;
-
-  async load(
-    sourcePath: string,
-    sources?: Readonly<Record<string, string>>,
-    transpiles?: readonly SnapshotTranspileText[],
-  ): Promise<unknown> {
-    const workerUrl = scriptablePackWorkerUrl();
-    const compileRoot = await mkdtemp(resolve(tmpdir(), 'forgeax-scriptable-pack-'));
-    // A module timeout may retire this executor while mkdtemp is in flight.
-    if (this.disposal !== undefined) {
-      await rm(compileRoot, { recursive: true, force: true, maxRetries: 5 });
-      throw new Error('ScriptablePack executor was disposed before module load');
-    }
-    this.compileRoot = compileRoot;
-    const worker = new Worker(workerUrl, {
-      workerData: { sourcePath: resolve(sourcePath), compileRoot, sources, transpiles },
-      execArgv: scriptablePackWorkerExecArgv(),
-      resourceLimits: { maxOldGenerationSizeMb: 256, maxYoungGenerationSizeMb: 64 },
-    });
-    this.worker = worker;
-    worker.on('message', (message: unknown) => this.onMessage(message));
-    worker.unref();
-    return new Promise((resolveLoad, rejectLoad) => {
-      const onMessage = (message: unknown): void => {
-        if (message === null || typeof message !== 'object') return;
-        const value = message as Record<string, unknown>;
-        if (value.kind === 'loaded') {
-          // The scan keeps this executor alive for the later no-reopen build
-          // route, but an idle source worker must not keep a Vite/Vitest host
-          // process alive after its own work has settled.
-          worker.unref();
-          worker.off('message', onMessage);
-          resolveLoad({
-            transpiles: value.transpiles,
-            default:
-              value.definition === undefined
-                ? undefined
-                : {
-                    ...(value.definition as Record<string, unknown>),
-                    build: (
-                      readByGuid: AssetReader['readByGuid'],
-                      context?: SerializedScriptablePackBuildContext,
-                    ) => this.runBuild({ readByGuid }, context),
-                  },
-          });
-        } else if (value.kind === 'load-threw') {
-          worker.off('message', onMessage);
-          rejectLoad(hydrateFailure(value.error));
-        }
-      };
-      worker.on('message', onMessage);
-      const fail = (error: Error): void => {
-        rejectLoad(error);
-        const active = this.build;
-        this.build = undefined;
-        active?.reject(error);
-        void this.dispose('failure');
-      };
-      worker.once('error', fail);
-      worker.once('exit', (code) => {
-        if (this.disposal !== undefined) return;
-        fail(new Error(`ScriptablePack worker exited with code ${code}`));
-      });
-    });
-  }
-
-  dispose(reason: 'complete' | 'timeout' | 'failure' = 'complete'): Promise<void> {
-    if (this.disposal !== undefined) return this.disposal;
-    const worker = this.worker;
-    this.worker = undefined;
-    const compileRoot = this.compileRoot;
-    this.compileRoot = undefined;
-    const active = this.build;
-    this.build = undefined;
-    if (active !== undefined) {
-      active.reject(new Error(`ScriptablePack build disposed during ${reason}`));
-    }
-    this.disposal = (async () => {
-      try {
-        if (worker !== undefined) await worker.terminate();
-      } finally {
-        if (compileRoot !== undefined)
-          await rm(compileRoot, { recursive: true, force: true, maxRetries: 5 });
-      }
-    })();
-    return this.disposal;
-  }
-
-  private runBuild(
-    reader: AssetReader,
-    context?: SerializedScriptablePackBuildContext,
-  ): Promise<unknown> {
-    const worker = this.worker;
-    if (worker === undefined) return Promise.reject(new Error('ScriptablePack worker is closed'));
-    if (this.build !== undefined)
-      return Promise.reject(new Error('ScriptablePack worker already has an active build'));
-    const id = this.nextBuildId++;
-    return new Promise((resolveBuild, rejectBuild) => {
-      this.build = { id, reader, resolve: resolveBuild, reject: rejectBuild };
-      worker.postMessage({ kind: 'build', buildId: id, context });
-    });
-  }
-
-  private onMessage(message: unknown): void {
-    if (message === null || typeof message !== 'object') return;
-    const value = message as Record<string, unknown>;
-    const active = this.build;
-    if (active === undefined || value.buildId !== active.id) return;
-    if (value.kind === 'asset-read' && typeof value.readId === 'number') {
-      void active.reader
-        .readByGuid(value.guid as AssetGuid)
-        .then((result) =>
-          this.worker?.postMessage({
-            kind: 'asset-result',
-            readId: value.readId,
-            result:
-              result.ok === true ? result : { ...result, error: serializeFailure(result.error) },
-          }),
-        )
-        .catch((error: unknown) => {
-          if (this.build?.id !== active.id) return;
-          this.build = undefined;
-          active.reject(error);
-          void this.dispose('failure');
-        });
-      return;
-    }
-    this.build = undefined;
-    if (value.kind === 'build-result') active.resolve(value.result);
-    else if (value.kind === 'build-threw') active.reject(hydrateFailure(value.error));
-    else this.build = active;
-  }
-}
-
 function scriptablePackWorkerUrl(): URL {
   const bundledWorker = new URL('./scriptable-pack-worker.mjs', import.meta.url);
   return existsSync(fileURLToPath(bundledWorker))
@@ -321,13 +150,15 @@ function scriptablePackWorkerUrl(): URL {
     : new URL('../dist/scriptable-pack-worker.mjs', import.meta.url);
 }
 
-class ReusableWorkerScriptablePackExecutor
+class WorkerScriptablePackExecutor
   implements ScriptablePackModuleExecutor, WorkerBackedScriptablePackExecutor
 {
   readonly supportsPackParameters = true as const;
   private readonly worker: Worker;
-  private readonly compileRootReady = mkdtemp(resolve(tmpdir(), 'forgeax-scriptable-pack-pool-'));
-  private compileRoot: string | undefined;
+  private readonly compileRootReady = mkdtemp(
+    resolve(tmpdir(), 'forgeax-scriptable-pack-pool-'),
+  ).then(ok, (error: unknown) => err(error));
+  private preparation: Promise<string> | undefined;
   private nextLoadId = 0;
   private nextBuildId = 0;
   private pendingLoad:
@@ -353,14 +184,10 @@ class ReusableWorkerScriptablePackExecutor
 
   constructor(
     private readonly maxTasksPerWorker: number,
-    private readonly release: (
-      executor: ReusableWorkerScriptablePackExecutor,
-      reusable: boolean,
-    ) => void,
+    private readonly release: (executor: WorkerScriptablePackExecutor, reusable: boolean) => void,
     bytecodeCacheRoot: string | undefined,
   ) {
     this.worker = new Worker(scriptablePackWorkerUrl(), {
-      workerData: { mode: 'reusable' },
       execArgv: scriptablePackWorkerExecArgv(),
       ...(bytecodeCacheRoot === undefined
         ? {}
@@ -393,29 +220,37 @@ class ReusableWorkerScriptablePackExecutor
     const activeDisposal = this.disposal;
     if (activeDisposal !== undefined) {
       await activeDisposal;
-      if (this.failed) {
+      if (this.disposal !== undefined) {
         return Promise.reject(new Error('ScriptablePack executor is not leased'));
       }
-      this.disposal = undefined;
     }
     this.released = false;
-    if (this.pendingLoad !== undefined || this.build !== undefined) {
+    if (
+      this.preparation !== undefined ||
+      this.pendingLoad !== undefined ||
+      this.build !== undefined
+    ) {
       return Promise.reject(new Error('ScriptablePack executor already has an active task'));
     }
-    const compileRoot = this.compileRoot ?? (await this.compileRootReady);
-    if (this.disposal !== undefined) {
-      const disposal = this.disposal;
-      await disposal;
-      if (this.failed) {
-        return Promise.reject(new Error('ScriptablePack executor is not leased'));
-      }
-      this.disposal = undefined;
+    this.preparation = this.compileRootReady.then(async (allocated) => {
+      if (!allocated.ok) throw allocated.error;
+      const compileRoot = allocated.value;
+      // A temp cleaner may remove idle output. Disposal waits for any active
+      // recreation before retiring the directory and its Worker together.
+      if (this.disposal === undefined) await mkdir(compileRoot, { recursive: true });
+      return compileRoot;
+    });
+    let compileRoot: string;
+    try {
+      compileRoot = await this.preparation;
+    } finally {
+      this.preparation = undefined;
+    }
+    if (this.disposal !== undefined || this.released) {
+      await this.disposal;
+      return Promise.reject(new Error('ScriptablePack executor is not leased'));
     }
     const loadId = this.nextLoadId++;
-    this.compileRoot = compileRoot;
-    // This directory is disposable output, not source or a persistent cache.
-    // A temp cleaner may remove it between tasks; compile current bytes again.
-    await mkdir(compileRoot, { recursive: true });
     this.taskCount += 1;
     return new Promise((resolveLoad, rejectLoad) => {
       this.pendingLoad = { id: loadId, resolve: resolveLoad, reject: rejectLoad };
@@ -444,23 +279,25 @@ class ReusableWorkerScriptablePackExecutor
     }
     this.rejectActive(new Error(`ScriptablePack task disposed during ${reason}`));
     this.disposal = Promise.resolve().then(async () => {
-      const compileRoot = this.compileRoot ?? (await this.compileRootReady);
+      const allocated = await this.compileRootReady;
+      await this.preparation?.catch(() => undefined);
       const reusable =
+        allocated.ok &&
         reason === 'complete' &&
         !this.failed &&
         !this.forceDispose &&
         this.taskCount < this.maxTasksPerWorker;
       this.forceDispose = false;
       if (!reusable) {
-        this.compileRoot = undefined;
         try {
           await this.worker.terminate();
         } finally {
-          await rm(compileRoot, { recursive: true, force: true, maxRetries: 5 });
+          if (allocated.ok)
+            await rm(allocated.value, { recursive: true, force: true, maxRetries: 5 });
         }
       }
       this.released = true;
-      this.disposal = undefined;
+      if (reusable) this.disposal = undefined;
       this.release(this, reusable);
     });
     return this.disposal;
@@ -555,17 +392,14 @@ class ReusableWorkerScriptablePackExecutor
 class DefaultScriptablePackModuleExecutorPool implements ScriptablePackModuleExecutorPool {
   private readonly maxWorkers: number;
   private readonly maxTasksPerWorker: number;
-  private readonly idle: ReusableWorkerScriptablePackExecutor[] = [];
+  private readonly idle: WorkerScriptablePackExecutor[] = [];
   private readonly waiters: {
     readonly resolve: (executor: ScriptablePackModuleExecutor) => void;
     readonly reject: (reason: unknown) => void;
   }[] = [];
-  private readonly executors = new Set<ReusableWorkerScriptablePackExecutor>();
-  private workerCount = 0;
-  private closed = false;
-  private bytecodeCacheRootReady: Promise<string | undefined> | undefined;
-  private bytecodeCacheRoot: string | undefined;
-  private ownsBytecodeCache = false;
+  private readonly executors = new Set<WorkerScriptablePackExecutor>();
+  private disposal: Promise<void> | undefined;
+  private bytecodeCacheRootReady: Promise<{ path: string; owned: boolean } | undefined> | undefined;
 
   constructor(options: ScriptablePackModuleExecutorPoolOptions = {}) {
     this.maxWorkers = Math.max(1, Math.trunc(options.maxWorkers ?? 2));
@@ -573,39 +407,39 @@ class DefaultScriptablePackModuleExecutorPool implements ScriptablePackModuleExe
   }
 
   async acquire(): Promise<ScriptablePackModuleExecutor> {
-    if (this.closed) throw new Error('ScriptablePack executor pool is closed');
-    await this.prepareBytecodeCache();
-    if (this.closed) throw new Error('ScriptablePack executor pool is closed');
+    if (this.disposal !== undefined) throw new Error('ScriptablePack executor pool is closed');
+    const cache = await this.prepareBytecodeCache();
+    if (this.disposal !== undefined) throw new Error('ScriptablePack executor pool is closed');
     const executor = this.idle.pop();
     if (executor !== undefined) return Promise.resolve(executor);
-    if (this.workerCount < this.maxWorkers) {
-      this.workerCount += 1;
-      return Promise.resolve(this.createExecutor());
+    if (this.executors.size < this.maxWorkers) {
+      return Promise.resolve(this.createExecutor(cache?.path));
     }
     return new Promise((resolveAcquire, rejectAcquire) =>
       this.waiters.push({ resolve: resolveAcquire, reject: rejectAcquire }),
     );
   }
 
-  async dispose(): Promise<void> {
-    if (this.closed) return;
-    this.closed = true;
-    const waiters = this.waiters.splice(0);
-    for (const waiter of waiters) {
-      waiter.reject(new Error('ScriptablePack executor pool is closed'));
-    }
-    this.idle.splice(0);
-    const retired = await Promise.allSettled(
-      [...this.executors].map((executor) => executor.dispose('failure')),
-    );
-    // Every Worker must be gone before removing the files they can still flush.
-    await this.bytecodeCacheRootReady;
-    if (this.ownsBytecodeCache && this.bytecodeCacheRoot !== undefined)
-      await rm(this.bytecodeCacheRoot, { recursive: true, force: true, maxRetries: 5 });
-    for (const result of retired) if (result.status === 'rejected') throw result.reason;
+  dispose(): Promise<void> {
+    if (this.disposal !== undefined) return this.disposal;
+    const retirements: Promise<void>[] = [];
+    this.disposal = Promise.resolve().then(async () => {
+      for (const waiter of this.waiters.splice(0)) {
+        waiter.reject(new Error('ScriptablePack executor pool is closed'));
+      }
+      this.idle.length = 0;
+      const retired = await Promise.allSettled(retirements);
+      // Workers are retired before deleting a cache they may still flush.
+      const cache = await this.bytecodeCacheRootReady;
+      if (cache?.owned) await rm(cache.path, { recursive: true, force: true, maxRetries: 5 });
+      for (const result of retired) if (result.status === 'rejected') throw result.reason;
+    });
+    // Escalate same-turn reusable disposals before their completion microtask.
+    for (const executor of this.executors) retirements.push(executor.dispose('failure'));
+    return this.disposal;
   }
 
-  private prepareBytecodeCache(): Promise<string | undefined> {
+  private prepareBytecodeCache(): NonNullable<typeof this.bytecodeCacheRootReady> {
     if (this.bytecodeCacheRootReady !== undefined) return this.bytecodeCacheRootReady;
     const inherited = process.env.NODE_COMPILE_CACHE;
     const enabled =
@@ -614,54 +448,46 @@ class DefaultScriptablePackModuleExecutorPool implements ScriptablePackModuleExe
       !enabled
         ? Promise.resolve(undefined)
         : inherited !== undefined
-          ? Promise.resolve(inherited)
-          : mkdtemp(resolve(tmpdir(), 'forgeax-scriptable-bytecode-')).then((directory) => {
-              this.ownsBytecodeCache = true;
-              return directory;
-            })
-    )
-      .catch(() => undefined)
-      .then((directory) => {
-        this.bytecodeCacheRoot = directory;
-        return directory;
-      });
+          ? Promise.resolve({ path: inherited, owned: false })
+          : mkdtemp(resolve(tmpdir(), 'forgeax-scriptable-bytecode-')).then((path) => ({
+              path,
+              owned: true,
+            }))
+    ).catch(() => undefined);
     return this.bytecodeCacheRootReady;
   }
 
-  private createExecutor(): ReusableWorkerScriptablePackExecutor {
-    const executor = new ReusableWorkerScriptablePackExecutor(
+  private createExecutor(bytecodeCacheRoot: string | undefined): WorkerScriptablePackExecutor {
+    const executor = new WorkerScriptablePackExecutor(
       this.maxTasksPerWorker,
       (executor, reusable) => {
-        if (this.closed) {
+        if (this.disposal !== undefined) {
           this.executors.delete(executor);
-          if (!reusable) this.workerCount -= 1;
           return;
         }
         if (!reusable) {
           this.executors.delete(executor);
-          this.workerCount -= 1;
         } else {
           this.idle.push(executor);
         }
-        this.drain();
+        this.drain(bytecodeCacheRoot);
       },
-      this.bytecodeCacheRoot,
+      bytecodeCacheRoot,
     );
     this.executors.add(executor);
     return executor;
   }
 
-  private drain(): void {
-    if (this.closed) return;
+  private drain(bytecodeCacheRoot: string | undefined): void {
+    if (this.disposal !== undefined) return;
     while (this.waiters.length > 0) {
       const idle = this.idle.pop();
       if (idle !== undefined) {
         this.waiters.shift()?.resolve(idle);
         continue;
       }
-      if (this.workerCount >= this.maxWorkers) return;
-      this.workerCount += 1;
-      this.waiters.shift()?.resolve(this.createExecutor());
+      if (this.executors.size >= this.maxWorkers) return;
+      this.waiters.shift()?.resolve(this.createExecutor(bytecodeCacheRoot));
     }
   }
 }
@@ -673,9 +499,11 @@ export function createScriptablePackModuleExecutorPool(
 }
 
 export interface LoadScriptablePackOptions {
+  readonly signal?: AbortSignal;
   readonly timeoutMs?: number;
   readonly buildTimeoutMs?: number;
   readonly executor?: ScriptablePackModuleExecutor;
+  /** Path-only scans must release the isolated loader before returning. */
   readonly metadataOnly?: boolean;
   readonly sourceSnapshot?: ScriptablePackSourceSnapshot;
 }
@@ -780,7 +608,8 @@ export function loadScriptablePack(
     options.metadataOnly !== true ||
     snapshot === undefined ||
     options.executor !== undefined ||
-    options.buildTimeoutMs !== undefined
+    options.buildTimeoutMs !== undefined ||
+    options.signal !== undefined
   )
     return loadScriptablePackFresh(sourcePath, options);
   // DevKit and Pack inventory share this snapshot during Play. Its metadata
@@ -798,25 +627,51 @@ async function loadScriptablePackFresh(
   // five-second default rejected large production packs before they could
   // publish a result.
   const buildTimeoutMs = options.buildTimeoutMs ?? 15_000;
-  const executor = options.executor ?? new WorkerScriptablePackExecutor();
+  const executor = options.executor ?? new WorkerScriptablePackExecutor(1, () => {}, undefined);
+  let cancel: (() => void) | undefined;
+  const cancelled = new Promise<never>((_resolve, reject) => {
+    cancel = () => {
+      reject(options.signal?.reason ?? new Error('ScriptablePack build cancelled'));
+      void executor.dispose?.('failure');
+    };
+    options.signal?.addEventListener('abort', cancel, { once: true });
+  });
+  const removeCancellation = () => {
+    if (cancel) options.signal?.removeEventListener('abort', cancel);
+  };
   let loadedSources: Readonly<Record<string, string>> | undefined;
-  const nativeExecutor =
-    executor instanceof WorkerScriptablePackExecutor ||
-    executor instanceof ReusableWorkerScriptablePackExecutor;
+  let liveDeclaration: PackAuthoringDeclaration | undefined;
+  const nativeExecutor = executor instanceof WorkerScriptablePackExecutor;
   let disposeReason: 'complete' | 'timeout' | 'failure' | undefined;
   let timeout: ReturnType<typeof setTimeout> | undefined;
   try {
+    options.signal?.throwIfAborted();
     const timeoutSignal = Symbol('scriptable-pack-module-timeout');
     const loaded = await Promise.race([
+      cancelled,
       (async () => {
-        const captured = await options.sourceSnapshot?.moduleSources(sourcePath);
-        const sources = captured?.sources;
+        let snapshot = options.sourceSnapshot;
+        if (nativeExecutor) {
+          const source = snapshot
+            ? await snapshot.readText(sourcePath)
+            : await readFile(sourcePath, 'utf8');
+          const declaration = readPackAuthoringDeclaration(sourcePath, source);
+          if (
+            declaration.ok &&
+            declaration.value.parameters.some((parameter) => typeof parameter.apply === 'object')
+          ) {
+            liveDeclaration = declaration.value;
+            snapshot ??= createScriptablePackSourceSnapshot();
+          }
+        }
+        const captured = await snapshot?.moduleSources(sourcePath);
+        const sources =
+          liveDeclaration && captured
+            ? projectPackGenerationModules(captured.entry, captured.sources, liveDeclaration)
+            : captured?.sources;
         loadedSources = sources;
         if (
-          !(
-            executor instanceof WorkerScriptablePackExecutor ||
-            executor instanceof ReusableWorkerScriptablePackExecutor
-          ) ||
+          !(executor instanceof WorkerScriptablePackExecutor) ||
           options.sourceSnapshot === undefined ||
           captured === undefined ||
           sources === undefined
@@ -843,14 +698,29 @@ async function loadScriptablePackFresh(
         ),
       );
     }
-    const moduleValue =
+    const loadedDefinition =
       loaded !== null && typeof loaded === 'object' && 'default' in loaded
         ? (loaded as { readonly default: unknown }).default
         : undefined;
+    const moduleValue =
+      liveDeclaration && loadedDefinition !== null && typeof loadedDefinition === 'object'
+        ? { ...loadedDefinition, parameters: liveDeclaration.parameters }
+        : loadedDefinition;
     const validated = validatePackDefinition(moduleValue, sourcePath);
     if (!validated.ok) {
       disposeReason = 'failure';
       return validated;
+    }
+    if (
+      nativeExecutor &&
+      'parameters' in validated.value &&
+      validated.value.parameters.some((parameter) => typeof parameter.apply === 'object') &&
+      !liveDeclaration
+    ) {
+      disposeReason = 'failure';
+      return err(
+        packSourceFailure(sourcePath, 'live parameters require an isolated literal declaration'),
+      );
     }
     if (
       nativeExecutor &&
@@ -920,6 +790,7 @@ async function loadScriptablePackFresh(
                 })
               : definition.build(context as never);
           const built = await Promise.race([
+            cancelled,
             Promise.resolve(invocation),
             new Promise<Awaited<PackBuildResult>>((resolve) => {
               buildTimeout = setTimeout(() => {
@@ -938,6 +809,7 @@ async function loadScriptablePackFresh(
           await executor.dispose?.('failure');
           throw error;
         } finally {
+          removeCancellation();
           if (buildTimeout !== undefined) clearTimeout(buildTimeout);
         }
       },
@@ -948,7 +820,7 @@ async function loadScriptablePackFresh(
       error !== null &&
       typeof error === 'object' &&
       'code' in error &&
-      error.code === 'pack-module-not-found'
+      (error.code === 'pack-module-not-found' || error.code === 'pack-source-mutation-unsupported')
     )
       return err(error as PackAuthoringError);
     return err(
@@ -962,5 +834,6 @@ async function loadScriptablePackFresh(
   } finally {
     if (timeout !== undefined) clearTimeout(timeout);
     if (disposeReason !== undefined) await executor.dispose?.(disposeReason);
+    if (disposeReason !== undefined) removeCancellation();
   }
 }

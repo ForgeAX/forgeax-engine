@@ -23,6 +23,16 @@
 
 // ─── RHI-owned handles ───────────────────────────────────────────────────────
 
+import {
+  createPmremAtlas,
+  createPmremPipeline,
+  PREFILTER_SIZE,
+  pmremLevelCount,
+  pmremViewport,
+} from './pmrem';
+
+export { PREFILTER_SIZE } from './pmrem';
+
 import { mat4 } from '@forgeax/engine-math';
 import {
   type BindGroup,
@@ -119,6 +129,7 @@ export interface IblPipelineCache {
   cubeGroup1Bgl?: BindGroupLayout;
   /** group(0) BGL for prefilter (face + prefilter uniforms). */
   prefilterGroup0Bgl?: BindGroupLayout;
+  prefilterGroup1Bgl?: BindGroupLayout;
 
   /** Counter: times irradiance pass has executed. AC-04: == 1 after first cook. */
   irradianceBakeCount: number;
@@ -260,8 +271,7 @@ function cubemapCaptureProjection(fovy: number, near: number, far: number): Floa
 
 // IBL output texture sizes (plan D-10 SSOT, mirrored in ibl-brdf-lut.wgsl).
 const IRRADIANCE_SIZE = 32;
-export const PREFILTER_SIZE = 128;
-export const PREFILTER_MIP_LEVELS = 5;
+const PREFILTER_MIP_LEVELS = pmremLevelCount(PREFILTER_SIZE);
 const BRDF_LUT_SIZE = 256;
 
 /** Face (mat4x4f) and prefilter (vec4f) uniforms each own one dynamic-offset-aligned slot. */
@@ -284,13 +294,11 @@ function iblFaceUniformEntry(buffer: Buffer, face: number): BindGroupEntry {
 }
 
 export function iblPrefilterGroup0Entries(
-  faceUniforms: Buffer,
   prefilterUniforms: Buffer,
   mip: number,
   face: number,
 ): BindGroupEntry[] {
   return [
-    iblFaceUniformEntry(faceUniforms, face),
     {
       binding: 1,
       resource: {
@@ -381,16 +389,6 @@ export async function createIblPipelines(
   if (!faceBgl.ok) return err(faceBgl.error);
   cache.faceUniformsBgl = faceBgl.value;
 
-  const prefilterGroup0 = device.createBindGroupLayout({
-    label: 'ibl-prefilter-group0-bgl',
-    entries: [
-      { binding: 0, visibility: GPU_SHADER_STAGE_VERTEX, buffer: { type: 'uniform' } },
-      { binding: 1, visibility: GPU_SHADER_STAGE_FRAGMENT, buffer: { type: 'uniform' } },
-    ],
-  });
-  if (!prefilterGroup0.ok) return err(prefilterGroup0.error);
-  cache.prefilterGroup0Bgl = prefilterGroup0.value;
-
   const equirectGroup1 = device.createBindGroupLayout({
     label: 'ibl-equirect-group1-bgl',
     entries: [
@@ -438,11 +436,6 @@ export async function createIblPipelines(
     bindGroupLayouts: [faceBgl.value, cubeGroup1.value],
   });
   if (!irradianceLayout.ok) return err(irradianceLayout.error);
-  const prefilterLayout = device.createPipelineLayout({
-    label: 'ibl-prefilter-pipeline-layout',
-    bindGroupLayouts: [prefilterGroup0.value, cubeGroup1.value],
-  });
-  if (!prefilterLayout.ok) return err(prefilterLayout.error);
   const brdfLutLayout = device.createPipelineLayout({
     label: 'ibl-brdf-lut-pipeline-layout',
     bindGroupLayouts: [],
@@ -482,19 +475,11 @@ export async function createIblPipelines(
   if (!pipeIrradiance.ok) return err(pipeIrradiance.error);
   cache.irradiancePipeline = pipeIrradiance.value;
 
-  const pipePrefilter = device.createRenderPipeline({
-    label: 'ibl-prefilter-pipeline',
-    layout: prefilterLayout.value,
-    vertex: { module: mPr, entryPoint: 'cubemap_vs', buffers: [vertexLayout3F] },
-    fragment: {
-      module: mPr,
-      entryPoint: 'prefilterEnv_fs',
-      targets: [{ format: cubeOutputFormat }],
-    },
-    primitive: { topology: 'triangle-list', cullMode: 'none' },
-  });
-  if (!pipePrefilter.ok) return err(pipePrefilter.error);
-  cache.prefilterPipeline = pipePrefilter.value;
+  const pmrem = createPmremPipeline(device, mPr, cubeOutputFormat);
+  if (!pmrem.ok) return err(pmrem.error);
+  cache.prefilterPipeline = pmrem.value.pipeline;
+  cache.prefilterGroup0Bgl = pmrem.value.parametersLayout;
+  cache.prefilterGroup1Bgl = pmrem.value.inputLayout;
 
   const pipeBrdfLut = device.createRenderPipeline({
     label: 'ibl-brdf-lut-pipeline',
@@ -513,7 +498,7 @@ export async function createIblPipelines(
   return ok({
     equirectToCubePipeline: pipeEquirect.value,
     irradiancePipeline: pipeIrradiance.value,
-    prefilterPipeline: pipePrefilter.value,
+    prefilterPipeline: pmrem.value.pipeline,
     brdfLutPipeline: pipeBrdfLut.value,
   });
 }
@@ -540,11 +525,12 @@ function iblPipelineError(
  * come from the t55 helpers.
  */
 export interface RunIblPrecomputeOptions {
+  /** Candidate resources and cancellation belong to this scope. */
   readonly scope: DeviceScope;
+  /** Device-wide pipelines remain shared when a source owns a child scope. */
+  readonly pipelineScope?: DeviceScope;
   readonly device: IblRhiOwner;
-  readonly equirectGpuTex: Texture;
   readonly equirectView: TextureView;
-  readonly cubeGpuTex: Texture;
   readonly cubeView: TextureView;
   readonly cubeFaceViews: ReadonlyArray<TextureView>;
   readonly faceUniformsBuffer: Buffer;
@@ -558,7 +544,7 @@ export interface IblPrecomputeOutput {
   irradianceFaceViews: ReadonlyArray<TextureView>;
   prefilterTexture: Texture;
   prefilterView: TextureView;
-  prefilterFaceViewsByMip: ReadonlyArray<ReadonlyArray<TextureView>>;
+  prefilterLevelCount: number;
   brdfLutTexture: Texture;
   brdfLutView: TextureView;
 }
@@ -619,7 +605,7 @@ export async function runIblPrecompute(
 ): Promise<Result<IblPrecomputeOutput, IblPrecomputeError>> {
   const { device, scope } = opts;
   if (!scope.isAlive()) return err(badAlloc('device-scope-generation'));
-  const cache = getOrCreateIblCache(scope);
+  const cache = getOrCreateIblCache(opts.pipelineScope ?? scope);
   const outputFormat = cache.outputFormat ?? 'rgba16float';
   const generation = scope.generation;
   const candidate: Partial<IblPrecomputeOutput> = {};
@@ -687,348 +673,319 @@ export async function runIblPrecompute(
     candidate.irradianceFaceViews = faceViews;
   }
 
-  {
-    const textureResult = device.createTexture({
-      label: 'ibl-prefilter-cube',
-      size: { width: PREFILTER_SIZE, height: PREFILTER_SIZE, depthOrArrayLayers: 6 },
-      mipLevelCount: PREFILTER_MIP_LEVELS,
-      sampleCount: 1,
-      dimension: '2d',
-      format: outputFormat,
-      usage:
-        GPU_TEXTURE_USAGE_RENDER_ATTACHMENT_AND_TEXTURE_BINDING |
-        GPU_TEXTURE_USAGE_COPY_DST |
-        GPU_TEXTURE_USAGE_COPY_SRC,
-      viewFormats: [],
-      textureBindingViewDimension: undefined,
+  const prefilter = createPmremAtlas(device, 'ibl-prefilter-atlas', PREFILTER_SIZE, outputFormat);
+  if (!prefilter.ok) return fail('prefilter-atlas', prefilter.error);
+  candidate.prefilterTexture = adoptIblTexture(scope, device, prefilter.value.texture);
+  candidate.prefilterView = prefilter.value.view;
+  candidate.prefilterLevelCount = PREFILTER_MIP_LEVELS;
+  const scratch = createPmremAtlas(device, 'ibl-prefilter-scratch', PREFILTER_SIZE, outputFormat);
+  if (!scratch.ok) return fail('prefilter-scratch', scratch.error);
+  const scratchScope = scope.createChild('ibl-prefilter-scratch');
+  adoptIblTexture(scratchScope, device, scratch.value.texture);
+  try {
+    {
+      const textureResult = device.createTexture({
+        label: 'ibl-brdf-lut',
+        size: { width: BRDF_LUT_SIZE, height: BRDF_LUT_SIZE, depthOrArrayLayers: 1 },
+        mipLevelCount: 1,
+        sampleCount: 1,
+        dimension: '2d',
+        format: outputFormat,
+        usage:
+          GPU_TEXTURE_USAGE_RENDER_ATTACHMENT_AND_TEXTURE_BINDING |
+          GPU_TEXTURE_USAGE_COPY_DST |
+          GPU_TEXTURE_USAGE_COPY_SRC,
+        viewFormats: [],
+        textureBindingViewDimension: undefined,
+      });
+      if (!textureResult.ok) return fail('brdf-lut-texture', textureResult.error);
+      candidate.brdfLutTexture = adoptIblTexture(scope, device, textureResult.value);
+      const viewResult = device.createTextureView(textureResult.value, {
+        label: 'ibl-brdf-lut-view',
+        dimension: '2d',
+      });
+      if (!viewResult.ok) return fail('brdf-lut-view', viewResult.error);
+      candidate.brdfLutView = viewResult.value;
+    }
+
+    // Shared sampler (filtering, linear-linear).
+    // U=repeat because equirect wraps horizontally (atan2 seam at ±π);
+    // V=clamp because equirect poles are clamped vertically.
+    const samplerResult = device.createSampler({
+      label: 'ibl-precompute-sampler',
+      magFilter: 'linear',
+      minFilter: 'linear',
+      mipmapFilter: 'linear',
+      addressModeU: 'repeat',
+      addressModeV: 'clamp-to-edge',
+      addressModeW: 'clamp-to-edge',
     });
-    if (!textureResult.ok) return fail('prefilter-texture', textureResult.error);
-    candidate.prefilterTexture = adoptIblTexture(scope, device, textureResult.value);
-    const cubeViewResult = device.createTextureView(textureResult.value, {
-      label: 'ibl-prefilter-cube-view',
-      dimension: 'cube',
-      arrayLayerCount: 6,
-      baseMipLevel: 0,
-      mipLevelCount: PREFILTER_MIP_LEVELS,
+    if (!samplerResult.ok) return fail('sampler', samplerResult.error);
+    const sampler: Sampler = samplerResult.value;
+
+    let encoderResult = device.createCommandEncoder({
+      label: 'ibl-precompute-encoder-equirect-to-cube',
     });
-    if (!cubeViewResult.ok) return fail('prefilter-view', cubeViewResult.error);
-    candidate.prefilterView = cubeViewResult.value;
-    const mipViews: TextureView[][] = [];
-    for (let m = 0; m < PREFILTER_MIP_LEVELS; m++) {
-      const faces: TextureView[] = [];
-      for (let f = 0; f < 6; f++) {
-        const viewResult = device.createTextureView(textureResult.value, {
-          label: `ibl-prefilter-mip${m}-face${f}`,
-          dimension: '2d',
-          baseMipLevel: m,
-          mipLevelCount: 1,
-          baseArrayLayer: f,
-          arrayLayerCount: 1,
-        });
-        if (!viewResult.ok) return fail('prefilter-face-view', viewResult.error);
-        faces.push(viewResult.value);
+    if (!encoderResult.ok) return fail('encoder-equirect-to-cube', encoderResult.error);
+    let encoder: RhiCommandEncoder = encoderResult.value;
+
+    const submitStage = async (stage: string, createNextEncoder: boolean) => {
+      if (!scope.isAlive() || scope.generation !== generation) {
+        return err(badAlloc(`${stage}-device-scope-generation`));
       }
-      mipViews.push(faces);
-    }
-    candidate.prefilterFaceViewsByMip = mipViews;
-  }
-
-  {
-    const textureResult = device.createTexture({
-      label: 'ibl-brdf-lut',
-      size: { width: BRDF_LUT_SIZE, height: BRDF_LUT_SIZE, depthOrArrayLayers: 1 },
-      mipLevelCount: 1,
-      sampleCount: 1,
-      dimension: '2d',
-      format: outputFormat,
-      usage:
-        GPU_TEXTURE_USAGE_RENDER_ATTACHMENT_AND_TEXTURE_BINDING |
-        GPU_TEXTURE_USAGE_COPY_DST |
-        GPU_TEXTURE_USAGE_COPY_SRC,
-      viewFormats: [],
-      textureBindingViewDimension: undefined,
-    });
-    if (!textureResult.ok) return fail('brdf-lut-texture', textureResult.error);
-    candidate.brdfLutTexture = adoptIblTexture(scope, device, textureResult.value);
-    const viewResult = device.createTextureView(textureResult.value, {
-      label: 'ibl-brdf-lut-view',
-      dimension: '2d',
-    });
-    if (!viewResult.ok) return fail('brdf-lut-view', viewResult.error);
-    candidate.brdfLutView = viewResult.value;
-  }
-
-  // Shared sampler (filtering, linear-linear).
-  // U=repeat because equirect wraps horizontally (atan2 seam at ±π);
-  // V=clamp because equirect poles are clamped vertically.
-  const samplerResult = device.createSampler({
-    label: 'ibl-precompute-sampler',
-    magFilter: 'linear',
-    minFilter: 'linear',
-    mipmapFilter: 'linear',
-    addressModeU: 'repeat',
-    addressModeV: 'clamp-to-edge',
-    addressModeW: 'clamp-to-edge',
-  });
-  if (!samplerResult.ok) return fail('sampler', samplerResult.error);
-  const sampler: Sampler = samplerResult.value;
-
-  let encoderResult = device.createCommandEncoder({
-    label: 'ibl-precompute-encoder-equirect-to-cube',
-  });
-  if (!encoderResult.ok) return fail('encoder-equirect-to-cube', encoderResult.error);
-  let encoder: RhiCommandEncoder = encoderResult.value;
-
-  const submitStage = async (stage: string, createNextEncoder: boolean) => {
-    if (!scope.isAlive() || scope.generation !== generation) {
-      return err(badAlloc(`${stage}-device-scope-generation`));
-    }
-    const finishRes = encoder.finish();
-    if (!finishRes.ok) return err(badAlloc(`${stage}-finish`, finishRes.error));
-    const submitRes = device.queue.submit([finishRes.value]);
-    if (!submitRes.ok) return err(badAlloc(`${stage}-submit`, submitRes.error));
-    // Immutable face/mip uniform slots and same-queue order preserve every
-    // dependency. Fence only the final submission before promoting outputs;
-    // avoid a CPU/GPU roundtrip for every face-sized submission.
-    if (!createNextEncoder) {
-      try {
-        await device.queue.onSubmittedWorkDone();
-      } catch {
-        return err(badAlloc(`${stage}-fence`));
+      const finishRes = encoder.finish();
+      if (!finishRes.ok) return err(badAlloc(`${stage}-finish`, finishRes.error));
+      const submitRes = device.queue.submit([finishRes.value]);
+      if (!submitRes.ok) return err(badAlloc(`${stage}-submit`, submitRes.error));
+      // Immutable face/mip uniform slots and same-queue order preserve every
+      // dependency. Fence only the final submission before promoting outputs;
+      // avoid a CPU/GPU roundtrip for every face-sized submission.
+      if (!createNextEncoder) {
+        try {
+          await device.queue.onSubmittedWorkDone();
+        } catch {
+          return err(badAlloc(`${stage}-fence`));
+        }
       }
+      if (!scope.isAlive() || scope.generation !== generation) {
+        return err(badAlloc(`${stage}-device-scope-generation`));
+      }
+      if (createNextEncoder) {
+        encoderResult = device.createCommandEncoder({ label: `ibl-precompute-encoder-${stage}` });
+        if (!encoderResult.ok) return err(badAlloc(`${stage}-next-encoder`, encoderResult.error));
+        encoder = encoderResult.value;
+      }
+      return ok(true);
+    };
+
+    const yieldBetweenBatches = async (stage: string) => {
+      await yieldToRenderOpportunity();
+      if (!scope.isAlive() || scope.generation !== generation) {
+        return err(badAlloc(`${stage}-device-scope-generation`));
+      }
+      return ok(true);
+    };
+
+    const faceUniformsBgl = cache.faceUniformsBgl;
+    const equirectGroup1Bgl = cache.equirectGroup1Bgl;
+    const cubeGroup1Bgl = cache.cubeGroup1Bgl;
+    const prefilterGroup0Bgl = cache.prefilterGroup0Bgl;
+    const equirectPipeline = cache.equirectToCubePipeline;
+    const irradiancePipeline = cache.irradiancePipeline;
+    const prefilterPipeline = cache.prefilterPipeline;
+    const brdfLutPipeline = cache.brdfLutPipeline;
+    const candidateIrradianceTexture = candidate.irradianceTexture;
+    const candidateIrradianceView = candidate.irradianceView;
+    const irrFaceViews = candidate.irradianceFaceViews;
+    const candidatePrefilterTexture = candidate.prefilterTexture;
+    const candidatePrefilterView = candidate.prefilterView;
+    const prefilterGroup1Bgl = cache.prefilterGroup1Bgl;
+    const candidateBrdfLutTexture = candidate.brdfLutTexture;
+    const brdfLutView = candidate.brdfLutView;
+    if (
+      faceUniformsBgl === undefined ||
+      equirectGroup1Bgl === undefined ||
+      cubeGroup1Bgl === undefined ||
+      prefilterGroup0Bgl === undefined ||
+      equirectPipeline === undefined ||
+      irradiancePipeline === undefined ||
+      prefilterPipeline === undefined ||
+      brdfLutPipeline === undefined ||
+      candidateIrradianceTexture === undefined ||
+      candidateIrradianceView === undefined ||
+      irrFaceViews === undefined ||
+      candidatePrefilterTexture === undefined ||
+      candidatePrefilterView === undefined ||
+      prefilterGroup1Bgl === undefined ||
+      candidateBrdfLutTexture === undefined ||
+      brdfLutView === undefined
+    ) {
+      return fail('ibl-cache-resources');
     }
-    if (!scope.isAlive() || scope.generation !== generation) {
-      return err(badAlloc(`${stage}-device-scope-generation`));
-    }
-    if (createNextEncoder) {
-      encoderResult = device.createCommandEncoder({ label: `ibl-precompute-encoder-${stage}` });
-      if (!encoderResult.ok) return err(badAlloc(`${stage}-next-encoder`, encoderResult.error));
-      encoder = encoderResult.value;
-    }
-    return ok(true);
-  };
 
-  const yieldBetweenBatches = async (stage: string) => {
-    await yieldToRenderOpportunity();
-    if (!scope.isAlive() || scope.generation !== generation) {
-      return err(badAlloc(`${stage}-device-scope-generation`));
-    }
-    return ok(true);
-  };
-
-  const faceUniformsBgl = cache.faceUniformsBgl;
-  const equirectGroup1Bgl = cache.equirectGroup1Bgl;
-  const cubeGroup1Bgl = cache.cubeGroup1Bgl;
-  const prefilterGroup0Bgl = cache.prefilterGroup0Bgl;
-  const equirectPipeline = cache.equirectToCubePipeline;
-  const irradiancePipeline = cache.irradiancePipeline;
-  const prefilterPipeline = cache.prefilterPipeline;
-  const brdfLutPipeline = cache.brdfLutPipeline;
-  const candidateIrradianceTexture = candidate.irradianceTexture;
-  const candidateIrradianceView = candidate.irradianceView;
-  const irrFaceViews = candidate.irradianceFaceViews;
-  const candidatePrefilterTexture = candidate.prefilterTexture;
-  const candidatePrefilterView = candidate.prefilterView;
-  const prefMipViews = candidate.prefilterFaceViewsByMip;
-  const candidateBrdfLutTexture = candidate.brdfLutTexture;
-  const brdfLutView = candidate.brdfLutView;
-  if (
-    faceUniformsBgl === undefined ||
-    equirectGroup1Bgl === undefined ||
-    cubeGroup1Bgl === undefined ||
-    prefilterGroup0Bgl === undefined ||
-    equirectPipeline === undefined ||
-    irradiancePipeline === undefined ||
-    prefilterPipeline === undefined ||
-    brdfLutPipeline === undefined ||
-    candidateIrradianceTexture === undefined ||
-    candidateIrradianceView === undefined ||
-    irrFaceViews === undefined ||
-    candidatePrefilterTexture === undefined ||
-    candidatePrefilterView === undefined ||
-    prefMipViews === undefined ||
-    candidateBrdfLutTexture === undefined ||
-    brdfLutView === undefined
-  ) {
-    return fail('ibl-cache-resources');
-  }
-
-  // Bind group: equirect group(1).
-  const equirectBgResult = device.createBindGroup({
-    label: 'ibl-equirect-bg',
-    layout: equirectGroup1Bgl,
-    entries: [
-      { binding: 0, resource: { kind: 'textureView', value: opts.equirectView } },
-      { binding: 1, resource: { kind: 'sampler', value: sampler } },
-    ],
-  });
-  if (!equirectBgResult.ok) return fail('equirect-bg', equirectBgResult.error);
-  const equirectBg: BindGroup = equirectBgResult.value;
-
-  // Bind group: cube group(1) for irradiance + prefilter.
-  const cubeBgResult = device.createBindGroup({
-    label: 'ibl-cube-bg',
-    layout: cubeGroup1Bgl,
-    entries: [
-      { binding: 0, resource: { kind: 'textureView', value: opts.cubeView } },
-      { binding: 1, resource: { kind: 'sampler', value: sampler } },
-    ],
-  });
-  if (!cubeBgResult.ok) return fail('cube-bg', cubeBgResult.error);
-  const cubeBg: BindGroup = cubeBgResult.value;
-
-  // (a) equirect-to-cube: 6 face draws.
-  const cubeFaceViews = opts.cubeFaceViews;
-  for (let face = 0; face < 6; face++) {
-    const cubeFaceView = cubeFaceViews[face];
-    if (cubeFaceView === undefined) return fail('cube-face-view');
-    const pass: RhiRenderPassEncoder = encoder.beginRenderPass({
-      label: 'ibl-equirect-to-cube',
-      colorAttachments: [
-        {
-          view: cubeFaceView,
-          clearValue: { r: 0, g: 0, b: 0, a: 1 },
-          loadOp: 'clear',
-          storeOp: 'store',
-        },
+    // Bind group: equirect group(1).
+    const equirectBgResult = device.createBindGroup({
+      label: 'ibl-equirect-bg',
+      layout: equirectGroup1Bgl,
+      entries: [
+        { binding: 0, resource: { kind: 'textureView', value: opts.equirectView } },
+        { binding: 1, resource: { kind: 'sampler', value: sampler } },
       ],
     });
-    const faceBgResult = device.createBindGroup({
-      label: `ibl-face-bg-${face}`,
-      layout: faceUniformsBgl,
-      entries: [iblFaceUniformEntry(opts.faceUniformsBuffer, face)],
-    });
-    if (!faceBgResult.ok) return fail('face-bg', faceBgResult.error);
-    pass.setPipeline(equirectPipeline);
-    pass.setBindGroup(0, faceBgResult.value);
-    pass.setBindGroup(1, equirectBg);
-    pass.setVertexBuffer(0, opts.cubeVertexBuffer);
-    pass.draw(6, 1, face * 6, 0);
-    pass.end();
-  }
+    if (!equirectBgResult.ok) return fail('equirect-bg', equirectBgResult.error);
+    const equirectBg: BindGroup = equirectBgResult.value;
 
-  const cubeStage = await submitStage('equirect-to-cube', true);
-  if (!cubeStage.ok) return err(cubeStage.error);
-  const cubeOpportunity = await yieldBetweenBatches('equirect-to-cube');
-  if (!cubeOpportunity.ok) return err(cubeOpportunity.error);
-
-  // (b) irradiance convolve: 6 face draws.
-  for (let face = 0; face < 6; face++) {
-    const irrFaceView = irrFaceViews[face];
-    if (irrFaceView === undefined) return fail('irradiance-face-view');
-    const pass: RhiRenderPassEncoder = encoder.beginRenderPass({
-      label: 'ibl-irradiance',
-      colorAttachments: [
-        {
-          view: irrFaceView,
-          clearValue: { r: 0, g: 0, b: 0, a: 1 },
-          loadOp: 'clear',
-          storeOp: 'store',
-        },
+    // Bind group: cube group(1) for irradiance + prefilter.
+    const cubeBgResult = device.createBindGroup({
+      label: 'ibl-cube-bg',
+      layout: cubeGroup1Bgl,
+      entries: [
+        { binding: 0, resource: { kind: 'textureView', value: opts.cubeView } },
+        { binding: 1, resource: { kind: 'sampler', value: sampler } },
       ],
     });
-    const faceBgResult = device.createBindGroup({
-      label: `ibl-irr-face-bg-${face}`,
-      layout: faceUniformsBgl,
-      entries: [iblFaceUniformEntry(opts.faceUniformsBuffer, face)],
-    });
-    if (!faceBgResult.ok) return fail('irr-face-bg', faceBgResult.error);
-    pass.setPipeline(irradiancePipeline);
-    pass.setBindGroup(0, faceBgResult.value);
-    pass.setBindGroup(1, cubeBg);
-    pass.setVertexBuffer(0, opts.cubeVertexBuffer);
-    pass.draw(6, 1, face * 6, 0);
-    pass.end();
+    if (!cubeBgResult.ok) return fail('cube-bg', cubeBgResult.error);
+    const cubeBg: BindGroup = cubeBgResult.value;
 
-    const irradianceFaceStage = await submitStage(`irradiance-face-${face}`, true);
-    if (!irradianceFaceStage.ok) return err(irradianceFaceStage.error);
-  }
-  const irradianceOpportunity = await yieldBetweenBatches('irradiance');
-  if (!irradianceOpportunity.ok) return err(irradianceOpportunity.error);
-
-  // (c) prefilter env: 5 mips x 6 faces = 30 sub-passes.
-  for (let mip = 0; mip < PREFILTER_MIP_LEVELS; mip++) {
-    const mipFaceViews = prefMipViews[mip];
-    if (mipFaceViews === undefined) return fail('prefilter-mip-views');
+    // (a) equirect-to-cube: 6 face draws.
+    const cubeFaceViews = opts.cubeFaceViews;
     for (let face = 0; face < 6; face++) {
-      const subIdx = prefilterSubpassIndex(mip, face);
-      const mipFaceView = mipFaceViews[face];
-      if (mipFaceView === undefined) return fail('prefilter-face-view');
+      const cubeFaceView = cubeFaceViews[face];
+      if (cubeFaceView === undefined) return fail('cube-face-view');
       const pass: RhiRenderPassEncoder = encoder.beginRenderPass({
-        label: 'ibl-prefilter',
+        label: 'ibl-equirect-to-cube',
         colorAttachments: [
           {
-            view: mipFaceView,
+            view: cubeFaceView,
             clearValue: { r: 0, g: 0, b: 0, a: 1 },
             loadOp: 'clear',
             storeOp: 'store',
           },
         ],
       });
-      const bgResult = device.createBindGroup({
-        label: `ibl-pref-bg-${subIdx}`,
-        layout: prefilterGroup0Bgl,
-        entries: iblPrefilterGroup0Entries(
-          opts.faceUniformsBuffer,
-          opts.prefilterUniformsBuffer,
-          mip,
-          face,
-        ),
+      const faceBgResult = device.createBindGroup({
+        label: `ibl-face-bg-${face}`,
+        layout: faceUniformsBgl,
+        entries: [iblFaceUniformEntry(opts.faceUniformsBuffer, face)],
       });
-      if (!bgResult.ok) return fail('pref-bg', bgResult.error);
-      pass.setPipeline(prefilterPipeline);
-      pass.setBindGroup(0, bgResult.value);
+      if (!faceBgResult.ok) return fail('face-bg', faceBgResult.error);
+      pass.setPipeline(equirectPipeline);
+      pass.setBindGroup(0, faceBgResult.value);
+      pass.setBindGroup(1, equirectBg);
+      pass.setVertexBuffer(0, opts.cubeVertexBuffer);
+      pass.draw(6, 1, face * 6, 0);
+      pass.end();
+    }
+
+    const cubeStage = await submitStage('equirect-to-cube', true);
+    if (!cubeStage.ok) return err(cubeStage.error);
+    const cubeOpportunity = await yieldBetweenBatches('equirect-to-cube');
+    if (!cubeOpportunity.ok) return err(cubeOpportunity.error);
+
+    // (b) irradiance convolve: 6 face draws.
+    for (let face = 0; face < 6; face++) {
+      const irrFaceView = irrFaceViews[face];
+      if (irrFaceView === undefined) return fail('irradiance-face-view');
+      const pass: RhiRenderPassEncoder = encoder.beginRenderPass({
+        label: 'ibl-irradiance',
+        colorAttachments: [
+          {
+            view: irrFaceView,
+            clearValue: { r: 0, g: 0, b: 0, a: 1 },
+            loadOp: 'clear',
+            storeOp: 'store',
+          },
+        ],
+      });
+      const faceBgResult = device.createBindGroup({
+        label: `ibl-irr-face-bg-${face}`,
+        layout: faceUniformsBgl,
+        entries: [iblFaceUniformEntry(opts.faceUniformsBuffer, face)],
+      });
+      if (!faceBgResult.ok) return fail('irr-face-bg', faceBgResult.error);
+      pass.setPipeline(irradiancePipeline);
+      pass.setBindGroup(0, faceBgResult.value);
       pass.setBindGroup(1, cubeBg);
       pass.setVertexBuffer(0, opts.cubeVertexBuffer);
       pass.draw(6, 1, face * 6, 0);
       pass.end();
 
-      // Bound software-GPU work just as for irradiance; preserve every sample.
-      const faceStage = await submitStage(`prefilter-mip-${mip}-face-${face}`, true);
-      if (!faceStage.ok) return err(faceStage.error);
+      const irradianceFaceStage = await submitStage(`irradiance-face-${face}`, true);
+      if (!irradianceFaceStage.ok) return err(irradianceFaceStage.error);
     }
-    const mipOpportunity = await yieldBetweenBatches(`prefilter-mip-${mip}`);
-    if (!mipOpportunity.ok) return err(mipOpportunity.error);
-  }
+    const irradianceOpportunity = await yieldBetweenBatches('irradiance');
+    if (!irradianceOpportunity.ok) return err(irradianceOpportunity.error);
 
-  // (d) brdf-lut: fullscreen triangle.
-  {
-    const pass: RhiRenderPassEncoder = encoder.beginRenderPass({
-      label: 'ibl-brdf-lut',
-      colorAttachments: [
-        {
-          view: brdfLutView,
-          clearValue: { r: 0, g: 0, b: 0, a: 1 },
-          loadOp: 'clear',
-          storeOp: 'store',
-        },
+    const prefilterInputs = device.createBindGroup({
+      label: 'ibl-prefilter-inputs',
+      layout: prefilterGroup1Bgl,
+      entries: [
+        { binding: 0, resource: { kind: 'textureView', value: opts.cubeView } },
+        { binding: 1, resource: { kind: 'sampler', value: sampler } },
+        { binding: 2, resource: { kind: 'textureView', value: scratch.value.view } },
       ],
     });
-    pass.setPipeline(brdfLutPipeline);
-    pass.draw(3, 1, 0, 0);
-    pass.end();
+    if (!prefilterInputs.ok) return fail('prefilter-inputs', prefilterInputs.error);
+    for (let level = 0; level < PREFILTER_MIP_LEVELS; level++) {
+      for (let face = 0; face < 6; face++) {
+        const viewport = pmremViewport(PREFILTER_SIZE, level, face);
+        const pass = encoder.beginRenderPass({
+          label: 'ibl-prefilter',
+          colorAttachments: [
+            {
+              view: candidatePrefilterView,
+              loadOp: level === 0 && face === 0 ? 'clear' : 'load',
+              storeOp: 'store',
+              clearValue: { r: 0, g: 0, b: 0, a: 1 },
+            },
+          ],
+        });
+        const group = device.createBindGroup({
+          label: `ibl-prefilter-${level}-${face}`,
+          layout: prefilterGroup0Bgl,
+          entries: iblPrefilterGroup0Entries(opts.prefilterUniformsBuffer, level, face),
+        });
+        if (!group.ok) return fail('prefilter-uniforms', group.error);
+        pass.setPipeline(prefilterPipeline);
+        pass.setBindGroup(0, group.value);
+        pass.setBindGroup(1, prefilterInputs.value);
+        pass.setViewport(viewport.x, viewport.y, viewport.width, viewport.height, 0, 1);
+        pass.setScissorRect(viewport.x, viewport.y, viewport.width, viewport.height);
+        pass.draw(3);
+        pass.end();
+        encoder.copyTextureToTexture(
+          { texture: candidatePrefilterTexture, origin: [viewport.x, viewport.y, 0] },
+          { texture: scratch.value.texture, origin: [viewport.x, viewport.y, 0] },
+          { width: viewport.width, height: viewport.height, depthOrArrayLayers: 1 },
+        );
+        const submitted = await submitStage(`prefilter-level-${level}-face-${face}`, true);
+        if (!submitted.ok) return err(submitted.error);
+      }
+      const yielded = await yieldBetweenBatches(`prefilter-level-${level}`);
+      if (!yielded.ok) return err(yielded.error);
+    }
+
+    // (d) brdf-lut: fullscreen triangle.
+    {
+      const pass: RhiRenderPassEncoder = encoder.beginRenderPass({
+        label: 'ibl-brdf-lut',
+        colorAttachments: [
+          {
+            view: brdfLutView,
+            clearValue: { r: 0, g: 0, b: 0, a: 1 },
+            loadOp: 'clear',
+            storeOp: 'store',
+          },
+        ],
+      });
+      pass.setPipeline(brdfLutPipeline);
+      pass.draw(3, 1, 0, 0);
+      pass.end();
+    }
+
+    // The final stage is fenced before the candidate is promoted.
+    const brdfStage = await submitStage('brdf-lut', false);
+    if (!brdfStage.ok) return err(brdfStage.error);
+
+    const promoted: IblPrecomputeOutput = {
+      irradianceTexture: candidateIrradianceTexture,
+      irradianceView: candidateIrradianceView,
+      irradianceFaceViews: irrFaceViews,
+      prefilterTexture: candidatePrefilterTexture,
+      prefilterView: candidatePrefilterView,
+      prefilterLevelCount: PREFILTER_MIP_LEVELS,
+      brdfLutTexture: candidateBrdfLutTexture,
+      brdfLutView,
+    };
+    // POST-SUBMIT counter increments (AC-20).
+    cache.irradianceBakeCount += 1;
+    cache.prefilterBakeCount += 1;
+    cache.brdfLutBakeCount += 1;
+
+    return ok(promoted);
+  } finally {
+    scratchScope.retire();
   }
-
-  // The final stage is fenced before the candidate is promoted.
-  const brdfStage = await submitStage('brdf-lut', false);
-  if (!brdfStage.ok) return err(brdfStage.error);
-
-  const promoted: IblPrecomputeOutput = {
-    irradianceTexture: candidateIrradianceTexture,
-    irradianceView: candidateIrradianceView,
-    irradianceFaceViews: irrFaceViews,
-    prefilterTexture: candidatePrefilterTexture,
-    prefilterView: candidatePrefilterView,
-    prefilterFaceViewsByMip: prefMipViews,
-    brdfLutTexture: candidateBrdfLutTexture,
-    brdfLutView,
-  };
-  // POST-SUBMIT counter increments (AC-20).
-  cache.irradianceBakeCount += 1;
-  cache.prefilterBakeCount += 1;
-  cache.brdfLutBakeCount += 1;
-
-  return ok(promoted);
 }
 
 function adoptIblTexture(scope: DeviceScope, device: IblRhiOwner, texture: Texture): Texture {

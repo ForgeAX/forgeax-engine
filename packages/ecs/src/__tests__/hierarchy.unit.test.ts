@@ -2250,8 +2250,8 @@ import { handleNumeric } from './utils/handle-numeric';
     it("'unique<MaterialAsset>' -> 0 (UniqueRefStore handle slot)", () => {
       expect(typeDefault('unique<MaterialAsset>')).toBe(0);
     });
-    it("'shared<MeshAsset>' -> 0 (unmanaged handle phantom u32)", () => {
-      expect(typeDefault('shared<MeshAsset>')).toBe(0);
+    it("'asset<mesh>' -> 0 (unmanaged handle phantom u32)", () => {
+      expect(typeDefault('asset<mesh>')).toBe(0);
     });
   });
 
@@ -2288,7 +2288,7 @@ import { handleNumeric } from './utils/handle-numeric';
 
     it('brand-class field (handle<T>) — schema-nullable gets layer-3 NULL sentinel 0', () => {
       const C = defineComponent('M', {
-        mesh: { type: 'shared<MeshAsset>' },
+        mesh: { type: 'asset<mesh>' },
         mat: { type: 'unique<MaterialAsset>' },
       });
       const out = fillComponentDefaults(C, {});

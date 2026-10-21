@@ -1,7 +1,9 @@
+import { AssetRegistry } from '@forgeax/engine-assets-runtime';
+import { runtimeAssetRegistry } from '@forgeax/engine-assets-runtime/internal';
 import type { EntityHandle } from '@forgeax/engine-ecs';
 import { createWorldContext, Entity, World } from '@forgeax/engine-ecs';
 import { ChildOf, scenePlugin, Transform } from '@forgeax/engine-scene';
-import type { AnimationClip, AnimationTargetIdValue, Handle } from '@forgeax/engine-types';
+import type { AnimationClip, AnimationTargetIdValue, AssetHandle } from '@forgeax/engine-types';
 import { describe, expect, it, vi } from 'vitest';
 import { AnimationPlayer } from '../animation-player';
 import {
@@ -32,7 +34,7 @@ function clip(targetId = TARGET_ID): AnimationClip {
   };
 }
 
-async function spawnPair(world: World, clipHandle: Handle<'AnimationClip', 'shared'>) {
+async function spawnPair(world: World, clipHandle: AssetHandle<'animation-clip'>) {
   const player = world
     .spawn({
       component: Transform,
@@ -54,14 +56,16 @@ async function spawnPair(world: World, clipHandle: Handle<'AnimationClip', 'shar
 
 describe('animation target isolation and lifecycle', () => {
   it('skips five malformed targets or channels while a valid sibling player continues', async () => {
-    const world = new World();
+    const world = new World({ assets: new AssetRegistry() });
     await createWorldContext(world, [animationPlugin()]);
-    const clipHandle = world.allocSharedRef('AnimationClip', clip());
+    const clipHandle = runtimeAssetRegistry(world.assets).create(clip()).unwrap();
     const valid = await spawnPair(world, clipHandle);
 
     await spawnPair(
       world,
-      world.allocSharedRef('AnimationClip', clip('00000000000000000000000000000000' as never)),
+      runtimeAssetRegistry(world.assets)
+        .create(clip('00000000000000000000000000000000' as never))
+        .unwrap(),
     );
 
     const noTransform = await spawnPair(world, clipHandle);
@@ -82,11 +86,13 @@ describe('animation target isolation and lifecycle', () => {
     const staleRaw = stale.target;
     world.despawn(staleRaw).unwrap();
 
-    const emptyClip = world.allocSharedRef('AnimationClip', {
-      kind: 'animation-clip',
-      duration: 1,
-      channels: [],
-    } satisfies AnimationClip);
+    const emptyClip = runtimeAssetRegistry(world.assets)
+      .create({
+        kind: 'animation-clip',
+        duration: 1,
+        channels: [],
+      } satisfies AnimationClip)
+      .unwrap();
     const missingChannel = await spawnPair(world, clipHandle);
     world.set(missingChannel.player, AnimationPlayer, {
       clips: [clipHandle, emptyClip],
@@ -110,10 +116,10 @@ describe('animation target isolation and lifecycle', () => {
   });
 
   it('isolates two players sharing one Clip and TargetId while pause ownership swaps', async () => {
-    const world = new World();
+    const world = new World({ assets: new AssetRegistry() });
     await createWorldContext(world, [scenePlugin()]);
     await createWorldContext(world, [animationPlugin()]);
-    const clipHandle = world.allocSharedRef('AnimationClip', clip());
+    const clipHandle = runtimeAssetRegistry(world.assets).create(clip()).unwrap();
     const a = await spawnPair(world, clipHandle);
     const b = await spawnPair(world, clipHandle);
     world.set(a.player, AnimationPlayer, { paused: true }).unwrap();
@@ -130,9 +136,9 @@ describe('animation target isolation and lifecycle', () => {
   });
 
   it('performs at most one final Transform set per target per update', async () => {
-    const world = new World();
+    const world = new World({ assets: new AssetRegistry() });
     await createWorldContext(world, [animationPlugin()]);
-    const clipHandle = world.allocSharedRef('AnimationClip', clip());
+    const clipHandle = runtimeAssetRegistry(world.assets).create(clip()).unwrap();
     const { target } = await spawnPair(world, clipHandle);
     const set = vi.spyOn(world, 'set');
 
@@ -145,9 +151,9 @@ describe('animation target isolation and lifecycle', () => {
   });
 
   it('keeps targets alive after player despawn and permits stale-owner recovery', async () => {
-    const world = new World();
+    const world = new World({ assets: new AssetRegistry() });
     await createWorldContext(world, [animationPlugin()]);
-    const clipHandle = world.allocSharedRef('AnimationClip', clip());
+    const clipHandle = runtimeAssetRegistry(world.assets).create(clip()).unwrap();
     const first = await spawnPair(world, clipHandle);
     world.removeComponent(first.target, ChildOf).unwrap();
     world.despawn(first.player).unwrap();
@@ -169,9 +175,9 @@ describe('animation target isolation and lifecycle', () => {
   });
 
   it.each([30, 60, 120])('reaches the same target pose after one second at %iHz', async (hz) => {
-    const world = new World();
+    const world = new World({ assets: new AssetRegistry() });
     await createWorldContext(world, [animationPlugin()]);
-    const clipHandle = world.allocSharedRef('AnimationClip', clip());
+    const clipHandle = runtimeAssetRegistry(world.assets).create(clip()).unwrap();
     const { target } = await spawnPair(world, clipHandle);
     for (let frame = 0; frame < hz; frame++) world.update(1 / hz);
     expect(world.get(target, Transform).unwrap().pos[0]).toBeCloseTo(10, 4);

@@ -1,4 +1,4 @@
-import { AssetRegistry, HANDLE_CUBE } from '@forgeax/engine-assets-runtime';
+import { AssetRegistry } from '@forgeax/engine-assets-runtime';
 import { World } from '@forgeax/engine-ecs';
 import { createBoxGeometry } from '@forgeax/engine-geometry';
 import { MorphWeights, Transform } from '@forgeax/engine-scene';
@@ -6,71 +6,72 @@ import {
   createMaterialShaderProgram,
   createStandardPbrArtifactReceipt,
   type MaterialShaderArtifact,
-  ShaderRegistry,
 } from '@forgeax/engine-shader';
 import type { MaterialAsset, MaterialPass } from '@forgeax/engine-types';
-import { expect, it } from 'vitest';
+import { assert, expect, it, vi } from 'vitest';
 import { MeshFilter, MeshRenderer } from '../../components';
-import { ShadowClaimTable } from '../../gpu-driven/shadow-claims';
-import { ShadowCasterOwnershipProjection } from '../../gpu-driven/shadow-ownership';
+import {
+  type BatchArtifactResolver,
+  prepareBatchExecution,
+} from '../../gpu-driven/batch-execution';
+import { BatchTopology } from '../../gpu-driven/batch-topology';
+import { GpuDrawSelection } from '../../gpu-driven/draw-selection';
+import {
+  collectGpuDrivenMaterialArtifacts,
+  GpuDrivenMaterialProgramProjection,
+} from '../../gpu-driven/material-artifacts';
+import { meshGeometryDraws } from '../../gpu-driven/mesh-batches';
 import { InstanceProjectionStore } from '../../instances';
-import { Materials, standard } from '../../materials';
-import type {
-  DispatchEntry,
-  MaterialSnapshot,
-  RenderableSnapshot,
-} from '../../render-system-extract';
+import { Materials } from '../../materials';
+import type { RenderableSnapshot } from '../../render-system-extract';
+import { MaterialDispatch } from '../../scene/material-dispatch';
+import { effectiveMeshMaterials } from '../../scene/mesh-materials';
 import { PersistentRenderScene } from '../../scene/render-scene';
 import { renderPublicationTransfers } from '../contract';
 import { preparePublicationGeometry } from '../prepare-geometry';
-import { preparePublishedShadowPasses } from '../prepare-shadow';
 import { createRenderPublisher } from '../publisher';
 import { RenderPublicationReceiver } from '../receiver';
 
-function fixture(materialAsset = Materials.standard({ baseColor: [1, 1, 1, 1] })) {
-  const world = new World();
-  const assets = new AssetRegistry(new ShaderRegistry({ manifestUrl: undefined }));
-  const identity = { source: 'shadow-admission', epoch: 1 };
-  const publisher = createRenderPublisher(world, assets, identity);
-  const receiver = new RenderPublicationReceiver(identity);
-  const scene = new PersistentRenderScene();
-  const instances = new InstanceProjectionStore();
-  const material = world.allocSharedRef('MaterialAsset', materialAsset);
-  const entity = world
-    .spawn(
-      { component: Transform, data: {} },
-      { component: MeshFilter, data: { assetHandle: HANDLE_CUBE } },
-      { component: MeshRenderer, data: { materials: [material] } },
-    )
-    .unwrap();
-  const receipt = createStandardPbrArtifactReceipt(false, false);
-  const artifact: MaterialShaderArtifact = {
-    material: 'forgeax::default-standard-pbr',
-    pass: 'forward',
-    program: createMaterialShaderProgram('shadow-admission-forward-fixture'),
+function artifact(material: string, pass: 'forward' | 'shadow'): MaterialShaderArtifact {
+  const receipt = createStandardPbrArtifactReceipt();
+  return {
+    material,
+    pass,
+    program: createMaterialShaderProgram(`shadow-admission-${pass}`),
     layoutIdentity: receipt.reflection.layoutIdentity,
     bindings: [],
-    deps: ['forgeax_material::standard'],
+    deps: [],
     vertexInputs: receipt.vertexInputs.map((input) => ({ ...input })),
     receipt,
   };
-  const shadowArtifact: MaterialShaderArtifact = {
-    ...artifact,
-    material: 'forgeax::default-shadow-caster',
-    pass: 'shadow',
-    program: createMaterialShaderProgram('shadow-admission-shadow-fixture'),
-  };
+}
+
+function fixture(materialAsset: MaterialAsset = Materials.standard({ baseColor: [1, 1, 1, 1] })) {
+  const assets = new AssetRegistry();
+  const world = new World({ assets });
+  const identity = { source: 'shadow-admission', epoch: 1 };
+  const publisher = createRenderPublisher(world, assets, identity);
+  const receiver = new RenderPublicationReceiver(identity);
+  const scene = new PersistentRenderScene({ assets });
+  const instances = new InstanceProjectionStore();
+  const material = assets.create(materialAsset).unwrap();
+  const mesh = assets.create(createBoxGeometry(1, 1, 1).unwrap()).unwrap();
+  const entity = world
+    .spawn(
+      { component: Transform, data: {} },
+      { component: MeshFilter, data: { assetHandle: mesh } },
+      { component: MeshRenderer, data: { materials: [material] } },
+    )
+    .unwrap();
+  const forward = artifact('forgeax::default-standard-pbr', 'forward');
+  const shadow = artifact('forgeax::default-shadow-caster', 'shadow');
   const requests: { material: string; pass: string }[] = [];
-  const resolveArtifact: NonNullable<Parameters<typeof preparePublicationGeometry>[5]> = (
-    material,
-    request,
-  ) => {
-    const pass = typeof request === 'object' ? (request.pass ?? 'forward') : 'forward';
-    requests.push({ material, pass });
-    const selected = pass === 'shadow' ? shadowArtifact : artifact;
+  const resolve: BatchArtifactResolver = (material, request) => {
+    requests.push({ material, pass: request.pass });
+    const selected = request.pass === 'shadow' ? shadow : forward;
     return selected.material === material ? selected : undefined;
   };
-  const publish = (resolve: Parameters<typeof preparePublicationGeometry>[5] = resolveArtifact) => {
+  const publish = () => {
     world.update(0).unwrap();
     const candidate = publisher.prepare(0).unwrap();
     const packet = structuredClone(candidate.packet, {
@@ -79,17 +80,52 @@ function fixture(materialAsset = Materials.standard({ baseColor: [1, 1, 1, 1] })
     candidate.accept();
     const replay = structuredClone(packet);
     const received = receiver.accept(packet).unwrap();
-    const prepared = preparePublicationGeometry(
-      received,
-      scene,
-      undefined,
-      assets,
-      instances,
-      resolve,
-    );
+    const prepared = preparePublicationGeometry(received, scene, undefined, assets, instances);
     const frame = scene.consumePublication(prepared);
     publisher.recycle(packet.revision, renderPublicationTransfers(packet)).unwrap();
-    return { received, prepared, frame, packet: replay };
+    return { received, frame, packet: replay };
+  };
+  const admit = (select: BatchArtifactResolver = resolve, source = scene) => {
+    const slots = source.compositionSlots();
+    const retained = source.compositionRetainedScene();
+    assert(retained);
+    const topology = new BatchTopology();
+    topology.rebuild(slots);
+    const dispatch = new MaterialDispatch();
+    for (const slot of slots) dispatch.bind(slot.slot, slot.snapshot);
+    dispatch.prepare(retained.meshes);
+    const plan = topology.query(topology.sourcePlan(), retained.meshes);
+    const selected = collectGpuDrivenMaterialArtifacts({
+      batches: plan.batches,
+      programs: new GpuDrivenMaterialProgramProjection().project(
+        dispatch.query(slots, retained.meshes),
+        dispatch.materials(),
+      ),
+      resolve: (id, request) => {
+        assert(
+          typeof request === 'object' &&
+            request.deformation &&
+            request.pass &&
+            request.address === 'scene-index',
+        );
+        return select(id, {
+          deformation: request.deformation,
+          pass: request.pass,
+          address: request.address,
+          vertexColorAvailable: request.vertexColorAvailable ?? false,
+        });
+      },
+      clustered: false,
+      reflectionFallback: false,
+      probeBlend: false,
+      shadowViews: true,
+    });
+    const batches = plan.batches.filter(
+      (batch) =>
+        batch.binding !== undefined &&
+        selected.batchExecutions.get(batch.binding)?.shadow.route === 'gpu',
+    );
+    return { ...selected, batches: plan.batches, selection: new GpuDrawSelection(batches) };
   };
   return {
     world,
@@ -99,60 +135,86 @@ function fixture(materialAsset = Materials.standard({ baseColor: [1, 1, 1, 1] })
     scene,
     entity,
     material,
-    artifact,
-    resolveArtifact,
+    mesh,
+    forward,
+    shadow,
     requests,
+    resolve,
     publish,
+    admit,
+    actualSource(snapshot: RenderableSnapshot) {
+      const retained = scene.compositionRetainedScene();
+      assert(retained && snapshot.assetHandle !== undefined);
+      const mesh = retained.meshes?.get(snapshot.worldId, snapshot.assetHandle);
+      assert(mesh);
+      const materials = effectiveMeshMaterials(snapshot, mesh);
+      return {
+        ...snapshot,
+        ...materials,
+        gpuDrivenDraws: meshGeometryDraws(mesh, materials.materials, 'rigid'),
+      };
+    },
+    close() {
+      publisher.dispose();
+      receiver.dispose();
+      scene.dispose();
+      assets.dispose();
+    },
   };
 }
 
-it('replaces source-only unprepared shadow state with receiver-owned GPU admission', () => {
+it('admits transferred geometry and independent Shadow programs through shared material execution', () => {
   const f = fixture();
   try {
-    const { received, frame } = f.publish();
-    expect(received.frame.renderables[0]?.shadowCasterPasses?.[0]?.cpuReason).toBe('unprepared');
-    const snapshot = frame.renderables[0];
-    expect(snapshot?.gpuDrivenDraws?.[0]?.prepared).toBeDefined();
-    expect(snapshot?.shadowCasterPasses?.[0]?.cpuReason).toBeUndefined();
-    const ownership = new ShadowCasterOwnershipProjection().project(
-      frame.renderables,
-      frame.dispatch,
-    );
-    expect(ownership.membership[0]?.gpuDrivenEligible).toBe(true);
+    const { received } = f.publish();
+    const accepted = f.scene.compositionSlots().at(0)?.snapshot;
+    assert(accepted);
+    expect(received.frame.renderables).toHaveLength(1);
+    expect(accepted.gpuDrivenDraws?.[0]?.geometry).toBeDefined();
+    const selected = f.admit();
+    expect(
+      [...selected.batchExecutions.values()].map(({ forward, shadow }) => [
+        forward.route,
+        shadow.route,
+      ]),
+    ).toEqual([['gpu', 'gpu']]);
+    expect(selected.selection.has(f.actualSource(accepted), 0)).toBe(true);
     expect(f.requests).toEqual([
-      { material: 'forgeax::default-standard-pbr', pass: 'forward' },
-      { material: 'forgeax::default-shadow-caster', pass: 'shadow' },
+      { material: f.forward.material, pass: 'forward' },
+      { material: f.shadow.material, pass: 'shadow' },
     ]);
   } finally {
-    f.publisher.dispose();
-    f.scene.dispose();
+    f.close();
   }
 });
 
-it('keeps a transferred caster on CPU when its independent Shadow program is absent', () => {
+it('keeps a transferred caster on the direct lane until its independent Shadow program is available', () => {
   const f = fixture();
   try {
-    const { frame } = f.publish((material, request) =>
-      typeof request === 'object' && request.pass === 'shadow'
-        ? undefined
-        : f.resolveArtifact(material, request),
+    f.publish();
+    const withoutShadow = f.admit((material, request) =>
+      request.pass === 'shadow' ? undefined : f.resolve(material, request),
     );
-    const snapshot = frame.renderables[0];
-    expect(snapshot?.gpuDrivenDraws?.[0]?.prepared).toBeDefined();
-    expect(snapshot?.shadowCasterPasses?.[0]).toMatchObject({
-      cpuReason: 'unprepared',
-      gpuDrivenEligible: false,
-    });
+    expect(
+      [...withoutShadow.batchExecutions.values()].map(({ forward, shadow }) => [
+        forward.route,
+        shadow.route,
+      ]),
+    ).toEqual([['gpu', 'direct']]);
+    const source = f.scene.compositionSlots().at(0)?.snapshot;
+    assert(source);
+    expect(withoutShadow.selection.has(f.actualSource(source), 0)).toBe(false);
+    expect(f.admit().selection.has(f.actualSource(source), 0)).toBe(true);
   } finally {
-    f.publisher.dispose();
-    f.scene.dispose();
+    f.close();
   }
 });
 
-function shadowMaterial(update: (shadow: MaterialPass) => readonly MaterialPass[]): MaterialAsset {
+function shadowMaterial(
+  update: (shadow: MaterialPass) => readonly MaterialPass[],
+): ReturnType<typeof Materials.standard> {
   const source = Materials.standard({ baseColor: [1, 1, 1, 1] });
-  if (source.parent !== undefined || source.passes === undefined)
-    throw new Error('Expected root material');
+  assert(source.passes);
   const [first, ...rest] = source.passes;
   return {
     ...source,
@@ -173,467 +235,289 @@ it.each([
   ],
   ['multi-pass', () => shadowMaterial((pass) => [pass, { ...pass, name: 'second-shadow' }])],
   [
-    'transparent',
+    'transparent-shadow',
     () =>
-      Materials.standard({
-        baseColor: [1, 1, 1, 0.5],
-        renderState: {
-          blend: {
-            color: { srcFactor: 'src-alpha', dstFactor: 'one-minus-src-alpha', operation: 'add' },
-            alpha: { srcFactor: 'one', dstFactor: 'one-minus-src-alpha', operation: 'add' },
+      shadowMaterial((pass) => [
+        {
+          ...pass,
+          renderState: {
+            ...pass.renderState,
+            blend: {
+              color: { srcFactor: 'src-alpha', dstFactor: 'one-minus-src-alpha', operation: 'add' },
+              alpha: { srcFactor: 'one', dstFactor: 'one-minus-src-alpha', operation: 'add' },
+            },
           },
         },
-      }),
+      ]),
   ],
-] as const)('retains the actual %s CPU shadow lane after transfer', (reason, material) => {
+] as const)('retains the actual %s direct Shadow lane after transfer', (_reason, material) => {
   const f = fixture(material());
   try {
-    const { frame } = f.publish();
-    const ownership = new ShadowCasterOwnershipProjection().project(
-      frame.renderables,
-      frame.dispatch,
-    );
-    expect(ownership.membership.length).toBeGreaterThan(0);
+    f.publish();
+    const selected = f.admit();
+    expect(selected.batchExecutions.size).toBe(1);
     expect(
-      ownership.membership.every(
-        (pass) => pass.cpuReason === reason && pass.gpuDrivenEligible === false,
-      ),
+      [...selected.batchExecutions.values()].every(({ shadow }) => shadow.route === 'direct'),
     ).toBe(true);
+    expect([...selected.shadowMaterialArtifacts]).toEqual([]);
   } finally {
-    f.publisher.dispose();
-    f.scene.dispose();
+    f.close();
   }
 });
 
-it('re-evaluates material edits against the current receiver receipt', () => {
+it('adopts an edited shared asset without an entity update and uses the current Shadow receipt', () => {
   const f = fixture();
-  const replace = (red: number) =>
-    f.world
-      .set(f.entity, MeshRenderer, {
-        materials: [
-          f.world.allocSharedRef(
-            'MaterialAsset',
-            Materials.standard({ baseColor: [red, 0.5, 1, 1] }),
-          ),
-        ],
+  try {
+    f.publish();
+    const before = [...f.admit().batchExecutions.values()][0]?.shadow;
+    assert(before?.route === 'gpu');
+    const source = f.scene.compositionSlots().at(0)?.snapshot;
+    assert(source);
+    f.assets.update(f.material, { values: { baseColor: [0.5, 0.25, 1, 1] } }).unwrap();
+    const { received } = f.publish();
+    expect(received.operations.filter((operation) => operation.kind === 'update')).toEqual([]);
+    const next = f.admit((id, request) => {
+      const selected = f.resolve(id, request);
+      assert(selected?.receipt);
+      return { ...selected, receipt: { ...selected.receipt, generation: 4 } };
+    });
+    const execution = [...next.batchExecutions.values()][0]?.shadow;
+    assert(execution?.route === 'gpu');
+    expect(execution.prepared.receiptGeneration).toBe(4);
+    expect(execution.material.baseColor).toEqual(new Float32Array([0.5, 0.25, 1]));
+    expect(execution.material).not.toBe(before.material);
+    expect(before.material.baseColor).toEqual(new Float32Array([1, 1, 1]));
+    expect(next.selection.has(f.actualSource(source), 0)).toBe(true);
+  } finally {
+    f.close();
+  }
+});
+
+it('keeps active morph deformation on the direct lane and admits neutralized geometry', () => {
+  const f = fixture();
+  try {
+    const mesh = createBoxGeometry(1, 1, 1).unwrap();
+    assert(mesh.attributes.position instanceof Float32Array);
+    const handle = f.assets
+      .create({
+        ...mesh,
+        morphTargets: [{ position: new Float32Array(mesh.attributes.position.length).fill(0.1) }],
       })
       .unwrap();
-  try {
-    expect(f.publish().frame.renderables[0]?.shadowCasterPasses?.[0]?.gpuDrivenEligible).toBe(true);
-    replace(0.5);
-    const unavailable = f.publish(() => undefined).frame.renderables[0];
-    expect(unavailable?.gpuDrivenDraws?.[0]?.preparationError?.code).toBe(
-      'missing-material-receipt',
-    );
-    expect(unavailable?.shadowCasterPasses?.[0]?.cpuReason).toBe('unprepared');
-    replace(0.25);
-    const mismatched = f.publish(() => ({ ...f.artifact, material: 'other-material' })).frame
-      .renderables[0];
-    expect(mismatched?.gpuDrivenDraws?.[0]?.prepared).toBeDefined();
-    expect(mismatched?.shadowCasterPasses?.[0]?.cpuReason).toBe('prepared-contract');
-    replace(1);
-    expect(f.publish().frame.renderables[0]?.shadowCasterPasses?.[0]?.gpuDrivenEligible).toBe(true);
-  } finally {
-    f.publisher.dispose();
-    f.scene.dispose();
-  }
-});
-
-it('keeps active morph deformation on CPU and admits it after neutralization', () => {
-  const f = fixture();
-  const mesh = createBoxGeometry(1, 1, 1).unwrap();
-  if (!(mesh.attributes.position instanceof Float32Array))
-    throw new Error('Expected float positions');
-  const handle = f.world.allocSharedRef('MeshAsset', {
-    ...mesh,
-    morphTargets: [{ position: new Float32Array(mesh.attributes.position.length).fill(0.1) }],
-  });
-  f.world.set(f.entity, MeshFilter, { assetHandle: handle }).unwrap();
-  f.world
-    .addComponent(f.entity, { component: MorphWeights, data: { weights: new Float32Array([1]) } })
-    .unwrap();
-  try {
-    const active = f.publish().frame.renderables[0];
-    expect(active?.morph).toBeDefined();
-    expect(active?.gpuDrivenDraws).toEqual([]);
-    expect(active?.shadowCasterPasses?.[0]?.cpuReason).toBe('morph');
+    f.world.set(f.entity, MeshFilter, { assetHandle: handle }).unwrap();
+    f.world
+      .addComponent(f.entity, { component: MorphWeights, data: { weights: new Float32Array([1]) } })
+      .unwrap();
+    f.publish();
+    expect(f.scene.compositionSlots().at(0)?.snapshot.morph).toBeDefined();
+    expect(f.admit().batches.length).toBe(0);
     f.world.set(f.entity, MorphWeights, { weights: new Float32Array([0]) }).unwrap();
-    const neutral = f.publish().frame.renderables[0];
-    expect(neutral?.morph).toBeUndefined();
-    expect(neutral?.gpuDrivenDraws?.[0]?.prepared).toBeDefined();
-    expect(neutral?.shadowCasterPasses?.[0]?.gpuDrivenEligible).toBe(true);
+    f.publish();
+    const neutral = f.scene.compositionSlots().at(0)?.snapshot;
+    assert(neutral);
+    expect(neutral.morph).toBeUndefined();
+    expect(f.admit().selection.has(f.actualSource(neutral), 0)).toBe(true);
   } finally {
-    f.publisher.dispose();
-    f.scene.dispose();
+    f.close();
   }
 });
 
 it.each([
-  { state: { cullMode: 'none' }, reason: undefined },
-  { state: { depthWriteEnabled: false }, reason: 'unsupported-render-state' },
-] as const)('rebuilds receiver admission while retaining CPU reason $reason', ({
-  state,
-  reason,
-}) => {
+  true,
+  false,
+])('rebuilds receiver execution from current receipts (GPU Shadow: %s)', (gpu) => {
   const f = fixture(
-    shadowMaterial((pass) => [{ ...pass, renderState: { ...pass.renderState, ...state } }]),
-  );
-  const rebuilt = new PersistentRenderScene();
-  try {
-    const { packet } = f.publish();
-    const receiver = new RenderPublicationReceiver(f.publisher.identity);
-    const received = receiver.accept(packet).unwrap();
-    const prepared = preparePublicationGeometry(
-      received,
-      rebuilt,
-      undefined,
-      f.assets,
-      new InstanceProjectionStore(),
-      (material, request) => {
-        const selected = f.resolveArtifact(material, request);
-        if (selected?.receipt === undefined) throw new Error('Expected selected material receipt');
-        return { ...selected, receipt: { ...selected.receipt, generation: 4 } };
-      },
-    );
-    const frame = rebuilt.consumePublication(prepared);
-    expect(frame.renderables[0]?.gpuDrivenDraws?.[0]?.prepared?.receiptGeneration).toBe(4);
-    expect(frame.renderables[0]?.shadowCasterPasses?.[0]).toMatchObject({
-      gpuDrivenEligible: reason === undefined,
-      renderState: state,
-    });
-    expect(frame.renderables[0]?.shadowCasterPasses?.[0]?.cpuReason).toBe(reason);
-  } finally {
-    f.publisher.dispose();
-    f.scene.dispose();
-    rebuilt.dispose();
-  }
-});
-
-it('preserves source submesh indices through transparent compaction, motion and removal', () => {
-  const f = fixture();
-  const mesh = createBoxGeometry(1, 1, 1).unwrap();
-  const submesh = mesh.submeshes[0];
-  if (submesh === undefined) throw new Error('Expected cube submesh');
-  const handle = f.world.allocSharedRef('MeshAsset', {
-    ...mesh,
-    materialSlots: [{ slotName: 'transparent' }, { slotName: 'opaque' }],
-    submeshes: [
-      { ...submesh, indexOffset: 0, indexCount: 18, materialSlot: 0 },
-      { ...submesh, indexOffset: 18, indexCount: 18, materialSlot: 1 },
-    ],
-  });
-  const transparent = f.world.allocSharedRef(
-    'MaterialAsset',
-    Materials.standard({
-      baseColor: [1, 1, 1, 0.5],
-      renderState: {
-        blend: {
-          color: { srcFactor: 'src-alpha', dstFactor: 'one-minus-src-alpha', operation: 'add' },
-          alpha: { srcFactor: 'one', dstFactor: 'one-minus-src-alpha', operation: 'add' },
+    shadowMaterial((pass) => [
+      {
+        ...pass,
+        renderState: {
+          ...pass.renderState,
+          ...(gpu ? { cullMode: 'back' as const } : { depthWriteEnabled: false }),
         },
       },
-    }),
+    ]),
   );
-  f.world.set(f.entity, MeshFilter, { assetHandle: handle }).unwrap();
-  f.world.set(f.entity, MeshRenderer, { materials: [transparent, f.material] }).unwrap();
+  const rebuilt = new PersistentRenderScene({ assets: f.assets });
+  const receiver = new RenderPublicationReceiver(f.publisher.identity);
   try {
-    for (const x of [0, 2]) {
-      f.world.set(f.entity, Transform, { pos: [x, 0, 0] }).unwrap();
-      const frame = f.publish().frame;
-      expect(frame.renderables[0]?.gpuDrivenDraws?.map((draw) => draw.drawItemIndex)).toEqual([1]);
-      expect(
-        frame.renderables[0]?.shadowCasterPasses?.map((pass) => [
-          pass.drawItemIndex,
-          pass.cpuReason,
-          pass.gpuDrivenEligible,
-        ]),
-      ).toEqual([
-        [0, 'transparent', false],
-        [1, undefined, true],
-      ]);
-    }
-    f.world.despawn(f.entity).unwrap();
-    const removed = f.publish().frame;
-    expect(removed.renderables).toHaveLength(0);
-    expect(
-      new ShadowCasterOwnershipProjection().project(removed.renderables, removed.dispatch)
-        .membership,
-    ).toHaveLength(0);
+    const { packet } = f.publish();
+    const received = receiver.accept(packet).unwrap();
+    rebuilt.consumePublication(
+      preparePublicationGeometry(
+        received,
+        rebuilt,
+        undefined,
+        f.assets,
+        new InstanceProjectionStore(),
+      ),
+    );
+    const selected = f.admit((id, request) => {
+      const current = f.resolve(id, request);
+      assert(current?.receipt);
+      return { ...current, receipt: { ...current.receipt, generation: 4 } };
+    }, rebuilt);
+    const execution = [...selected.batchExecutions.values()][0]?.shadow;
+    expect(execution?.route).toBe(gpu ? 'gpu' : 'direct');
+    if (execution?.route === 'gpu') expect(execution.prepared.receiptGeneration).toBe(4);
   } finally {
-    f.publisher.dispose();
-    f.scene.dispose();
+    receiver.dispose();
+    rebuilt.dispose();
+    f.close();
   }
 });
 
-it('re-admits a published rigid shadow caster after Renderer-owned shader preparation', () => {
-  const world = new World();
-  const assets = new AssetRegistry(new ShaderRegistry({ manifestUrl: undefined }));
-  const identity = { source: 'late-shadow', epoch: 1 };
-  const publisher = createRenderPublisher(world, assets, identity);
-  const receiver = new RenderPublicationReceiver(identity);
-  const scene = new PersistentRenderScene();
-  const instances = new InstanceProjectionStore();
+it('preserves source submesh identity through direct-lane filtering, motion and removal', () => {
+  const f = fixture();
   try {
-    const material = world.allocSharedRef(
-      'MaterialAsset',
-      standard({ baseColor: [0.5, 0.5, 0.5, 1], metallic: 0, roughness: 1 }),
-    );
-    world
-      .spawn(
-        { component: Transform, data: {} },
-        { component: MeshFilter, data: { assetHandle: HANDLE_CUBE } },
-        { component: MeshRenderer, data: { materials: [material] } },
+    const mesh = createBoxGeometry(1, 1, 1).unwrap();
+    const submesh = mesh.submeshes[0];
+    assert(submesh);
+    const handle = f.assets
+      .create({
+        ...mesh,
+        materialSlots: [{ slotName: 'direct' }, { slotName: 'gpu' }],
+        submeshes: [
+          { ...submesh, indexOffset: 0, indexCount: 18, materialSlot: 0 },
+          { ...submesh, indexOffset: 18, indexCount: 18, materialSlot: 1 },
+        ],
+      })
+      .unwrap();
+    const direct = f.assets
+      .create(
+        shadowMaterial((pass) => [
+          { ...pass, renderState: { ...pass.renderState, depthWriteEnabled: false } },
+        ]),
       )
       .unwrap();
-    world.update(0).unwrap();
-    const candidate = publisher.prepare(0).unwrap();
-    const packet = structuredClone(candidate.packet);
-    candidate.accept();
-    const received = receiver.accept(packet).unwrap();
-    expect(received.frame.renderables).toHaveLength(1);
-    expect(received.frame.renderables[0]?.shadowCasterPasses?.[0]?.cpuReason).toBe('unprepared');
-    const receipt = createStandardPbrArtifactReceipt();
-    const requests: string[] = [];
-    const prepared = preparePublicationGeometry(
-      received,
-      scene,
-      undefined,
-      assets,
-      instances,
-      (material, request) => {
-        requests.push(typeof request === 'object' ? (request.pass ?? 'missing') : 'missing');
-        return {
-          material,
-          pass: 'Forward',
-          program: createMaterialShaderProgram(''),
-          layoutIdentity: receipt.reflection.layoutIdentity,
-          bindings: [],
-          deps: [],
-          vertexInputs: [],
-          receipt,
-        };
-      },
-    );
-    expect(prepared.frame.renderables[0]?.gpuDrivenDraws?.[0]?.preparationError).toBeUndefined();
-    expect(prepared.frame.renderables[0]?.gpuDrivenDraws?.[0]?.prepared).toBeDefined();
-    const ownership = new ShadowCasterOwnershipProjection().project(
-      prepared.frame.renderables,
-      prepared.frame.dispatch,
-    );
-    expect(ownership.membership).toHaveLength(1);
-    expect(ownership.membership[0]?.cpuReason).toBeUndefined();
-    expect(ownership.membership[0]?.gpuDrivenEligible).toBe(true);
-    expect(requests).toEqual(['forward', 'shadow']);
-    const accepted = prepared.frame.renderables[0];
-    if (accepted === undefined) throw new Error('missing actual published row');
-    const claims = new ShadowClaimTable(ownership.drawKeys, ownership.membership);
-    expect(
-      claims.claim({ snapshot: accepted } as never, { drawItemIndex: 0 } as never).compatible,
-    ).toBe(true);
-    assertAdmissionBoundaries(accepted, prepared.frame.dispatch);
+    f.world.set(f.entity, MeshFilter, { assetHandle: handle }).unwrap();
+    f.world.set(f.entity, MeshRenderer, { materials: [direct, f.material] }).unwrap();
+    for (const x of [0, 2]) {
+      f.world.set(f.entity, Transform, { pos: [x, 0, 0] }).unwrap();
+      f.publish();
+      const source = f.scene.compositionSlots().at(0)?.snapshot;
+      assert(source);
+      const selected = f.admit();
+      expect(
+        selected.batches.map((batch) => [
+          batch.binding?.drawItemIndex,
+          batch.binding === undefined
+            ? undefined
+            : selected.batchExecutions.get(batch.binding)?.shadow.route,
+        ]),
+      ).toEqual([
+        [0, 'direct'],
+        [1, 'gpu'],
+      ]);
+      expect(selected.selection.has(f.actualSource(source), 0)).toBe(false);
+      expect(selected.selection.has(f.actualSource(source), 1)).toBe(true);
+    }
+    f.world.despawn(f.entity).unwrap();
+    f.publish();
+    expect(f.scene.compositionSlots()).toHaveLength(0);
+    expect(f.admit().batchExecutions.size).toBe(0);
   } finally {
-    publisher.dispose();
-    receiver.dispose();
+    f.close();
   }
 });
 
-function assertAdmissionBoundaries(
-  accepted: RenderableSnapshot,
-  dispatch: readonly DispatchEntry[],
-) {
-  const pass = accepted.shadowCasterPasses?.[0];
-  const draw = accepted.gpuDrivenDraws?.[0];
-  if (pass === undefined || draw?.prepared === undefined)
-    throw new Error('missing prepared caster');
-  const sourcePass = { ...pass, cpuReason: 'unprepared' as const };
-  delete (sourcePass as { gpuDrivenEligible?: boolean }).gpuDrivenEligible;
-  const source: RenderableSnapshot = { ...accepted, shadowCasterPasses: [sourcePass] };
-  const entries = dispatch.filter((entry) => entry.tags.LightMode === 'ShadowCaster');
-  const byMaterial = new Map([[pass.materialHandle, entries]]);
-  const receipt = createStandardPbrArtifactReceipt();
-  const artifact = (material: string): MaterialShaderArtifact => ({
-    material,
-    pass: 'ShadowCaster',
-    program: createMaterialShaderProgram(''),
-    layoutIdentity: receipt.reflection.layoutIdentity,
-    bindings: [],
-    deps: [],
-    vertexInputs: [],
-    receipt,
-  });
-  const prepare = (
-    row = source,
-    resolve: (id: string) => MaterialShaderArtifact | undefined = artifact,
-  ) => preparePublishedShadowPasses(row, byMaterial, resolve);
-  expect(prepare()?.[0]?.cpuReason).toBeUndefined();
-  const noShadow = prepare(source, () => undefined);
-  expect(noShadow?.[0]).toBe(sourcePass);
-  expect(
-    prepare(source, (id) => {
-      const { receipt: _receipt, ...missing } = artifact(id);
-      return missing;
-    })?.[0],
-  ).toBe(sourcePass);
-  expect(
-    prepare(source, (id) => ({
-      ...artifact(id),
-      receipt: (({ sceneIndexEntry: _entry, ...direct }) => direct)(receipt),
-    }))?.[0],
-  ).toBe(sourcePass);
-  expect(prepare(source, (id) => ({ ...artifact(id), layoutIdentity: 'wrong-layout' }))?.[0]).toBe(
-    sourcePass,
-  );
-  expect(
-    prepare(source, (id) => ({ ...artifact(id), material: 'wrong-selected-program' }))?.[0],
-  ).toBe(sourcePass);
-  expect(
-    prepare(source, (id) => ({
-      ...artifact(id),
-      receipt: {
-        ...receipt,
-        vertexInputs: [{ semantic: 'unavailable', location: 15, format: 'float32x4' }],
-      },
-    }))?.[0],
-  ).toBe(sourcePass);
-  const { prepared: _prepared, ...unprepared } = draw;
-  expect(prepare({ ...source, gpuDrivenDraws: [unprepared, draw] })?.[0]).toBe(sourcePass);
-  expect(
-    prepare(source, (id) => ({
-      ...artifact(id),
-      receipt: { ...receipt, materialRow: { ...receipt.materialRow, fields: ['wrong'] } },
-    }))?.[0],
-  ).toBe(sourcePass);
-  const explicitlyDisabled = { ...sourcePass, gpuDrivenEligible: false };
-  expect(prepare({ ...source, shadowCasterPasses: [explicitlyDisabled] })?.[0]).toBe(
-    explicitlyDisabled,
-  );
-  for (const cpuReason of [
-    'transparent',
-    'morph',
-    'multi-pass',
-    'missing-gpu-draw',
-    'missing-skin-bounds',
-    'prepared-contract',
-    'unsupported-render-state',
-  ] as const) {
-    const rejected = { ...sourcePass, cpuReason };
-    expect(prepare({ ...source, shadowCasterPasses: [rejected] })?.[0]).toBe(rejected);
+it('validates the selected Shadow ABI and propagates producer failures', () => {
+  const f = fixture();
+  try {
+    f.publish();
+    const selected = f.admit();
+    const batch = selected.batches.at(0);
+    assert(batch?.binding);
+    const execution = selected.batchExecutions.get(batch.binding)?.shadow;
+    assert(execution?.route === 'gpu');
+    const { geometry } = batch.binding;
+    const receipt = f.shadow.receipt;
+    assert(receipt);
+    const prepare = (resolve: BatchArtifactResolver) =>
+      prepareBatchExecution(geometry, execution.material, execution.pass, resolve);
+    expect(prepare(() => undefined).unwrap().route).toBe('direct');
+    expect(
+      prepare(
+        () => ({ ...f.shadow, receipt: undefined }) as unknown as MaterialShaderArtifact,
+      ).unwrap().route,
+    ).toBe('direct');
+    expect(
+      prepare(
+        () =>
+          ({
+            ...f.shadow,
+            receipt: { ...receipt, sceneIndexEntry: undefined },
+          }) as unknown as MaterialShaderArtifact,
+      ).unwrap().route,
+    ).toBe('direct');
+    expect(prepare(() => ({ ...f.shadow, layoutIdentity: 'wrong-layout' }))).toMatchObject({
+      ok: false,
+      error: { code: 'reflection-mismatch' },
+    });
+    expect(
+      prepare(() => ({
+        ...f.shadow,
+        receipt: {
+          ...receipt,
+          vertexInputs: [{ semantic: 'unavailable', location: 15, format: 'float32x4' }],
+        },
+      })),
+    ).toMatchObject({ ok: false, error: { code: 'vertex-input-mismatch' } });
+    expect(
+      prepare(() => ({
+        ...f.shadow,
+        receipt: {
+          ...receipt,
+          alphaMask: { ...receipt.alphaMask, cutoff: '', source: 'baseColorTexture' },
+        },
+      })),
+    ).toMatchObject({ ok: false, error: { code: 'alpha-mask-mismatch' } });
+    const error = new Error('registry admission failed');
+    expect(() =>
+      prepare(() => {
+        throw error;
+      }),
+    ).toThrow(error);
+    const paired = { ...execution.pass, sceneIndexProgramKey: 'shadow-scene' };
+    expect(
+      prepareBatchExecution(geometry, execution.material, paired, () => undefined),
+    ).toMatchObject({ ok: false, error: { code: 'missing-material-receipt' } });
+    const requests: string[] = [];
+    const specialized = prepareBatchExecution(geometry, execution.material, paired, (id) => {
+      requests.push(id);
+      return artifact(id, 'shadow');
+    }).unwrap();
+    expect(requests).toEqual(['shadow-scene']);
+    assert(specialized.route === 'gpu');
+    expect(specialized.artifact).toMatchObject({
+      material: execution.pass.shaderId,
+      specializationKey: 'shadow-scene',
+    });
+  } finally {
+    f.close();
   }
-  expect(prepare({ ...source, skin: {} as never })).toBe(source.shadowCasterPasses);
-  expect(prepare({ ...source, skinPose: {} as never })).toBe(source.shadowCasterPasses);
-  expect(prepare({ ...source, shadowCasterPasses: [] })).toEqual([]);
-  const error = new Error('registry admission failed');
-  expect(() =>
-    prepare(source, () => {
-      throw error;
-    }),
-  ).toThrow(error);
+});
 
-  // Same logical material, but a modern Forward-only scene pair must not
-  // cause the direct-only Shadow program to be interpreted as scene-index.
-  const modernMaterial: MaterialSnapshot = {
-    ...source.material,
-    materialProgramKeys: { forward: source.material.materialShaderId as string },
-    materialSceneIndexProgramKeys: {
-      forward: { pass: 'forward' as const, specializationKey: 'forward-scene' },
-    },
-  };
-  const modern = { ...source, material: modernMaterial, materials: [modernMaterial] };
-  expect(prepare(modern)?.[0]).toBe(sourcePass);
-  const pairedMaterial: MaterialSnapshot = {
-    ...modernMaterial,
-    materialProgramKeys: {
-      ...modernMaterial.materialProgramKeys,
-      shadow: sourcePass.materialShaderId as string,
-    },
-    materialSceneIndexProgramKeys: {
-      ...modernMaterial.materialSceneIndexProgramKeys,
-      shadow: { pass: 'shadow', specializationKey: 'shadow-scene' },
-    },
-  };
-  const paired = { ...source, material: pairedMaterial, materials: [pairedMaterial] };
-  const ids: string[] = [];
-  expect(
-    prepare(paired, (id) => {
-      ids.push(id);
-      return artifact(id);
-    })?.[0]?.cpuReason,
-  ).toBeUndefined();
-  expect(ids).toEqual(['shadow-scene']);
-  const changed = prepare(paired, (id) => {
-    const { receipt: _receipt, ...missing } = artifact(id);
-    return missing;
-  });
-  expect(changed?.[0]).toBe(sourcePass);
-
-  // Compact draw ordinal zero belongs to source submesh two and material
-  // slot one. Neither ordinal nor the fallback material selects its contract.
-  const selectedMaterial = { ...source.material, materialHandle: sourcePass.materialHandle + 1 };
-  const selectedPass = {
-    ...sourcePass,
-    drawItemIndex: 2,
-    materialHandle: selectedMaterial.materialHandle,
-  };
-  const selectedEntries = entries.map((entry) => ({
-    ...entry,
-    materialHandle: selectedPass.materialHandle,
-  }));
-  const compact = {
-    ...source,
-    materials: [source.material, selectedMaterial],
-    gpuDrivenDraws: [{ ...draw, drawItemIndex: 2, materialSlot: 1 }],
-    shadowCasterPasses: [selectedPass],
-  };
-  const admitted = preparePublishedShadowPasses(
-    compact,
-    new Map([[selectedPass.materialHandle, selectedEntries]]),
-    artifact,
-  );
-  expect(admitted?.[0]).toMatchObject({
-    drawItemIndex: 2,
-    materialHandle: selectedPass.materialHandle,
-    gpuDrivenEligible: true,
-  });
-  expect(admitted?.[0]?.cpuReason).toBeUndefined();
-  expect(preparePublishedShadowPasses(compact, byMaterial, artifact)?.[0]).toBe(selectedPass);
-  const changedState = { ...sourcePass, renderState: { cullMode: 'front' as const } };
-  expect(prepare({ ...source, shadowCasterPasses: [changedState] })?.[0]).toBe(changedState);
-  const customVertex = { ...sourcePass, vertexEntry: 'custom_direct_vertex' };
-  expect(
-    preparePublishedShadowPasses(
-      { ...source, shadowCasterPasses: [customVertex] },
-      new Map([
-        [
-          customVertex.materialHandle,
-          entries.map((entry) => ({ ...entry, vertexEntry: customVertex.vertexEntry })),
-        ],
-      ]),
-      artifact,
-    )?.[0],
-  ).toBe(customVertex);
-  expect(
-    preparePublishedShadowPasses(
-      compact,
-      new Map([
-        [
-          selectedPass.materialHandle,
-          [...selectedEntries, { ...selectedEntries[0], passIndex: 3 } as DispatchEntry],
-        ],
-      ]),
-      artifact,
-    )?.[0],
-  ).toBe(selectedPass);
-  const { materialShaderId: _shader, ...noShader } = sourcePass;
-  expect(
-    preparePublishedShadowPasses(
-      { ...source, shadowCasterPasses: [noShader] },
-      new Map([
-        [
-          noShader.materialHandle,
-          entries.map((entry) => ({ ...entry, materialShaderId: undefined })),
-        ],
-      ]),
-      artifact,
-    )?.[0],
-  ).toBe(noShader);
-}
+it('rejects stale prepared publications before geometry or persistent scene mutation', () => {
+  const f = fixture();
+  try {
+    const old = f.publish().received;
+    f.assets.update(f.material, { values: { roughness: 0.25 } }).unwrap();
+    f.publish();
+    const current = f.scene.compositionRetainedScene();
+    const projection = f.scene.shadowCasterProjection();
+    assert(current && projection);
+    const work = [...projection.dispatch];
+    const instances = new InstanceProjectionStore();
+    const release = vi.spyOn(instances, 'release');
+    expect(() => preparePublicationGeometry(old, f.scene, undefined, f.assets, instances)).toThrow(
+      /stale prepared geometry input/,
+    );
+    expect(release).not.toHaveBeenCalled();
+    expect(() => f.scene.consumePublication(old)).toThrow(/stale prepared scene input/);
+    expect(f.scene.compositionRetainedScene()?.identity).toBe(current.identity);
+    expect(f.scene.shadowCasterProjection()).toBe(projection);
+    expect([...projection.dispatch]).toEqual(work);
+  } finally {
+    f.close();
+  }
+});

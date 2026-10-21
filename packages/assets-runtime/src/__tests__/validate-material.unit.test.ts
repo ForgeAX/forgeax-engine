@@ -1,6 +1,6 @@
 // @forgeax/engine-assets-runtime -- material-validation free-function coverage
 // (fix issue #709). validateMaterialPasses / validateSpriteSlices /
-// validateParamType / detectTileNeedsRepeatSampler / materialShaderTextureFieldNames.
+// materialShaderTextureFieldNames.
 //
 // The free functions read only `registry.shaderRegistry` / `.metrics` /
 // `.assetCatalog`, so a duck-typed stub standing in for AssetRegistry suffices
@@ -14,10 +14,8 @@ import {
 import { describe, expect, it } from 'vitest';
 import type { AssetRegistry } from '../asset-registry';
 import {
-  detectTileNeedsRepeatSampler,
   materialShaderTextureFieldNames,
   validateMaterialPasses,
-  validateParamType,
   validateSpriteSlices,
 } from '../registry/validate-material';
 
@@ -155,31 +153,6 @@ describe('validateMaterialPasses', () => {
   });
 });
 
-describe('validateParamType', () => {
-  it('numeric scalars', () => {
-    expect(validateParamType('f32', 1)).toBe(true);
-    expect(validateParamType('u32', 'no')).toBe(false);
-  });
-  it('vector arities', () => {
-    expect(validateParamType('vec2', [1, 2])).toBe(true);
-    expect(validateParamType('vec3', [1, 2])).toBe(false);
-    expect(validateParamType('vec4', [1, 2, 3, 4])).toBe(true);
-  });
-  it('color accepts length 3 or 4', () => {
-    expect(validateParamType('color', [1, 2, 3])).toBe(true);
-    expect(validateParamType('color', [1, 2, 3, 4])).toBe(true);
-    expect(validateParamType('color', [1, 2])).toBe(false);
-  });
-  it('texture values accept compact GUIDs and structured records', () => {
-    expect(validateParamType('texture', 'guid')).toBe(true);
-    expect(validateParamType('texture', { texture: 'guid' })).toBe(true);
-    expect(validateParamType('texture', 123)).toBe(false);
-  });
-  it('unknown type -> false', () => {
-    expect(validateParamType('mat4', {})).toBe(false);
-  });
-});
-
 describe('validateSpriteSlices', () => {
   const spritePass = { name: 'main', program: { module: 'forgeax_material::sprite' } };
 
@@ -237,65 +210,6 @@ describe('validateSpriteSlices', () => {
     expect(
       validateSpriteSlices(mat({ passes: [spritePass], values: { slices: [0, 0.6, 0, 0.6] } })),
     ).not.toBeNull();
-  });
-});
-
-describe('detectTileNeedsRepeatSampler', () => {
-  const spritePass = { name: 'main', program: { module: 'forgeax_material::sprite' } };
-
-  it('no-ops when metrics is null', () => {
-    // makeRegistry defaults metrics to null; call must not throw.
-    expect(() =>
-      detectTileNeedsRepeatSampler(
-        makeRegistry({}),
-        mat({ passes: [spritePass], values: { sliceMode: 1, sampler: 'g' } }),
-      ),
-    ).not.toThrow();
-  });
-
-  it('increments the metric when a tile sampler is not repeat/repeat', () => {
-    const counts: string[] = [];
-    const catalog = new Map<string, unknown>([
-      [
-        's-guid',
-        {
-          kind: 'sampler',
-          payload: { kind: 'sampler', addressModeU: 'clamp', addressModeV: 'repeat' },
-        },
-      ],
-    ]);
-    const reg = makeRegistry({}, { metrics: { increment: (k) => counts.push(k) }, catalog });
-    detectTileNeedsRepeatSampler(
-      reg,
-      mat({ passes: [spritePass], values: { sliceMode: 1, sampler: 'S-GUID' } }),
-    );
-    expect(counts).toContain('nineslice.tile-needs-repeat-sampler');
-  });
-
-  it('does not increment when the sampler is repeat/repeat', () => {
-    const counts: string[] = [];
-    const catalog = new Map<string, unknown>([
-      [
-        's-guid',
-        {
-          kind: 'sampler',
-          payload: { kind: 'sampler', addressModeU: 'repeat', addressModeV: 'repeat' },
-        },
-      ],
-    ]);
-    const reg = makeRegistry({}, { metrics: { increment: (k) => counts.push(k) }, catalog });
-    detectTileNeedsRepeatSampler(
-      reg,
-      mat({ passes: [spritePass], values: { sliceMode: 1, sampler: 's-guid' } }),
-    );
-    expect(counts).toEqual([]);
-  });
-
-  it('no-ops for sliceMode !== 1', () => {
-    const counts: string[] = [];
-    const reg = makeRegistry({}, { metrics: { increment: (k) => counts.push(k) } });
-    detectTileNeedsRepeatSampler(reg, mat({ passes: [spritePass], values: { sliceMode: 0 } }));
-    expect(counts).toEqual([]);
   });
 });
 

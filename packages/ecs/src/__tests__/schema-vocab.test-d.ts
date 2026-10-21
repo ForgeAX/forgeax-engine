@@ -20,7 +20,7 @@
 // `@ts-expect-error` directive turns RED the moment the union accidentally
 // widens to `string`.
 
-import type { Handle } from '@forgeax/engine-types';
+import type { AssetHandle, Handle } from '@forgeax/engine-types';
 import { describe, expectTypeOf, it } from 'vitest';
 import type { FieldValueType, ScalarFieldType, SchemaOf, ShapeOf } from '../component';
 import { defineComponent } from '../component';
@@ -43,12 +43,8 @@ describe('schema vocab — keyword recognition (w3, AC-01)', () => {
   });
 
   it("handle<T> derives to Handle<T, 'shared'>", () => {
-    expectTypeOf<FieldValueType<'shared<MeshAsset>'>>().toEqualTypeOf<
-      Handle<'MeshAsset', 'shared'>
-    >();
-    expectTypeOf<FieldValueType<'shared<MaterialAsset>'>>().toEqualTypeOf<
-      Handle<'MaterialAsset', 'shared'>
-    >();
+    expectTypeOf<FieldValueType<'asset<mesh>'>>().toEqualTypeOf<AssetHandle<'mesh'>>();
+    expectTypeOf<FieldValueType<'asset<material>'>>().toEqualTypeOf<AssetHandle<'material'>>();
   });
 
   it('entity derives to Entity | null', () => {
@@ -57,7 +53,7 @@ describe('schema vocab — keyword recognition (w3, AC-01)', () => {
 
   it('cross-keyword: ref/handle differ on the mode axis (managed vs unmanaged)', () => {
     type Managed = FieldValueType<'unique<MaterialAsset>'>;
-    type Unmanaged = FieldValueType<'shared<MaterialAsset>'>;
+    type Unmanaged = FieldValueType<'asset<material>'>;
     expectTypeOf<Managed>().not.toEqualTypeOf<Unmanaged>();
   });
 });
@@ -75,13 +71,13 @@ describe('schema vocab — ShapeOf composition (w3, AC-01)', () => {
     type S = {
       data: 'buffer<64>';
       mat: 'unique<MaterialAsset>';
-      mesh: 'shared<MeshAsset>';
+      mesh: 'asset<mesh>';
       parent: 'entity';
     };
     type Expected = {
       data: Uint8Array;
       mat: Handle<'MaterialAsset', 'unique'>;
-      mesh: Handle<'MeshAsset', 'shared'>;
+      mesh: AssetHandle<'mesh'>;
       parent: EntityHandle | null;
     };
     expectTypeOf<ShapeOf<S>>().toEqualTypeOf<Expected>();
@@ -91,13 +87,13 @@ describe('schema vocab — ShapeOf composition (w3, AC-01)', () => {
     const C = defineComponent('VocabSample', {
       data: { type: 'buffer<32>' },
       mat: { type: 'unique<MaterialAsset>' },
-      mesh: { type: 'shared<MeshAsset>' },
+      mesh: { type: 'asset<mesh>' },
       parent: { type: 'entity' },
     });
     type Shape = ShapeOf<SchemaOf<typeof C>>;
     expectTypeOf<Shape['data']>().toEqualTypeOf<Uint8Array>();
     expectTypeOf<Shape['mat']>().toEqualTypeOf<Handle<'MaterialAsset', 'unique'>>();
-    expectTypeOf<Shape['mesh']>().toEqualTypeOf<Handle<'MeshAsset', 'shared'>>();
+    expectTypeOf<Shape['mesh']>().toEqualTypeOf<AssetHandle<'mesh'>>();
     expectTypeOf<Shape['parent']>().toEqualTypeOf<EntityHandle | null>();
   });
 });

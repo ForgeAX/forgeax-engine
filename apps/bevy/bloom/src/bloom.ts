@@ -1,7 +1,8 @@
-import { HANDLE_SPHERE } from '@forgeax/engine-assets-runtime';
+import type { AssetHandle } from '@forgeax/engine/types';
+
 import type { EntityHandle, World } from '@forgeax/engine-ecs';
 import { quat } from '@forgeax/engine-math';
-import type { Handle, MaterialAsset } from '@forgeax/engine-types';
+
 import {
   BLOOM_DISABLED,
   Camera,
@@ -13,6 +14,10 @@ import {
   TONEMAP_REINHARD_EXTENDED,
 } from '@forgeax/engine/render';
 import { Transform } from '@forgeax/engine-scene';
+import { AssetRegistry } from '@forgeax/engine/assets-runtime';
+
+import { createPrimitiveMesh } from '@forgeax/engine/geometry';
+
 
 const GRID_RADIUS = 5;
 const GRID_SPACING = 1.8;
@@ -23,8 +28,11 @@ export interface BloomScene {
   readonly emissiveCount: number;
 }
 
-function material(world: World, options: Parameters<typeof Materials.standard>[0]): Handle<'MaterialAsset', 'shared'> {
-  return world.allocSharedRef<'MaterialAsset', MaterialAsset>('MaterialAsset', Materials.standard(options));
+function material(world: World, options: Parameters<typeof Materials.standard>[0]): AssetHandle<'material'> {
+const sceneAssets = world.assets;
+if (!(sceneAssets instanceof AssetRegistry)) throw new Error('Scene requires its runtime asset owner');
+
+  return sceneAssets.create(Materials.standard(options)).unwrap();
 }
 
 function variantAt(x: number, z: number): number {
@@ -32,6 +40,11 @@ function variantAt(x: number, z: number): number {
 }
 
 export function buildBloomWorld(world: World, aspect: number): BloomScene {
+const sceneAssets = world.assets;
+if (!(sceneAssets instanceof AssetRegistry)) throw new Error('Scene requires its runtime asset owner');
+
+const primitiveSphere = sceneAssets.create(createPrimitiveMesh('sphere').unwrap()).unwrap();
+
   const emissiveBlue = material(world, { baseColor: [0.9, 0.9, 0.9, 1], emissive: [0, 0, 8], emissiveIntensity: 1, roughness: 0.35 });
   const emissiveWhite = material(world, { baseColor: [0.9, 0.9, 0.9, 1], emissive: [12, 12, 12], emissiveIntensity: 1, roughness: 0.35 });
   const emissiveRed = material(world, { baseColor: [0.9, 0.9, 0.9, 1], emissive: [5, 0, 0], emissiveIntensity: 1, roughness: 0.35 });
@@ -47,7 +60,7 @@ export function buildBloomWorld(world: World, aspect: number): BloomScene {
       const scale = variant === 1 ? 0.1 : variant === 2 ? 1 : variant === 0 ? 0.5 : 1.5;
       world.spawn(
         { component: Transform, data: { pos: [x * GRID_SPACING, 0, z * GRID_SPACING], quat: [0, 0, 0, 1], scale: [scale, scale, scale] } },
-        { component: MeshFilter, data: { assetHandle: HANDLE_SPHERE } },
+        { component: MeshFilter, data: { assetHandle: primitiveSphere } },
         { component: MeshRenderer, data: { materials: [selected] } },
       );
       sphereCount += 1;

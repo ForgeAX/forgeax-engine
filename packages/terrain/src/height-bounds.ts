@@ -5,21 +5,17 @@ export function terrainAxisEndpoint(offset: number, width: number): number {
   return Math.fround(Math.fround(offset) + Math.fround(width));
 }
 
-/** Packed RG16 quantization and f32 decode/morph rounding are renderer geometry facts. */
-export function terrainHeightBounds(
-  min: number,
-  max: number,
-  range: readonly [number, number],
-): readonly [number, number] {
-  const span = range[1] - range[0];
-  // Cover UNORM conversion, byte reconstruction, multiply/add, morph and AABB f32 storage.
-  const rounding = 16 * 2 ** -23 * (Math.max(Math.abs(range[0]), Math.abs(range[1])) + span);
-  const padding = span / 65535 / 2 + rounding;
+/** Raw f32 storage is exact; morph, world addition and AABB storage still round. */
+export function terrainHeightBounds(min: number, max: number): readonly [number, number] {
+  const padding = 16 * 2 ** -23 * Math.max(Math.abs(min), Math.abs(max));
   return [min - padding, max + padding];
 }
 
 /** Both consumers admit only the translation applied by the submitted-surface query. */
-export function terrainTranslationValid(asset: TerrainAsset, matrix: ArrayLike<number>): boolean {
+export function terrainTranslationValid(
+  asset: Pick<TerrainAsset, 'heightRange' | 'columns' | 'rows' | 'subsectionVertices' | 'spacing'>,
+  matrix: ArrayLike<number>,
+): boolean {
   for (let i = 0; i < 16; i++) {
     const value = matrix[i];
     if (!Number.isFinite(value) || ((i < 12 || i === 15) && value !== (i % 5 === 0 ? 1 : 0)))
@@ -27,7 +23,7 @@ export function terrainTranslationValid(asset: TerrainAsset, matrix: ArrayLike<n
   }
   const range = asset.heightRange;
   if (!range || range.length !== 2 || !range.every(Number.isFinite)) return false;
-  const height = terrainHeightBounds(range[0], range[1], range);
+  const height = terrainHeightBounds(range[0], range[1]);
   const width = (asset.subsectionVertices - 1) * asset.spacing;
   const endpoint = (samples: number) =>
     terrainAxisEndpoint((samples - asset.subsectionVertices) * asset.spacing, width);
@@ -38,7 +34,7 @@ export function terrainTranslationValid(asset: TerrainAsset, matrix: ArrayLike<n
   ].every(Number.isFinite);
 }
 
-/** Actual author extrema and the shared minimum span used by height encoding. */
+/** Actual author extrema, independent of the exact f32 height storage. */
 export function terrainSourceHeightRange(heights: Float32Array) {
   let min = Infinity,
     max = -Infinity;
@@ -46,5 +42,5 @@ export function terrainSourceHeightRange(heights: Float32Array) {
     min = Math.min(min, height);
     max = Math.max(max, height);
   }
-  return { min, max, span: Math.max(max - min, 1e-6) };
+  return { min, max };
 }

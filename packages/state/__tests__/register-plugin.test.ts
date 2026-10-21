@@ -1,6 +1,6 @@
 // @forgeax/engine-state -- registerStatesPlugin unit tests (M2 / m2w1)
 //
-// Covers: idempotency, three Resources injected with correct initial values,
+// Covers: idempotency, one complete resource injected with correct initial values,
 // transitionStatesSystem registered, AC-09 assemble-form auto-register,
 // AC-10 manual removeResource fail-fast (resource presence check).
 //
@@ -16,32 +16,28 @@
 import { describe, expect, it } from 'vitest';
 import { World } from '@forgeax/engine-ecs';
 import { defineState } from '../src/define-state';
-import { stateResourceKey, nextStateResourceKey, previousStateResourceKey } from '../src/resources';
+import { type StatePayload, stateResourceKey } from '../src/resources';
 import { registerStatesPlugin } from '../src/register-plugin';
 
 const TestState = defineState('TestState', ['alpha', 'beta', 'gamma'] as const);
 
 describe('registerStatesPlugin', () => {
-  it('inserts three Resources (State / NextState / PreviousState) with correct initial values', () => {
+  it('inserts one complete resource (current / next / previous) with correct initial values', () => {
     const world = new World();
     registerStatesPlugin(world);
 
     const sKey = stateResourceKey(TestState);
-    const nsKey = nextStateResourceKey(TestState);
-    const psKey = previousStateResourceKey(TestState);
 
     expect(world.hasResource(sKey)).toBe(true);
-    expect(world.hasResource(nsKey)).toBe(true);
-    expect(world.hasResource(psKey)).toBe(true);
 
-    // State Resource = variant index (defaultValue = variants[0] = 'alpha' -> 0)
-    expect(world.getResource<number>(sKey)).toBe(0);
+    // Current state = variant index (defaultValue = variants[0] = 'alpha' -> 0)
+    expect(world.getResource<StatePayload>(sKey).current).toBe(0);
 
-    // NextState Resource = undefined (no pending transition)
-    expect(world.getResource<{ value: number; force: boolean } | undefined>(nsKey)).toBeUndefined();
+    // Next request = undefined (no pending transition)
+    expect(world.getResource<StatePayload>(sKey).next).toBeUndefined();
 
-    // PreviousState Resource = variant index (defaultValue = variants[0] = 'alpha' -> 0)
-    expect(world.getResource<number>(psKey)).toBe(0);
+    // PreviousCurrent state = variant index (defaultValue = variants[0] = 'alpha' -> 0)
+    expect(world.getResource<StatePayload>(sKey).previous).toBe(0);
   });
 
   it('is idempotent — second call is a silent no-op', () => {
@@ -50,12 +46,12 @@ describe('registerStatesPlugin', () => {
 
     // Capture state after first call
     const sKey = stateResourceKey(TestState);
-    const firstStateValue = world.getResource<number>(sKey);
+    const firstStateValue = world.getResource<StatePayload>(sKey).current;
 
     // Second call must not throw, not overwrite incorrectly, not double-register
     registerStatesPlugin(world);
 
-    expect(world.getResource<number>(sKey)).toBe(firstStateValue);
+    expect(world.getResource<StatePayload>(sKey).current).toBe(firstStateValue);
 
     // System count should remain the same (no duplicate system registration)
     const systems = world.inspect().systems;
@@ -72,26 +68,21 @@ describe('registerStatesPlugin', () => {
     expect(found).toBe(true);
   });
 
-  it('AC-09: Resources are present after registerStatesPlugin (assemble-form ready for setNextState calls)', () => {
+  it('AC-09: the resource is present after registerStatesPlugin (assemble-form ready for setNextState calls)', () => {
     // Simulate the assemble-form path: host creates World, calls registerStatesPlugin,
-    // then all three Resources are present and getState/getNextState/getPreviousState
-    // Resources can be read. The actual setNextState call is tested in m2w3.
+    // then the complete state resource can be read. The transition tests exercise requests through the public API.
     const world = new World();
     registerStatesPlugin(world);
 
     const sKey = stateResourceKey(TestState);
-    const nsKey = nextStateResourceKey(TestState);
-    const psKey = previousStateResourceKey(TestState);
 
     expect(world.hasResource(sKey)).toBe(true);
-    expect(world.hasResource(nsKey)).toBe(true);
-    expect(world.hasResource(psKey)).toBe(true);
 
     // State Resource has valid default value
-    expect(world.getResource<number>(sKey)).toBe(0);
+    expect(world.getResource<StatePayload>(sKey).current).toBe(0);
 
-    // NextState Resource is undefined (no pending transition)
-    expect(world.getResource<unknown>(nsKey)).toBeUndefined();
+    // Next request is undefined (no pending transition)
+    expect(world.getResource<StatePayload>(sKey).next).toBeUndefined();
   });
 
   it('AC-10: manual removeResource — ResourceNotPresent after removal, throw on getResource', () => {
@@ -116,15 +107,11 @@ describe('registerStatesPlugin', () => {
     const world = new World();
     registerStatesPlugin(world);
 
-    // All three Resources exist for both tokens
+    // A complete resource exists for each token
     expect(world.hasResource(stateResourceKey(TokenA))).toBe(true);
-    expect(world.hasResource(nextStateResourceKey(TokenA))).toBe(true);
-    expect(world.hasResource(previousStateResourceKey(TokenA))).toBe(true);
     expect(world.hasResource(stateResourceKey(TokenB))).toBe(true);
-    expect(world.hasResource(nextStateResourceKey(TokenB))).toBe(true);
-    expect(world.hasResource(previousStateResourceKey(TokenB))).toBe(true);
 
-    // Second call — no errors, Resources unchanged
+    // Second call — no errors, resource unchanged
     registerStatesPlugin(world);
     expect(world.hasResource(stateResourceKey(TokenA))).toBe(true);
     expect(world.hasResource(stateResourceKey(TokenB))).toBe(true);

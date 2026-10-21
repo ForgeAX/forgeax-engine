@@ -4,6 +4,7 @@ import { Camera, Materials, MeshFilter, MeshRenderer } from '@forgeax/engine-ren
 import { registerPropagateTransforms, Transform } from '@forgeax/engine-scene';
 import { expect, it, vi } from 'vitest';
 import { createRenderer } from '../createRenderer';
+import { testAssets } from './helpers/runtime-assets';
 
 it('boots and completes 60 native frames without expanding unselected WGSL in variant queries', async () => {
   const canvas = document.createElement('canvas');
@@ -48,8 +49,12 @@ it('boots and completes 60 native frames without expanding unselected WGSL in va
           { component: Camera, data: { fov: Math.PI / 3, aspect: 1, near: 0.1, far: 100 } },
         )
         .unwrap();
-      const mesh = world.allocSharedRef('MeshAsset', createBoxGeometry(1, 1, 1).unwrap());
-      const material = world.allocSharedRef('MaterialAsset', Materials.unlit([1, 0, 0, 1]));
+      const mesh = testAssets(world)
+        .create(createBoxGeometry(1, 1, 1).unwrap())
+        .unwrap();
+      const material = testAssets(world)
+        .create(Materials.unlit([1, 0, 0, 1]))
+        .unwrap();
       world
         .spawn(
           { component: Transform, data: {} },

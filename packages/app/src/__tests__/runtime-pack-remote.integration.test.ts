@@ -25,7 +25,7 @@ it('uses the actual App Context to admit and execute a new plugin over the exist
       platform: testPlatform(),
       world,
       renderer,
-      assets: new AssetRegistry({} as never),
+      assets: new AssetRegistry({ shaderRegistry: {} as never }),
       assetCatalog: createCatalogSource({ entries: [] }),
       pluginPrograms: {
         sessionId: 'test',

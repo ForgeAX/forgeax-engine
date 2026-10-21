@@ -1,6 +1,4 @@
-import type { AnimationChannel, AnimationSampler } from '@forgeax/engine-types';
-
-type ChannelKind = Exclude<AnimationChannel['property'], 'property'>;
+import type { AnimationSampler, AnimationTransformChannel } from '@forgeax/engine-types';
 
 /**
  * Sample an animation sampler at the given time.
@@ -13,7 +11,7 @@ type ChannelKind = Exclude<AnimationChannel['property'], 'property'>;
 export function sampleChannel(
   sampler: AnimationSampler,
   time: number,
-  property: ChannelKind,
+  property: AnimationTransformChannel['property'],
   result: number[] = [],
 ): number[] | undefined {
   const { input, output, interpolation } = sampler;

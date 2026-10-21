@@ -1,5 +1,6 @@
-import { AssetRegistry, HANDLE_CUBE } from '@forgeax/engine-assets-runtime';
+import { AssetRegistry } from '@forgeax/engine-assets-runtime';
 import { World } from '@forgeax/engine-ecs';
+import { createBoxGeometry } from '@forgeax/engine-geometry';
 import { Transform } from '@forgeax/engine-scene';
 import {
   createStandardPbrArtifactReceipt,
@@ -9,6 +10,7 @@ import {
 import { expect, it, vi } from 'vitest';
 import { resolveMaterialShaderArtifact } from '../assembly/material/assembly';
 import { MeshFilter, MeshRenderer } from '../components';
+import { BatchTopology } from '../gpu-driven/batch-topology';
 import { collectGpuDrivenMaterialArtifacts } from '../gpu-driven/material-artifacts';
 import { InstanceProjectionStore } from '../instances';
 import { Materials } from '../materials';
@@ -19,34 +21,39 @@ import { RenderPublicationReceiver } from '../publication/receiver';
 import { PersistentRenderScene } from '../scene/render-scene';
 
 it('retains receiver-owned inputs through native publication, scene ownership and material collection', () => {
-  const source = new AssetRegistry(new ShaderRegistry({ manifestUrl: undefined }));
+  const source = new AssetRegistry({
+    shaderRegistry: new ShaderRegistry({ manifestUrl: undefined }),
+  });
   const shaderId = 'game::owned-inputs';
   source.shaderRegistry.installMaterialArtifact(shaderId, {
     source: '',
     paramSchema: STANDARD_PIPELINE_PARAM_SCHEMA,
     receipt: createStandardPbrArtifactReceipt(),
   });
-  const world = new World();
-  const material = world.allocSharedRef('MaterialAsset', {
-    ...Materials.standard({ baseColor: [0.5, 0.5, 0.5, 1] }),
-    passes: [
-      {
-        name: 'forward',
-        program: { module: shaderId },
-        renderState: { tags: { LightMode: 'Forward' } },
-      },
-      {
-        name: 'shadow-caster',
-        program: { module: shaderId },
-        renderState: { tags: { LightMode: 'ShadowCaster' } },
-      },
-    ],
-  });
+  const world = new World({ assets: source });
+  const mesh = source.create(createBoxGeometry(1, 1, 1).unwrap()).unwrap();
+  const material = source
+    .create({
+      ...Materials.standard({ baseColor: [0.5, 0.5, 0.5, 1] }),
+      passes: [
+        {
+          name: 'forward',
+          program: { module: shaderId },
+          renderState: { tags: { LightMode: 'Forward' } },
+        },
+        {
+          name: 'shadow-caster',
+          program: { module: shaderId },
+          renderState: { tags: { LightMode: 'ShadowCaster' } },
+        },
+      ],
+    })
+    .unwrap();
   for (let entity = 0; entity < 8; entity++) {
     world
       .spawn(
         { component: Transform, data: {} },
-        { component: MeshFilter, data: { assetHandle: HANDLE_CUBE } },
+        { component: MeshFilter, data: { assetHandle: mesh } },
         { component: MeshRenderer, data: { materials: [material] } },
       )
       .unwrap();
@@ -54,8 +61,10 @@ it('retains receiver-owned inputs through native publication, scene ownership an
   const identity = { source: 'owned-vertex-inputs', epoch: 1 };
   const publisher = createRenderPublisher(world, source, identity);
   const receiver = new RenderPublicationReceiver(identity);
-  const assets = new AssetRegistry(new ShaderRegistry({ manifestUrl: undefined }));
-  const scene = new PersistentRenderScene();
+  const assets = new AssetRegistry({
+    shaderRegistry: new ShaderRegistry({ manifestUrl: undefined }),
+  });
+  const scene = new PersistentRenderScene({ assets });
   try {
     const candidate = publisher.prepare(0).unwrap();
     const packet = structuredClone(candidate.packet, {
@@ -91,27 +100,34 @@ it('retains receiver-owned inputs through native publication, scene ownership an
       expect(snapshot.gpuDrivenDraws?.[0]?.prepared?.vertexInputs).toBe(receipt.vertexInputs);
     }
     let frame = scene.consumePublication(prepared);
-    const tables = new Set<unknown>(
-      frame.renderables.flatMap((snapshot) =>
-        (snapshot.gpuDrivenDraws ?? []).flatMap((draw) =>
-          draw.prepared === undefined ? [] : [draw.prepared.vertexInputs],
-        ),
-      ),
-    );
-    const collect = () =>
-      collectGpuDrivenMaterialArtifacts({
-        rows: frame.renderables.map((snapshot, renderableIndex) => ({
-          source: snapshot,
-          renderableIndex,
-        })),
-        dispatch: frame.dispatch,
-        programs: scene.shadowCasterProjection()?.materialPrograms,
+    const collect = () => {
+      const topology = new BatchTopology();
+      topology.rebuild(scene.compositionSlots());
+      const programs = scene.shadowCasterProjection()?.materialPrograms;
+      if (programs === undefined) throw Error('missing accepted material programs');
+      return collectGpuDrivenMaterialArtifacts({
+        batches: topology.query(topology.sourcePlan(), undefined).batches,
+        programs,
         resolve,
         clustered: false,
         reflectionFallback: false,
+        probeBlend: false,
         shadowViews: true,
       });
-    collect();
+    };
+    const initial = collect();
+    const tables = new Set<unknown>(
+      [...initial.batchExecutions.values()].flatMap((execution) =>
+        [execution.forward, execution.shadow].flatMap((pass) =>
+          pass.route === 'gpu' ? [pass.prepared.vertexInputs] : [],
+        ),
+      ),
+    );
+    expect(
+      frame.renderables.every((snapshot) =>
+        snapshot.gpuDrivenDraws?.every((draw) => draw.prepared === undefined),
+      ),
+    ).toBe(true);
     const scans = vi.spyOn(Array.prototype, 'some');
     let inputScans: number;
     try {

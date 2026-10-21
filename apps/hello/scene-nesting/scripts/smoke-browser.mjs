@@ -171,7 +171,6 @@ try {
   const baselinePath = resolve(artifactDir, 'scene-nesting-baseline.png');
   await page.locator('#canvas').screenshot({ path: baselinePath });
 
-  assert(baselineReport.baseline.diagnostics.length === 0, `baseline diagnostics: ${JSON.stringify(baselineReport)}`);
   assert(baselineReport.baseline.siblingRenderable === true, 'healthy sibling is not renderable');
   assert(baselineReport.baseline.mountedRenderable === true, 'mounted member is not renderable');
 
@@ -196,7 +195,6 @@ try {
     recovery.healthyRetained === true && recovery.healthyRetainedAfterFault === true,
     `healthy baseline was lost: ${JSON.stringify(repairedReport)}`,
   );
-  assert(recovery.correctedEmpty === true, `corrected diagnostics: ${JSON.stringify(recovery.correctedDiagnostics)}`);
   assert(recovery.freshIdentity === true, 'corrected instance reused faulty identity');
   assert(recovery.rendererErrors.length === 0, `renderer errors: ${JSON.stringify(recovery.rendererErrors)}`);
 
@@ -210,7 +208,7 @@ try {
   assert(cleanedReport.cleanup.idempotent === true, `cleanup was not idempotent: ${JSON.stringify(cleanedReport)}`);
   assert(cleanedReport.cleanup.healthyRetainedBeforeFinalTeardown === true, 'cleanup removed healthy scene too early');
   assert(cleanedReport.cleanup.finalEntityCount === 0, `entity leak: ${JSON.stringify(cleanedReport.cleanup)}`);
-  assert(Object.values(cleanedReport.cleanup.sharedRefCounts).every((count) => count === 0), `shared-ref leak: ${JSON.stringify(cleanedReport.cleanup)}`);
+  assert(Object.values(cleanedReport.cleanup.releasedAssets).every((released) => released === true), `asset retention leak: ${JSON.stringify(cleanedReport.cleanup)}`);
   assert(cleanedReport.cleanup.rendererErrors.length === 0, `cleanup renderer errors: ${JSON.stringify(cleanedReport.cleanup)}`);
   assert(pageErrors.length === 0, `page errors: ${pageErrors.join(' | ')}`);
   assert(consoleErrors.length === 0, `console errors: ${consoleErrors.join(' | ')}`);

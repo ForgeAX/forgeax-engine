@@ -1,3 +1,4 @@
+import type { AssetHandle } from '@forgeax/engine-types';
 import { installGpuDrivenEvidence } from '@forgeax/apps-shared/gpu-driven-evidence';
 import { configureRuntimeAssetCatalog, createRuntimeAssetImportTransport, runtimeBinding } from '@forgeax/apps-shared/asset-runtime-config';
 import { Update } from '@forgeax/engine-ecs';
@@ -8,7 +9,7 @@ import { Update } from '@forgeax/engine-ecs';
 //   (1) configureRuntimeAssetCatalog(assets, runtimeBinding) — scoped dev or static build catalog
 //   (2) createRuntimeAssetImportTransport(runtimeBinding)             — dev-server POST /__import/:guid
 //                                                     dispatches to fbxImporter
-//   (3) loadByGuid<SceneAsset>(sceneGuid)           — runtime resolves the GUID
+//   (3) assets.load(sceneGuid, 'scene')           — runtime resolves the GUID
 //   (4) instantiate x 3 + AnimationPlayer N-way SoA slots  — per-instance pose-distinct
 //
 // Loads humanoid.fbx (FBX SDK 2020.3.7 sample: 80 joints, 1605 skinned verts,
@@ -40,7 +41,7 @@ import { perspective } from '@forgeax/engine-render';
 import { EngineEnvironmentError } from '@forgeax/engine-runtime';
 import { SceneInstance } from '@forgeax/engine-render';
 
-import { type AnimationClip, type Handle, type SceneAsset } from '@forgeax/engine-types';
+
 import { forgeaxBundlerAdapter } from 'virtual:forgeax/bundler';
 
 const SCENE_GUID = '019ecd87-179b-7eb3-a37d-391f05c61e52';
@@ -100,38 +101,36 @@ async function bootstrap(target: HTMLCanvasElement): Promise<void> {
     console.error('[fbx-skin] AssetGuid.parse(scene) failed:', sceneGuidRes.error);
     return;
   }
-  const sceneRes = await assets.loadByGuid<SceneAsset>(sceneGuidRes.value);
+  const sceneRes = await assets.load(sceneGuidRes.value, 'scene');
   if (!sceneRes.ok) {
-    console.error('[fbx-skin] loadByGuid<SceneAsset> failed:', sceneRes.error);
+    console.error('[fbx-skin] load failed:', sceneRes.error);
     return;
   }
 
-  // feat-20260614 M8 (D-17): loadByGuid returns the payload; mint a user-tier
-  // column handle per clip via world.allocSharedRef.
-  type ClipHandle = Handle<'AnimationClip', 'shared'>;
+  // Keep the managed clip handles for per-instance playback.
+  type ClipHandle = AssetHandle<'animation-clip'>;
   const clipHandles: { name: string; handle: ClipHandle }[] = [];
   for (const c of CLIPS) {
     const gRes = AssetGuid.parse(c.guid);
     if (!gRes.ok) continue;
-    const res = await assets.loadByGuid<AnimationClip>(gRes.value);
+    const res = await assets.load(gRes.value, 'animation-clip');
     if (!res.ok) {
-      console.warn(`[fbx-skin] clip '${c.name}' loadByGuid failed:`, res.error.code);
+      console.warn(`[fbx-skin] clip '${c.name}' load failed:`, res.error.code);
       continue;
     }
-    const handle = world.allocSharedRef<'AnimationClip', AnimationClip>('AnimationClip', res.value);
+    const handle = res.value;
     clipHandles.push({ name: c.name, handle });
   }
 
-  // feat-20260614 M8 (D-17): mint the SceneAsset payload into a user-tier
-  // column handle once; instantiate dedups per GUID across the 3 copies.
-  const sceneHandle = world.allocSharedRef('SceneAsset', sceneRes.value);
+  // Reuse the loaded scene handle across the three instances.
+  const sceneHandle = sceneRes.value;
 
   // Instantiate 3 copies at distinct world positions; assign different clips.
   const playerEnts: EntityHandle[] = [];
   for (let i = 0; i < 3; i++) {
     const pos = INSTANCE_POSITIONS[i];
     if (pos === undefined) continue;
-    const instRes = assets.instantiate<SceneAsset>(sceneHandle, world);
+    const instRes = assets.instantiate(sceneHandle, world);
     if (!instRes.ok) {
       console.error(`[fbx-skin] instantiate[${i}] failed:`, instRes.error);
       continue;

@@ -74,32 +74,44 @@ export function createGamepadFeedback(): GamepadFeedback {
     effect?: GamepadRumble,
   ): GamepadFeedbackAdmission {
     if (disposed) return { ok: false, reason: 'disposed' };
+    if (!target) return { ok: false, reason: 'invalid' };
+    const ownedTarget = Object.freeze({
+      attachment: target.attachment,
+      index: target.index,
+      generation: target.generation,
+    });
     if (
-      !target ||
-      !Number.isSafeInteger(target.attachment) ||
-      target.attachment <= 0 ||
-      !Number.isSafeInteger(target.index) ||
-      target.index < 0 ||
-      !Number.isSafeInteger(target.generation) ||
-      target.generation <= 0 ||
-      (effect !== undefined && !validGamepadRumble(effect))
+      !Number.isSafeInteger(ownedTarget.attachment) ||
+      ownedTarget.attachment <= 0 ||
+      !Number.isSafeInteger(ownedTarget.index) ||
+      ownedTarget.index < 0 ||
+      !Number.isSafeInteger(ownedTarget.generation) ||
+      ownedTarget.generation <= 0
     )
       return { ok: false, reason: 'invalid' };
     if (pending.size + results.length >= GAMEPAD_FEEDBACK_CAPACITY)
       return { ok: false, reason: 'capacity' };
     const id = nextId++;
     pending.add(id);
-    const ownedTarget = Object.freeze({ ...target });
     intents.push(
       effect === undefined
         ? { id, target: ownedTarget, kind: 'stop' }
-        : { id, target: ownedTarget, kind: 'play', effect: Object.freeze({ ...effect }) },
+        : { id, target: ownedTarget, kind: 'play', effect },
     );
     return { ok: true, id };
   }
   return {
-    play: (target, effect) =>
-      validGamepadRumble(effect) ? enqueue(target, effect) : { ok: false, reason: 'invalid' },
+    play(target, effect) {
+      if (!effect) return { ok: false, reason: 'invalid' };
+      const ownedEffect = Object.freeze({
+        durationMs: effect.durationMs,
+        strongMagnitude: effect.strongMagnitude,
+        weakMagnitude: effect.weakMagnitude,
+      });
+      return validGamepadRumble(ownedEffect)
+        ? enqueue(target, ownedEffect)
+        : { ok: false, reason: 'invalid' };
+    },
     stop: (target) => enqueue(target),
     drainIntents() {
       const out = intents;

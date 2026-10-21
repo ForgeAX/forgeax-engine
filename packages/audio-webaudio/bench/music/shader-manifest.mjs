@@ -8,6 +8,7 @@ export function createMusicFixtureShaderManifest(publication) {
     !Array.isArray(publication.materialShaders) ||
     !Array.isArray(publication.fragments) ||
     !Array.isArray(publication.receipts) ||
+    !Array.isArray(publication.entryPoints) ||
     publication.sources === null ||
     typeof publication.sources !== 'object'
   ) {
@@ -34,7 +35,7 @@ export function createMusicFixtureShaderManifest(publication) {
   const receipts = [];
   const receiptIndices = new Map();
   for (const row of retainedRows) {
-    if (row.receiptIndex === undefined || receiptIndices.has(row.receiptIndex)) continue;
+    if (!Object.hasOwn(row, 'receiptIndex') || receiptIndices.has(row.receiptIndex)) continue;
     if (
       !Number.isSafeInteger(row.receiptIndex) ||
       row.receiptIndex < 0 ||
@@ -45,8 +46,26 @@ export function createMusicFixtureShaderManifest(publication) {
     receiptIndices.set(row.receiptIndex, receipts.length);
     receipts.push(publication.receipts[row.receiptIndex]);
   }
-  const remapReceipt = (row) =>
-    row.receiptIndex === undefined ? row : { ...row, receiptIndex: receiptIndices.get(row.receiptIndex) };
+  const entryPoints = [];
+  const entryPointIndices = new Map();
+  for (const row of retainedRows) {
+    if (!Object.hasOwn(row, 'entryPointsIndex') || entryPointIndices.has(row.entryPointsIndex)) continue;
+    const index = row.entryPointsIndex;
+    if (!Number.isSafeInteger(index) || index < 0 || index >= publication.entryPoints.length) {
+      throw new Error('music fixture shader entry points reference is invalid');
+    }
+    entryPointIndices.set(index, entryPoints.length);
+    entryPoints.push(publication.entryPoints[index]);
+  }
+  const remapReferences = (row) => ({
+    ...row,
+    ...(Object.hasOwn(row, 'receiptIndex')
+      ? { receiptIndex: receiptIndices.get(row.receiptIndex) }
+      : {}),
+    ...(Object.hasOwn(row, 'entryPointsIndex')
+      ? { entryPointsIndex: entryPointIndices.get(row.entryPointsIndex) }
+      : {}),
+  });
 
   for (const digest of new Set(retainedRows.map((entry) => entry.sourceDigest))) {
     const indices = publication.sources[digest];
@@ -74,12 +93,13 @@ export function createMusicFixtureShaderManifest(publication) {
   return {
     schemaVersion: publication.schemaVersion,
     receipts,
+    entryPoints,
     fragments,
     sources,
-    entries: publication.entries.map(remapReceipt),
+    entries: publication.entries.map(remapReferences),
     materialShaders: materialShaders.map((entry) => ({
-      ...remapReceipt(entry),
-      variants: entry.variants.map(remapReceipt),
+      ...remapReferences(entry),
+      variants: entry.variants.map(remapReferences),
     })),
   };
 }

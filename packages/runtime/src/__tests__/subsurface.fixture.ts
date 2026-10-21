@@ -24,6 +24,7 @@ import { expect } from 'vitest';
 import { withFoliageMaterialModule } from '../../../../apps/hello/foliage-transmission/src/material-contract';
 import { drawReadyFrame } from '../../../../scripts/test/ready-render-frame.mjs';
 import testQuality from '../../../../scripts/test/render-quality.json' with { type: 'json' };
+import { testAssets } from './helpers/runtime-assets';
 import { renderValue } from './standard-gbuffer-replay.fixture';
 
 export type CaptureSubsurfaceFrame = (
@@ -92,18 +93,22 @@ export async function verifySubsurface(
     mips: { kind: 'none' },
     data,
   };
-  const textureHandle = world.allocSharedRef('TextureAsset', texture);
+  const textureHandle = testAssets(world).create(texture).unwrap();
   const transmissionMask = data.slice();
   for (let pixel = 0; pixel < 128 * 128; pixel++)
     transmissionMask[pixel * 4 + 3] = data[pixel * 4] ?? 0;
-  const transmissionTexture = world.allocSharedRef('TextureAsset', {
-    ...texture,
-    data: transmissionMask,
-  });
+  const transmissionTexture = testAssets(world)
+    .create({
+      ...texture,
+      data: transmissionMask,
+    })
+    .unwrap();
   const emissionData = new Uint8Array(128 * 128 * 4);
   for (let pixel = 0; pixel < 128 * 128; pixel++)
     emissionData.set([255, pixel === 64 * 128 + 64 ? 255 : 0, 255, 255], pixel * 4);
-  const emission = world.allocSharedRef('TextureAsset', { ...texture, data: emissionData });
+  const emission = testAssets(world)
+    .create({ ...texture, data: emissionData })
+    .unwrap();
   let specularOnly = false;
   let transmissionOnly = false;
   const makeMaterial = (radius: number, weight: number): MaterialAsset => {
@@ -150,10 +155,10 @@ export async function verifySubsurface(
   const entity = world
     .spawn(
       { component: Transform, data: {} },
-      { component: MeshFilter, data: { assetHandle: world.allocSharedRef('MeshAsset', geometry) } },
+      { component: MeshFilter, data: { assetHandle: testAssets(world).create(geometry).unwrap() } },
       {
         component: MeshRenderer,
-        data: { materials: [world.allocSharedRef('MaterialAsset', makeMaterial(0, 1))] },
+        data: { materials: [testAssets(world).create(makeMaterial(0, 1)).unwrap()] },
       },
     )
     .unwrap();
@@ -173,12 +178,14 @@ export async function verifySubsurface(
     const inverseBindMatrices = new Float32Array(32);
     for (const joint of [0, 1])
       for (const diagonal of [0, 5, 10, 15]) inverseBindMatrices[joint * 16 + diagonal] = 1;
-    const skeleton = world.allocSharedRef('SkeletonAsset', {
-      kind: 'skeleton',
-      jointCount: 2,
-      inverseBindMatrices,
-      bounds: new Float32Array([-1, -1, -0.01, 1, 1, 0.01]),
-    });
+    const skeleton = testAssets(world)
+      .create({
+        kind: 'skeleton',
+        jointCount: 2,
+        inverseBindMatrices,
+        bounds: new Float32Array([-1, -1, -0.01, 1, 1, 0.01]),
+      })
+      .unwrap();
     const joints = [
       world.spawn({ component: Transform, data: {} }).unwrap(),
       world.spawn({ component: Transform, data: {} }).unwrap(),
@@ -216,7 +223,7 @@ export async function verifySubsurface(
   const sample = async (radius: number, weight: number) => {
     world
       .set(entity, MeshRenderer, {
-        materials: [world.allocSharedRef('MaterialAsset', makeMaterial(radius, weight))],
+        materials: [testAssets(world).create(makeMaterial(radius, weight)).unwrap()],
       })
       .unwrap();
     let receipt: FrameReceipt | undefined;
@@ -336,14 +343,15 @@ export async function verifySubsurface(
       specularOnly = true;
       world
         .set(entity, MeshFilter, {
-          assetHandle: world.allocSharedRef(
-            'MeshAsset',
-            createSphereGeometry(
-              0.9,
-              testQuality.geometry.sphereWidth,
-              testQuality.geometry.sphereHeight,
-            ).unwrap(),
-          ),
+          assetHandle: testAssets(world)
+            .create(
+              createSphereGeometry(
+                0.9,
+                testQuality.geometry.sphereWidth,
+                testQuality.geometry.sphereHeight,
+              ).unwrap(),
+            )
+            .unwrap(),
         })
         .unwrap();
       const sentinel = Materials.standard({
@@ -360,15 +368,14 @@ export async function verifySubsurface(
           {
             component: MeshFilter,
             data: {
-              assetHandle: world.allocSharedRef(
-                'MeshAsset',
-                createPlaneGeometry(0.2, 0.2).unwrap(),
-              ),
+              assetHandle: testAssets(world)
+                .create(createPlaneGeometry(0.2, 0.2).unwrap())
+                .unwrap(),
             },
           },
           {
             component: MeshRenderer,
-            data: { materials: [world.allocSharedRef('MaterialAsset', sentinel)] },
+            data: { materials: [testAssets(world).create(sentinel).unwrap()] },
           },
         )
         .unwrap();
@@ -398,7 +405,7 @@ export async function verifySubsurface(
     }
     world
       .set(entity, MeshRenderer, {
-        materials: [world.allocSharedRef('MaterialAsset', makeMaterial(6, 1))],
+        materials: [testAssets(world).create(makeMaterial(6, 1)).unwrap()],
       })
       .unwrap();
     const probe = world
@@ -434,7 +441,7 @@ export async function verifySubsurface(
     errors.length = 0;
     expect((await sample(0, 1)).passes).not.toContain('subsurface-diffusion');
     if (kind === 'rigid') {
-      const profileMesh = world.allocSharedRef('MeshAsset', geometry);
+      const profileMesh = testAssets(world).create(geometry).unwrap();
       const roster = Array.from({ length: 17 }, (_, index) =>
         world
           .spawn(
@@ -447,14 +454,15 @@ export async function verifySubsurface(
               component: MeshRenderer,
               data: {
                 materials: [
-                  world.allocSharedRef(
-                    'MaterialAsset',
-                    Materials.standard({
-                      baseColor: [1, 1, 1, 1],
-                      subsurfaceRadius: [0.5 + index * 0.6, 2, 1],
-                      subsurfaceWeight: 1,
-                    }),
-                  ),
+                  testAssets(world)
+                    .create(
+                      Materials.standard({
+                        baseColor: [1, 1, 1, 1],
+                        subsurfaceRadius: [0.5 + index * 0.6, 2, 1],
+                        subsurfaceWeight: 1,
+                      }),
+                    )
+                    .unwrap(),
                 ],
               },
             },

@@ -25,7 +25,32 @@ export class PassRegistry<Ctx = unknown> {
         detail: { passName: name },
       });
     }
-    const entry: PassEntry<Ctx> = { name, descriptor };
+    const { reads, writes, execute, compute, storageBuffer, colorConnections } = descriptor;
+    const entry: PassEntry<Ctx> = Object.freeze({
+      name,
+      descriptor: Object.freeze({
+        reads: Object.freeze([...reads]),
+        writes: Object.freeze([...writes]),
+        ...(execute === undefined ? {} : { execute }),
+        ...(compute === undefined ? {} : { compute }),
+        ...(storageBuffer === undefined ? {} : { storageBuffer }),
+        ...(colorConnections === undefined
+          ? {}
+          : {
+              colorConnections: Object.freeze(
+                colorConnections.map(({ source, destination, conversion }) =>
+                  Object.freeze({
+                    source,
+                    destination,
+                    ...(conversion === undefined
+                      ? {}
+                      : { conversion: Object.freeze({ kind: conversion.kind }) }),
+                  }),
+                ),
+              ),
+            }),
+      }),
+    });
     const beforeIndex =
       before === undefined ? -1 : this.passes.findIndex((pass) => pass.name === before);
     if (beforeIndex < 0) this.passes.push(entry);

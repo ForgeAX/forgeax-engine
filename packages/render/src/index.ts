@@ -28,6 +28,7 @@ export { SceneSdfUnavailableError, type SceneSdfUnavailableReason } from './erro
 export type { RenderFeatureSceneSdfDescriptor } from './features/scene-sdf';
 export type {
   GeometryCommandObservation,
+  GeometryGBufferProgram,
   GeometryObservation,
   GeometrySourceIdentity,
   GeometryViewObservation,
@@ -565,6 +566,7 @@ export type {
   RenderFeatureViewContext,
   RenderFeatureWorldVisibilitySnapshot,
 } from './features/types.js';
+export { glyphTextGeometry } from './glyph-geometry';
 export {
   beginProbeIblUpdate,
   createIblKernelCache,
@@ -613,6 +615,9 @@ export type {
   ShadowViewIdentity,
   ShadowViewInvalidationReason,
   ShadowViewKind,
+  ShadowWorkloadCommands,
+  ShadowWorkloadObservation,
+  ShadowWorkloadPass,
   TransmissionInspection,
 } from './inspection-types.js';
 export {
@@ -626,6 +631,7 @@ export {
   type InstanceSubmissionLane,
   InstanceTransformsError,
 } from './instances';
+export { MaterialResource } from './material-resource';
 export {
   type MaterialSampledTextureBudget,
   materialSampledTextureBudget,
@@ -773,7 +779,9 @@ export {
   type IrradianceVolume,
   type IrradianceVolumeError,
   type IrradianceVolumeErrorCode,
-  irradianceVolumePackLoader,
+  irradianceVolumeContribution,
+  irradianceVolumeKind,
+  validateIrradianceVolume,
 } from './raytracing/irradiance-volume.js';
 export type { BakedFieldInspection } from './raytracing/renderer-baked-field.js';
 export { resolveVisibleSurface, type VisibleSurfaceIdentity } from './raytracing/visible-surface';
@@ -1019,6 +1027,7 @@ export {
   type ExternalTextureSource,
   isExternalTextureSource,
 } from './textures/external-texture';
+export { tilemapGeometry } from './tilemap-geometry';
 export {
   composeSingleLayerMediumColor,
   estimateSingleLayerPathLength,

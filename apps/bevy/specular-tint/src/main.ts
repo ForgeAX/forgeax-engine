@@ -1,9 +1,8 @@
 import { configureRuntimeAssetCatalog, createRuntimeAssetImportTransport, runtimeBinding } from '@forgeax/apps-shared/asset-runtime-config';
 import { createApp } from '@forgeax/engine-app/browser';
 import { AssetGuid } from '@forgeax/engine-pack/guid';
-import { type EquirectAsset, type TextureAsset } from '@forgeax/engine-types';
+
 import { EngineEnvironmentError } from '@forgeax/engine-runtime';
-import { unwrapHandle } from '@forgeax/engine-types';
 import { forgeaxBundlerAdapter } from 'virtual:forgeax/bundler';
 import { buildSpecularTintWorld } from './specular-tint';
 
@@ -33,12 +32,12 @@ async function bootstrap(target: HTMLCanvasElement): Promise<void> {
   const hdrGuid = AssetGuid.parse(NEWPORT_LOFT_GUID);
   const tintGuid = AssetGuid.parse(SPECULAR_TINT_GUID);
   if (!hdrGuid.ok || !tintGuid.ok) { console.error('[bevy-specular-tint] asset GUID parse failed'); return; }
-  const hdr = await assets.loadByGuid<EquirectAsset>(hdrGuid.value);
-  const tint = await assets.loadByGuid<TextureAsset>(tintGuid.value);
+  const hdr = await assets.load(hdrGuid.value, 'equirect');
+  const tint = await assets.load(tintGuid.value, 'texture');
   if (!hdr.ok) { console.error('[bevy-specular-tint] HDR load failed:', hdr.error.code); return; }
   if (!tint.ok) { console.error('[bevy-specular-tint] texture load failed:', tint.error.code); return; }
-  const equirect = app.world.allocSharedRef('EquirectAsset', hdr.value);
-  const specularColorTexture = unwrapHandle(app.world.allocSharedRef('TextureAsset', tint.value));
+  const equirect = hdr.value;
+  const specularColorTexture = tint.value;
   buildSpecularTintWorld(app.world, equirect, specularColorTexture, target.width / Math.max(target.height, 1));
   app.onError((error) => console.error('[bevy-specular-tint] app error:', error.code, error.hint));
   const started = app.start();

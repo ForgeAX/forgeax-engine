@@ -34,9 +34,9 @@ This skill produces review conclusions. Repairs, conversions, and publication fo
 
 | Path | Formal production and consumption | Review focus |
 |:--|:--|:--|
-| Build-time Scriptable Pack | `definePack` -> Host Producer/Cook -> Pack v2/Catalog -> `loadByGuid` | Isolated cold production, Cook/artifact evidence, source closure |
-| Direct runtime assets | Delivered algorithm -> Asset map -> `prepareRuntimePackContent` -> App `runtimePacks.producer.admit` -> combined Catalog/`loadByGuid` | Deliver the algorithm and inputs; standalone mesh/texture bytes do not prove procedural generation |
-| Runtime Pack generator | Prepared JS artifact (DevKit converts TS) -> `admit` anchor -> `generate` parameter instance -> combined Catalog/`loadByGuid` | Complete program/fixed dependencies, public parameters, publication/recovery; admitting the generator does not execute `build` or emit its outputs |
+| Build-time Scriptable Pack | `definePack` -> Host Producer/Cook -> Pack v2/Catalog -> `load(guid, kind)` | Isolated cold production, Cook/artifact evidence, source closure |
+| Direct runtime assets | Delivered algorithm -> Asset map -> `prepareRuntimePackContent` -> App `runtimePacks.producer.admit` -> combined Catalog/`load(guid, kind)` | Deliver the algorithm and inputs; standalone mesh/texture bytes do not prove procedural generation |
+| Runtime Pack generator | Prepared JS artifact (DevKit converts TS) -> `admit` anchor -> `generate` parameter instance -> combined Catalog/`load(guid, kind)` | Complete program/fixed dependencies, public parameters, publication/recovery; admitting the generator does not execute `build` or emit its outputs |
 
 Import's `RuntimePackProducer` owns runtime production; App assembles it into existing asset services. Invoke production explicitly outside asset loading and ECS frames. Consumption retains Registry/GUID ownership. Calling a geometry function or rendering temporary objects does not qualify Runtime Pack delivery.
 
@@ -56,7 +56,7 @@ Mark each applicable item PASS / FAIL / BLOCKED / N/A with file locations or exe
 | P1 | Provenance | Trace each key output from recipe/input through its actual generating function to Asset, using the rules below. Inspect libraries, package dependencies, parameter defaults, and remote payloads too. |
 | P2 | Rule contribution | Identify the structural, sampling, or composition rules creating content: dimension-driven construction, curves, layout, noise, semantic material recipes. Iterating, decoding, copying, decompressing, or converting stored results alone is insufficient. |
 | R1 | Stability/effects | Same source, dependencies, identity, and effective parameters yield equivalent payloads/refs across repeated and fresh-process/realm cold production. Seed randomness; exclude clock/global counters/environment accidents. Generation does not write source, randomize output identities, mutate a live World, or publish Catalog itself; the caller publishes through the formal producer. |
-| R2 | Usability | Load the currently verified outputs through the consumer's normal Registry/`loadByGuid`. Check finite geometry/index bounds/required attributes, texture extent/format/byte length, and scene refs/hierarchy as applicable. Actually view, hear, or play promised visual/audio/motion results. Admission, Catalog rows, cache hits, and lastKnownGood previews do not prove current-request usability. |
+| R2 | Usability | Load the currently verified outputs through the consumer's normal Registry/`load(guid, kind)`. Check finite geometry/index bounds/required attributes, texture extent/format/byte length, and scene refs/hierarchy as applicable. Actually view, hear, or play promised visual/audio/motion results. Admission, Catalog rows, cache hits, and lastKnownGood previews do not prove current-request usability. |
 
 Compare actual payloads and refs, not only package IDs/sourceKeys. Document exclusions for nonsemantic tool metadata. Floating tolerances require a target-contract basis and must not conceal differences.
 

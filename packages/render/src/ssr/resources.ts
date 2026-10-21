@@ -118,8 +118,8 @@ export function estimateSsrSpatialMemory(
   });
 }
 
-function texture(
-  graph: RenderGraphBuilder<RenderGraphFrame>,
+function texture<FrameCtx extends RenderGraphFrame>(
+  graph: RenderGraphBuilder<FrameCtx>,
   label: string,
   format: typeof SSR_TRACE_FORMAT,
   extent: DepthPyramidExtent,
@@ -142,8 +142,8 @@ function texture(
 }
 
 /** Allocate only the transient resources required by an admitted spatial path. */
-export function createSsrSpatialResources(
-  graph: RenderGraphBuilder<RenderGraphFrame>,
+export function createSsrSpatialResources<FrameCtx extends RenderGraphFrame>(
+  graph: RenderGraphBuilder<FrameCtx>,
   extent: DepthPyramidExtent,
 ): Result<SsrSpatialResources, RenderGraphError> {
   const traceExtent = traceExtentForView(extent);

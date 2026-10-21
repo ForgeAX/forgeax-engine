@@ -21,10 +21,10 @@ For the completed HDR Bloom carrier, start with [5.7 Bloom](5.advanced-lighting/
 | `light.ambient/diffuse/specular` (three vec3 channels) | `DirectionalLight.color{R,G,B}` + `intensity` | Phong-era three-channel split has no PBR equivalent; ambient → env/IBL, specular → BRDF |
 | `Camera` class with WASD/mouse | `Transform + Camera` ECS components + `addFirstPersonSystem` from [`apps/shared/`](../shared/) | engine-agnostic ECS shape; first-person controls live in app-level shared, **not** in `@forgeax/engine-*` (out of scope for the engine) |
 | Manual `glClearColor / glEnable(GL_DEPTH_TEST)` | `createApp(canvas, { clearColor })` | engine handles depth state, swapchain, gamma |
-| Vertex array literals | builtin `HANDLE_CUBE` / glTF `MeshAsset` | engine ships standard primitives; user assets ride the GUID `*.pack.json` pipeline |
+| Vertex array literals | `assets.create(createPrimitiveMesh('cube').unwrap())` / imported Mesh | engine ships standard primitives; user assets ride the GUID `*.pack.json` pipeline |
 | `Shader` C++ class | `vite-plugin-shader` + build-time WGSL compile + `/shaders/manifest.json` at runtime | naga compiled ahead-of-time; runtime is shader-source-free |
 | Imgui (LO §6 PBR-IBL chapters) | not yet | inspector via JSON-RPC `@forgeax/engine-console` is the equivalent layer; per-demo imgui-style UI deferred |
-| Direct file IO | `assets.loadByGuid()` + `*.image.meta.json` / `*.gltf.meta.json` sidecars | GUID-addressed disk schema |
+| Direct file IO | `assets.load(guid, kind)` + `*.image.meta.json` / `*.gltf.meta.json` sidecars | GUID-addressed disk schema |
 
 > [!NOTE]
 > **PBR ≠ Phong visually identical.** When a LO chapter is fully translated, the forgeax demo will not pixel-match the LO C++ output: PBR has Fresnel darkening at grazing angles, energy conservation, and no constant ambient term. The *teaching concept* is preserved, the *exact pixels* are not. This is intentional — pixel-matching LO would require keeping Phong, which contradicts AGENTS.md `Change stance` (optimal > compatible).

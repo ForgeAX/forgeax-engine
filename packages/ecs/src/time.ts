@@ -1,3 +1,5 @@
+import type { AssetReferenceOwner } from '@forgeax/engine-types';
+
 export interface TimeResource {
   readonly delta: number;
   readonly elapsed: number;
@@ -43,6 +45,7 @@ export interface TimePolicy {
 }
 
 export interface WorldOptions {
+  readonly assets?: AssetReferenceOwner;
   readonly time?: TimePolicy;
   /** SAB-backed dense numeric columns for a SharedKernel-capable Engine Realm. */
   readonly storage?: 'local' | 'shared';
@@ -63,11 +66,11 @@ export const DEFAULT_TIME_POLICY: Required<TimePolicy> = {
   maxDeltaSeconds: 0.1,
 };
 
-export function createTimeResource(policy: Required<TimePolicy>): TimeResource {
+function createTimeResource(policy: Required<TimePolicy>): TimeResource {
   return { delta: 0, elapsed: 0, maxDeltaSeconds: policy.maxDeltaSeconds };
 }
 
-export function createFixedTimeResource(policy: Required<TimePolicy>): FixedTimeResource {
+function createFixedTimeResource(policy: Required<TimePolicy>): FixedTimeResource {
   return {
     delta: policy.fixedDeltaSeconds,
     maxStepsPerUpdate: policy.maxStepsPerUpdate,

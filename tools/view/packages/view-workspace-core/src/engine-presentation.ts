@@ -1,11 +1,19 @@
 import type { EngineWorkspacePresentation } from '@forgeax/engine/app';
 import type { Context } from '@forgeax/engine-plugin';
 export type PreviewOwner = { panelId: string; pageType: string };
-export type ViewPresentation = Omit<EngineWorkspacePresentation, 'attach'> & { owner?: PreviewOwner; attach?: (input: Parameters<NonNullable<EngineWorkspacePresentation['attach']>>[0] & { owner?: PreviewOwner }) => ReturnType<NonNullable<EngineWorkspacePresentation['attach']>> };
+export type ViewPresentation = {
+  attachScene?: (input: { target: Parameters<NonNullable<EngineWorkspacePresentation['attach']>>[0]['target']; container: HTMLElement }) => () => void;
+  attachPreview?: (input: { target: Parameters<NonNullable<EngineWorkspacePresentation['attach']>>[0]['target']; container: HTMLElement; owner: PreviewOwner }) => { ready: Promise<void>; dispose(): Promise<void> };
+  retainPlacement?: (target: { targetId: string; generation?: number }, release: () => Promise<void>) => () => void;
+  releaseSurface?: (target: { targetId: string; generation?: number }) => Promise<void>;
+} & Omit<EngineWorkspacePresentation, 'attach'> & { owner?: PreviewOwner; attach?: (input: Parameters<NonNullable<EngineWorkspacePresentation['attach']>>[0] & { owner?: PreviewOwner }) => ReturnType<NonNullable<EngineWorkspacePresentation['attach']>> };
 export type PresentationConfig = { presentation?: ViewPresentation; targetPresentation?: ViewPresentation };
+declare module '@forgeax/engine-plugin' {
+  interface EngineContextServices { viewNativePreviewPresentation?: ViewPresentation; }
+}
 
 export function readEnginePresentation(config: PresentationConfig = {}, ctx?: Context): ViewPresentation | undefined {
-  return config.presentation
+  return (ctx?.get?.('viewNativePreviewPresentation', false) || undefined) ?? config.presentation
     ?? config.targetPresentation
     ?? (ctx?.get?.('engineWorkspacePresentation', false) || undefined);
 }
@@ -26,5 +34,6 @@ export function liveEnginePresentation(ctx: Context, config: PresentationConfig 
     detach(input) {
       return read()?.detach?.(input);
     },
+    get attachPreview() { return read()?.attachPreview; },
   };
 }

@@ -32,26 +32,34 @@ import {
 } from '@forgeax/engine/render';
 import { ChildOf, GlobalTransform, Name, Transform } from '@forgeax/engine/scene';
 import { Skin } from '@forgeax/engine/skinning';
-import type { AnimationClip, PluginAsset, SceneAsset, SkeletonAsset } from '@forgeax/engine/types';
 import { motionGuid } from './skeletal-motion-guids';
 import type {} from './skeletal-motion-program';
+import { AssetRegistry } from '@forgeax/engine/assets-runtime';
 
 /** This ordinary authored scene is shared by Host, Engine Worker and native evidence. */
 export async function loadSkeletalMotionScene(ctx: Context, aspect: number) {
   const world = ctx.world;
+  const sceneAssets = world.assets;
+  if (!(sceneAssets instanceof AssetRegistry))
+    throw new Error('Scene requires its runtime asset owner');
+
   const assets = ctx.assets;
   if (assets === undefined) throw new Error('skeletal motion requires ordinary assets');
   const registry = assets;
   configureRuntimeAssetCatalog(registry, runtimeBinding);
-  const load = async <T>(key: string): Promise<T> =>
-    (await assets.loadByGuid<T>(assets.parseGuid(motionGuid(key)))).unwrap();
-  const scene = await load<SceneAsset>('scene');
-  const definitionAsset = await load<PluginAsset>('motion');
-  const skeleton = await load<SkeletonAsset>('skeleton');
+  const scene = (await assets.load(assets.parseGuid(motionGuid('scene')), 'scene')).unwrap();
+  const definitionHandle = (
+    await assets.load(assets.parseGuid(motionGuid('motion')), 'plugin')
+  ).unwrap();
+  const definitionAsset = assets.read(definitionHandle).unwrap();
+  const skeletonHandle = (
+    await assets.load(assets.parseGuid(motionGuid('skeleton')), 'skeleton')
+  ).unwrap();
+  const skeleton = assets.read(skeletonHandle).unwrap();
   const definition = definitionAsset.config as unknown as SkeletalMotionDefinition;
-  const clip = world.allocSharedRef('AnimationClip', await load<AnimationClip>('clip'));
+  const clip = (await assets.load(assets.parseGuid(motionGuid('clip')), 'animation-clip')).unwrap();
   function instantiateRig() {
-    const root = registry.instantiate(world.allocSharedRef('SceneAsset', scene), world).unwrap();
+    const root = registry.instantiate(scene, world).unwrap();
     let player: EntityHandle | undefined, skinEntity: EntityHandle | undefined;
     const joints: EntityHandle[] = [];
     for (const row of world.query({ read: [Name] }).unwrap()) {
@@ -94,17 +102,16 @@ export async function loadSkeletalMotionScene(ctx: Context, aspect: number) {
       {
         component: MeshFilter,
         data: {
-          assetHandle: world.allocSharedRef('MeshAsset', createBoxGeometry(16, 0.5, 16).unwrap()),
+          assetHandle: sceneAssets.create(createBoxGeometry(16, 0.5, 16).unwrap()).unwrap(),
         },
       },
       {
         component: MeshRenderer,
         data: {
           materials: [
-            world.allocSharedRef(
-              'MaterialAsset',
-              Materials.standard({ baseColor: [0.05, 0.07, 0.1, 1], roughness: 0.9 }),
-            ),
+            sceneAssets
+              .create(Materials.standard({ baseColor: [0.05, 0.07, 0.1, 1], roughness: 0.9 }))
+              .unwrap(),
           ],
         },
       },

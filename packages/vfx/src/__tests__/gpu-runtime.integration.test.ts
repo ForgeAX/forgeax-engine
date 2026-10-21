@@ -1,7 +1,10 @@
 import { readFileSync } from 'node:fs';
+import { AssetRegistry } from '@forgeax/engine-assets-runtime';
+import { runtimeAssetRegistry, runtimeAssets } from '@forgeax/engine-assets-runtime/internal';
 import { createWorldContext, FixedTime, World } from '@forgeax/engine-ecs';
 import type { ParticleEffectAsset } from '@forgeax/engine-types';
-import { describe, expect, it } from 'vitest';
+import { cookParticleCodeProgram } from '@forgeax/engine-vfx-compiler';
+import { describe, expect, it, vi } from 'vitest';
 import { createVfxEffectContract } from '../effect-contract.js';
 import type { VfxGpuEffectAsset } from '../gpu-program.js';
 import {
@@ -13,6 +16,12 @@ import {
 import { ParticleEffectInstance } from '../instance.js';
 import { VFX_PARTICLE_CORE_LAYOUT } from '../particle-layout.js';
 import { ParticleEffectPlayer } from '../player.js';
+import { runtimeEffectFixture } from './runtime-effect-fixture';
+
+function required<T>(value: T | undefined): T {
+  if (value === undefined) throw new Error('Missing VFX fixture input');
+  return value;
+}
 
 function commitSnapshot(runtime: VfxGpuRuntime, count = Number.POSITIVE_INFINITY): void {
   runtime.commit(
@@ -23,74 +32,275 @@ function commitSnapshot(runtime: VfxGpuRuntime, count = Number.POSITIVE_INFINITY
   );
 }
 
+const cookedFixture = (
+  await cookParticleCodeProgram(
+    {
+      schemaVersion: 3,
+      emitters: [
+        {
+          id: 'sparks',
+          capacity: 100_000,
+          backend: { required: 'gpu' },
+          space: 'world',
+          schedule: { rate: 60, bursts: [{ time: 0, count: 7 }], loopDuration: 1 },
+          bounds: { kind: 'sphere', center: [0, 0, 0], radius: 10 },
+          program: { module: 'sparks.vfx.wgsl' },
+          renderers: [{ kind: 'billboard', material: 'material-guid' }],
+          simulationWhenCulled: 'continue',
+        },
+      ],
+    },
+    {
+      'sparks.vfx.wgsl': {
+        entry: `
+#import forgeax_vfx::prelude::{VfxParticle,VfxSpawnContext,VfxUpdateContext}
+fn vfx_spawn(ctx: VfxSpawnContext, p: ptr<function,VfxParticle>) { (*p).lifetime = 2.0; }
+fn vfx_update(ctx: VfxUpdateContext, p: ptr<function,VfxParticle>) { (*p).age += ctx.delta; }
+`,
+      },
+    },
+  )
+).unwrap();
 const effect: VfxGpuEffectAsset = {
   guid: 'effect-guid',
   kind: 'particle-effect',
   schemaVersion: 3,
-  programFingerprint: 'sha256:test',
+  programFingerprint: cookedFixture.fingerprint,
   emitters: [{ id: 'sparks', capacity: 100_000 }],
-  program: {
-    format: 'forgeax-vfx-program-4',
-    fingerprint: 'sha256:test',
-    emitters: [
-      {
-        id: 'sparks',
-        module: 'sparks.vfx.wgsl',
-        capacity: 100_000,
-        backend: { required: 'gpu' },
-        space: 'world',
-        schedule: { rate: 60, bursts: [{ time: 0, count: 7 }], loopDuration: 1 },
-        bounds: { kind: 'sphere', center: [0, 0, 0], radius: 10 },
-        renderers: [{ kind: 'billboard', material: 'material-guid' }],
-        simulationWhenCulled: 'continue',
-        wgsl: 'cooked',
-        reflection: {
-          hooks: ['vfx_spawn', 'vfx_update'],
-          imports: [],
-          resources: [],
-          entryPoints: [],
-          bindings: [],
-          layout: {
-            version: 3,
-            parameters: { name: 'VfxParameters', fields: [], size: 0, alignment: 1 },
-            custom: { name: 'VfxCustom', fields: [], size: 0, alignment: 1 },
-            core: VFX_PARTICLE_CORE_LAYOUT,
-            customLayout: {
-              name: 'VfxCustom',
-              fields: [],
-              size: 0,
-              alignment: 1,
-              stride: 0,
-              lanes: 0,
-            },
-            fingerprint: 'sha256:test-layout',
-          },
-          dataInterfaces: [],
-          eventChannels: [],
-          events: [],
-          eventEntryPoint: 'forgeax_vfx_event_main',
-          stages: [],
-          renderers: [
+  program: { ...cookedFixture.program, fingerprint: cookedFixture.fingerprint },
+};
+
+async function recookEmitter(emitter: VfxGpuEffectAsset['program']['emitters'][number]) {
+  const { wgsl: _wgsl, reflection: _reflection, module, channels, events, ...metadata } = emitter;
+  return required(
+    (
+      await cookParticleCodeProgram(
+        {
+          schemaVersion: 3,
+          emitters: [
             {
-              topology: 'billboard',
-              resource: 'billboardInstances',
-              capacity: 100_000,
-              overflow: 'drop-newest',
-              enabled: true,
-              shaderInputs: [],
-              attributes: {},
-              materialInputs: [],
-              castShadows: false,
-              receiveShadows: false,
+              ...metadata,
+              program: { module },
+              ...(channels?.length ? { channels } : {}),
+              ...(events?.length ? { events } : {}),
             },
           ],
         },
-      },
-    ],
-  },
-};
+        {
+          [module]: {
+            entry: `
+#import forgeax_vfx::prelude::{VfxParticle,VfxSpawnContext,VfxUpdateContext}
+${emitter.forceFields === undefined ? '' : '#import forgeax_vfx::data::force_fields'}
+fn vfx_spawn(ctx: VfxSpawnContext, p: ptr<function,VfxParticle>) { (*p).lifetime = 2.0; }
+fn vfx_update(ctx: VfxUpdateContext, p: ptr<function,VfxParticle>) { (*p).age += ctx.delta; }
+`,
+          },
+        },
+      )
+    ).unwrap().program.emitters[0],
+  );
+}
 
 describe('GPU VFX fixed-tick intents', () => {
+  it('does no player discovery or asset polling during unchanged paused ticks', async () => {
+    const assets = new AssetRegistry();
+    const world = new World({ assets });
+    const handle = assets.create(runtimeEffectFixture(world, effect)).unwrap();
+    const players = Array.from({ length: 1000 }, () =>
+      world
+        .spawn({ component: ParticleEffectPlayer, data: { effect: handle, playing: false } })
+        .unwrap(),
+    );
+    const ctx = await createWorldContext(world, [vfxGpuRuntimePlugin()]);
+    const runtime = world.getResource<VfxGpuRuntime>(VFX_GPU_RUNTIME_RESOURCE_KEY);
+    try {
+      world.update(1 / 60).unwrap();
+      const query = vi.spyOn(world, 'query');
+      const read = vi.spyOn(world, 'get');
+      const version = vi.spyOn(runtimeAssets(assets), 'version');
+      try {
+        for (let tick = 0; tick < 60; tick++) world.update(1 / 60).unwrap();
+        expect(query).not.toHaveBeenCalled();
+        expect(read).not.toHaveBeenCalled();
+        expect(version).not.toHaveBeenCalled();
+        expect(runtime.snapshot()).toHaveLength(0);
+        // A source edit cannot awaken or walk paused consumers.
+        assets
+          .update(handle, {
+            program: {
+              ...runtimeEffectFixture(world, effect).program,
+              emitters: runtimeEffectFixture(world, effect).program.emitters.map((emitter) => ({
+                ...emitter,
+                schedule: { ...emitter.schedule, rate: 0 },
+              })),
+            },
+          })
+          .unwrap();
+        version.mockClear();
+        world.update(1 / 60).unwrap();
+        expect(version).not.toHaveBeenCalled();
+        expect(runtime.snapshot()).toHaveLength(0);
+      } finally {
+        query.mockRestore();
+        read.mockRestore();
+        version.mockRestore();
+      }
+      const removed = required(players[500]);
+      world.despawn(removed).unwrap();
+      const visited: number[] = [];
+      runtime.forEachEmitterSource(world, (source) => visited.push(source.player));
+      expect(visited).toHaveLength(999);
+      expect(visited).not.toContain(removed);
+      const replacement = world
+        .spawn({ component: ParticleEffectPlayer, data: { effect: handle, playing: false } })
+        .unwrap();
+      const current: number[] = [];
+      runtime.forEachEmitterSource(world, (source) => current.push(source.player));
+      expect(current).toHaveLength(1000);
+      expect(current).toContain(replacement);
+      expect(current).not.toContain(removed);
+    } finally {
+      await ctx.fiber.dispose();
+      assets.dispose();
+    }
+  });
+
+  it('captures anonymous force-field content at each tick without changing earlier queued inputs', async () => {
+    const assets = new AssetRegistry();
+    const world = new World({ assets });
+    const samples = new Float32Array(2 * 2 * 2 * 4).fill(1);
+    const texture = assets
+      .create({
+        kind: 'texture',
+        shape: { viewDimension: '3d', extent: { width: 2, height: 2, depth: 2 } },
+        format: 'rgba32float',
+        colorSpace: 'linear',
+        mips: { kind: 'none' },
+        data: new Uint8Array(samples.buffer),
+      })
+      .unwrap();
+    const emitter = await recookEmitter({
+      ...required(effect.program.emitters[0]),
+      forceFields: [
+        {
+          kind: 'vector',
+          texture: '01a11250-0000-7000-8000-000000000001',
+          sampling: 'nearest',
+          transform: [1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1],
+          strength: 1,
+          attenuation: 0,
+        },
+      ],
+    });
+    const handle = assets
+      .create(
+        runtimeEffectFixture(world, {
+          ...effect,
+          program: {
+            ...effect.program,
+            emitters: [
+              {
+                ...emitter,
+                forceFields: (emitter.forceFields ?? []).map((field) =>
+                  field.kind === 'vector' ? { ...field, texture } : field,
+                ),
+              },
+            ],
+          },
+        }),
+      )
+      .unwrap();
+    const player = world
+      .spawn({ component: ParticleEffectPlayer, data: { effect: handle } })
+      .unwrap();
+    const ctx = await createWorldContext(world, [vfxGpuRuntimePlugin()]);
+    const runtime = world.getResource<VfxGpuRuntime>(VFX_GPU_RUNTIME_RESOURCE_KEY);
+    const fieldValue = (intent: import('../gpu-runtime').VfxGpuTickIntent) => {
+      const bytes = required(runtime.fieldTextureVersions(required(intent.forceFields).unwrap())[0])
+        .value.data;
+      return new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength).getFloat32(0, true);
+    };
+    try {
+      assets.release(texture).unwrap();
+      expect(assets.validate(texture, 'texture').ok).toBe(true);
+      world.update(1 / 60).unwrap();
+      const first = required(runtime.snapshot()[0]);
+      expect(fieldValue(first)).toBe(1);
+      const changed = new Float32Array(samples.length).fill(2);
+      assets.update(texture, { data: new Uint8Array(changed.buffer) }).unwrap();
+      expect(fieldValue(first)).toBe(1);
+      world.update(1 / 60).unwrap();
+      const second = required(runtime.snapshot().at(-1));
+      expect(fieldValue(second)).toBe(2);
+      expect(second.reset).toBe(false);
+      expect(second.forceFields?.unwrap()).not.toBe(first.forceFields?.unwrap());
+      world.update(1 / 60).unwrap();
+      expect(runtime.snapshot().at(-1)?.forceFields?.unwrap()).toBe(second.forceFields?.unwrap());
+      runtime.commit(first.sequence);
+      expect(fieldValue(required(runtime.lastCommitted(player)))).toBe(1);
+    } finally {
+      await ctx.fiber.dispose();
+      world.despawn(player).unwrap();
+      assets.release(handle).unwrap();
+      expect(assets.validate(texture).ok).toBe(false);
+      assets.dispose();
+    }
+  });
+  it('adopts an edited definition on FixedUpdate while queued ticks retain their exact version', async () => {
+    const assets = new AssetRegistry();
+    const world = new World({ assets });
+    const handle = assets.create(runtimeEffectFixture(world, effect)).unwrap();
+    const material = required(
+      assets.read(handle).unwrap().program.emitters[0]?.renderers[0],
+    ).material;
+    assets.release(material as import('@forgeax/engine-types').AssetHandle<'material'>).unwrap();
+    const player = world
+      .spawn({ component: ParticleEffectPlayer, data: { effect: handle } })
+      .unwrap();
+    const ctx = await createWorldContext(world, [vfxGpuRuntimePlugin()]);
+    const runtime = world.getResource<VfxGpuRuntime>(VFX_GPU_RUNTIME_RESOURCE_KEY);
+    try {
+      world.update(1 / 60).unwrap();
+      const old = runtime.snapshot()[0];
+      if (old === undefined) throw new Error('missing initial intent');
+      const updated = runtimeEffectFixture(world, structuredClone(effect));
+      const emitter = updated.program.emitters[0];
+      if (emitter === undefined) throw new Error('missing emitter');
+      assets
+        .update(handle, {
+          program: { ...updated.program, emitters: [{ ...emitter, schedule: { rate: 600 } }] },
+        })
+        .unwrap();
+      expect(old.emitter.schedule.rate).toBe(60);
+      expect(runtime.effectVersion(old.effect).handle).toBe(handle);
+      world.update(1 / 60).unwrap();
+      const next = runtime.snapshot().at(-1);
+      if (next === undefined) throw new Error('missing edited intent');
+      expect(next.emitter.schedule.rate).toBe(600);
+      expect(next.spawnCount).toBe(10);
+      expect(next.reset).toBe(true);
+      expect(next.playCycle).toBe(old.playCycle + 1);
+      expect(next.phaseTick).toBe(0);
+      expect(runtime.effectVersion(next.effect).handle).toBe(handle);
+      expect(runtime.effectVersion(next.effect).revision).toBeGreaterThan(
+        runtime.effectVersion(old.effect).revision,
+      );
+      expect(runtimeAssets(assets).inspect().snapshots).toBe(2);
+      runtime.commit(old.sequence);
+      expect(runtime.lastCommitted(player)?.emitter.schedule.rate).toBe(60);
+      runtime.commit(next.sequence);
+      expect(runtime.lastCommitted(player)?.emitter.schedule.rate).toBe(600);
+      expect(runtimeAssets(assets).inspect().snapshots).toBe(1);
+      world.despawn(player).unwrap();
+      runtime.forEachEmitterSource(world, () => {});
+      expect(runtimeAssets(assets).inspect().snapshots).toBe(0);
+      assets.release(handle).unwrap();
+      expect(runtimeAssets(assets).inspect().assets).toBe(0);
+    } finally {
+      await ctx.fiber.dispose();
+    }
+  });
+
   it('uses the ordinary asset program as the playback source', () => {
     const asset: ParticleEffectAsset = effect;
     expect(asset.program.fingerprint).toBe(asset.programFingerprint);
@@ -98,8 +308,10 @@ describe('GPU VFX fixed-tick intents', () => {
   });
 
   it('keeps skipped queue acknowledgements out of the retained GPU state', async () => {
-    const world = new World();
-    const handle = world.allocSharedRef('ParticleEffectAsset', effect);
+    const world = new World({ assets: new AssetRegistry() });
+    const handle = runtimeAssetRegistry(world.assets)
+      .create(runtimeEffectFixture(world, effect))
+      .unwrap();
     const player = world
       .spawn({
         component: ParticleEffectPlayer,
@@ -134,8 +346,10 @@ describe('GPU VFX fixed-tick intents', () => {
   });
 
   it('restarts same-seed playback after source observes paused preparation', async () => {
-    const world = new World();
-    const handle = world.allocSharedRef('ParticleEffectAsset', effect);
+    const world = new World({ assets: new AssetRegistry() });
+    const handle = runtimeAssetRegistry(world.assets)
+      .create(runtimeEffectFixture(world, effect))
+      .unwrap();
     const player = world
       .spawn({
         component: ParticleEffectPlayer,
@@ -170,8 +384,10 @@ describe('GPU VFX fixed-tick intents', () => {
   });
 
   it('defers a seed reset until a session-disabled emitter can submit', async () => {
-    const world = new World();
-    const handle = world.allocSharedRef('ParticleEffectAsset', effect);
+    const world = new World({ assets: new AssetRegistry() });
+    const handle = runtimeAssetRegistry(world.assets)
+      .create(runtimeEffectFixture(world, effect))
+      .unwrap();
     const player = world
       .spawn({
         component: ParticleEffectPlayer,
@@ -219,7 +435,7 @@ describe('GPU VFX fixed-tick intents', () => {
   });
 
   it('keeps a disabled emitter reset pending when a sibling emitter stays active', async () => {
-    const world = new World();
+    const world = new World({ assets: new AssetRegistry() });
     const multiEmitterEffect = structuredClone(effect) as VfxGpuEffectAsset;
     const primary = multiEmitterEffect.program.emitters[0];
     if (primary === undefined) return;
@@ -230,7 +446,9 @@ describe('GPU VFX fixed-tick intents', () => {
       id: 'healthy',
       module: 'healthy.vfx.wgsl',
     });
-    const handle = world.allocSharedRef('ParticleEffectAsset', multiEmitterEffect);
+    const handle = runtimeAssetRegistry(world.assets)
+      .create(runtimeEffectFixture(world, multiEmitterEffect))
+      .unwrap();
     const player = world
       .spawn({
         component: ParticleEffectPlayer,
@@ -299,8 +517,10 @@ describe('GPU VFX fixed-tick intents', () => {
         },
       ],
     };
-    const world = new World();
-    const handle = world.allocSharedRef('ParticleEffectAsset', channelEffect);
+    const world = new World({ assets: new AssetRegistry() });
+    const handle = runtimeAssetRegistry(world.assets)
+      .create(runtimeEffectFixture(world, channelEffect))
+      .unwrap();
     const player = world
       .spawn({
         component: ParticleEffectPlayer,
@@ -332,8 +552,10 @@ describe('GPU VFX fixed-tick intents', () => {
   });
 
   it('publishes multiple same-tick patches as one atomic instance generation', async () => {
-    const world = new World();
-    const handle = world.allocSharedRef('ParticleEffectAsset', effect);
+    const world = new World({ assets: new AssetRegistry() });
+    const handle = runtimeAssetRegistry(world.assets)
+      .create(runtimeEffectFixture(world, effect))
+      .unwrap();
     const player = world
       .spawn({
         component: ParticleEffectPlayer,
@@ -367,8 +589,10 @@ describe('GPU VFX fixed-tick intents', () => {
   });
 
   it('drops stale instances at a new render generation and restarts from authored state', async () => {
-    const world = new World();
-    const handle = world.allocSharedRef('ParticleEffectAsset', effect);
+    const world = new World({ assets: new AssetRegistry() });
+    const handle = runtimeAssetRegistry(world.assets)
+      .create(runtimeEffectFixture(world, effect))
+      .unwrap();
     const player = world
       .spawn({
         component: ParticleEffectPlayer,
@@ -404,8 +628,10 @@ describe('GPU VFX fixed-tick intents', () => {
   });
 
   it('fires time-zero once and keeps tick commands bounded and ordered', async () => {
-    const world = new World();
-    const handle = world.allocSharedRef('ParticleEffectAsset', effect);
+    const world = new World({ assets: new AssetRegistry() });
+    const handle = runtimeAssetRegistry(world.assets)
+      .create(runtimeEffectFixture(world, effect))
+      .unwrap();
     const spawned = world.spawn({
       component: ParticleEffectPlayer,
       data: { effect: handle, playing: true, seed: 9, timeScale: 1 },
@@ -447,8 +673,10 @@ describe('GPU VFX fixed-tick intents', () => {
       capacity: delayedEmitter.capacity,
     });
 
-    const world = new World();
-    const handle = world.allocSharedRef('ParticleEffectAsset', delayedEffect);
+    const world = new World({ assets: new AssetRegistry() });
+    const handle = runtimeAssetRegistry(world.assets)
+      .create(runtimeEffectFixture(world, delayedEffect))
+      .unwrap();
     const player = world
       .spawn({
         component: ParticleEffectPlayer,
@@ -474,8 +702,10 @@ describe('GPU VFX fixed-tick intents', () => {
   });
 
   it('replays an authored stopped player without mutating author intent', async () => {
-    const world = new World();
-    const handle = world.allocSharedRef('ParticleEffectAsset', effect);
+    const world = new World({ assets: new AssetRegistry() });
+    const handle = runtimeAssetRegistry(world.assets)
+      .create(runtimeEffectFixture(world, effect))
+      .unwrap();
     const player = world
       .spawn({
         component: ParticleEffectPlayer,
@@ -507,8 +737,10 @@ describe('GPU VFX fixed-tick intents', () => {
   });
 
   it('holds time during cold GPU preparation, then diagnoses post-start backpressure', async () => {
-    const world = new World();
-    const handle = world.allocSharedRef('ParticleEffectAsset', effect);
+    const world = new World({ assets: new AssetRegistry() });
+    const handle = runtimeAssetRegistry(world.assets)
+      .create(runtimeEffectFixture(world, effect))
+      .unwrap();
     world
       .spawn({
         component: ParticleEffectPlayer,
@@ -531,8 +763,10 @@ describe('GPU VFX fixed-tick intents', () => {
   });
 
   it('makes an explicit replay boundary discard an overflowing player queue', async () => {
-    const world = new World();
-    const handle = world.allocSharedRef('ParticleEffectAsset', effect);
+    const world = new World({ assets: new AssetRegistry() });
+    const handle = runtimeAssetRegistry(world.assets)
+      .create(runtimeEffectFixture(world, effect))
+      .unwrap();
     const player = world
       .spawn({
         component: ParticleEffectPlayer,
@@ -588,8 +822,10 @@ describe('GPU VFX fixed-tick intents', () => {
   });
 
   it('deduplicates active overflow diagnostics after another diagnostic interleaves', async () => {
-    const world = new World();
-    const handle = world.allocSharedRef('ParticleEffectAsset', effect);
+    const world = new World({ assets: new AssetRegistry() });
+    const handle = runtimeAssetRegistry(world.assets)
+      .create(runtimeEffectFixture(world, effect))
+      .unwrap();
     const player = world
       .spawn({
         component: ParticleEffectPlayer,
@@ -620,8 +856,10 @@ describe('GPU VFX fixed-tick intents', () => {
   });
 
   it('bounds each player independently', async () => {
-    const world = new World();
-    const handle = world.allocSharedRef('ParticleEffectAsset', effect);
+    const world = new World({ assets: new AssetRegistry() });
+    const handle = runtimeAssetRegistry(world.assets)
+      .create(runtimeEffectFixture(world, effect))
+      .unwrap();
     const first = world
       .spawn({
         component: ParticleEffectPlayer,
@@ -646,7 +884,7 @@ describe('GPU VFX fixed-tick intents', () => {
     const firstEmitter = multiEmitter.program.emitters[0];
     expect(firstEmitter).toBeDefined();
     if (firstEmitter === undefined) return;
-    const secondEmitter = {
+    const secondEmitter = await recookEmitter({
       ...firstEmitter,
       id: 'smoke',
       module: 'smoke.vfx.wgsl',
@@ -654,7 +892,7 @@ describe('GPU VFX fixed-tick intents', () => {
       renderers: [
         { kind: 'trail' as const, material: 'smoke-material', historyLength: 4, capacity: 64 },
       ],
-    };
+    });
     (multiEmitter.program.emitters as VfxGpuEffectAsset['program']['emitters'][number][]).push(
       secondEmitter,
     );
@@ -662,8 +900,10 @@ describe('GPU VFX fixed-tick intents', () => {
       id: 'smoke',
       capacity: 64,
     });
-    const world = new World();
-    const handle = world.allocSharedRef('ParticleEffectAsset', multiEmitter);
+    const world = new World({ assets: new AssetRegistry() });
+    const handle = runtimeAssetRegistry(world.assets)
+      .create(runtimeEffectFixture(world, multiEmitter))
+      .unwrap();
     const first = world
       .spawn({
         component: ParticleEffectPlayer,
@@ -684,7 +924,8 @@ describe('GPU VFX fixed-tick intents', () => {
       expect.objectContaining({
         player: first,
         assetGuid: 'effect-guid',
-        programFingerprint: 'sha256:test',
+        programFingerprint: runtimeAssetRegistry(world.assets).read(handle).unwrap().program
+          .fingerprint,
         seed: 1,
         fixedDelta: 1 / 60,
         emitters: [
@@ -716,17 +957,18 @@ describe('GPU VFX fixed-tick intents', () => {
     expect(runtime.inspectPlayer(999 as never)).toBeUndefined();
   });
 
-  it('clears player and effect diagnostics after authored state recovers', async () => {
-    const world = new World();
-    const unavailable = world.allocSharedRef('ParticleEffectAsset', {
-      ...effect,
-      schemaVersion: 1,
-    } as never);
-    const available = world.allocSharedRef('ParticleEffectAsset', effect);
+  it('rejects obsolete effects at admission and clears invalid player diagnostics', async () => {
+    const world = new World({ assets: new AssetRegistry() });
+    expect(
+      runtimeAssetRegistry(world.assets).create({ ...effect, schemaVersion: 1 } as never).ok,
+    ).toBe(false);
+    const available = runtimeAssetRegistry(world.assets)
+      .create(runtimeEffectFixture(world, effect))
+      .unwrap();
     const player = world
       .spawn({
         component: ParticleEffectPlayer,
-        data: { effect: unavailable, playing: true, seed: 3, timeScale: -1 },
+        data: { effect: available, playing: true, seed: 3, timeScale: -1 },
       })
       .unwrap();
     await createWorldContext(world, [vfxGpuRuntimePlugin()]);
@@ -739,12 +981,6 @@ describe('GPU VFX fixed-tick intents', () => {
 
     world.set(player, ParticleEffectPlayer, { timeScale: 1 }).unwrap();
     world.update(1 / 60).unwrap();
-    expect(runtime.diagnostics().map((diagnostic) => diagnostic.code)).toEqual([
-      'vfx-effect-unavailable',
-    ]);
-
-    world.set(player, ParticleEffectPlayer, { effect: available }).unwrap();
-    world.update(1 / 60).unwrap();
     expect(runtime.diagnostics()).toEqual([]);
   });
 
@@ -752,11 +988,13 @@ describe('GPU VFX fixed-tick intents', () => {
     ['pause', false, 8],
     ['restart-on-visible', true, 0],
   ] as const)('%s applies culling lifecycle at fixed-tick boundaries', async (policy, reset, firstParticleId) => {
-    const world = new World();
+    const world = new World({ assets: new AssetRegistry() });
     const policyEffect = structuredClone(effect) as VfxGpuEffectAsset;
     (policyEffect.program.emitters[0] as { simulationWhenCulled: string }).simulationWhenCulled =
       policy;
-    const handle = world.allocSharedRef('ParticleEffectAsset', policyEffect);
+    const handle = runtimeAssetRegistry(world.assets)
+      .create(runtimeEffectFixture(world, policyEffect))
+      .unwrap();
     const player = world
       .spawn({
         component: ParticleEffectPlayer,
@@ -782,8 +1020,10 @@ describe('GPU VFX fixed-tick intents', () => {
   });
 
   it('keeps editor session masks independent from camera culling and authored enablement', async () => {
-    const world = new World();
-    const handle = world.allocSharedRef('ParticleEffectAsset', effect);
+    const world = new World({ assets: new AssetRegistry() });
+    const handle = runtimeAssetRegistry(world.assets)
+      .create(runtimeEffectFixture(world, effect))
+      .unwrap();
     const player = world
       .spawn({
         component: ParticleEffectPlayer,
@@ -819,8 +1059,10 @@ describe('GPU VFX fixed-tick intents', () => {
 });
 
 it('keeps paused stable frames idle but executes zero-time reset and replay', async () => {
-  const world = new World();
-  const handle = world.allocSharedRef('ParticleEffectAsset', effect);
+  const world = new World({ assets: new AssetRegistry() });
+  const handle = runtimeAssetRegistry(world.assets)
+    .create(runtimeEffectFixture(world, effect))
+    .unwrap();
   const player = world
     .spawn({
       component: ParticleEffectPlayer,
@@ -860,8 +1102,10 @@ it('keeps paused stable frames idle but executes zero-time reset and replay', as
 });
 
 it('admits a new player without consuming later fixed-time patches or replay', async () => {
-  const world = new World();
-  const handle = world.allocSharedRef('ParticleEffectAsset', effect);
+  const world = new World({ assets: new AssetRegistry() });
+  const handle = runtimeAssetRegistry(world.assets)
+    .create(runtimeEffectFixture(world, effect))
+    .unwrap();
   const player = world
     .spawn({
       component: ParticleEffectPlayer,
@@ -920,7 +1164,7 @@ it('admits a new player without consuming later fixed-time patches or replay', a
     });
   } finally {
     world.despawn(player).unwrap();
-    world.sharedRefs.release(handle).unwrap();
+    runtimeAssetRegistry(world.assets).release(handle).unwrap();
     await context.fiber.dispose();
   }
 });

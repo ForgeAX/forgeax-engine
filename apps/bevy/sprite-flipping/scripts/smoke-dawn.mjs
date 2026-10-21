@@ -1,5 +1,7 @@
 #!/usr/bin/env node
 import { encodePng } from '@forgeax/engine-image/png';
+import { createPrimitiveMesh } from '@forgeax/engine-geometry';
+import { constructRuntimeRendererHost } from '@forgeax/engine-runtime/internal/renderer-host';
 import { createSmokeRenderer, drawSmokeFrame, rendererBackend, subscribeSmokeErrors } from "../../scripts/renderer-smoke.mjs";
 // Dawn smoke for Bevy `sprite_flipping`: three asymmetric sprite instances
 // exercise identity, horizontal UV flip, and vertical UV flip.
@@ -54,8 +56,7 @@ const { Camera, MeshFilter, MeshRenderer, orthographic } = await import('@forgea
 const { createRenderer } = await import('@forgeax/engine-runtime');
 const { SPRITE_PREMULTIPLIED_ALPHA_BLEND } = await import('@forgeax/engine-render/authoring');
 const { Transform } = await import('@forgeax/engine-scene');
-const { HANDLE_QUAD } = await import('@forgeax/engine-assets-runtime');
-const { unwrapHandle } = await import('@forgeax/engine-types');
+
 
 const manifestPath = resolve(here, '..', 'dist', 'shaders', 'manifest.json');
 const manifestUrl = `data:application/json,${encodeURIComponent(readFileSync(manifestPath, 'utf8'))}`;
@@ -70,7 +71,9 @@ gpu.requestAdapter = async (options) => {
   };
   return adapter;
 };
-const renderer = await createSmokeRenderer(createRenderer, canvas, {}, { shaderManifestUrl: manifestUrl });
+const hostResult = await constructRuntimeRendererHost(canvas, {}, { shaderManifestUrl: manifestUrl });
+if (!hostResult.ok) throw hostResult.error;
+const { renderer, assets: smokeAssets } = hostResult.value;
 gpu.requestAdapter = originalRequestAdapter;
 console.log(`[bevy-sprite-flipping] backend=${rendererBackend(renderer)}`);
 const errors = [];
@@ -95,7 +98,8 @@ for (let y = 0; y < SPRITE_SIZE; y++) {
     pixels[off + 3] = marker || inside ? 255 : 0;
   }
 }
-const world = new World();
+const world = new World({ assets: smokeAssets });
+const primitiveQuad = world.assets.create(createPrimitiveMesh('quad').unwrap()).unwrap();
 const worldAttachment1 = renderer.attach(world);
 if (!worldAttachment1.ok) throw worldAttachment1.error;
 const texture = {
@@ -106,12 +110,12 @@ const texture = {
   colorSpace: 'srgb',
   mips: { kind: 'none' },
 };
-const textureHandle = world.allocSharedRef('TextureAsset', texture);
-const textureId = unwrapHandle(textureHandle);
+const textureHandle = world.assets.create(texture).unwrap();
+const textureId = textureHandle;
 
-const sampler = world.allocSharedRef('SamplerAsset', {
+const sampler = world.assets.create({
   kind: 'sampler', magFilter: 'linear', minFilter: 'linear', addressModeU: 'repeat', addressModeV: 'repeat',
-});
+}).unwrap();
 const material = (flipX = 0, flipY = 0) => ({
   kind: 'material',
   passes: [{ name: 'Forward', program: { module: 'forgeax::sprite' }, renderState: { blend: SPRITE_PREMULTIPLIED_ALPHA_BLEND, tags: { LightMode: 'Forward' }, queue: 3000 } }],
@@ -129,11 +133,11 @@ const material = (flipX = 0, flipY = 0) => ({
     pivotAndSize: [0.5, 0.5, 1, 1],
   },
 });
-const mats = [world.allocSharedRef('MaterialAsset', material()), world.allocSharedRef('MaterialAsset', material(1)), world.allocSharedRef('MaterialAsset', material(0, 1))];
+const mats = [world.assets.create(material()).unwrap(), world.assets.create(material(1)).unwrap(), world.assets.create(material(0, 1)).unwrap()];
 for (const [x, mat] of [[-3, mats[0]], [0, mats[1]], [3, mats[2]]]) {
   world.spawn(
     { component: Transform, data: { pos: [x, 0, 0], scale: [2, 2, 1] } },
-    { component: MeshFilter, data: { assetHandle: HANDLE_QUAD } },
+    { component: MeshFilter, data: { assetHandle: primitiveQuad } },
     { component: MeshRenderer, data: { materials: [mat] } },
   );
 }

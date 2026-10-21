@@ -1,5 +1,6 @@
+import { runtimeAssetReference, runtimeAssets } from '@forgeax/engine-assets-runtime/internal';
 import type { World } from '@forgeax/engine-ecs';
-import type { Asset, Handle, Result } from '@forgeax/engine-types';
+import type { Asset, AssetHandle, Result } from '@forgeax/engine-types';
 import { err, ok } from '@forgeax/engine-types';
 
 /** Closed animation-domain failure codes for durable GUID projection. */
@@ -14,10 +15,6 @@ export interface AnimationAssetErrorDetail {
   readonly actualKind?: string;
   readonly lookupCode: string;
 }
-
-type AnimationAssetTarget<T extends Asset> = T extends { readonly kind: 'animation-clip' }
-  ? 'AnimationClip'
-  : 'AnimationGraph';
 
 /** Structured failure at the animation consumer boundary. */
 export class AnimationAssetError extends Error {
@@ -44,85 +41,55 @@ export class AnimationAssetError extends Error {
 export interface ResolvedAnimationAsset<T extends Asset> {
   readonly guid: string;
   readonly asset: T;
-  readonly handle: Handle<AnimationAssetTarget<T>, 'shared'>;
+  readonly handle: AssetHandle<T['kind']>;
 }
 
-export type AnimationAssetLookup<T extends Asset> = T | { readonly code: 'stale' } | undefined;
-
-/**
- * Resolve a durable GUID through the caller's existing payload owner, then
- * project that payload into the current World. The callback is deliberately a
- * lookup seam, not a registry: AssetRegistry remains GUID -> payload only.
- */
+/** Resolve directly through the World asset owner; resolving grants no producer hold. */
 export function resolveAnimationAsset<T extends Asset>(
   world: World,
-  guid: string,
+  reference: string | number,
   expectedKind: T['kind'],
-  lookup: (guid: string) => AnimationAssetLookup<T>,
 ): Result<ResolvedAnimationAsset<T>, AnimationAssetError> {
-  if (guid.length === 0) {
+  const guid = String(reference);
+  const owner = world.assets;
+  const handle =
+    typeof reference === 'number'
+      ? reference
+      : owner === undefined
+        ? undefined
+        : runtimeAssetReference(owner, reference);
+  if (handle === undefined)
     return err(
       new AnimationAssetError({
         code: 'animation-asset-not-found',
-        expected: `a durable ${expectedKind} GUID`,
-        hint: 'load the animation asset by GUID before evaluating the graph',
-        detail: { guid, expectedKind, lookupCode: 'guid-empty' },
-      }),
-    );
-  }
-  let asset: AnimationAssetLookup<T>;
-  try {
-    asset = lookup(guid);
-  } catch {
-    return err(
-      new AnimationAssetError({
-        code: 'animation-asset-not-found',
-        expected: `a loaded ${expectedKind} payload for GUID ${guid}`,
-        hint: 'repair the animation asset lookup provider and retry resolution',
-        detail: { guid, expectedKind, lookupCode: 'lookup-threw' },
-      }),
-    );
-  }
-  if (asset !== undefined && 'code' in asset && asset.code === 'stale') {
-    return err(
-      new AnimationAssetError({
-        code: 'animation-asset-stale',
-        expected: `a current ${expectedKind} payload for GUID ${guid}`,
-        hint: 'rebuild the stale asset projection before evaluating the graph',
-        detail: { guid, expectedKind, lookupCode: 'asset-stale' },
-      }),
-    );
-  }
-  if (asset === undefined) {
-    return err(
-      new AnimationAssetError({
-        code: 'animation-asset-not-found',
-        expected: `a loaded ${expectedKind} payload for GUID ${guid}`,
-        hint: 'load or retain the referenced animation asset before evaluating the graph',
+        expected: `a loaded ${expectedKind} reference ${guid}`,
+        hint: 'load the animation asset closure before playback',
         detail: { guid, expectedKind, lookupCode: 'asset-not-found' },
       }),
     );
-  }
-  const payload = asset as T;
-  if (payload.kind !== expectedKind) {
+  const read = runtimeAssets(world.assets).resolveAsset<T>(handle);
+  if (!read.ok)
+    return err(
+      new AnimationAssetError({
+        code: 'animation-asset-stale',
+        expected: `a retained ${expectedKind} reference ${guid}`,
+        hint: 'bind assets from the live World owner',
+        detail: { guid, expectedKind, lookupCode: read.error.code },
+      }),
+    );
+  if (read.value.kind !== expectedKind)
     return err(
       new AnimationAssetError({
         code: 'animation-asset-kind-mismatch',
-        expected: `asset kind '${expectedKind}'`,
-        hint: `replace GUID ${guid} with a loaded ${expectedKind} asset`,
+        expected: `asset kind ${expectedKind}`,
+        hint: 'bind the matching animation asset kind',
         detail: {
           guid,
           expectedKind,
-          actualKind: payload.kind,
+          actualKind: read.value.kind,
           lookupCode: 'asset-kind-mismatch',
         },
       }),
     );
-  }
-  const target = expectedKind === 'animation-clip' ? 'AnimationClip' : 'AnimationGraph';
-  const handle = world.internSharedRef(target, payload) as Handle<
-    AnimationAssetTarget<T>,
-    'shared'
-  >;
-  return ok({ guid, asset: payload, handle });
+  return ok({ guid, asset: read.value, handle: handle as AssetHandle<T['kind']> });
 }

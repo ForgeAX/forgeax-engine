@@ -1,3 +1,4 @@
+import type { AssetHandle } from '@forgeax/engine-types';
 import { Update } from '@forgeax/engine-ecs';
 // apps/learn-render/4.advanced-opengl/10.anti-aliasing-msaa -- MSAA hardware
 // multisample anti-aliasing OFF/ON comparison demo with Space toggle.
@@ -27,7 +28,7 @@ import { Update } from '@forgeax/engine-ecs';
 //
 // Recipe (charter P1 progressive disclosure):
 //   (1) createApp(canvas, {}, { shaderManifestUrl }) + spawn Camera with clear* fields
-//   (2) world.allocSharedRef<'MaterialAsset', MaterialAsset>(standard PBR) -> materialHandle
+//   (2) assets.create(standard PBR) -> materialHandle
 //   (3) world.spawn 4 geometries, DirectionalLight, Camera (save entity)
 //   (4) world.addSystem press-edge toggle + HUD sync
 //   (5) app.start()
@@ -35,7 +36,7 @@ import { Update } from '@forgeax/engine-ecs';
 import { createApp } from '@forgeax/engine-app/browser';
 import type { App, CanvasAppError } from '@forgeax/engine-app';
 
-import { HANDLE_CUBE, HANDLE_QUAD, HANDLE_SPHERE, HANDLE_TRIANGLE } from '@forgeax/engine-assets-runtime';
+
 import { INPUT_SNAPSHOT_RESOURCE_KEY, type InputSnapshot } from '@forgeax/engine-input';
 import { Transform } from '@forgeax/engine-scene';
 
@@ -43,8 +44,10 @@ import { ANTIALIAS_MSAA, ANTIALIAS_NONE, perspective } from '@forgeax/engine-ren
 import { EngineEnvironmentError } from '@forgeax/engine-runtime';
 import { Camera, DirectionalLight, MeshFilter, MeshRenderer } from '@forgeax/engine-render';
 
-import type { Handle, MaterialAsset } from '@forgeax/engine-types';
+
 import { forgeaxBundlerAdapter } from 'virtual:forgeax/bundler';
+import { createPrimitiveMesh } from '@forgeax/engine-geometry';
+
 
 const canvas = document.querySelector<HTMLCanvasElement>('#app');
 if (!canvas) {
@@ -69,6 +72,8 @@ async function bootstrap(target: HTMLCanvasElement): Promise<void> {
     return;
   }
   const app = appRes.value;
+if (app.assets === undefined) throw new Error('This scene requires the App asset owner');
+
   app.onError((error) => {
     console.error('[msaa] app.onError:', error.code, error.hint);
     const bus = (globalThis as unknown as { __learnRenderErrors?: Array<{ code: string; hint?: string }> }).__learnRenderErrors;
@@ -77,9 +82,17 @@ async function bootstrap(target: HTMLCanvasElement): Promise<void> {
   console.warn(`[msaa] execution=${JSON.stringify(app.execution.report().workers)}`);
 
   const world = app.world;
+const primitiveTriangle = app.assets.create(createPrimitiveMesh('triangle').unwrap()).unwrap();
+
+const primitiveCube = app.assets.create(createPrimitiveMesh('cube').unwrap()).unwrap();
+
+const primitiveQuad = app.assets.create(createPrimitiveMesh('quad').unwrap()).unwrap();
+
+const primitiveSphere = app.assets.create(createPrimitiveMesh('sphere').unwrap()).unwrap();
+
 
   // Step 2: register the standard PBR material shared across all 4 geometries.
-  const materialHandle = world.allocSharedRef<'MaterialAsset', MaterialAsset>('MaterialAsset', {
+  const materialHandle = app.assets.create({
     kind: 'material',
     passes: [
       { name: 'Forward', program: { module: 'forgeax::default-standard-pbr' }, renderState: { tags: { LightMode: 'Forward' }, queue: 2000 } },
@@ -89,20 +102,20 @@ async function bootstrap(target: HTMLCanvasElement): Promise<void> {
       metallic: 0.0,
       roughness: 0.4,
     },
-  });
+  }).unwrap();
 
   // Step 3: spawn 4 static geometries (triangle + cube + quad + sphere).
   // Layout: 4 bodies spread horizontally so edges stay visible and
   // aliasing is obvious in the ANTIALIAS_NONE state. The triangle and
   // cube have the sharpest diagonal edges.
   const LAYOUT: readonly {
-    readonly handle: Handle<'MeshAsset', 'shared'>;
+    readonly handle: AssetHandle<'mesh'>;
     readonly pos: readonly [number, number, number];
   }[] = [
-    { handle: HANDLE_TRIANGLE, pos: [-1.05, 0, 0]},
-    { handle: HANDLE_CUBE, pos: [-0.35, 0, 0]},
-    { handle: HANDLE_QUAD, pos: [0.35, 0, 0]},
-    { handle: HANDLE_SPHERE, pos: [1.05, 0, 0]},
+    { handle: primitiveTriangle, pos: [-1.05, 0, 0]},
+    { handle: primitiveCube, pos: [-0.35, 0, 0]},
+    { handle: primitiveQuad, pos: [0.35, 0, 0]},
+    { handle: primitiveSphere, pos: [1.05, 0, 0]},
   ];
   for (const slot of LAYOUT) {
     world.spawn(

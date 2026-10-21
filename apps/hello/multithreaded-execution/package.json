@@ -27,7 +27,8 @@
     "@forgeax/engine-render": "workspace:*",
     "@forgeax/engine-rhi-webgpu": "workspace:*",
     "@forgeax/engine-runtime": "workspace:*",
-    "@forgeax/engine-scene": "workspace:*"
+    "@forgeax/engine-scene": "workspace:*",
+    "@forgeax/engine-geometry": "workspace:*"
   },
   "devDependencies": {
     "@forgeax/engine-shader-compiler": "workspace:*",
@@ -41,7 +42,10 @@
     "gauntletScenario": {
       "id": "hello-m12-execution-poison-rebuild",
       "script": "gauntlet",
-      "domains": ["World and host contract", "Simulation and media implementations"],
+      "domains": [
+        "World and host contract",
+        "Simulation and media implementations"
+      ],
       "packages": [
         "@forgeax/engine-app",
         "@forgeax/engine-assets-runtime",
@@ -74,19 +78,48 @@
         "reverse-order idempotent cleanup"
       ],
       "evidence": {
-        "frontDoors": ["browser-app", "browser-webgpu", "ecs-world", "execution-report"],
-        "legs": ["semantic", "live", "gpu", "behavioral", "recovery"]
+        "frontDoors": [
+          "browser-app",
+          "browser-webgpu",
+          "ecs-world",
+          "execution-report"
+        ],
+        "legs": [
+          "semantic",
+          "live",
+          "gpu",
+          "behavioral",
+          "recovery"
+        ]
       },
       "oracle": {
-        "stdoutIncludes": ["M12_EXECUTION_POISON_REBUILD_PASS"]
+        "stdoutIncludes": [
+          "M12_EXECUTION_POISON_REBUILD_PASS"
+        ]
       }
     },
     "metrics": {
-      "bundle-size": { "enabled": false, "reason": "Vite app bundle shape is downstream of the tracked App, ECS, Runtime, and RHI package bundles" },
-      "fps": { "enabled": true, "sampleCount": 15, "frameCount": 60 },
-      "bench": { "enabled": false, "reason": "custom Host-frame p95 evidence is an explicit bench:production diagnostic" },
-      "gate": { "enabled": false, "reason": "dedicated CI owns Worker capability, recovery and raw-kernel speedup; bench:production requires stable benchmark conditions" },
-      "spike-report": { "enabled": false, "reason": "production worker-policy consumer, not a spike" }
+      "bundle-size": {
+        "enabled": false,
+        "reason": "Vite app bundle shape is downstream of the tracked App, ECS, Runtime, and RHI package bundles"
+      },
+      "fps": {
+        "enabled": true,
+        "sampleCount": 15,
+        "frameCount": 60
+      },
+      "bench": {
+        "enabled": false,
+        "reason": "custom Host-frame p95 evidence is an explicit bench:production diagnostic"
+      },
+      "gate": {
+        "enabled": false,
+        "reason": "dedicated CI owns Worker capability, recovery and raw-kernel speedup; bench:production requires stable benchmark conditions"
+      },
+      "spike-report": {
+        "enabled": false,
+        "reason": "production worker-policy consumer, not a spike"
+      }
     }
   }
 }

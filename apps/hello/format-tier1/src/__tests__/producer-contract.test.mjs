@@ -22,11 +22,11 @@ test('format-tier1 browser producer owns one canonical entry and refuses unsuppo
   }
   assert.match(source, /parseGltf/);
   assert.match(source, /meshIrToMeshAsset/);
-  assert.match(source, /loadByGuid/);
-  assert.match(source, /loadCanonicalMorph\(assets: RuntimeAssetRegistry\)/);
-  assert.match(source, /configureRuntimeAssetCatalog\(\s*assets,\s*createStandaloneRuntimeAssetBinding\('format-tier1'\)/);
-  assert.match(source, /assets\.loadByGuid<AnimationClip>/);
-  assert.match(source, /baseWeights: loaded\.value\.morphWeights/);
+  assert.match(source, /assets\.load\(/);
+  assert.match(source, /loadCanonicalMorph\(assets: AssetRegistry\)/);
+  assert.match(source, /configureRuntimeAssetCatalog\(assets, runtimeBinding\)/);
+  assert.match(source, /assets\.load\(MORPH_ANIMATION_GUID.value, 'animation-clip'\)/);
+  assert.match(source, /baseWeights: mesh\.morphWeights/);
   assert.match(source, /weights: canonical\.baseWeights\.slice\(\)/);
   assert.match(source, /MeshFilter/);
   assert.match(source, /MeshRenderer/);

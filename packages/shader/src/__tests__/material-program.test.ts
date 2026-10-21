@@ -3,6 +3,64 @@ import * as programs from '../material/program';
 import { ShaderRegistry } from '../ShaderRegistry';
 
 describe('registry-owned material programs', () => {
+  it('adds published entry reads to warmed source facts without rescanning or retaining caller data', () => {
+    const source = 'struct Input { @location(0) pos: vec3f } @vertex fn main(v: Input) {}';
+    const receiving = new ShaderRegistry({ manifestUrl: undefined });
+    const staged = new ShaderRegistry({ manifestUrl: undefined });
+    const reads = [
+      {
+        name: 'main',
+        stage: 'vertex' as const,
+        bindings: [{ group: 1, binding: 0, fields: ['scale'] }],
+      },
+    ];
+    const analyze = vi.spyOn(programs, 'createMaterialShaderProgram');
+    try {
+      const warmed = receiving.materialProgram(source);
+      staged.installMaterialArtifact(
+        'forgeax::published',
+        { source, paramSchema: [], entryPoints: reads },
+        receiving,
+      );
+      const program = staged.findMaterialArtifact('forgeax::published').unwrap().program;
+      expect(program.entryPoints).toEqual(reads);
+      expect(program.vertexInputRequired).toBe(true);
+      expect(program.sampledUserTextureFields).toBe(warmed.sampledUserTextureFields);
+      expect(program.identity).toBe(warmed.identity);
+      expect(analyze).toHaveBeenCalledTimes(1);
+      reads[0]?.bindings[0]?.fields.push('mutated');
+      expect(program.entryPoints?.[0]?.bindings[0]?.fields).toEqual(['scale']);
+      receiving.installMaterialArtifactsFrom(staged);
+      expect(receiving.materialProgram(source)).toBe(program);
+      expect(receiving.forkForDevice({ createShaderModule: vi.fn() }).materialProgram(source)).toBe(
+        program,
+      );
+    } finally {
+      analyze.mockRestore();
+    }
+  });
+
+  it('rejects conflicting entry reads for the same immutable source before publishing a shader', () => {
+    const source = '@vertex fn main() {}';
+    const receiving = new ShaderRegistry({ manifestUrl: undefined });
+    const reads = [{ name: 'main', stage: 'vertex' as const, bindings: [] }];
+    const accepted = receiving.materialProgram(source, reads);
+    const staged = new ShaderRegistry({ manifestUrl: undefined });
+    expect(() =>
+      staged.installMaterialArtifact(
+        'forgeax::conflict',
+        {
+          source,
+          paramSchema: [],
+          entryPoints: [{ name: 'main', stage: 'vertex', bindings: [{ group: 1, binding: 0 }] }],
+        },
+        receiving,
+      ),
+    ).toThrow('entry read contract');
+    expect(staged.findMaterialArtifact('forgeax::conflict').ok).toBe(false);
+    expect(receiving.materialProgram(source)).toBe(accepted);
+  });
+
   it('reuses sampled texture facts while checking each staged schema and exact source', () => {
     const source = `// textureSample(normalTexture, s, uv)
       fn read() { textureSampleLevel(baseColorTexture, s, uv, 0); }

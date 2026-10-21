@@ -1,5 +1,6 @@
-import { HANDLE_CUBE } from '@forgeax/engine-assets-runtime';
+import { AssetRegistry } from '@forgeax/engine-assets-runtime';
 import { World } from '@forgeax/engine-ecs';
+import { createBoxGeometry } from '@forgeax/engine-geometry';
 import { registerPropagateTransforms, Transform } from '@forgeax/engine-scene';
 import { describe, expect, it } from 'vitest';
 import { Camera } from '../components/camera';
@@ -26,11 +27,19 @@ function spawnCamera(world: World): void {
     .unwrap();
 }
 
-function spawnInstancedCube(world: World, entityX: number, instanceX: number) {
+function spawnInstancedCube(
+  world: World,
+  assets: AssetRegistry,
+  entityX: number,
+  instanceX: number,
+) {
   return world
     .spawn(
       { component: Transform, data: { pos: [entityX, 0, 0] } },
-      { component: MeshFilter, data: { assetHandle: HANDLE_CUBE } },
+      {
+        component: MeshFilter,
+        data: { assetHandle: assets.create(createBoxGeometry(1, 1, 1).unwrap()).unwrap() },
+      },
       { component: MeshRenderer, data: {} },
       { component: Instances, data: { transforms: translated(instanceX) } },
     )
@@ -39,50 +48,56 @@ function spawnInstancedCube(world: World, entityX: number, instanceX: number) {
 
 describe('Instances CPU/GPU culling ownership', () => {
   it('keeps an instance visible when the entity origin is outside the camera frustum', () => {
-    const world = new World();
+    const worldAssets = new AssetRegistry();
+    const world = new World({ assets: worldAssets });
     registerPropagateTransforms(world);
     spawnCamera(world);
-    const entity = spawnInstancedCube(world, 20, -20);
+    const entity = spawnInstancedCube(world, worldAssets, 20, -20);
     world.update(0).unwrap();
 
-    const frame = extractFrames([world], 0);
+    const frame = extractFrames([world], 0, worldAssets);
 
     expect(frame.renderables.map((renderable) => renderable.entityKey)).toContain(entity);
     expect(frame.frustumStats).toEqual({ culled: 0, total: 1 });
   });
 
   it('recomputes the union after entity and instance transforms change', () => {
-    const world = new World();
+    const worldAssets = new AssetRegistry();
+    const world = new World({ assets: worldAssets });
     registerPropagateTransforms(world);
     spawnCamera(world);
-    const entity = spawnInstancedCube(world, 20, -20);
+    const entity = spawnInstancedCube(world, worldAssets, 20, -20);
     world.update(0).unwrap();
-    expect(extractFrames([world], 0).renderables).toHaveLength(1);
+    expect(extractFrames([world], 0, worldAssets).renderables).toHaveLength(1);
 
     world.set(entity, Transform, { pos: [40, 0, 0] }).unwrap();
     world.set(entity, Instances, { transforms: translated(-40) }).unwrap();
     world.update(0).unwrap();
 
-    const frame = extractFrames([world], 0);
+    const frame = extractFrames([world], 0, worldAssets);
     expect(frame.renderables).toHaveLength(1);
-    expect(frame.renderables[0]?.instances?.instanceCount).toBe(1);
+    expect(frame.renderables.at(0)?.instances?.instanceCount).toBe(1);
   });
 
   it('does not make an empty instance array visible or feed it to the GPU as one identity instance', () => {
-    const world = new World();
+    const worldAssets = new AssetRegistry();
+    const world = new World({ assets: worldAssets });
     registerPropagateTransforms(world);
     spawnCamera(world);
     const entity = world
       .spawn(
         { component: Transform, data: { pos: [20, 0, 0] } },
-        { component: MeshFilter, data: { assetHandle: HANDLE_CUBE } },
+        {
+          component: MeshFilter,
+          data: { assetHandle: worldAssets.create(createBoxGeometry(1, 1, 1).unwrap()).unwrap() },
+        },
         { component: MeshRenderer, data: {} },
         { component: Instances, data: { transforms: new Float32Array() } },
       )
       .unwrap();
     world.update(0).unwrap();
 
-    const frame = extractFrames([world], 0);
+    const frame = extractFrames([world], 0, worldAssets);
     expect(
       frame.renderables.find((renderable) => renderable.entityKey === entity)?.instances,
     ).toMatchObject({ instanceCount: 0 });

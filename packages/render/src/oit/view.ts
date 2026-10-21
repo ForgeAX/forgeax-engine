@@ -1,7 +1,9 @@
 import type { Transparency } from '../components/camera';
 import { isTransparentLaneMaterial } from '../record/main-pass';
 import type { RenderPipelineTopology } from '../render-pipeline';
-import type { DispatchEntry, RenderableSnapshot } from '../render-system-extract';
+import type { DispatchList, RenderableSnapshot } from '../render-system-extract';
+import type { FrameList } from '../scene/frame-list';
+import type { MaterialFrame } from '../scene/material-dispatch';
 import { FORWARD_PASS_SELECTOR, matchPass } from '../systems/pass-selector';
 import { classifyOitDraw, type OitIneligibleReason } from './eligibility';
 
@@ -46,12 +48,9 @@ export interface TransparencyViewResolution {
 export function resolveTransparencyView(input: {
   readonly requested: Transparency;
   readonly rgba16floatRenderable: boolean;
-  /** Validation and camera projection preserve ascending renderable indices; holes are valid. */
-  readonly rows: readonly {
-    readonly renderableIndex: number;
-    readonly source: Pick<RenderableSnapshot, 'skin' | 'materials' | 'material'>;
-  }[];
-  readonly dispatch: readonly DispatchEntry[];
+  readonly renderables: FrameList<Pick<RenderableSnapshot, 'skin' | 'materials' | 'material'>>;
+  readonly materialFrame: MaterialFrame;
+  readonly dispatch: DispatchList;
 }): TransparencyViewResolution {
   const capabilityAbsent = input.requested === 'weighted-blended' && !input.rgba16floatRenderable;
   const resolved: Transparency = capabilityAbsent ? 'sorted' : input.requested;
@@ -64,24 +63,17 @@ export function resolveTransparencyView(input: {
   let sorted = 0;
   if (input.dispatch.length > 0) {
     for (const entry of input.dispatch) {
-      if (!matchPass(entry.tags, FORWARD_PASS_SELECTOR)) continue;
-      let row = input.rows[entry.renderableIndex];
-      if (row?.renderableIndex !== entry.renderableIndex) {
-        let low = 0;
-        let high = input.rows.length;
-        while (low < high) {
-          const middle = (low + high) >>> 1;
-          const candidate = input.rows[middle] as (typeof input.rows)[number];
-          if (candidate.renderableIndex < entry.renderableIndex) low = middle + 1;
-          else high = middle;
-        }
-        row = input.rows[low];
-      }
-      if (row?.renderableIndex !== entry.renderableIndex) continue;
-      const material =
-        row.source.materials.find(
-          (candidate) => (candidate.materialHandle ?? 0) === entry.materialHandle,
-        ) ?? row.source.material;
+      const row = input.renderables.at(entry.renderableIndex);
+      if (row === undefined || !matchPass(entry.tags, FORWARD_PASS_SELECTOR)) continue;
+      const resource =
+        row.materials.find(
+          (candidate) =>
+            (input.materialFrame.get(candidate)?.snapshot.materialHandle ?? 0) ===
+            entry.materialHandle,
+        ) ?? row.material;
+      const material = input.materialFrame.get(resource)?.snapshot;
+      if (material === undefined)
+        throw new Error('Transparency requires its accepted material frame');
       if (!isTransparentLaneMaterial(material)) continue;
       if (resolved === 'sorted') {
         sorted += 1;
@@ -89,7 +81,7 @@ export function resolveTransparencyView(input: {
       }
       const eligibility = classifyOitDraw({
         materialShaderId: entry.materialShaderId,
-        skinned: row.source.skin !== undefined,
+        skinned: row.skin !== undefined,
         renderState: entry.renderState,
         fragmentEntry: entry.fragmentEntry,
       });

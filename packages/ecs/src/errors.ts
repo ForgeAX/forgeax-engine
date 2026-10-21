@@ -93,15 +93,9 @@ export class SchemaUnsupportedFieldError extends Error {
 
   constructor(fieldName: string, fieldType: string) {
     let hint = 'Supported types: f32 / f64 / i32 / u32 / i16 / u16 / i8 / u8 / bool / enum / ref.';
-    // feat-20260614 M1 / M5: explicit migration hints for the two
-    // retired schema-vocab keyword families. Both renames preserve brand
-    // and storage layout (u32 column); only the keyword + dispatch arm
-    // changed. AI users hitting either literal land directly on the new
-    // keyword instead of grepping for the rename note (charter F1
-    // single-entry indexability).
     if (fieldType.startsWith('handle<') && fieldType.endsWith('>')) {
       const tag = fieldType.slice(7, -1);
-      hint = `'handle<${tag}>' was removed in feat-20260614 M5; use 'shared<${tag}>' instead. The brand and storage layout are unchanged; only the keyword + write-barrier dispatch (SharedRefStore retain/release) is new.`;
+      hint = `Use 'asset<kind>' for managed assets (for example 'asset<mesh>') and 'shared<${tag}>' for shared non-asset resources. AssetRegistry owns asset content; World retains component references.`;
     } else if (fieldType.startsWith('ref<') && fieldType.endsWith('>')) {
       const tag = fieldType.slice(4, -1);
       hint = `'ref<${tag}>' was renamed in feat-20260614 M1; use 'unique<${tag}>' instead. The brand and storage layout are unchanged; the dispatch still routes through UniqueRefStore (single-holder direct release).`;
@@ -399,6 +393,18 @@ export class ChangeEpochExhaustedError extends Error {
   }
 }
 
+export class DerivedWriteActiveError extends Error {
+  override readonly name = 'DerivedWriteActiveError';
+  readonly code = 'derived-write-active' as const;
+  readonly expected =
+    'a completed synchronous derived write before reading changes or starting another writer';
+  readonly hint = 'Finish the active numeric producer, then retry on the same healthy World.';
+  readonly detail = {};
+  constructor() {
+    super('World has an active derived write; its change evidence is not published yet.');
+  }
+}
+
 export class DerivedRangeOutOfBoundsError extends Error {
   override readonly name = 'DerivedRangeOutOfBoundsError';
   readonly code = 'derived-range-out-of-bounds' as const;
@@ -622,59 +628,6 @@ export class SharedRefPayloadInvalidError extends Error {
     this.detail = { target, actual };
   }
 }
-
-/**
- * Returned via `Result.err` when a builtin-tier slot (`slot < BUILTIN_BASE`)
- * is passed to SharedRefStore.alloc / retain / release / resolve
- * (feat-20260614 M6 D-15). The SharedRefStore manages ONLY user-tier slots
- * (`>= BUILTIN_BASE`); builtin asset payloads are process-static and owned by
- * the package that authored their builtin handle, never reference-counted by
- * this World store.
- *
- * `.code = 'builtin-slot-not-owned'`
- * `.detail = { slot }`
- * `.hint` — points the caller back to the builtin handle owner.
- */
-export class BuiltinSlotNotOwnedError extends Error {
-  override readonly name = 'BuiltinSlotNotOwnedError';
-  readonly code = 'builtin-slot-not-owned' as const;
-  readonly hint: string;
-  readonly expected: string;
-  readonly detail: { readonly slot: number };
-
-  constructor(slot: number) {
-    const hint = `Slot ${slot} is a builtin-tier handle (< BUILTIN_BASE). World.sharedRefs manages only user-tier handles (>= BUILTIN_BASE). Obtain the builtin payload from the package that authored the handle; builtin payloads are process-static and never reference-counted by this World.`;
-    const expected = 'user-tier slot (>= BUILTIN_BASE)';
-    super(
-      `SharedRefStore: builtin slot is not owned by this store.\n` +
-        `  code: builtin-slot-not-owned\n` +
-        `  slot: ${slot}\n` +
-        `  expected: ${expected}\n` +
-        `  hint: ${hint}`,
-    );
-    this.hint = hint;
-    this.expected = expected;
-    this.detail = { slot };
-  }
-}
-
-// ────────────────────────────────────────────────────────────────────────────
-// feat-20260623-asset-handle-generation M4 — stale error classes (+2).
-//
-// Two error classes covering gen-based staleness detection in SharedRefStore
-// and UniqueRefStore. Distinguish from the existing `*-ref-released` codes
-// (slot empty / never allocated) — `*-ref-stale` means the slot has been
-// released AND re-allocated, so the caller's handle generation no longer
-// matches the store's current generation. AI users pick different recovery
-// strategies: released -> re-load the asset; stale -> re-acquire the handle
-// from AssetRegistry (charter P3 explicit failure, two semantics two
-// recovery paths).
-//
-// `.detail` carries { slot, expectedGeneration, actualGeneration } aligned
-// with StaleEntityError field names (AC-11). Codes are add-only minor
-// members of EcsErrorCode (AC-10) and detail shapes extend EcsErrorDetail
-// discriminator.
-// ────────────────────────────────────────────────────────────────────────────
 
 /**
  * Returned via `Result.err` when SharedRefStore.resolve / .retain / .release
@@ -995,11 +948,6 @@ export type EcsErrorCode =
   | 'shared-ref-released'
   | 'shared-ref-double-release'
   | 'shared-ref-payload-invalid'
-  // feat-20260614-ecs-shared-component-and-unique-rename M6 D-15 (+1).
-  // SharedRefStore manages ONLY user-tier slots (>= BUILTIN_BASE); a builtin
-  // slot (< BUILTIN_BASE) passed to alloc/retain/release/resolve is a caller
-  // error -> `'builtin-slot-not-owned'` (the authoring package owns the payload).
-  | 'builtin-slot-not-owned'
   // feat-20260623-asset-handle-generation M4 — stale error codes (+2).
   // `'shared-ref-stale'` / `'unique-ref-stale'` cover gen mismatch on resolve /
   // retain / release after slot re-allocation. Add-only minor per AGENTS.md
@@ -1084,8 +1032,8 @@ export type EcsErrorCode =
   // mis-bound reference read back as `0` / `[0,0,0,0]` and rendered blank with
   // no error. `validateComponentDataKeys` only checks key names, not value
   // types — this code closes the value-type gap at all three write entries
-  // (spawn / addComponent / set). AI users resolve a GUID via
-  // `AssetRegistry.load(guid, kind) + allocSharedRef` first; passing the raw GUID now fails fast.
+  // (spawn / addComponent / set). Non-asset values use world.allocSharedRef;
+  // asset<kind> fields bind assets.load/create handles directly.
   // Minor evolution +1 per AGENTS.md §Error model evolution contract.
   | 'shared-field-invalid-value'
   // feat-20260714-bevy-style-system-sets M1 / w3 — sole invalid-SystemSet
@@ -1099,6 +1047,7 @@ export type EcsErrorCode =
   | 'managed-array-invalid-value'
   // In-place numeric array range writes never resize the array.
   | 'array-range-out-of-bounds'
+  | 'derived-write-active'
   | 'shared-kernel-ineligible'
   | 'shared-kernel-failed'
   | 'world-poisoned'
@@ -1143,6 +1092,7 @@ export type EcsErrorDetail =
       readonly actualStructureEpoch: number;
     }
   | { readonly code: 'query-iteration-active' }
+  | { readonly code: 'derived-write-active' }
   | { readonly code: 'change-epoch-exhausted'; readonly epoch: number }
   | { readonly code: 'unique-ref-released'; readonly handle: number; readonly target: string }
   | {
@@ -1349,7 +1299,8 @@ export type EcsErrorDetail =
   // `{ guid }` / `{ kind }` object is not coerced, the fail-fast surfaces it);
   // `.detail.index` is the array element index for the array form (undefined for
   // the scalar form). AI users read `.detail.field` + `.detail.fieldType` to see
-  // which reference needs `AssetRegistry.load(guid, kind) + allocSharedRef` before binding.
+  // whether to allocate a non-asset shared reference or use an asset<kind> field
+  // with the handle returned directly by assets.load/create.
   | {
       readonly code: 'shared-field-invalid-value';
       readonly component: string;

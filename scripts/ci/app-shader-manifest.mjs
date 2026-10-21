@@ -2,6 +2,7 @@
 
 import { existsSync, readFileSync } from 'node:fs';
 import { dirname, isAbsolute, relative, resolve } from 'node:path';
+import { isShaderEntryPointReads } from '@forgeax/engine-types';
 import { SHADER_MANIFEST_PUBLICATION_VERSION } from '../../packages/shader/src/manifest-publication.ts';
 
 export const APP_SHADER_MANIFEST_DELTA = 'forgeax-app-shader-manifest-delta-v1';
@@ -41,30 +42,56 @@ function compactPair(left, right, sourcePath) {
   return result;
 }
 
-function remapReceiptRows(rows, indices) {
+const compactPools = [
+  {
+    table: 'receipts',
+    reference: 'receiptIndex',
+    inline: 'receipt',
+    label: 'receipt',
+    valid: (value) => value !== null && typeof value === 'object' && !Array.isArray(value),
+  },
+  {
+    table: 'entryPoints',
+    reference: 'entryPointsIndex',
+    inline: 'entryPoints',
+    label: 'entry reads',
+    valid: isShaderEntryPointReads,
+  },
+];
+
+function remapPoolRows(rows, indices) {
   return rows.map((row) => {
-    const index = row.receiptIndex;
-    if (
-      index !== undefined &&
-      (!Number.isSafeInteger(index) || index < 0 || indices[index] === undefined)
-    )
-      fail(`compact shader receipt is missing: ${String(index)}`);
+    const references = {};
+    for (const pool of compactPools) {
+      if (Object.hasOwn(row, pool.inline)) fail(`compact shader row has inline ${pool.label}`);
+      if (!Object.hasOwn(row, pool.reference)) continue;
+      const index = row[pool.reference];
+      if (!Number.isSafeInteger(index) || index < 0 || indices[pool.table][index] === undefined)
+        fail(`compact shader ${pool.label} is missing: ${String(index)}`);
+      references[pool.reference] = indices[pool.table][index];
+    }
     return {
       ...row,
-      ...(index === undefined ? {} : { receiptIndex: indices[index] }),
-      ...(Array.isArray(row.variants) ? { variants: remapReceiptRows(row.variants, indices) } : {}),
+      ...references,
+      ...(Array.isArray(row.variants) ? { variants: remapPoolRows(row.variants, indices) } : {}),
     };
   });
 }
 
-function receiptKeys(publication) {
-  if (!Array.isArray(publication.receipts)) fail('compact shader manifest is missing receipts');
-  return publication.receipts.map((receipt, index) => {
-    if (!receipt || typeof receipt !== 'object' || Array.isArray(receipt)) {
-      fail(`compact shader receipt is invalid: ${String(index)}`);
-    }
-    return JSON.stringify(receipt);
-  });
+function poolKeys(publication) {
+  return Object.fromEntries(
+    compactPools.map((pool) => {
+      if (!Array.isArray(publication[pool.table]))
+        fail(`compact shader manifest is missing ${pool.table}`);
+      return [
+        pool.table,
+        publication[pool.table].map((value, index) => {
+          if (!pool.valid(value)) fail(`compact shader ${pool.label} is invalid: ${String(index)}`);
+          return JSON.stringify(value);
+        }),
+      ];
+    }),
+  );
 }
 
 function compactTables(publication, entries, materialShaders) {
@@ -110,29 +137,36 @@ function compactTables(publication, entries, materialShaders) {
       return index;
     });
   }
-  const usedReceipts = new Set(
-    [...entries, ...materialShaders, ...materialShaders.flatMap((row) => row.variants ?? [])]
-      .map((row) => row.receiptIndex)
-      .filter((index) => index !== undefined),
-  );
-  const receipts = [];
-  const receiptIndices = new Map();
-  const indices = receiptKeys(publication).map((key, original) => {
-    if (!usedReceipts.has(original)) return undefined;
-    let index = receiptIndices.get(key);
-    if (index === undefined) {
-      index = receipts.length;
-      receipts.push(publication.receipts[original]);
-      receiptIndices.set(key, index);
-    }
-    return index;
-  });
+  const rows = [
+    ...entries,
+    ...materialShaders,
+    ...materialShaders.flatMap((row) => row.variants ?? []),
+  ];
+  const keys = poolKeys(publication);
+  const tables = {};
+  const indices = {};
+  for (const pool of compactPools) {
+    const used = new Set(rows.map((row) => row[pool.reference]));
+    const values = [];
+    const byKey = new Map();
+    indices[pool.table] = keys[pool.table].map((key, original) => {
+      if (!used.has(original)) return undefined;
+      let index = byKey.get(key);
+      if (index === undefined) {
+        index = values.length;
+        values.push(publication[pool.table][original]);
+        byKey.set(key, index);
+      }
+      return index;
+    });
+    tables[pool.table] = values;
+  }
   return {
     fragments,
     sources,
-    receipts,
-    entries: remapReceiptRows(entries, indices),
-    materialShaders: remapReceiptRows(materialShaders, indices),
+    ...tables,
+    entries: remapPoolRows(entries, indices),
+    materialShaders: remapPoolRows(materialShaders, indices),
   };
 }
 
@@ -163,8 +197,7 @@ export function readSharedShaderManifest(root, requestedManifest) {
   const wrapper = readJson(manifestPath, 'shared app input manifest');
   const sourceRelative = wrapper?.payload?.engineShaderManifest;
   if (
-    wrapper?.schemaVersion !== 1 ||
-    wrapper?.producer !== 'shared-app-inputs' ||
+    !['repo-build-inputs', 'shared-app-inputs'].includes(wrapper?.producer) ||
     typeof sourceRelative !== 'string'
   ) {
     fail(`shared app input manifest has incompatible producer metadata: ${manifestPath}`);
@@ -172,7 +205,7 @@ export function readSharedShaderManifest(root, requestedManifest) {
 
   const sourceCandidates = [
     resolve(root, sourceRelative),
-    resolve(dirname(manifestPath), sourceRelative.replace(/^shared-app-inputs\//, '')),
+    resolve(dirname(manifestPath), 'shaders/manifest.json'),
   ].filter((path, index, paths) => isWithinRoot(root, path) && paths.indexOf(path) === index);
   const sourcePath = sourceCandidates.find((path) => existsSync(path));
   if (sourcePath === undefined) {
@@ -212,23 +245,39 @@ export function projectAppShaderManifest(appManifest, sharedManifest, sourcePath
     'shared engine shader manifest',
     'materialShaders',
   );
-  const sharedHashes = new Set(sharedEntries.map((entry) => entry?.hash));
-  // Receipt indices belong to each publication's pool. Compare the receipt
-  // facts so a reordered pool cannot turn an unchanged engine row into a delta.
-  const sharedRows = compact
-    ? remapReceiptRows(sharedMaterialShaders, receiptKeys(sharedManifest))
-    : sharedMaterialShaders;
-  const appRows = compact
-    ? remapReceiptRows(appMaterialShaders, receiptKeys(appManifest))
-    : appMaterialShaders;
+  // Compare exact pooled facts using shared integer tokens. Expanding entry-read
+  // JSON into every variant would recreate the duplication the publication removes.
+  const facts = Object.fromEntries(compactPools.map((pool) => [pool.table, new Map()]));
+  const comparableRows = (publication, entries, materials) => {
+    if (!compact) return { entries, materials };
+    const indices = poolKeys(publication);
+    for (const pool of compactPools) {
+      const byKey = facts[pool.table];
+      indices[pool.table] = indices[pool.table].map((key) => {
+        if (!byKey.has(key)) byKey.set(key, byKey.size);
+        return byKey.get(key);
+      });
+    }
+    return {
+      entries: remapPoolRows(entries, indices),
+      materials: remapPoolRows(materials, indices),
+    };
+  };
+  const sharedRows = comparableRows(sharedManifest, sharedEntries, sharedMaterialShaders);
+  const appRows = comparableRows(appManifest, appEntries, appMaterialShaders);
+  const sharedEntryRows = new Map(
+    sharedRows.entries.map((entry) => [entry?.hash, JSON.stringify(entry)]),
+  );
   const sharedMaterialRows = new Map(
-    sharedRows.map((entry) => [materialShaderKey(entry), JSON.stringify(entry)]),
+    sharedRows.materials.map((entry) => [materialShaderKey(entry), JSON.stringify(entry)]),
   );
 
-  const entries = appEntries.filter((entry) => !sharedHashes.has(entry?.hash));
+  const entries = appEntries.filter(
+    (entry, index) => JSON.stringify(appRows.entries[index]) !== sharedEntryRows.get(entry?.hash),
+  );
   const materialShaders = appMaterialShaders.filter(
     (entry, index) =>
-      JSON.stringify(appRows[index]) !== sharedMaterialRows.get(materialShaderKey(entry)),
+      JSON.stringify(appRows.materials[index]) !== sharedMaterialRows.get(materialShaderKey(entry)),
   );
   return {
     forgeaxTransport: APP_SHADER_MANIFEST_DELTA,
@@ -264,18 +313,30 @@ export function mergeAppShaderManifest(sharedManifest, deltaManifest, sourcePath
     'shared engine shader manifest',
     'materialShaders',
   );
-  const sharedReceiptCount = compact ? receiptKeys(sharedManifest).length : 0;
-  const receiptOffsets = compact
-    ? receiptKeys(deltaManifest).map((_, index) => index + sharedReceiptCount)
-    : [];
-  const entriesByHash = new Map(sharedEntries.map((entry) => [entry?.hash, entry]));
-  for (const entry of compact ? remapReceiptRows(deltaEntries, receiptOffsets) : deltaEntries)
+  const sharedIndices = compact ? poolKeys(sharedManifest) : {};
+  const deltaIndices = compact ? poolKeys(deltaManifest) : {};
+  if (compact) {
+    for (const pool of compactPools) {
+      const count = sharedIndices[pool.table].length;
+      sharedIndices[pool.table] = sharedIndices[pool.table].map((_, index) => index);
+      deltaIndices[pool.table] = deltaIndices[pool.table].map((_, index) => index + count);
+    }
+  }
+  const entriesByHash = new Map(
+    (compact ? remapPoolRows(sharedEntries, sharedIndices) : sharedEntries).map((entry) => [
+      entry?.hash,
+      entry,
+    ]),
+  );
+  for (const entry of compact ? remapPoolRows(deltaEntries, deltaIndices) : deltaEntries)
     entriesByHash.set(entry?.hash, entry);
   const materialShadersByKey = new Map(
-    sharedMaterialShaders.map((entry) => [materialShaderKey(entry), entry]),
+    (compact ? remapPoolRows(sharedMaterialShaders, sharedIndices) : sharedMaterialShaders).map(
+      (entry) => [materialShaderKey(entry), entry],
+    ),
   );
   for (const entry of compact
-    ? remapReceiptRows(deltaMaterialShaders, receiptOffsets)
+    ? remapPoolRows(deltaMaterialShaders, deltaIndices)
     : deltaMaterialShaders)
     materialShadersByKey.set(materialShaderKey(entry), entry);
 
@@ -295,13 +356,22 @@ export function mergeAppShaderManifest(sharedManifest, deltaManifest, sourcePath
     const mergedSources = { ...sharedManifest.sources };
     for (const [digest, indices] of Object.entries(deltaManifest.sources)) {
       if (!Array.isArray(indices)) fail(`compact app shader delta has invalid source: ${digest}`);
-      mergedSources[digest] = indices.map((index) => index + sharedManifest.fragments.length);
+      mergedSources[digest] = indices.map((index) => {
+        if (
+          !Number.isSafeInteger(index) ||
+          index < 0 ||
+          typeof deltaManifest.fragments[index] !== 'string'
+        )
+          fail(`compact app shader delta has invalid source fragment: ${digest}`);
+        return index + sharedManifest.fragments.length;
+      });
     }
     sources = compactTables(
       {
         fragments,
         sources: mergedSources,
         receipts: [...sharedManifest.receipts, ...deltaManifest.receipts],
+        entryPoints: [...sharedManifest.entryPoints, ...deltaManifest.entryPoints],
       },
       entries,
       materialShaders,

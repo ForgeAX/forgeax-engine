@@ -176,7 +176,7 @@ export const texturePreview = defineTool(subjectDescriptor('texture'), (args, co
   if (!host.ok) return host;
   return host.value.withSession(async (mechanisms) =>
     executeTexturePreview(args, {
-      ...(mechanisms.assets === undefined ? {} : { assets: mechanisms.assets }),
+      ...(mechanisms.subject === undefined ? {} : { subject: mechanisms.subject }),
       ...(mechanisms.renderer === undefined ? {} : { renderer: mechanisms.renderer }),
       runId: mechanisms.runId,
       ...(mechanisms.artifacts === undefined ? {} : { artifacts: mechanisms.artifacts }),

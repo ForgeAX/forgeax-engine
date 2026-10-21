@@ -1,14 +1,23 @@
+import { AssetRegistry } from '@forgeax/engine-assets-runtime';
 import { createBrowserPlatform } from '@forgeax/engine/platform-browser';
-import { configureRuntimeAssetCatalog, runtimeBinding } from '@forgeax/apps-shared/asset-runtime-config';
+import {
+  configureRuntimeAssetCatalog,
+  runtimeBinding,
+} from '@forgeax/apps-shared/asset-runtime-config';
 import { createApp } from '@forgeax/engine-app';
 import { FixedUpdate, FixedTime, World, type EntityHandle } from '@forgeax/engine-ecs';
-import { HANDLE_CUBE, HANDLE_CYLINDER, HANDLE_SPHERE } from '@forgeax/engine-assets-runtime';
+
 import { mat4, quat, vec3 } from '@forgeax/engine-math';
-import { Camera, DirectionalLight, MeshFilter, MeshRenderer, PointLight, Skylight } from '@forgeax/engine-render';
+import {
+  Camera,
+  DirectionalLight,
+  MeshFilter,
+  MeshRenderer,
+  PointLight,
+  Skylight,
+} from '@forgeax/engine-render';
 import { constructRuntimeRendererHost } from '@forgeax/engine-runtime/internal/renderer-host';
 import { GlobalTransform, Transform, scenePlugin } from '@forgeax/engine-scene';
-import type { AssetRegistry } from '@forgeax/engine-assets-runtime';
-import type { MaterialAsset } from '@forgeax/engine-types';
 import {
   loadVfxGpuEffect,
   ParticleEffectPlayer,
@@ -19,6 +28,8 @@ import {
 import { createVfxRuntimeHost } from '@forgeax/engine-vfx-render';
 import { forgeaxBundlerAdapter } from 'virtual:forgeax/bundler';
 import { CinderFallCast, type CinderFallPhase } from './cast.js';
+
+import { createPrimitiveMesh } from '@forgeax/engine/geometry';
 
 const EFFECT_GUID = 'c1de0000-0000-7000-8000-000000000000';
 const STANDARD_MATERIAL_GUID = 'c1de0000-0000-7000-8000-000000000001';
@@ -86,9 +97,14 @@ function cameraSource() {
 }
 
 async function loadMaterial(world: World, assets: AssetRegistry, guid: string) {
-  const loaded = await assets.loadByGuid<MaterialAsset>(assets.parseGuid(guid));
-  if (!loaded.ok) throw new Error(`hello-cinder-fall: material ${guid} failed: ${String(loaded.error)}`);
-  return world.allocSharedRef('MaterialAsset', loaded.value);
+  const sceneAssets = world.assets;
+  if (!(sceneAssets instanceof AssetRegistry))
+    throw new Error('Scene requires its runtime asset owner');
+
+  const loaded = await assets.load(assets.parseGuid(guid), 'material');
+  if (!loaded.ok)
+    throw new Error(`hello-cinder-fall: material ${guid} failed: ${String(loaded.error)}`);
+  return loaded.value;
 }
 
 function phaseEffects(phase: CinderFallPhase, elapsed: number): readonly string[] {
@@ -110,21 +126,6 @@ function phaseEffects(phase: CinderFallPhase, elapsed: number): readonly string[
 }
 
 async function bootstrap(): Promise<void> {
-  const world = new World({ time: { fixedDeltaSeconds: 1 / 60, maxStepsPerUpdate: 4 } });
-  const camera = world.spawn(
-    { component: Transform, data: { pos: CAMERA_POSITION, quat: CAMERA_QUAT } },
-    {
-      component: Camera,
-      data: {
-        fov: Math.PI / 3,
-        aspect: targetCanvas.width / targetCanvas.height,
-        near: 0.1,
-        far: 100,
-        clearColor: [0.012, 0.018, 0.032, 1],
-      },
-    },
-  ).unwrap();
-  cameraEntities.set(world, camera);
   const host = createVfxRuntimeHost({
     camera: cameraSource(),
     // Camera/depth/noise are supplied by the renderer's prepared generation
@@ -133,15 +134,47 @@ async function bootstrap(): Promise<void> {
     // renderer-owned resources at plan time.
     providers: [],
   });
-  const constructed = await constructRuntimeRendererHost(targetCanvas, { features: [host.feature] }, forgeaxBundlerAdapter());
+  const constructed = await constructRuntimeRendererHost(
+    targetCanvas,
+    { features: [host.feature] },
+    forgeaxBundlerAdapter(),
+  );
   if (!constructed.ok) throw constructed.error;
   const { renderer, assets } = constructed.value;
+  const world = new World({ assets, time: { fixedDeltaSeconds: 1 / 60, maxStepsPerUpdate: 4 } });
+  const sceneAssets = world.assets;
+  if (!(sceneAssets instanceof AssetRegistry))
+    throw new Error('Scene requires its runtime asset owner');
+
+  const primitiveSphere = sceneAssets.create(createPrimitiveMesh('sphere').unwrap()).unwrap();
+
+  const primitiveCube = sceneAssets.create(createPrimitiveMesh('cube').unwrap()).unwrap();
+
+  const primitiveCylinder = sceneAssets.create(createPrimitiveMesh('cylinder').unwrap()).unwrap();
+
+  const camera = world
+    .spawn(
+      { component: Transform, data: { pos: CAMERA_POSITION, quat: CAMERA_QUAT } },
+      {
+        component: Camera,
+        data: {
+          fov: Math.PI / 3,
+          aspect: targetCanvas.width / targetCanvas.height,
+          near: 0.1,
+          far: 100,
+          clearColor: [0.012, 0.018, 0.032, 1],
+        },
+      },
+    )
+    .unwrap();
+  cameraEntities.set(world, camera);
   configureRuntimeAssetCatalog(assets, runtimeBinding);
   const leaseResult = renderer.attach(world);
   if (!leaseResult.ok) throw leaseResult.error;
   const lease = leaseResult.value;
   const attached = await host.attachWorld({ world, assets });
-  if (!attached.ok) throw new Error(`hello-cinder-fall: VFX host attach failed: ${attached.error.hint}`);
+  if (!attached.ok)
+    throw new Error(`hello-cinder-fall: VFX host attach failed: ${attached.error.hint}`);
 
   const [standard, additive, alpha, platformMaterial, scorchMaterial] = await Promise.all([
     loadMaterial(world, assets, STANDARD_MATERIAL_GUID),
@@ -150,34 +183,52 @@ async function bootstrap(): Promise<void> {
     loadMaterial(world, assets, PLATFORM_MATERIAL_GUID),
     loadMaterial(world, assets, SCORCH_MATERIAL_GUID),
   ]);
-  const meteor = world.spawn(
-    { component: Transform, data: { pos: [0, 8, 0], quat: METEOR_QUAT, scale: [0.5, 0.68, 0.5] } },
-    { component: MeshFilter, data: { assetHandle: HANDLE_SPHERE } },
-    { component: MeshRenderer, data: { materials: [standard] } },
-  ).unwrap();
-  world.spawn(
-    { component: Transform, data: { pos: [0, -0.12, 0], scale: [4.5, 0.1, 4.5] } },
-    { component: MeshFilter, data: { assetHandle: HANDLE_CUBE } },
-    { component: MeshRenderer, data: { materials: [platformMaterial] } },
-  ).unwrap();
+  const meteor = world
+    .spawn(
+      {
+        component: Transform,
+        data: { pos: [0, 8, 0], quat: METEOR_QUAT, scale: [0.5, 0.68, 0.5] },
+      },
+      { component: MeshFilter, data: { assetHandle: primitiveSphere } },
+      { component: MeshRenderer, data: { materials: [standard] } },
+    )
+    .unwrap();
+  world
+    .spawn(
+      { component: Transform, data: { pos: [0, -0.12, 0], scale: [4.5, 0.1, 4.5] } },
+      { component: MeshFilter, data: { assetHandle: primitiveCube } },
+      { component: MeshRenderer, data: { materials: [platformMaterial] } },
+    )
+    .unwrap();
   // A single ordinary scene-mesh proxy anchors the long-lived burn. It is
   // intentionally separate from the particle layer: no decal or second VFX
   // path is needed for a flat, world-aligned scorch mark.
-  const scorch = world.spawn(
-    { component: Transform, data: { pos: [0, -100, 0], scale: [0.35, 0.025, 0.35] } },
-    { component: MeshFilter, data: { assetHandle: HANDLE_CYLINDER } },
-    { component: MeshRenderer, data: { materials: [scorchMaterial] } },
-  ).unwrap();
-  world.spawn({
-    component: DirectionalLight,
-    data: { direction: [-0.4, -0.8, -0.5], color: [1, 0.68, 0.42], intensity: 2.2, castShadow: true },
-  }).unwrap();
+  const scorch = world
+    .spawn(
+      { component: Transform, data: { pos: [0, -100, 0], scale: [0.35, 0.025, 0.35] } },
+      { component: MeshFilter, data: { assetHandle: primitiveCylinder } },
+      { component: MeshRenderer, data: { materials: [scorchMaterial] } },
+    )
+    .unwrap();
+  world
+    .spawn({
+      component: DirectionalLight,
+      data: {
+        direction: [-0.4, -0.8, -0.5],
+        color: [1, 0.68, 0.42],
+        intensity: 2.2,
+        castShadow: true,
+      },
+    })
+    .unwrap();
   // A small warm ambient floor keeps the standard scene mesh from collapsing
   // to a flat red silhouette while leaving the point light as the impact cue.
-  world.spawn({
-    component: Skylight,
-    data: { color: [0.06, 0.08, 0.14], intensity: 0.72 },
-  }).unwrap();
+  world
+    .spawn({
+      component: Skylight,
+      data: { color: [0.06, 0.08, 0.14], intensity: 0.72 },
+    })
+    .unwrap();
   // One warm, bounded light follows the gameplay meteor. This keeps the
   // authored mesh and GPU wake in the same lighting story without adding a
   // second presentation system or an unbounded bloom source.
@@ -193,22 +244,33 @@ async function bootstrap(): Promise<void> {
 
   const loaded = await loadVfxGpuEffect(assets, EFFECT_GUID);
   if (!loaded.ok) throw new Error(`hello-cinder-fall: GPU effect failed: ${String(loaded.error)}`);
-  const effect = world.allocSharedRef('ParticleEffectAsset', loaded.value);
-  const player = world.spawn(
-    { component: Transform, data: { pos: [0, 0, 0] } },
-    { component: ParticleEffectPlayer, data: { effect, playing: true, seed: cast.snapshot().seed, timeScale: 1 } },
-  ).unwrap();
+  const effect = loaded.value;
+  const player = world
+    .spawn(
+      { component: Transform, data: { pos: [0, 0, 0] } },
+      {
+        component: ParticleEffectPlayer,
+        data: { effect, playing: true, seed: cast.snapshot().seed, timeScale: 1 },
+      },
+    )
+    .unwrap();
   const controlResult = host.acquireControl(world);
-  if (!controlResult.ok) throw new Error(`hello-cinder-fall: control failed: ${controlResult.error.hint}`);
+  if (!controlResult.ok)
+    throw new Error(`hello-cinder-fall: control failed: ${controlResult.error.hint}`);
   const control = controlResult.value;
   let initialParametersPatched = false;
   let impactChannelSubmitted = false;
   const setPhase = (phase: CinderFallPhase): void => {
     const snapshot = cast.snapshot();
     const active = new Set(phaseEffects(phase, snapshot.elapsed));
-    for (const emitter of loaded.value.program.emitters) {
-      const result = control.setEmitterSessionEnabled({ player, emitterId: emitter.id, enabled: active.has(emitter.id) });
-      if (!result.ok) throw new Error(`hello-cinder-fall: phase control failed: ${result.error.hint}`);
+    for (const emitter of assets.read(loaded.value).unwrap().program.emitters) {
+      const result = control.setEmitterSessionEnabled({
+        player,
+        emitterId: emitter.id,
+        enabled: active.has(emitter.id),
+      });
+      if (!result.ok)
+        throw new Error(`hello-cinder-fall: phase control failed: ${result.error.hint}`);
     }
     const amount = Math.min(1, snapshot.elapsed / 1.5);
     // The scene mesh is the travel actor, not the impact actor. Retiring it at
@@ -219,15 +281,29 @@ async function bootstrap(): Promise<void> {
       ? [0, 0.68 + 7.32 * (1 - amount), 0]
       : [0, -100, 0];
     const transform = world.get(meteor, Transform);
-    if (transform.ok) world.set(meteor, Transform, { ...transform.value, pos: meteorPosition }).unwrap();
+    if (transform.ok)
+      world.set(meteor, Transform, { ...transform.value, pos: meteorPosition }).unwrap();
     const lightTransform = world.get(meteorLight, Transform);
     if (lightTransform.ok) {
-      world.set(meteorLight, Transform, { ...lightTransform.value, pos: meteorVisible ? meteorPosition : [0, 0.05, 0] }).unwrap();
+      world
+        .set(meteorLight, Transform, {
+          ...lightTransform.value,
+          pos: meteorVisible ? meteorPosition : [0, 0.05, 0],
+        })
+        .unwrap();
     }
     const light = world.get(meteorLight, PointLight);
     if (light.ok) {
       const lightIntensity =
-          phase === 'impact' ? 18 : phase === 'burn' ? 0.18 : phase === 'fade' ? 0.05 : phase === 'complete' ? 0 : 7;
+        phase === 'impact'
+          ? 18
+          : phase === 'burn'
+            ? 0.18
+            : phase === 'fade'
+              ? 0.05
+              : phase === 'complete'
+                ? 0
+                : 7;
       world.set(meteorLight, PointLight, { ...light.value, intensity: lightIntensity }).unwrap();
     }
     const scorchVisible = phase !== 'release' && phase !== 'mid-travel' && phase !== 'complete';
@@ -241,11 +317,13 @@ async function bootstrap(): Promise<void> {
             : phase === 'fade'
               ? 0.96
               : 0;
-      world.set(scorch, Transform, {
-        ...scorchTransform.value,
-        pos: scorchVisible ? [0, -0.058, 0] : [0, -100, 0],
-        scale: [scorchScale, 0.012, scorchScale],
-      }).unwrap();
+      world
+        .set(scorch, Transform, {
+          ...scorchTransform.value,
+          pos: scorchVisible ? [0, -0.058, 0] : [0, -100, 0],
+          scale: [scorchScale, 0.012, scorchScale],
+        })
+        .unwrap();
     }
     if (snapshot.impactCount > 0 && !impactChannelSubmitted) {
       const anchor = snapshot.impactAnchor ?? cast.target;
@@ -253,37 +331,61 @@ async function bootstrap(): Promise<void> {
         player,
         values: { targetPosition: anchor },
       });
-      if (!patched.ok) throw new Error(`hello-cinder-fall: impact parameters failed: ${patched.error.hint}`);
+      if (!patched.ok)
+        throw new Error(`hello-cinder-fall: impact parameters failed: ${patched.error.hint}`);
       const submitted = control.submitChannel({
         player,
         channel: 'impact',
         payload: { position: [0, 0, 0], strength: 1 },
         sequence: 1,
       });
-      if (!submitted.ok) throw new Error(`hello-cinder-fall: impact channel failed: ${submitted.error.hint}`);
+      if (!submitted.ok)
+        throw new Error(`hello-cinder-fall: impact channel failed: ${submitted.error.hint}`);
       impactChannelSubmitted = true;
     }
     const runtime = world.getResource<VfxGpuRuntime>(VFX_GPU_RUNTIME_RESOURCE_KEY);
-    targetStatus.textContent = JSON.stringify({ ...snapshot, renderer: 'engine.vfx-render', gpu: runtime.inspectPlayers() }, null, 2);
+    targetStatus.textContent = JSON.stringify(
+      { ...snapshot, renderer: 'engine.vfx-render', gpu: runtime.inspectPlayers() },
+      null,
+      2,
+    );
   };
-  world.addSystem(FixedUpdate, {
-    name: 'cinder-fall-gameplay',
-    queries: [],
-    fn: (world) => {
-      if (!initialParametersPatched) {
-        const patched = control.patchPlayerParameters({
-          player,
-          values: { intensity: 1, targetPosition: cast.target },
-        });
-        if (!patched.ok) throw new Error(`hello-cinder-fall: initial parameters failed: ${patched.error.hint}`);
-        initialParametersPatched = true;
-      }
-      setPhase(cast.advanceFixed(world.getResource(FixedTime).delta).phase);
-    },
-  }).unwrap();
+  world
+    .addSystem(FixedUpdate, {
+      name: 'cinder-fall-gameplay',
+      queries: [],
+      fn: (world) => {
+        if (!initialParametersPatched) {
+          const patched = control.patchPlayerParameters({
+            player,
+            values: { intensity: 1, targetPosition: cast.target },
+          });
+          if (!patched.ok)
+            throw new Error(`hello-cinder-fall: initial parameters failed: ${patched.error.hint}`);
+          initialParametersPatched = true;
+        }
+        setPhase(cast.advanceFixed(world.getResource(FixedTime).delta).phase);
+      },
+    })
+    .unwrap();
   const platform = createBrowserPlatform(targetCanvas).unwrap();
-  const appResult = await createApp({ platform,  renderer, assets, world, plugins: [{ name: 'browser-platform', apply(ctx) { ctx.effect(() => () => platform.dispose()); } }, scenePlugin()] });
-  if (!appResult.ok) throw new Error(`hello-cinder-fall: app assembly failed: ${appResult.error.hint}`);
+  const appResult = await createApp({
+    platform,
+    renderer,
+    assets,
+    world,
+    plugins: [
+      {
+        name: 'browser-platform',
+        apply(ctx) {
+          ctx.effect(() => () => platform.dispose());
+        },
+      },
+      scenePlugin(),
+    ],
+  });
+  if (!appResult.ok)
+    throw new Error(`hello-cinder-fall: app assembly failed: ${appResult.error.hint}`);
   const app = appResult.value;
   app.start();
   setPhase(cast.snapshot().phase);
@@ -332,7 +434,11 @@ async function bootstrap(): Promise<void> {
       // callers still use the same public App.stepFrame path.
       await new Promise((resolve) => setTimeout(resolve, 20));
     }
-    return { ok: true, frames, status: { snapshot: cast.snapshot(), inspect: host.inspect(world) } };
+    return {
+      ok: true,
+      frames,
+      status: { snapshot: cast.snapshot(), inspect: host.inspect(world) },
+    };
   };
   Object.assign(globalThis, {
     __forgeaxCinderFall: {
@@ -350,14 +456,19 @@ async function bootstrap(): Promise<void> {
       step,
       patchParameters: (values: Partial<VfxValueMap>) =>
         control.patchPlayerParameters({ player, values }),
-      submitChannel: (input: { channel: string; payload: { position: [number, number, number]; strength: number }; sequence: number }) =>
-        control.submitChannel({ player, ...input }),
+      submitChannel: (input: {
+        channel: string;
+        payload: { position: [number, number, number]; strength: number };
+        sequence: number;
+      }) => control.submitChannel({ player, ...input }),
       dispose,
     },
   });
 }
 
 void bootstrap().catch((error: unknown) => {
-  targetStatus.textContent = String(error instanceof Error ? error.stack ?? error.message : error);
+  targetStatus.textContent = String(
+    error instanceof Error ? (error.stack ?? error.message) : error,
+  );
   console.error('[hello-cinder-fall] bootstrap failed', error);
 });

@@ -18,6 +18,10 @@ import { Update } from '@forgeax/engine-ecs';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { emitSmokeReceipt } from '../../../../shared/scripts/smoke-receipt.mjs';
+import { AssetRegistry } from '@forgeax/engine-assets-runtime';
+
+import { createPrimitiveMesh } from '@forgeax/engine-geometry';
+
 
 const SMOKE_MIN_FRAMES = Number.parseInt(process.env.SMOKE_MIN_FRAMES ?? '60', 10);
 const SMOKE_PIXEL_THRESHOLD = Number.parseFloat(process.env.SMOKE_PIXEL_THRESHOLD ?? '0.05');
@@ -139,9 +143,7 @@ const { PointLight } = await import('@forgeax/engine-render');
 const { constructRuntimeRendererHost } = await import('@forgeax/engine-runtime/internal/renderer-host');
 const { MeshFilter } = await import('@forgeax/engine-render');
 const { Transform } = await import('@forgeax/engine-scene');
-const {
-  HANDLE_CUBE,
-} = await import('@forgeax/engine-assets-runtime');
+
 
 const { buildEngineShaderManifest } = await import(
   '@forgeax/engine-vite-plugin-shader'
@@ -179,7 +181,12 @@ const errors = [];
 renderer.subscribe((event) => { if (event.kind === 'error') errors.push({ code: event.error.code, hint: event.error.hint }); });
 
 
-const world = new World();
+const world = new World({ assets: assets });
+const sceneAssets = world.assets;
+if (!(sceneAssets instanceof AssetRegistry)) throw new Error('Scene requires its runtime asset owner');
+
+const primitiveCube = sceneAssets.create(createPrimitiveMesh('cube').unwrap()).unwrap();
+
 const worldAttachment1 = renderer.attach(world);
 if (!worldAttachment1.ok) throw worldAttachment1.error;
 const lease = worldAttachment1.value;
@@ -189,13 +196,13 @@ const lease = worldAttachment1.value;
 // feat-20260614 M8 (D-15/D-17): pass-based MaterialAsset minted via allocSharedRef.
 const objectBaseColor = [1.0, 0.5, 0.31, 1.0];
 
-const objectMatHandle = world.allocSharedRef('MaterialAsset', Materials.standard({
+const objectMatHandle = world.assets.create(Materials.standard({
   baseColor: objectBaseColor,
   metallic: OBJECT_METALLIC,
   roughness: 0.3,
-}));
+})).unwrap();
 
-const lampMatHandle = world.allocSharedRef('MaterialAsset', Materials.unlit([1.0, 1.0, 1.0, 1.0]));
+const lampMatHandle = world.assets.create(Materials.unlit([1.0, 1.0, 1.0, 1.0])).unwrap();
 
 // Spawn the object cube at origin (LO: model = identity).
 world
@@ -205,7 +212,7 @@ world
       data: {
         pos: [0, 0, 0], quat: [0, 0, 0, 1], scale: [1, 1, 1],},
     },
-    { component: MeshFilter, data: { assetHandle: HANDLE_CUBE } },
+    { component: MeshFilter, data: { assetHandle: primitiveCube } },
     { component: MeshRenderer, data: { materials: [objectMatHandle] } },
   )
   .unwrap();
@@ -224,14 +231,14 @@ const lightEntity = FALSIFY_NO_LIGHT
   ? world
       .spawn(
         lamp,
-        { component: MeshFilter, data: { assetHandle: HANDLE_CUBE } },
+        { component: MeshFilter, data: { assetHandle: primitiveCube } },
         { component: MeshRenderer, data: { materials: [lampMatHandle] } },
       )
       .unwrap()
   : world
       .spawn(
         lamp,
-        { component: MeshFilter, data: { assetHandle: HANDLE_CUBE } },
+        { component: MeshFilter, data: { assetHandle: primitiveCube } },
         { component: MeshRenderer, data: { materials: [lampMatHandle] } },
         {
           component: PointLight,

@@ -86,9 +86,9 @@ app.onError((error) => errors.push(error));
 const guid = AssetGuid.parse(hdrGuid);
 if (!guid.ok) { console.error(`[smoke] GUID parse failed: ${guid.error.code}`); process.exit(1); }
 app.assets.configurePackIndex('/pack-index.json');
-const hdr = await app.assets.loadByGuid(guid.value);
+const hdr = await app.assets.load(guid.value, 'equirect');
 if (!hdr.ok) { console.error(`[smoke] HDR load failed: ${hdr.error.code}`); process.exit(1); }
-const equirect = app.world.allocSharedRef('EquirectAsset', hdr.value);
+const equirect = hdr.value;
 const scene = buildEnvironmentWorld(app.world, equirect, width / height);
 let latestAngle = 0;
 app.world.addSystem(Update, { name: 'smoke-rotate-environment', queries: [], fn: (world) => { latestAngle = stepEnvironmentRotation(world, scene, world.getResource(Time).elapsed); } });

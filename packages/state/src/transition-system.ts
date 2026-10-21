@@ -20,17 +20,12 @@
 // - research F-6: row iteration + world.despawn is sufficient
 // - requirements sec 7: despawn tolerance (entity already dead = no error)
 
-import type { Component, EntityHandle, World } from '@forgeax/engine-ecs';
+import type { EntityHandle, World } from '@forgeax/engine-ecs';
 import { worldDespawnScene } from '@forgeax/engine-scene';
 import { getRegisteredTokens } from './define-state';
 import { getCallbacks, OnEnter, OnExit } from './on-enter-on-exit';
-import {
-  type NextStatePayload,
-  nextStateResourceKey,
-  previousStateResourceKey,
-  stateResourceKey,
-} from './resources';
-import { SCOPED_MODE_VALUE } from './scoped-component';
+import { type StatePayload, stateResourceKey } from './resources';
+import { getScopedComponent, SCOPED_MODE_VALUE } from './scoped-component';
 
 /**
  * Collect entities whose ScopedTo component matches a given mode and value,
@@ -47,7 +42,12 @@ import { SCOPED_MODE_VALUE } from './scoped-component';
  * `hierarchy-broken` every frame. Cascading via `despawnScene` removes the whole
  * instantiated subtree so nothing is left pointing at the dead root.
  */
-function scopeDespawn(world: World, scopedComponent: Component, mode: number, value: number): void {
+function scopeDespawn(
+  world: World,
+  scopedComponent: ReturnType<typeof getScopedComponent>,
+  mode: number,
+  value: number,
+): void {
   const query = world.query({ read: [scopedComponent] }).unwrap();
   const despawns: EntityHandle[] = [];
   for (const row of query) {
@@ -78,38 +78,26 @@ function scopeDespawn(world: World, scopedComponent: Component, mode: number, va
 
 export function transitionStatesSystem(world: World): void {
   for (const token of getRegisteredTokens().values()) {
-    const nsKey = nextStateResourceKey(token);
-
-    // (0) Skip tokens with no Resources yet. getRegisteredTokens() returns every
-    // token ever defined, but registerStatesPlugin only inserts Resources for
-    // tokens known at plugin time. A token defined after the plugin ran has no
-    // NextState Resource; world.getResource would throw ResourceNotFoundError.
-    // hasResource guard mirrors setNextState / getState in this package.
-    if (!world.hasResource(nsKey)) continue;
-    const ns = world.getResource<NextStatePayload | undefined>(nsKey);
-
-    // (1) No pending transition — zero-cost continue
+    const key = stateResourceKey(token);
+    if (!world.hasResource(key)) continue;
+    const state = world.getResource<StatePayload>(key);
+    const ns = state.next;
     if (ns === undefined) continue;
-
-    const sKey = stateResourceKey(token);
-    const prevIdx = world.getResource<number>(sKey);
+    const prevIdx = state.current;
     const nextIdx = ns.value;
     const force = ns.force;
 
     // (2) Same-state no-op (unless force flag overrides)
     if (prevIdx === nextIdx && !force) {
-      world.insertResource<NextStatePayload | undefined>(nsKey, undefined);
+      world.insertResource<StatePayload>(key, { ...state, next: undefined });
       continue;
     }
 
     // (3) Write PreviousState = prev, flip State = next
-    const psKey = previousStateResourceKey(token);
-    world.insertResource(psKey, prevIdx);
-    world.insertResource(sKey, nextIdx);
+    world.insertResource<StatePayload>(key, { ...state, previous: prevIdx, current: nextIdx });
 
-    // Resolve the per-token ScopedTo component from the global ECS registry
-    const scopedComponent = world.components.resolve(`__scopedTo__${token.name}`);
-    if (scopedComponent) {
+    const scopedComponent = getScopedComponent(token);
+    if (world.components.resolve(scopedComponent.name) === scopedComponent) {
       // (4) Despawn exit-scoped entities (value=prev)
       scopeDespawn(world, scopedComponent, SCOPED_MODE_VALUE.exit, prevIdx);
 
@@ -137,17 +125,11 @@ export function transitionStatesSystem(world: World): void {
       }
     }
 
-    // (8) Clear NextState — but only if OnEnter callbacks did not already
-    // write a new NextState payload (e.g. nested setNextState). If the
-    // payload differs from the original `ns`, leave it for the next frame.
-    const nsAfterCallbacks = world.getResource<NextStatePayload | undefined>(nsKey);
-    if (
-      nsAfterCallbacks !== undefined &&
-      nsAfterCallbacks.value === ns.value &&
-      nsAfterCallbacks.force === ns.force
-    ) {
-      world.insertResource<NextStatePayload | undefined>(nsKey, undefined);
+    // A callback can enqueue the same value/force again. Request identity,
+    // rather than equality of its fields, determines whether it was consumed.
+    const afterCallbacks = world.getResource<StatePayload>(key);
+    if (afterCallbacks.next === ns) {
+      world.insertResource<StatePayload>(key, { ...afterCallbacks, next: undefined });
     }
-    // else: callbacks wrote a new NextState — survive for next frame
   }
 }

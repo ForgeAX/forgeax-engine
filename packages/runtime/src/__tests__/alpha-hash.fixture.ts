@@ -1,3 +1,4 @@
+import type { AssetRegistry } from '@forgeax/engine-assets-runtime';
 import { World } from '@forgeax/engine-ecs';
 import { createPlaneGeometry, packInterleavedVertexAttributes } from '@forgeax/engine-geometry';
 import {
@@ -34,6 +35,7 @@ function statistics(values: readonly number[]) {
 /** Real Renderer path, shared by browser WebGPU and native Dawn. */
 export async function verifyAlphaHash(
   renderer: Renderer,
+  assets: AssetRegistry,
   options: {
     kind: 'standard' | 'unlit' | 'skin';
     taaScale?: number;
@@ -48,7 +50,7 @@ export async function verifyAlphaHash(
     captureIndependent?: (tape: EncodedTape) => void;
   },
 ) {
-  const world = new World();
+  const world = new World({ assets });
   const lease = unwrap(renderer.attach(world));
   const errors: unknown[] = [];
   const unsubscribe = renderer.subscribe((event) => {
@@ -70,7 +72,7 @@ export async function verifyAlphaHash(
       vertices: packInterleavedVertexAttributes(attributes, count).unwrap().vertices,
     };
   }
-  const mesh = world.allocSharedRef('MeshAsset', geometry);
+  const mesh = assets.create(geometry).unwrap();
   const material = (
     alpha: number,
     hash = true,
@@ -97,24 +99,26 @@ export async function verifyAlphaHash(
             ...(baseColorTexture === undefined ? {} : { baseColorTexture }),
             renderState: { cullMode: 'none' },
           });
-    return world.allocSharedRef(
-      'MaterialAsset',
-      options.kind === 'skin'
-        ? {
-            ...asset,
-            passes: asset.passes?.map((pass) => ({
-              ...pass,
-              program: {
-                ...pass.program,
-                module:
-                  pass.program.module === 'forgeax_material::standard'
-                    ? 'forgeax::pbr-skin'
-                    : pass.program.module,
-              },
-            })),
-          }
-        : asset,
-    );
+    if (asset.passes === undefined) throw new Error('material root passes are required');
+    return assets
+      .create(
+        options.kind === 'skin'
+          ? {
+              ...asset,
+              passes: asset.passes.map((pass) => ({
+                ...pass,
+                program: {
+                  ...pass.program,
+                  module:
+                    pass.program.module === 'forgeax_material::standard'
+                      ? 'forgeax::pbr-skin'
+                      : pass.program.module,
+                },
+              })) as unknown as NonNullable<typeof asset.passes>,
+            }
+          : asset,
+      )
+      .unwrap();
   };
   const object = world
     .spawn(
@@ -127,12 +131,14 @@ export async function verifyAlphaHash(
     const joint = world.spawn({ component: Transform, data: {} }).unwrap();
     const inverseBindMatrices = new Float32Array(16);
     for (const lane of [0, 5, 10, 15]) inverseBindMatrices[lane] = 1;
-    const skeleton = world.allocSharedRef('SkeletonAsset', {
-      kind: 'skeleton',
-      jointCount: 1,
-      inverseBindMatrices,
-      bounds: new Float32Array([-2, -2, -0.1, 2, 2, 0.1]),
-    });
+    const skeleton = assets
+      .create({
+        kind: 'skeleton',
+        jointCount: 1,
+        inverseBindMatrices,
+        bounds: new Float32Array([-2, -2, -0.1, 2, 2, 0.1]),
+      })
+      .unwrap();
     world
       .addComponent(object, {
         component: Skin,
@@ -251,7 +257,7 @@ export async function verifyAlphaHash(
         255, 255, 255, 0, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 0,
       ]),
     };
-    const texture = world.allocSharedRef('TextureAsset', fenceTexture);
+    const texture = assets.create(fenceTexture).unwrap();
     world
       .set(object, MeshRenderer, {
         materials: [material(0.5, true, 2000, { texture: texture as never })],
@@ -283,11 +289,13 @@ export async function verifyAlphaHash(
       ...geometry.attributes,
       color: Float32Array.from({ length: vertexCount * 4 }, (_, i) => (i % 4 === 3 ? 0.5 : 1)),
     };
-    const coloredMesh = world.allocSharedRef('MeshAsset', {
-      ...geometry,
-      attributes: coloredAttributes,
-      vertices: packInterleavedVertexAttributes(coloredAttributes, vertexCount).unwrap().vertices,
-    });
+    const coloredMesh = assets
+      .create({
+        ...geometry,
+        attributes: coloredAttributes,
+        vertices: packInterleavedVertexAttributes(coloredAttributes, vertexCount).unwrap().vertices,
+      })
+      .unwrap();
     world.set(object, MeshFilter, { assetHandle: coloredMesh }).unwrap();
     world.set(object, MeshRenderer, { materials: [material(0.5)] }).unwrap();
     const vertexAlpha = statistics(await sample());
@@ -299,20 +307,21 @@ export async function verifyAlphaHash(
         {
           component: MeshFilter,
           data: {
-            assetHandle: world.allocSharedRef('MeshAsset', createPlaneGeometry(4, 4).unwrap()),
+            assetHandle: assets.create(createPlaneGeometry(4, 4).unwrap()).unwrap(),
           },
         },
         {
           component: MeshRenderer,
           data: {
             materials: [
-              world.allocSharedRef(
-                'MaterialAsset',
-                Materials.unlit([0.2, 0.2, 0.2, 1], {
-                  queue: 2000,
-                  renderState: { cullMode: 'none' },
-                }),
-              ),
+              assets
+                .create(
+                  Materials.unlit([0.2, 0.2, 0.2, 1], {
+                    queue: 2000,
+                    renderState: { cullMode: 'none' },
+                  }),
+                )
+                .unwrap(),
             ],
           },
         },

@@ -1,5 +1,4 @@
 import { AssetRegistry } from '@forgeax/engine-assets-runtime';
-import { audioLoader } from '@forgeax/engine-audio-webaudio';
 import type { RenderError, RendererOptions, RenderResult } from '@forgeax/engine-render';
 import type {
   BundlerOptions,
@@ -10,6 +9,7 @@ import {
   EngineEnvironmentError,
 } from '@forgeax/engine-render/internal/construct-renderer';
 import { ShaderRegistry } from '@forgeax/engine-shader';
+import { installDefaultAssetDecoders } from './asset-contributions';
 import { loadBackendPack } from './backend-selection';
 import { postSpawnResolveJoints } from './scene-instances/index';
 
@@ -46,6 +46,7 @@ export async function constructRuntimeRendererHost(
   const first = await loadBackendPack(options);
   if (!first.ok) throw first.error;
   const constructed = await constructRendererHost(canvas, options, bundler, first.value);
+  if (constructed.ok) installDefaultAssetDecoders(constructed.value.assets);
   if (
     constructed.ok ||
     options?.rhi !== undefined ||
@@ -56,7 +57,9 @@ export async function constructRuntimeRendererHost(
   }
   const fallback = await loadBackendPack(options, true);
   if (!fallback.ok) return constructed;
-  return constructRendererHost(canvas, options, bundler, fallback.value);
+  const result = await constructRendererHost(canvas, options, bundler, fallback.value);
+  if (result.ok) installDefaultAssetDecoders(result.value.assets);
+  return result;
 }
 
 export { loadRhiPack } from './backend-selection';
@@ -73,10 +76,11 @@ export async function createPublicationAssets(bundler?: BundlerOptions): Promise
   });
   const loaded = await shaders.loadManifest();
   if (!loaded.ok) throw loaded.error;
-  return new AssetRegistry(
-    shaders,
-    bundler?.importTransport,
-    [audioLoader],
-    postSpawnResolveJoints,
-  );
+  const assets = new AssetRegistry({
+    shaderRegistry: shaders,
+    importTransport: bundler?.importTransport,
+    postSpawnHook: postSpawnResolveJoints,
+  });
+  installDefaultAssetDecoders(assets);
+  return assets;
 }

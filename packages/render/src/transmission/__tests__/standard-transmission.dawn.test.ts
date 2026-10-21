@@ -9,7 +9,7 @@ import {
 import { Transform } from '@forgeax/engine-scene';
 import type { TextureAsset } from '@forgeax/engine-types';
 import { describe, expect, it } from 'vitest';
-import { drawReadyFrame } from '../../../../../scripts/test/ready-render-frame.mjs';
+import { completeReadyFrame } from '../../../../../scripts/test/ready-render-frame.mjs';
 import { shaderManifestUrl } from '../../../../runtime/src/__tests__/shader-manifest-url.fixture';
 import {
   Camera,
@@ -201,29 +201,31 @@ async function renderCase(
     throw new Error('runtime Dawn renderer was not ready');
   }
 
-  const { renderer } = host.value;
+  const { renderer, assets } = host.value;
   const errors: { readonly code: string; readonly detail?: unknown }[] = [];
   const unsubscribe = renderer.subscribe((event) => {
     if (event.kind === 'error') errors.push(event.error);
   });
   try {
-    const world = new World();
+    const world = new World({ assets });
     const lease = renderer.attach(world);
     if (!lease.ok) throw lease.error;
     const plane = createPlaneGeometry(2, 2);
     if (!plane.ok) throw plane.error;
-    const mesh = world.allocSharedRef('MeshAsset', {
-      ...plane.value,
-      materialSlots: [{ slotName: 'Default' }],
-    });
+    const mesh = assets
+      .create({
+        ...plane.value,
+        materialSlots: [{ slotName: 'Default' }],
+      })
+      .unwrap();
     const transmissionHandle =
       testCase.transmissionTexture === undefined
         ? undefined
-        : world.allocSharedRef('TextureAsset', textureAsset(testCase.transmissionTexture));
+        : assets.create(textureAsset(testCase.transmissionTexture)).unwrap();
     const thicknessHandle =
       testCase.thicknessTexture === undefined
         ? undefined
-        : world.allocSharedRef('TextureAsset', textureAsset(testCase.thicknessTexture));
+        : assets.create(textureAsset(testCase.thicknessTexture)).unwrap();
     const material = Materials.standard({
       baseColor: [0.7, 0.8, 0.9, testCase.masked ? 0.35 : 1],
       metallic: 0,
@@ -240,17 +242,18 @@ async function renderCase(
             queue: 2450,
             alphaCutoff: 0.5,
             baseColorTexture: {
-              texture: world.allocSharedRef('TextureAsset', {
-                kind: 'texture',
-                width: 2,
-                height: 2,
-                format: 'rgba8unorm',
-                data: Uint8Array.from([
-                  255, 255, 255, 0, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 0,
-                ]),
-                colorSpace: 'linear',
-                mipmap: false,
-              }),
+              texture: assets
+                .create({
+                  kind: 'texture',
+                  shape: { viewDimension: '2d', extent: { width: 2, height: 2 } },
+                  format: 'rgba8unorm',
+                  data: Uint8Array.from([
+                    255, 255, 255, 0, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 0,
+                  ]),
+                  colorSpace: 'linear',
+                  mips: { kind: 'none' },
+                })
+                .unwrap(),
             },
           }
         : { queue: 2000 }),
@@ -264,12 +267,12 @@ async function renderCase(
       ...(testCase.metallicTexture === true
         ? {
             metallicTexture: {
-              texture: world.allocSharedRef('TextureAsset', textureAsset(0)) as never,
+              texture: assets.create(textureAsset(0)).unwrap() as never,
             },
           }
         : {}),
     });
-    const materialHandle = world.allocSharedRef('MaterialAsset', material);
+    const materialHandle = assets.create(material).unwrap();
     const meshEntity = world.spawn(
       {
         component: Transform,
@@ -292,7 +295,7 @@ async function renderCase(
           },
         },
       });
-      const overlayHandle = world.allocSharedRef('MaterialAsset', overlay);
+      const overlayHandle = assets.create(overlay).unwrap();
       const overlayEntity = world.spawn(
         { component: Transform, data: { pos: [0, 0, -0.1] } },
         { component: MeshFilter, data: { assetHandle: mesh } },
@@ -306,7 +309,7 @@ async function renderCase(
         [[1, 0, 0, 1], 2],
         [[0, 0, 1, 1], -2],
       ] as const) {
-        const half = world.allocSharedRef('MaterialAsset', Materials.unlit(color));
+        const half = assets.create(Materials.unlit(color)).unwrap();
         const halfEntity = world.spawn(
           { component: Transform, data: { pos: [0, y, -2], scale: [3, 2, 1] } },
           { component: MeshFilter, data: { assetHandle: mesh } },
@@ -354,10 +357,14 @@ async function renderCase(
     let lastDraw: FrameReceipt | undefined;
     for (let frame = 0; frame < frameCount; frame += 1) {
       if (frame > 0) world.update(1 / 60).unwrap();
-      const drawn = await drawReadyFrame(renderer, {
-        leases: [lease.value],
-        camera: { lease: lease.value },
-        environment: { lease: lease.value },
+      const drawn = await completeReadyFrame(() => {
+        const submitted = renderer.draw({
+          leases: [lease.value],
+          camera: { lease: lease.value },
+          environment: { lease: lease.value },
+        });
+        if (!submitted.ok) throw submitted.error;
+        return submitted.value;
       });
       lastDraw = drawn;
     }
@@ -549,35 +556,43 @@ describe('Standard transmission Dawn ROI', () => {
     );
   }, 120_000);
 
-  it('exercises both Standard render paths and transmission-before-BLEND overlap order', async () => {
-    const forward = await renderCase({
-      name: 'forward',
+  it('exercises both Standard render paths and sorted transmission/BLEND overlap', async () => {
+    const options = {
       transmission: 1,
       ior: 1.5,
       thickness: 0.5,
       roughness: 0.3,
-      attenuationColor: [0.7, 0.8, 0.9],
+      attenuationColor: [0.7, 0.8, 0.9] as const,
       attenuationDistance: 2,
-      overlap: true,
+    };
+    const baseline = await renderCase({
+      ...options,
+      name: 'without-overlay',
       renderPath: 'forward',
     });
-    const deferred = await renderCase({
-      name: 'deferred',
-      transmission: 1,
-      ior: 1.5,
-      thickness: 0.5,
-      roughness: 0.3,
-      attenuationColor: [0.7, 0.8, 0.9],
-      attenuationDistance: 2,
-      overlap: true,
-      renderPath: 'deferred',
-    });
-    const transmissionIndex = forward.passNames.indexOf('transmission-forward');
-    const transparentIndex = forward.passNames.indexOf('transparent');
-    expect(transmissionIndex).toBeGreaterThanOrEqual(0);
-    expect(transparentIndex).toBeGreaterThan(transmissionIndex);
-    expect(deferred.pixel.every(Number.isFinite)).toBe(true);
-    expect(forward.pixel.every(Number.isFinite)).toBe(true);
+    const outputs = [];
+    for (const renderPath of ['forward', 'deferred'] as const) {
+      const output = await renderCase({ ...options, name: renderPath, overlap: true, renderPath });
+      const prefix = output.passNames.indexOf('transparent-before-transmission');
+      const backdrop = output.passNames.indexOf('transmission-backdrop-copy');
+      const suffix = output.passNames.indexOf('transmission-forward');
+      expect(prefix).toBeGreaterThanOrEqual(0);
+      expect(backdrop).toBeGreaterThan(prefix);
+      expect(suffix).toBeGreaterThan(backdrop);
+      expect(output.errors).toEqual([]);
+      expect(output.pixel.every(Number.isFinite)).toBe(true);
+      // The green BLEND surface must survive the transmitting surface's composition.
+      // A clear-only or omitted transparent draw cannot satisfy this pixel control.
+      expect(output.pixel[1]).toBeGreaterThan(baseline.pixel[1] + 16);
+      outputs.push(output.pixel);
+    }
+    expect(baseline.errors).toEqual([]);
+    const [forward, deferred] = outputs;
+    if (forward === undefined || deferred === undefined) throw new Error('Missing render path');
+    for (let channel = 0; channel < 4; channel++)
+      expect(
+        Math.abs((forward[channel] ?? 0) - (deferred[channel] ?? 0)) / 255,
+      ).toBeLessThanOrEqual(0.05);
   }, 120_000);
 
   it('submits a real clustered local-light frame through the Standard front door', async () => {

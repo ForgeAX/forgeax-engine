@@ -184,7 +184,7 @@ describe('direct-light URP browser producer evidence', () => {
     expect(kindWord >>> DIRECT_LIGHT_SLOT_PCF_SHIFT).toBe(3);
     expect(rawU32[17]).toBe(3);
     expect(rawU32[20]).toBe(0xffffffff);
-    expect(transported[12]).toBeCloseTo(0.005, 6);
+    expect(transported[12]).toBeCloseTo(0.00001, 6);
     expect(transported[13]).toBeCloseTo(0.05, 6);
     expect(transported[14]).toBe(1);
     expect(transported[15]).toBe(0);

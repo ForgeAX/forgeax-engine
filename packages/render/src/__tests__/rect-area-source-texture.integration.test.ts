@@ -7,6 +7,7 @@ import { SpotLight } from '../components/spot-light';
 import { DIRECT_LIGHT_SLOT_METADATA_SENTINEL, packDirectLightSlot } from '../light-buffer-layout';
 import { COOKIE_SLICE_MIP_CHAIN_BYTES } from '../prepare/extended-lighting/resources';
 import { extractFrames } from '../render-system-extract-tail';
+import { testAssets } from './helpers/runtime-assets';
 
 function texture(
   format: 'rgba8unorm-srgb' | 'bc7-rgba-unorm-srgb' = 'rgba8unorm-srgb',
@@ -31,8 +32,8 @@ afterEach(() => vi.restoreAllMocks());
 describe('RectAreaLight source texture extraction', () => {
   it('shares one light-texture slice with a Spot Cookie of the same asset', () => {
     const world = new World();
-    const shared = world.allocSharedRef('TextureAsset', texture());
-    const own = world.allocSharedRef('TextureAsset', texture());
+    const shared = testAssets(world).create(texture()).unwrap();
+    const own = testAssets(world).create(texture()).unwrap();
     world
       .spawn(
         { component: Transform, data: { pos: [0, 3, 0] } },
@@ -82,7 +83,7 @@ describe('RectAreaLight source texture extraction', () => {
   it('routes a block-compressed source to the GPU resample on its own slice', () => {
     const world = new World();
     const asset = texture('bc7-rgba-unorm-srgb');
-    const compressed = world.allocSharedRef('TextureAsset', asset);
+    const compressed = testAssets(world).create(asset).unwrap();
     world
       .spawn(
         { component: Transform, data: { pos: [0, 1, 0] } },
@@ -100,10 +101,12 @@ describe('RectAreaLight source texture extraction', () => {
   it('routes a structured error and renders untextured for an unusable source', () => {
     const errors = vi.spyOn(console, 'error').mockImplementation(() => undefined);
     const world = new World();
-    const bad = world.allocSharedRef('TextureAsset', {
-      ...texture('bc7-rgba-unorm-srgb'),
-      colorSpace: 'linear',
-    });
+    const bad = testAssets(world)
+      .create({
+        ...texture('bc7-rgba-unorm-srgb'),
+        colorSpace: 'linear',
+      })
+      .unwrap();
     world
       .spawn(
         { component: Transform, data: { pos: [0, 1, 0] } },

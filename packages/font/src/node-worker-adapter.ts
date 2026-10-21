@@ -25,7 +25,8 @@ export class NodeWorkerAdapter {
   }
 
   public addEventListener(type: string, listener: MessageListener): void {
-    if (type !== 'message') return;
+    if (type !== 'message' || this.terminationPromise !== undefined || this.listeners.has(listener))
+      return;
     const handler = (data: unknown) => listener({ data, origin: '*' });
     this.listeners.set(listener, handler);
     this.worker.on('message', handler);
@@ -42,6 +43,8 @@ export class NodeWorkerAdapter {
   public terminate(): Promise<number> {
     if (this.terminationPromise === undefined) {
       this.terminationPromise = this.worker.terminate();
+      for (const handler of this.listeners.values()) this.worker.off('message', handler);
+      this.listeners.clear();
     }
     return this.terminationPromise;
   }

@@ -1,6 +1,8 @@
+import { AssetRegistry } from '@forgeax/engine/assets-runtime';
+import { createPrimitiveMesh } from '@forgeax/engine/geometry';
 import { PointLight, Skylight } from '@forgeax/engine/render';
 import { defineFeature } from '../../lab/feature';
-import { MESH, spawnCamera, spawnGround, spawnMesh, standard } from '../../lab/stage';
+import { spawnCamera, spawnGround, spawnMesh, standard } from '../../lab/stage';
 import { spawnPointLight } from './support/scene';
 
 const LIGHTS = [
@@ -18,6 +20,12 @@ export default defineFeature({
   expect:
     'ON: three overlapping red, green and blue pools on the floor, mixing to yellow/cyan where they meet. OFF: only the red light stays on.',
   setup({ world, app }) {
+    const primitiveAssets = world.assets;
+    if (!(primitiveAssets instanceof AssetRegistry))
+      throw new Error('Scene requires its runtime asset owner');
+
+    const stageSphere = primitiveAssets.create(createPrimitiveMesh('sphere').unwrap()).unwrap();
+
     spawnGround(world);
     spawnCamera(world, { eye: [0, 3, 5], target: [0, 0.2, 0] });
     world
@@ -25,7 +33,7 @@ export default defineFeature({
       .unwrap();
     const white = standard(world, { baseColor: [0.95, 0.95, 0.95, 1], roughness: 0.4 });
     for (let i = 0; i < 3; i++)
-      spawnMesh(world, MESH.sphere, white, {
+      spawnMesh(world, stageSphere, white, {
         pos: [-1.6 + i * 1.6, 0.35, -0.4],
         scale: [0.7, 0.7, 0.7],
       });

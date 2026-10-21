@@ -1,7 +1,9 @@
 import type { CreateAppOptions } from '@forgeax/engine/app';
+import { AssetRegistry } from '@forgeax/engine/assets-runtime';
+import { createPrimitiveMesh } from '@forgeax/engine/geometry';
 import { DEFAULT_STANDARD_PROFILE, DirectionalLight, Skylight } from '@forgeax/engine/render';
 import { defineFeature } from '../../lab/feature';
-import { MESH, spawnCamera, spawnGround, spawnMesh, standard } from '../../lab/stage';
+import { spawnCamera, spawnGround, spawnMesh, standard } from '../../lab/stage';
 
 const LENGTH = 0.5;
 
@@ -18,6 +20,12 @@ export default defineFeature({
   expect:
     'ON: each small cube has a dark contact-shadow band on the floor on its side away from the sun. OFF: contactShadowLength = 0 and the cubes look pasted onto the floor with no grounding shadow.',
   setup({ world }) {
+    const primitiveAssets = world.assets;
+    if (!(primitiveAssets instanceof AssetRegistry))
+      throw new Error('Scene requires its runtime asset owner');
+
+    const stageCube = primitiveAssets.create(createPrimitiveMesh('cube').unwrap()).unwrap();
+
     spawnGround(world, [0.7, 0.7, 0.7, 1]);
     spawnCamera(world, { eye: [0, 2.4, 3.2], target: [0, 0, 0] });
     world
@@ -37,7 +45,7 @@ export default defineFeature({
     const mat = standard(world, { baseColor: [0.95, 0.75, 0.2, 1], roughness: 0.8 });
     for (let z = 0; z < 3; z++) {
       for (let x = 0; x < 5; x++) {
-        spawnMesh(world, MESH.cube, mat, {
+        spawnMesh(world, stageCube, mat, {
           pos: [-1.6 + x * 0.8, 0.15, -0.8 + z * 0.8],
           scale: [0.3, 0.3, 0.3],
         });

@@ -1,17 +1,19 @@
-import { expect, it } from 'vitest';
-import type {
-  GpuDrivenDrawSnapshot,
-  MaterialSnapshot,
-  RenderableSnapshot,
-} from '../../render-system-extract';
+import { assert, expect, it } from 'vitest';
+import { receiptRow } from '../../__tests__/gpu-draw-selection-fixture';
+import { MaterialResource } from '../../material-resource';
+import type { GpuDrivenDrawSnapshot, RenderableSnapshot } from '../../render-system-extract';
 import { RenderScene } from '../../scene/render-scene';
 import { projectVisibleSurfaces, resolveVisibleSurface } from '../visible-surface';
 
 const materials = [
-  { materialHandle: 7 } as MaterialSnapshot,
-  { materialHandle: 11 } as MaterialSnapshot,
+  new MaterialResource({ ...receiptRow().source.material.snapshot, materialHandle: 7 }),
+  new MaterialResource({ ...receiptRow().source.material.snapshot, materialHandle: 11 }),
 ] as const;
+const baseDraw = receiptRow().source.gpuDrivenDraws?.[0];
+assert(baseDraw);
 const triangleDraw: GpuDrivenDrawSnapshot = {
+  ...baseDraw,
+  drawItemIndex: 0,
   kind: 'indexed',
   first: 9,
   count: 6,

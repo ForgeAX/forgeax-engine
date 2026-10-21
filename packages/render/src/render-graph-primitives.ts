@@ -7,6 +7,7 @@
 // Public graph assembly does not depend on legacy add* wrappers.
 import type { ResolveContext } from '@forgeax/engine-render-graph';
 import type {
+  BindGroupEntry,
   Buffer,
   RhiRenderPassEncoder,
   Sampler,
@@ -26,7 +27,11 @@ import { getOrCreateFromChain } from './record/mesh-ssbo';
 import type { _InternalRenderPipelineContext } from './record/render-context';
 import { recordFxaaPass } from './record/skybox-post-pass';
 import type { RenderPipelineContext } from './render-contract';
-import { getOrCreateSsaoBuffers, getOrCreateSsaoFallbackTexture } from './ssao-buffers';
+import {
+  getOrCreateSsaoBuffers,
+  getOrCreateSsaoFallbackTexture,
+  type SsaoBuffers,
+} from './ssao-buffers';
 import { buildSsaoUniformPayload } from './ssao-uniform';
 
 type DepthResolutionContext = Pick<_InternalRenderPipelineContext, 'runtime'> & {
@@ -188,6 +193,29 @@ function ensureSsaoRecordCompanions(internals: _InternalRenderPipelineContext): 
   };
 }
 
+function ssaoBindGroupEntries(
+  buffers: SsaoBuffers,
+  companions: NonNullable<ReturnType<typeof ensureSsaoRecordCompanions>>,
+  normal: TextureView,
+  depth: TextureView,
+  raw: TextureView,
+): readonly BindGroupEntry[] {
+  return [
+    { binding: 0, resource: { kind: 'buffer', value: { buffer: buffers.uniformBuffer } } },
+    { binding: 1, resource: { kind: 'buffer', value: { buffer: buffers.kernelBuffer } } },
+    { binding: 2, resource: { kind: 'textureView', value: buffers.noiseView } },
+    {
+      binding: 3,
+      resource: { kind: 'sampler', value: companions.filteringSampler },
+    },
+    { binding: 4, resource: { kind: 'textureView', value: normal } },
+    { binding: 5, resource: { kind: 'textureView', value: depth } },
+    { binding: 6, resource: { kind: 'sampler', value: companions.depthSampler } },
+    { binding: 7, resource: { kind: 'textureView', value: raw } },
+    { binding: 8, resource: { kind: 'sampler', value: companions.filteringSampler } },
+  ];
+}
+
 /**
  * recordSsaoCalcPass — fullscreen SSAO occlusion calculation (M8 / w38).
  *
@@ -299,20 +327,13 @@ export function recordSsaoCalcPass(
       const bgRes = runtime.device.createBindGroup({
         label: 'ssao-calc-bg',
         layout: ssaoBgl,
-        entries: [
-          { binding: 0, resource: { kind: 'buffer', value: { buffer: ssaoBufs.uniformBuffer } } },
-          { binding: 1, resource: { kind: 'buffer', value: { buffer: ssaoBufs.kernelBuffer } } },
-          { binding: 2, resource: { kind: 'textureView', value: ssaoBufs.noiseView } },
-          {
-            binding: 3,
-            resource: { kind: 'sampler', value: companions.filteringSampler },
-          },
-          { binding: 4, resource: { kind: 'textureView', value: gbuf0View } },
-          { binding: 5, resource: { kind: 'textureView', value: hdrDepthView } },
-          { binding: 6, resource: { kind: 'sampler', value: companions.depthSampler } },
-          { binding: 7, resource: { kind: 'textureView', value: companions.fallbackRawView } },
-          { binding: 8, resource: { kind: 'sampler', value: companions.filteringSampler } },
-        ],
+        entries: ssaoBindGroupEntries(
+          ssaoBufs,
+          companions,
+          gbuf0View,
+          hdrDepthView,
+          companions.fallbackRawView,
+        ),
       });
       if (!bgRes.ok) throw bgRes.error;
       return bgRes.value;
@@ -421,20 +442,7 @@ export function recordSsaoBlurPass(
       const bgRes = runtime.device.createBindGroup({
         label: 'ssao-blur-bg',
         layout: ssaoBgl,
-        entries: [
-          { binding: 0, resource: { kind: 'buffer', value: { buffer: ssaoBufs.uniformBuffer } } },
-          { binding: 1, resource: { kind: 'buffer', value: { buffer: ssaoBufs.kernelBuffer } } },
-          { binding: 2, resource: { kind: 'textureView', value: ssaoBufs.noiseView } },
-          {
-            binding: 3,
-            resource: { kind: 'sampler', value: companions.filteringSampler },
-          },
-          { binding: 4, resource: { kind: 'textureView', value: gbuf0View } },
-          { binding: 5, resource: { kind: 'textureView', value: hdrDepthView } },
-          { binding: 6, resource: { kind: 'sampler', value: companions.depthSampler } },
-          { binding: 7, resource: { kind: 'textureView', value: ssaoRawView } },
-          { binding: 8, resource: { kind: 'sampler', value: companions.filteringSampler } },
-        ],
+        entries: ssaoBindGroupEntries(ssaoBufs, companions, gbuf0View, hdrDepthView, ssaoRawView),
       });
       if (!bgRes.ok) throw bgRes.error;
       return bgRes.value;

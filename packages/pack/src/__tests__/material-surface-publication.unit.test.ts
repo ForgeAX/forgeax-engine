@@ -87,8 +87,8 @@ describe('Surface Pack publication', () => {
       ok: true,
       value: {
         status: 'recovered',
-        lastKnownGood: { payload: { generation: 1 } },
-        lastKnownGoodGeneration: 1,
+        draft: { payload: { generation: 1 } },
+        generation: 1,
       },
     });
   });

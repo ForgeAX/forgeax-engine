@@ -269,7 +269,7 @@ export interface ParticleMaterialInputPreparationError {
   readonly expected: string;
   readonly hint: string;
   readonly detail: {
-    readonly material?: string;
+    readonly material?: ParticleRendererSourceV3['material'];
     readonly name?: string;
     readonly lane?: number;
     readonly path?: string;

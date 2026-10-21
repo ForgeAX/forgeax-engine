@@ -1,13 +1,16 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
+import type { IblPrecomputeOutput } from '../ibl/IblPipelineCache';
 import type { RenderSystemInternals } from '../record/render-context';
 import { ReflectionProbeRecordOwner } from '../reflection/record-owner';
 import type { SkylightSnapshot } from '../render-system-extract';
 
 function fixture(captureReadback = true) {
+  const getCubemapIbl = vi.fn<() => IblPrecomputeOutput | undefined>(() => undefined);
   const internals = {
     device: { caps: { rgba16floatRenderable: true } },
     deviceScope: { owner: 'test', generation: 0 },
-    assets: { catalogEpoch: 0 },
+    assets: {},
+    gpuStore: { getCubemapIbl },
     captureReflectionFallbackReadback: captureReadback,
   } as unknown as RenderSystemInternals;
   const owner = new ReflectionProbeRecordOwner(internals);
@@ -20,11 +23,12 @@ function fixture(captureReadback = true) {
       frame,
       {
         entityHandle: source,
-        equirectHandle: 0,
+        equirectHandle: 1,
         color: [1, 1, 1],
         intensity: 1,
         rotation: [0, 0, 0, 1],
       } satisfies SkylightSnapshot,
+      undefined,
     );
   const complete = (tickets: ReturnType<typeof stage>, frameId: number) =>
     // biome-ignore lint/complexity/useLiteralKeys: Invoke the real asynchronous completion boundary.
@@ -41,7 +45,7 @@ function fixture(captureReadback = true) {
         textureIdentity: 1,
       }),
     });
-  return { owner, stage, complete, internals };
+  return { owner, stage, complete, internals, getCubemapIbl };
 }
 
 describe('fallback asynchronous publication', () => {
@@ -84,7 +88,7 @@ describe('fallback asynchronous publication', () => {
     const { owner, stage, complete } = fixture();
     const first = stage(1);
     // biome-ignore lint/complexity/useLiteralKeys: Retire through the same private staging seam.
-    owner['stageFallbackProjections']([], new Map(), new Map(), 2, undefined);
+    owner['stageFallbackProjections']([], new Map(), new Map(), 2, undefined, undefined);
     stage(3);
     await complete(first, 1);
     expect(owner.inspect().reflectionFallback.state).not.toBe('active');
@@ -139,12 +143,12 @@ describe('fallback asynchronous publication', () => {
     );
   });
 
-  it('requires new mapped proof after an asset catalog replacement', async () => {
-    const { owner, stage, complete, internals } = fixture();
+  it('requires new mapped proof after the selected skylight resource changes', async () => {
+    const { owner, stage, complete, getCubemapIbl } = fixture();
     await complete(stage(1), 1);
-    Object.assign(internals.assets, { catalogEpoch: 1 });
+    getCubemapIbl.mockReturnValue({ prefilterView: {} } as IblPrecomputeOutput);
     const replacement = stage(2);
-    // biome-ignore lint/complexity/useLiteralKeys: A changed catalog must not reuse the old source proof.
+    // biome-ignore lint/complexity/useLiteralKeys: A changed skylight must not reuse the old source proof.
     await owner['completeSubmission'](true, replacement, Promise.resolve());
     expect(owner.inspect().reflectionFallback.state).not.toBe('active');
     expect(owner.inspect().reflectionFallbackInspection.failureCode).toBe(

@@ -80,6 +80,8 @@ export function directionalShadowProfileFromQuality(
   quality: DirectionalShadowQuality | undefined,
 ): DirectionalShadowProfile {
   if (quality === undefined) return 'off';
+  if (quality.kind === 'variance') return 'variance';
+  if (quality.kind === 'pcf-soft') return 'pcfSoft';
   if (quality.kind === 'pcf-vogel') return 'pcfVogel';
   if (quality.kind === 'pcf') return `pcf${quality.kernel}` as 'pcf1' | 'pcf3' | 'pcf5';
   return quality.preset === 'medium' ? 'pcssMedium' : 'pcssHigh';
@@ -93,13 +95,15 @@ export function projectDirectionalShadowInspectionSource(
       ? { blockerTaps: 8, filterTapUpperBound: 16, seamTapUpperBound: 48 }
       : input.requested === 'pcssHigh'
         ? { blockerTaps: 16, filterTapUpperBound: 32, seamTapUpperBound: 96 }
-        : input.requested === 'pcfVogel'
-          ? { blockerTaps: 0, filterTapUpperBound: 5, seamTapUpperBound: 5 }
-          : input.requested === 'pcf5'
-            ? { blockerTaps: 0, filterTapUpperBound: 25, seamTapUpperBound: 25 }
-            : input.requested === 'pcf3'
-              ? { blockerTaps: 0, filterTapUpperBound: 9, seamTapUpperBound: 9 }
-              : { blockerTaps: 0, filterTapUpperBound: 1, seamTapUpperBound: 1 };
+        : input.requested === 'pcfSoft'
+          ? { blockerTaps: 0, filterTapUpperBound: 16, seamTapUpperBound: 16 }
+          : input.requested === 'pcfVogel'
+            ? { blockerTaps: 0, filterTapUpperBound: 5, seamTapUpperBound: 5 }
+            : input.requested === 'pcf5'
+              ? { blockerTaps: 0, filterTapUpperBound: 25, seamTapUpperBound: 25 }
+              : input.requested === 'pcf3'
+                ? { blockerTaps: 0, filterTapUpperBound: 9, seamTapUpperBound: 9 }
+                : { blockerTaps: 0, filterTapUpperBound: 1, seamTapUpperBound: 1 };
   const admission: DirectionalShadowBackendAdmission = {
     requested: input.requested,
     effective:

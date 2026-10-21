@@ -1,4 +1,5 @@
 import { STANDARD_DIRECT_DFG_LUT_BINDING } from '@forgeax/engine-shader';
+import type { AssetHandle } from '@forgeax/engine-types';
 import {
   standardTransmissionAdmission,
   transmissionBackdropAvailable,
@@ -6,21 +7,21 @@ import {
 import { meshSsboBuffer } from '../assembly/mesh-ssbo-grow';
 import { getOrCreateDirectDfgLut } from '../device/direct-dfg-lut';
 import type { IblPrecomputeOutput } from '../ibl/IblPipelineCache';
-import type { RenderResourceScope } from '../publication/resource-scope';
+import { type RenderResourceScope, renderAssetRevision } from '../publication/resource-scope';
+import { renderTextureSourceKey } from '../textures/source-token';
 import type { MaterialBgAssemblyCache } from './material-bg-assembly-cache';
+import {
+  materialUniformResources,
+  materialUniformSlot,
+  prepareMaterialUniform,
+} from './material-uniforms';
 import type { _InternalRenderPipelineContext } from './render-context';
 import { MATERIAL_PER_ENTITY_STRIDE } from './render-context';
 import { PLANAR_REFLECTION_UNIFORM_OFFSET } from './view-ubo';
 // @forgeax/engine-runtime - RenderSystem record stage: main-pass-material.
 // Extracted from render-system-record.ts (feat-20260704 M3/w17, pure move).
 
-import { resolveAssetHandle } from '@forgeax/engine-assets-runtime';
-import type { EntityHandle } from '@forgeax/engine-ecs';
-import {
-  VIDEO_SOURCE_PROVIDER_KEY,
-  type VideoSourceProvider,
-  videoSourceExtent,
-} from '@forgeax/engine-graphics-extras';
+import { videoSourceExtent } from '@forgeax/engine-graphics-extras';
 import {
   type BindGroup,
   type BindGroupEntry,
@@ -42,7 +43,6 @@ import {
   STANDARD_SHARED_TRANSMISSION_SLOTS,
 } from '@forgeax/engine-shader';
 import type {
-  Handle,
   ImageError,
   MaterialRenderState,
   ParamSchemaEntry,
@@ -50,7 +50,7 @@ import type {
   SamplerAsset,
   TextureAsset,
 } from '@forgeax/engine-types';
-import { derive, getAdmittedParamSchemaInterface, handleSlot } from '@forgeax/engine-types';
+import { derive, getAdmittedParamSchemaInterface } from '@forgeax/engine-types';
 import type { GpuResidencyCache } from '../device/gpu-residency';
 import { VideoUploadUnsupportedError } from '../errors/render';
 import {
@@ -227,31 +227,6 @@ export function selectGeometryPipeline(
 }
 
 /**
- * feat-city-glb Bug 5 (per-submesh transparency): true when EVERY submesh
- * material of the entity is transparent (blend). Used by the geometry pass to
- * decide whether to skip the whole entity (fully transparent → deferred to the
- * blend sub-pass) vs. draw its opaque submeshes and skip only the transparent
- * ones per-submesh.
- *
- * Falls back to the entity-level `material.transparent` when `materials` is
- * absent (single-material entities / test fixtures), byte-identical to the
- * pre-fix whole-entity gate.
- *
- * @internal
- */
-export function isEntityFullyTransparent(source: {
-  readonly material: MaterialSnapshot;
-  readonly materials?: readonly MaterialSnapshot[];
-}): boolean {
-  const mats = source.materials;
-  if (mats === undefined || mats.length === 0) return source.material.transparent === true;
-  for (let j = 0; j < mats.length; j++) {
-    if (mats[j]?.transparent !== true) return false;
-  }
-  return true;
-}
-
-/**
  * feat-20260601-device/gpu-residency-extraction M1 / D-9: resolve a texture's
  * GPU view through the pull-model residency store. The three steps replace the
  * pre-extraction single-call accessor on the registry:
@@ -270,7 +245,8 @@ function isImageError(error: unknown): error is ImageError {
   return typeof code === 'string' && code.startsWith('image-');
 }
 
-function materialDiagnosticsEnabled(): boolean {
+/** Opt-in `FORGEAX_MATERIAL_DIAGNOSTICS=1` gate shared by the main-pass recorders. */
+export function materialDiagnosticsEnabled(): boolean {
   if (typeof globalThis !== 'object' || globalThis === null || !('process' in globalThis)) {
     return false;
   }
@@ -286,15 +262,15 @@ export function residentTextureView(
   world: RenderResourceScope,
   store: GpuResidencyCache,
   runtime: RenderSystemRuntime,
-  handle: Handle<'TextureAsset', 'shared'>,
+  handle: AssetHandle<'texture'>,
   worldId: RenderResourceScope | number = world,
 ): TextureView | undefined {
-  const podRes = resolveAssetHandle<TextureAsset>(world, handle);
+  const podRes = world.resolveAsset<TextureAsset>(handle);
   const diagnosticsEnabled = materialDiagnosticsEnabled();
   if (!podRes.ok) {
     if (diagnosticsEnabled) {
       console.error(
-        `[render-material] texture resolve failed: ${JSON.stringify({ handle: handleSlot(handle), error: podRes.error })}`,
+        `[render-material] texture resolve failed: ${JSON.stringify({ handle: Number(handle), error: podRes.error })}`,
       );
     }
     return undefined;
@@ -310,7 +286,7 @@ export function residentTextureView(
     if (diagnosticsEnabled) {
       console.error(
         `[render-material] texture residency failed: ${JSON.stringify({
-          handle: handleSlot(handle),
+          handle: Number(handle),
           pod: {
             kind: podRes.value.kind,
             shape: podRes.value.shape,
@@ -328,7 +304,7 @@ export function residentTextureView(
   if (diagnosticsEnabled) {
     console.error(
       `[render-material] texture residency ready: ${JSON.stringify({
-        handle: handleSlot(handle),
+        handle: Number(handle),
         pod: {
           kind: podRes.value.kind,
           shape: podRes.value.shape,
@@ -348,10 +324,10 @@ function residentSampler(
   world: RenderResourceScope,
   store: GpuResidencyCache,
   runtime: RenderSystemRuntime,
-  handle: Handle<'SamplerAsset', 'shared'>,
+  handle: AssetHandle<'sampler'>,
   worldId: RenderResourceScope | number = world,
 ): Sampler | undefined {
-  const podRes = resolveAssetHandle<SamplerAsset>(world, handle);
+  const podRes = world.resolveAsset<SamplerAsset>(handle);
   if (!podRes.ok) return undefined;
   const residentRes = store.ensureSamplerResident(handle, podRes.value, worldId);
   if (!residentRes.ok) {
@@ -394,7 +370,7 @@ const VIDEO_UPLOAD_FAILURE_EPISODES = new WeakMap<
 function markVideoUploadFailureEpisode(
   store: DynamicTextureStore,
   entityKey: number,
-  clip: Handle<'VideoAsset', 'shared'>,
+  clip: AssetHandle<'video'>,
 ): boolean {
   let clips = VIDEO_UPLOAD_FAILURE_EPISODES.get(store);
   if (clips === undefined) {
@@ -406,7 +382,7 @@ function markVideoUploadFailureEpisode(
     episodes = new Set();
     clips.set(entityKey, episodes);
   }
-  const clipId = handleSlot(clip);
+  const clipId = Number(clip);
   if (episodes.has(clipId)) return false;
   episodes.add(clipId);
   return true;
@@ -415,12 +391,12 @@ function markVideoUploadFailureEpisode(
 function clearVideoUploadFailureEpisode(
   store: DynamicTextureStore,
   entityKey: number,
-  clip: Handle<'VideoAsset', 'shared'>,
+  clip: AssetHandle<'video'>,
 ): void {
   const clips = VIDEO_UPLOAD_FAILURE_EPISODES.get(store);
   const episodes = clips?.get(entityKey);
   if (episodes === undefined) return;
-  episodes.delete(handleSlot(clip));
+  episodes.delete(Number(clip));
   if (episodes.size === 0) clips?.delete(entityKey);
   if (clips?.size === 0) VIDEO_UPLOAD_FAILURE_EPISODES.delete(store);
 }
@@ -428,29 +404,24 @@ function clearVideoUploadFailureEpisode(
 function videoSourceElement(
   world: RenderResourceScope,
   entityKey: number,
-  clip: Handle<'VideoAsset', 'shared'>,
+  clip: AssetHandle<'video'>,
 ): HTMLVideoElement | VideoFrame | undefined {
-  if ('resolveAsset' in world) return world.videoFrame(entityKey, clip);
-  return world.hasResource(VIDEO_SOURCE_PROVIDER_KEY)
-    ? world
-        .getResource<VideoSourceProvider>(VIDEO_SOURCE_PROVIDER_KEY)
-        .getSource(entityKey as EntityHandle, clip)
-    : undefined;
+  return world.videoFrame(entityKey, clip);
 }
 
 const DIRECT_VIDEO_KEYS = new WeakMap<DynamicTextureStore, Map<number, object>>();
 
 /** texture_external slots sample in source orientation, so their copies use a separate unflipped key. */
-function directVideoKey(store: DynamicTextureStore, clip: Handle<'VideoAsset', 'shared'>): object {
+function directVideoKey(store: DynamicTextureStore, clip: AssetHandle<'video'>): object {
   let keys = DIRECT_VIDEO_KEYS.get(store);
   if (keys === undefined) {
     keys = new Map();
     DIRECT_VIDEO_KEYS.set(store, keys);
   }
-  let key = keys.get(handleSlot(clip));
+  let key = keys.get(Number(clip));
   if (key === undefined) {
     key = {};
-    keys.set(handleSlot(clip), key);
+    keys.set(Number(clip), key);
   }
   return key;
 }
@@ -464,7 +435,7 @@ export function videoTextureView(
   store: DynamicTextureStore | undefined,
   runtime: RenderSystemRuntime,
   entityKey: number,
-  clip: Handle<'VideoAsset', 'shared'>,
+  clip: AssetHandle<'video'>,
   slotExternal = false,
 ): TextureView | undefined {
   if (store === undefined) return undefined;
@@ -500,7 +471,7 @@ export function videoBindingResource(
   world: RenderResourceScope,
   runtime: RenderSystemRuntime,
   entityKey: number,
-  clip: Handle<'VideoAsset', 'shared'>,
+  clip: AssetHandle<'video'>,
   highPerfAvailable: boolean,
   slotExternal: boolean,
 ): RhiBindingResource | undefined {
@@ -559,7 +530,7 @@ export function materialTextureUvScale(
 function materialTextureForField(
   material: MaterialSnapshot,
   field: string,
-): Handle<'TextureAsset', 'shared'> | undefined {
+): AssetHandle<'texture'> | undefined {
   if (field === 'emissiveTexture') return material.emissiveTexture;
   if (field === 'occlusionTexture') return material.occlusionTexture;
   return material.textureHandles?.get(field);
@@ -574,7 +545,9 @@ export function materialRenderTargetSourceForField(
   const source = material.textureSources?.get(field);
   return source === undefined || isCanvasTextureSource(source) || isExternalTextureSource(source)
     ? undefined
-    : (resolveSource?.(source) ?? resolveRenderTargetMaterialSource(source));
+    : resolveSource === undefined
+      ? resolveRenderTargetMaterialSource(source)
+      : resolveSource(source);
 }
 
 /** Upload the current Canvas version through the same store as video frames. */
@@ -588,10 +561,9 @@ export function materialCanvasTextureView(
   const store = runtime.dynamicTextureStore;
   if (!isCanvasTextureSource(source) || store === undefined) return undefined;
   const local = canvasTextureState(source);
-  const published =
-    'resolveAsset' in world ? world.canvasFrame?.(source.canvasTextureId) : undefined;
+  const published = world.canvasFrame?.(renderTextureSourceKey(source));
   const image = local?.canvas ?? published?.frame;
-  const key = local === undefined ? published?.key : source;
+  const key = local ?? published?.key;
   if (key === undefined) return undefined;
   if (image === undefined) return store.getView(key);
   const width = 'displayWidth' in image ? image.displayWidth : image.width;
@@ -599,7 +571,7 @@ export function materialCanvasTextureView(
   const uploaded = store.uploadFrame(key, image, width, height, {
     version: local?.version ?? published?.version,
     generateMipmaps: true,
-    flipY: source.flipY,
+    flipY: local?.flipY ?? published?.flipY ?? false,
     signal: local?.lifetime.signal ?? published?.signal,
   });
   if (uploaded !== undefined && !uploaded.ok) runtime.errorRegistry.fire(uploaded.error);
@@ -687,7 +659,7 @@ export function applyMaterialTextureUvScales(
       const field = record.parameter;
       const handle = materialTextureForField(material, field);
       const resolvedTexture =
-        handle === undefined ? undefined : resolveAssetHandle<TextureAsset>(world, handle);
+        handle === undefined ? undefined : world.resolveAsset<TextureAsset>(handle);
       const texture = resolvedTexture?.ok === true ? resolvedTexture.value : undefined;
       const physicalScale =
         texture === undefined ? IDENTITY_TEXTURE_SCALE : materialTextureUvScale(texture);
@@ -722,8 +694,7 @@ export function applyMaterialTextureUvScales(
     const field = fields[index];
     if (field === undefined) continue;
     const handle = materialTextureForField(material, field);
-    const resolved =
-      handle === undefined ? undefined : resolveAssetHandle<TextureAsset>(world, handle);
+    const resolved = handle === undefined ? undefined : world.resolveAsset<TextureAsset>(handle);
     const texture = resolved?.ok === true ? resolved.value : undefined;
     const scale = texture === undefined ? IDENTITY_TEXTURE_SCALE : materialTextureUvScale(texture);
     const offset = textureScaleOffset / 4 + index * 2;
@@ -831,7 +802,7 @@ export function defaultViewForUserRegionField(
     // The renderer already owns a valid white cube for the Skylight fallback.
     // Use it until a receipt-promoted RenderTarget source becomes available;
     // binding a 2D view here would invalidate the custom cube material BGL.
-    return pipelineState.skylightFallback?.prefilterView ?? pipelineState.defaultWhiteTextureView;
+    return pipelineState.skylightFallback?.irradianceView ?? pipelineState.defaultWhiteTextureView;
   }
   if (parameter?.type === 'texture3d') {
     return pipelineState.defaultWhite3dTextureView ?? pipelineState.defaultWhiteTextureView;
@@ -860,7 +831,7 @@ function defaultViewForParameterType(
     // The renderer already owns a valid white cube for the Skylight fallback.
     // Use it until a receipt-promoted RenderTarget source becomes available;
     // binding a 2D view here would invalidate the custom cube material BGL.
-    return pipelineState.skylightFallback?.prefilterView ?? pipelineState.defaultWhiteTextureView;
+    return pipelineState.skylightFallback?.irradianceView ?? pipelineState.defaultWhiteTextureView;
   }
   if (type === 'texture3d') {
     return pipelineState.defaultWhite3dTextureView ?? pipelineState.defaultWhiteTextureView;
@@ -1001,6 +972,7 @@ export function writePbrMaterialUboPayload(
   buf: Uint8Array | Float32Array,
   material: MaterialSnapshot,
   view?: DataView,
+  parameters = material.paramSnapshot,
 ): ReturnType<typeof derive> {
   if (buf.byteLength < STANDARD_PBR_UBO_SIZE) {
     throw new RangeError(
@@ -1010,7 +982,7 @@ export function writePbrMaterialUboPayload(
   buf.fill(0);
   const dataView = view ?? materialNumericView(buf);
   const schema = materialParameterSchema(material) ?? STANDARD_PIPELINE_PARAM_SCHEMA;
-  const snapshot = material.paramSnapshot;
+  const snapshot = parameters;
   const derived = derive(schema, STANDARD_PIPELINE_PARAM_SCHEMA);
   const parametersByName = materialTextureProjection(schema)?.parametersByName;
   for (const entry of derived.uboLayout.entries) {
@@ -1153,7 +1125,7 @@ export function applyParamSchemaDefaultsToUbo(
 
 /**
  * feat-20260704 M3/w19: shared per-submesh material bind-group assembly, hoisted
- * from the `buildPerSubmeshMaterialBg` closure inside recordMainPass so both the
+ * from the `buildPerSubmeshMaterialBg` closure inside encodeMainPass so both the
  * geometry pass and the LDR blend sub-pass (extracted to separate functions)
  * call the identical layout.
  *
@@ -1180,7 +1152,8 @@ export interface PerSubmeshMaterialBgDeps {
   readonly resolveRenderTargetTextureSource?: RenderSystemRuntime['resolveRenderTargetTextureSource'];
   readonly resolveReflectionProbeResources?: (
     materialWorld: RenderResourceScope,
-    entityKey: number,
+    entityKey: number | undefined,
+    resourceClass?: string,
   ) => { readonly resources: SkylightBindGroupResources; readonly probeIndex: number } | undefined;
   readonly materialBgShared: Map<string, WeakMap<object, unknown>>;
   /** Cross-frame final BG reuse keyed by the stable source material handle. */
@@ -1297,6 +1270,69 @@ function sameMaterialBindingSources(left: MaterialSnapshot, right: MaterialSnaps
   );
 }
 
+function captureMaterialResources(
+  material: MaterialSnapshot,
+  world: RenderResourceScope,
+  store: GpuResidencyCache,
+  prepared: ReadonlyMap<
+    string,
+    ReturnType<NonNullable<RenderSystemRuntime['preparedMaterialTexture']>>
+  >,
+): MaterialBgAssemblyCacheEntry['materialResources'] {
+  const textures = new Set(
+    [...(material.textureHandles ?? [])]
+      .filter(([field]) => prepared.get(field) === undefined)
+      .map(([, handle]) => handle),
+  );
+  if (material.emissiveTexture !== undefined && prepared.get('emissiveTexture') === undefined)
+    textures.add(material.emissiveTexture);
+  if (material.occlusionTexture !== undefined && prepared.get('occlusionTexture') === undefined)
+    textures.add(material.occlusionTexture);
+  return [
+    ...[...textures].map((handle) => ({
+      handle,
+      kind: 'texture' as const,
+      revision: renderAssetRevision(world, handle),
+      view: store.getTextureGpuView(handle, world),
+    })),
+    ...[
+      ...new Set(
+        [...(material.samplerHandles ?? [])]
+          .filter(([field]) => prepared.get(field) === undefined)
+          .map(([, handle]) => handle),
+      ),
+    ].map((handle) => ({
+      handle,
+      kind: 'sampler' as const,
+      revision: renderAssetRevision(world, handle),
+      view: undefined,
+    })),
+  ];
+}
+
+/** Revalidate only resources actually retained by this material binding. */
+export function materialBindingResourcesCurrent(
+  entry: MaterialBgAssemblyCacheEntry,
+  world: RenderResourceScope,
+  store: GpuResidencyCache,
+  runtime?: Pick<RenderSystemRuntime, 'preparedMaterialTexture'>,
+  material = entry.material,
+): boolean {
+  return (
+    entry.preparedTextures.every((resource) => {
+      const current = runtime?.preparedMaterialTexture?.(material, resource.parameter);
+      return current?.textureView === resource.textureView && current?.sampler === resource.sampler;
+    }) &&
+    entry.materialResources.every(
+      (resource) =>
+        resource.revision === renderAssetRevision(world, resource.handle) &&
+        (resource.kind === 'sampler' ||
+          resource.view ===
+            store.getTextureGpuView(resource.handle as AssetHandle<'texture'>, world)),
+    )
+  );
+}
+
 /** @internal Exported only so buffer-generation invalidation stays regression-tested. */
 export function isMaterialBgAssemblyCacheHit(
   cached: MaterialBgAssemblyCacheEntry | undefined,
@@ -1304,7 +1340,7 @@ export function isMaterialBgAssemblyCacheHit(
   materialBgl: BindGroupLayout,
   materialBuffer: Buffer,
   skylightResources: SkylightBindGroupResources,
-  materialResourceEpoch: number,
+  resourcesCurrent: boolean,
   transmissionBackdropView?: TextureView | null,
   sceneMaterialBuffer?: Buffer,
   surfaceRawDepthView?: TextureView | null,
@@ -1322,7 +1358,7 @@ export function isMaterialBgAssemblyCacheHit(
   return (
     cached !== undefined &&
     sameMaterialBindingSources(cached.material, material) &&
-    cached.materialResourceEpoch === materialResourceEpoch &&
+    resourcesCurrent &&
     cached.materialBgl === materialBgl &&
     cached.materialBuffer === materialBuffer &&
     cached.sceneMaterialBuffer === sceneMaterialBuffer &&
@@ -1389,10 +1425,11 @@ function materialBindingGroup(
 export function buildPerSubmeshMaterialBg(
   deps: PerSubmeshMaterialBgDeps,
   submeshMaterial: MaterialSnapshot,
-  entityKey: number,
+  entityKey: number | undefined,
   materialWorld: RenderResourceScope = deps.world,
   materialShaderId: string | undefined = submeshMaterial.materialShaderId,
-  materialSlot = 0,
+  _materialSlot = 0,
+  resourceClass?: string,
 ): BindGroup {
   const {
     runtime,
@@ -1412,11 +1449,11 @@ export function buildPerSubmeshMaterialBg(
     bindGroupCounts,
     frameState,
   } = deps;
-  const materialBuffer = meshSsboBuffer(
+  let materialBuffer = meshSsboBuffer(
     pipelineState.materialUniformBuffer,
-    materialSlot * MATERIAL_PER_ENTITY_STRIDE,
+    materialUniformSlot(runtime, submeshMaterial) * MATERIAL_PER_ENTITY_STRIDE,
   );
-  const selectedProbe = resolveReflectionProbeResources?.(materialWorld, entityKey);
+  const selectedProbe = resolveReflectionProbeResources?.(materialWorld, entityKey, resourceClass);
   const effectiveSkylightResources = selectedProbe?.resources ?? skylightResources;
   const smMaterialHandle = submeshMaterial.materialHandle;
   const probeIndex = selectedProbe?.probeIndex;
@@ -1490,7 +1527,8 @@ export function buildPerSubmeshMaterialBg(
         smMaterialBgl,
         materialBuffer,
         effectiveSkylightResources,
-        store.materialResourceEpoch,
+        cached !== undefined &&
+          materialBindingResourcesCurrent(cached, materialWorld, store, runtime, submeshMaterial),
         transmissionBackdropView,
         sceneMaterialBuffer,
         surfaceRawDepthView,
@@ -1535,7 +1573,17 @@ export function buildPerSubmeshMaterialBg(
           'hit',
         );
       }
-      return cached.bindGroup;
+      const slot = prepareMaterialUniform(
+        deps,
+        submeshMaterial,
+        materialWorld,
+        cached.uniformResources,
+      );
+      materialBuffer = meshSsboBuffer(
+        pipelineState.materialUniformBuffer,
+        slot * MATERIAL_PER_ENTITY_STRIDE,
+      );
+      if (materialBuffer === cached.materialBuffer) return cached.bindGroup;
     }
   }
   const standardMaterial = isStandardPbrMaterialShader(smShaderId);
@@ -1561,6 +1609,16 @@ export function buildPerSubmeshMaterialBg(
             (field) => !physicalFields.includes(field),
           );
   const parameterTypes = schemaProjection?.parameterTypes;
+  const preparedTextures = new Map<
+    string,
+    ReturnType<NonNullable<RenderSystemRuntime['preparedMaterialTexture']>>
+  >();
+  const preparedForField = (field: string | undefined) => {
+    if (field === undefined || runtime.preparedMaterialTexture === undefined) return undefined;
+    if (!preparedTextures.has(field))
+      preparedTextures.set(field, runtime.preparedMaterialTexture(submeshMaterial, field));
+    return preparedTextures.get(field);
+  };
   const materialResources = {
     material: submeshMaterial,
     world: materialWorld,
@@ -1569,6 +1627,7 @@ export function buildPerSubmeshMaterialBg(
     pipelineState,
     resident: true,
   };
+  let missingBaseColor = false;
   const smBaseEntries: BindGroupEntry[] = [
     {
       binding: 0,
@@ -1600,6 +1659,10 @@ export function buildPerSubmeshMaterialBg(
     smPerShaderBgl === undefined
       ? undefined
       : sharedMaterialBindingDeclarations(runtime.shaderRegistry, smShaderId),
+    1 +
+      smUserRegionFields.length * 2 +
+      (derivedSchema?.resourceBindings.filter((resource) => resource.kind === 'storage-buffer')
+        .length ?? 0),
   );
   // Below the dedicated budget, the shared transmission variant reads its
   // transmission resources through the split scalar-map pairs it leaves unused.
@@ -1611,6 +1674,8 @@ export function buildPerSubmeshMaterialBg(
         : { ...submeshMaterial, materialShaderId: smShaderId },
       runtime.device.limits.maxSampledTexturesPerShaderStage,
     )?.kind === 'shared';
+  const storageBindings =
+    derivedSchema?.resourceBindings.filter((resource) => resource.kind === 'storage-buffer') ?? [];
   const smBglPairCount = smUserRegionFields.length;
   for (let fi = 0; fi < smBglPairCount; fi++) {
     const canonicalSlot = smUserRegionFields[fi];
@@ -1623,7 +1688,12 @@ export function buildPerSubmeshMaterialBg(
         }
       }
     }
-    const samplerBinding = 1 + fi * 2;
+    const samplerBinding =
+      (storageBindings.length > 0
+        ? derivedSchema?.resourceBindings.find(
+            (resource) => resource.kind === 'sampler' && resource.parameter === canonicalSlot,
+          )?.binding
+        : undefined) ?? 1 + fi * 2;
     const textureBinding = samplerBinding + 1;
     if (sharedResource === 'transmissionBackdropTexture') {
       smBaseEntries.push(
@@ -1685,7 +1755,10 @@ export function buildPerSubmeshMaterialBg(
             field,
             resolveRenderTargetTextureSource,
           );
-    if (isExternalTextureSource(smRuntimeSource)) {
+    const preparedTexture = preparedForField(field);
+    if (preparedTexture !== undefined) {
+      smView = preparedTexture.textureView;
+    } else if (isExternalTextureSource(smRuntimeSource)) {
       smResource = runtime.externalTextures?.resolve(smRuntimeSource, smSlotExternal);
       if (smResource === undefined) materialResources.resident = false;
     } else if (field !== undefined && isCanvasTextureSource(smRuntimeSource)) {
@@ -1708,6 +1781,12 @@ export function buildPerSubmeshMaterialBg(
         smView = smTargetSource.textureView;
       } else materialResources.resident = false;
     } else if (smVideoClip !== undefined) {
+      if (entityKey === undefined)
+        throw new RhiError({
+          code: 'rhi-descriptor-invalid',
+          expected: 'an entity-local video binding on the direct material path',
+          hint: 'route video materials through their player before assembling resources',
+        });
       smResource = videoBindingResource(
         materialWorld,
         runtime,
@@ -1728,7 +1807,11 @@ export function buildPerSubmeshMaterialBg(
       if (smHandle !== undefined) {
         const view = residentTextureView(materialWorld, store, runtime, smHandle);
         if (view !== undefined) smView = view;
-        else materialResources.resident = false;
+        else {
+          materialResources.resident = false;
+          if (field === 'baseColorTexture' && !store.isTexturePreparing(smHandle, materialWorld))
+            missingBaseColor = true;
+        }
       }
     }
     smBaseEntries.push(
@@ -1736,7 +1819,7 @@ export function buildPerSubmeshMaterialBg(
         binding: samplerBinding,
         resource: {
           kind: 'sampler' as const,
-          value: materialBindingSampler(materialResources, field),
+          value: preparedTexture?.sampler ?? materialBindingSampler(materialResources, field),
         },
       },
       {
@@ -1764,7 +1847,10 @@ export function buildPerSubmeshMaterialBg(
       resolveRenderTargetTextureSource,
     );
     const runtimeSource = submeshMaterial.textureSources?.get(field);
-    if (isExternalTextureSource(runtimeSource)) {
+    const preparedTexture = preparedForField(field);
+    if (preparedTexture !== undefined) {
+      view = preparedTexture.textureView;
+    } else if (isExternalTextureSource(runtimeSource)) {
       const resolved = runtime.externalTextures?.resolve(runtimeSource, false);
       if (resolved?.kind === 'textureView') view = resolved.value;
       else materialResources.resident = false;
@@ -1787,7 +1873,7 @@ export function buildPerSubmeshMaterialBg(
       slot: STANDARD_PHYSICAL_TEXTURE_FIELDS.indexOf(
         field as (typeof STANDARD_PHYSICAL_TEXTURE_FIELDS)[number],
       ),
-      sampler: materialBindingSampler(materialResources, field),
+      sampler: preparedTexture?.sampler ?? materialBindingSampler(materialResources, field),
       view,
     });
   }
@@ -1842,6 +1928,25 @@ export function buildPerSubmeshMaterialBg(
       },
     });
   }
+  const uniformResources = materialUniformResources([
+    ...smBaseEntries.slice(1).map(extractEntryResourceHandle),
+    ...physicalTextureInjections.flatMap((entry) => [entry.sampler, entry.view]),
+  ]);
+  const uniformSlot = prepareMaterialUniform(
+    deps,
+    submeshMaterial,
+    materialWorld,
+    uniformResources,
+    missingBaseColor,
+  );
+  materialBuffer = meshSsboBuffer(
+    pipelineState.materialUniformBuffer,
+    uniformSlot * MATERIAL_PER_ENTITY_STRIDE,
+  );
+  smMergedEntries[0] = {
+    binding: 0,
+    resource: { kind: 'buffer', value: { buffer: materialBuffer, offset: 0, size: materialSlice } },
+  };
   const materialCacheHandles = smMergedEntries.map((entry) => extractEntryResourceHandle(entry));
   if (
     diagnosticsEnabled &&
@@ -1919,7 +2024,18 @@ export function buildPerSubmeshMaterialBg(
         probeIndex,
         {
           material: submeshMaterial,
-          materialResourceEpoch: store.materialResourceEpoch,
+          uniformResources,
+          materialResources: captureMaterialResources(
+            submeshMaterial,
+            materialWorld,
+            store,
+            preparedTextures,
+          ),
+          preparedTextures: [...preparedTextures].map(([parameter, source]) => ({
+            parameter,
+            textureView: source?.textureView,
+            sampler: source?.sampler,
+          })),
           materialBgl: smMaterialBgl,
           materialBuffer: materialBuffer,
           ...(sceneMaterialBuffer === undefined ? {} : { sceneMaterialBuffer }),

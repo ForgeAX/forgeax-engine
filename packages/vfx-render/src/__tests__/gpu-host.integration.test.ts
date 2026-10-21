@@ -1,17 +1,20 @@
+import { AssetRegistry } from '@forgeax/engine-assets-runtime';
+import { runtimeAssetRegistry } from '@forgeax/engine-assets-runtime/internal';
 import { createWorldContext, World } from '@forgeax/engine-ecs';
-import type { Asset, MaterialAsset } from '@forgeax/engine-types';
 import {
   ParticleEffectPlayer,
   VFX_GPU_RUNTIME_RESOURCE_KEY,
-  VFX_PARTICLE_CORE_LAYOUT,
   type VfxGpuEffectAsset,
   type VfxGpuRuntime,
   type VfxGpuTickIntent,
   vfxGpuRuntimePlugin,
 } from '@forgeax/engine-vfx';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
+import { publishRuntimeAssets } from '../../../assets-runtime/src/__tests__/fixtures/runtime-publication';
 import { resolveFeatureWorkResources } from '../../../render/src/features/frame-plan';
 import { renderFeaturePlanSignature } from '../../../render/src/features/plan';
+import { cookedEffectFixture } from '../../../vfx/src/__tests__/cooked-effect-fixture';
+import { runtimeEffectFixture } from '../../../vfx/src/__tests__/runtime-effect-fixture';
 import {
   createCameraProvider,
   createVfxRuntimeHost as createRuntimeHost,
@@ -35,79 +38,29 @@ function createVfxRuntimeHost(options: Parameters<typeof createRuntimeHost>[0]) 
 }
 
 /** Keep legacy hand-authored fixtures executable on the one-cut Program v3 runtime. */
-function asV3Effect(input: unknown): VfxGpuEffectAsset {
-  type FixtureRecord = Record<string, unknown>;
-  const value = input as FixtureRecord;
-  const program = value.program as FixtureRecord;
-  const emitters = (program.emitters as readonly FixtureRecord[]).map((emitter) => {
-    const renderers = (emitter.renderers ?? []) as readonly FixtureRecord[];
-    const reflection = emitter.reflection as FixtureRecord;
-    return {
-      ...emitter,
-      reflection: {
-        hooks: ['vfx_spawn', 'vfx_update'],
-        imports: [],
-        resources: reflection.resources ?? [],
-        entryPoints: reflection.entryPoints ?? [],
-        bindings: reflection.bindings ?? [],
-        layout: reflection.layout ?? {
-          version: 3,
-          parameters: { name: 'VfxParameters', fields: [], size: 0, alignment: 1 },
-          custom: { name: 'VfxCustom', fields: [], size: 0, alignment: 1 },
-          core: VFX_PARTICLE_CORE_LAYOUT,
-          customLayout: {
-            name: 'VfxCustom',
-            fields: [],
-            size: 0,
-            alignment: 1,
-            stride: 0,
-            lanes: 0,
-          },
-          fingerprint: 'sha256:legacy-fixture-layout',
-        },
-        dataInterfaces: reflection.dataInterfaces ?? [],
-        eventChannels: reflection.eventChannels ?? [],
-        events: reflection.events ?? [],
-        eventEntryPoint: 'forgeax_vfx_event_main',
-        stages: reflection.stages ?? [],
-        renderers: renderers.map((renderer) => ({
-          topology: renderer.kind,
-          resource: `${renderer.kind}Instances`,
-          capacity: renderer.capacity ?? emitter.capacity,
-          overflow: 'drop-newest',
-          enabled: renderer.enabled !== false,
-          shaderInputs: [],
-          attributes: {},
-          materialInputs: renderer.materialInputs ?? [],
-          ...(renderer.materialInputDefinitions === undefined
-            ? {}
-            : { materialInputDefinitions: renderer.materialInputDefinitions }),
-          ...(renderer.historyLength === undefined
-            ? {}
-            : { historyLength: renderer.historyLength }),
-          ...(renderer.castShadows === undefined ? {} : { castShadows: renderer.castShadows }),
-          ...(renderer.receiveShadows === undefined
-            ? {}
-            : { receiveShadows: renderer.receiveShadows }),
-        })),
-      },
-    };
-  });
+async function asV3Effect(input: unknown): Promise<VfxGpuEffectAsset> {
+  return cookedEffectFixture(input as Parameters<typeof cookedEffectFixture>[0]);
+}
+
+async function cookedTick(input: unknown): Promise<VfxTickFixture> {
+  const tick = input as VfxTickFixture;
+  const emitter = tick.emitter;
+  const effect = await cookedEffectFixture({ program: { emitters: [emitter] } });
+  const cooked = effect.program.emitters[0];
+  if (cooked === undefined) throw new Error('missing cooked emitter');
   return {
-    ...value,
-    schemaVersion: 3,
-    program: { ...program, format: 'forgeax-vfx-program-4', emitters },
-  } as unknown as VfxGpuEffectAsset;
+    ...tick,
+    emitter: { ...cooked, wgsl: `${cooked.wgsl}\n// ${emitter.id}` },
+    programFingerprint: effect.programFingerprint,
+  } as unknown as VfxTickFixture;
 }
 
 describe('GPU VFX public host', () => {
   it('owns loader and FixedUpdate attachment without exposing simulation internals', async () => {
-    const world = new World();
-    const registered: unknown[] = [];
-    const assets = {
-      loaders: { registerPackLoader: (loader: unknown) => registered.push(loader) },
-      lookup: () => undefined,
-    };
+    const assets = new AssetRegistry();
+    const world = new World({ assets });
+
+    const registered = vi.spyOn(assets, 'installDecoder');
     const host = createVfxRuntimeHost({
       camera: {
         read: () => ({
@@ -119,9 +72,9 @@ describe('GPU VFX public host', () => {
       },
     });
 
-    const attached = await host.attachWorld({ world, assets: assets as never });
+    const attached = await host.attachWorld({ world, assets });
     expect(attached).toMatchObject({ ok: true, value: { state: 'attached' } });
-    expect(registered).toHaveLength(1);
+    expect(registered).toHaveBeenCalledTimes(1);
     expect(host.feature.requiredMaterialShaders).toEqual([
       ...Object.values(PARTICLE_SHADER_IDENTIFIERS),
       'forgeax::vfx-render.particles.mesh-unlit',
@@ -137,29 +90,28 @@ describe('GPU VFX public host', () => {
   it.each([
     false,
     true,
-  ])('preserves the registry receiver and declared depth writes: %s', async (writesDepth) => {
-    const world = new World();
-    const lookups: string[] = [];
-    class StatefulAssets {
-      readonly material: MaterialAsset = {
-        kind: 'material',
-        passes: [
-          {
-            name: 'particle-billboard',
-            program: { module: 'custom-depth' },
-            renderState: { depthWriteEnabled: writesDepth },
-          },
-        ],
-      };
-      readonly loaders = { registerPackLoader: () => {} };
+  ])('reads adopted material depth writes through the runtime owner: %s', async (writesDepth) => {
+    const assets = new AssetRegistry();
+    const world = new World({ assets });
 
-      lookup<T extends Asset = Asset>(guid: string): T | undefined {
-        if (this !== assets) throw new Error('asset registry receiver was lost');
-        lookups.push(guid);
-        return guid === 'material-guid' ? (this.material as T) : undefined;
-      }
-    }
-    const assets = new StatefulAssets();
+    const materialGuid = '11111111-1111-4111-8111-111111111111';
+    publishRuntimeAssets(assets, [
+      {
+        guid: materialGuid,
+        asset: {
+          kind: 'material',
+          passes: [
+            {
+              name: 'particle-billboard',
+              program: { module: 'custom-depth' },
+              renderState: { depthWriteEnabled: writesDepth },
+            },
+          ],
+        },
+      },
+    ]);
+    const material = (await assets.load(materialGuid, 'material')).unwrap();
+    assets.release(material).unwrap();
     const host = createVfxRuntimeHost({
       camera: {
         read: () => ({
@@ -172,7 +124,7 @@ describe('GPU VFX public host', () => {
     });
     expect(await host.attachWorld({ world, assets })).toMatchObject({ ok: true });
 
-    const intent = {
+    const intent = await cookedTick({
       player: world.spawn().unwrap(),
       fixedDelta: 1 / 60,
       initialFixedDelta: 1 / 60,
@@ -200,6 +152,8 @@ describe('GPU VFX public host', () => {
             'forgeax_vfx_scan_block_offsets_main',
             'forgeax_vfx_add_offsets_main',
             'forgeax_vfx_compact_main',
+            'forgeax_vfx_scan_compact_main',
+            'forgeax_vfx_update_compact_main',
             'forgeax_vfx_billboard_main',
             'forgeax_vfx_mesh_main',
             'forgeax_vfx_ribbon_main',
@@ -210,9 +164,9 @@ describe('GPU VFX public host', () => {
           ],
           bindings: [],
         },
-        renderers: [{ kind: 'billboard', material: 'material-guid' }],
+        renderers: [{ kind: 'billboard', material: materialGuid }],
       },
-    } as unknown as VfxTickFixture;
+    } as unknown as VfxTickFixture);
     const planned = host.feature.plan(
       {
         worlds: [
@@ -250,7 +204,9 @@ describe('GPU VFX public host', () => {
       } as never,
     );
     expect(planned.ok).toBe(true);
-    expect(lookups).toEqual(['material-guid']);
+    expect(assets.read(material).unwrap().passes?.[0]?.renderState?.depthWriteEnabled).toBe(
+      writesDepth,
+    );
     if (planned.ok) {
       expect(
         planResources(planned.value).find((resource) => resource.kind === 'graphics-program'),
@@ -267,6 +223,8 @@ describe('GPU VFX public host', () => {
             'forgeax_vfx_update_main',
             'forgeax_vfx_scan_blocks_main',
             'forgeax_vfx_compact_main',
+            'forgeax_vfx_scan_compact_main',
+            'forgeax_vfx_update_compact_main',
             'forgeax_vfx_billboard_main',
           ],
         },
@@ -324,22 +282,29 @@ describe('GPU VFX public host', () => {
   });
 
   it('fences preview controls to one attached host generation', async () => {
-    const world = new World();
-    const assets = {
-      loaders: { registerPackLoader: () => {} },
-      lookup: () => undefined,
-    };
+    const assets = new AssetRegistry();
+    const world = new World({ assets });
+
     const host = createVfxRuntimeHost({ camera: { read: () => undefined } });
     expect(host.acquireControl(world)).toMatchObject({
       ok: false,
       error: { code: 'vfx-host-control-world-detached' },
     });
 
-    expect(await host.attachWorld({ world, assets: assets as never })).toMatchObject({ ok: true });
+    expect(await host.attachWorld({ world, assets })).toMatchObject({ ok: true });
     const acquired = host.acquireControl(world);
     expect(acquired).toMatchObject({ ok: true, value: { generation: 1 } });
     if (!acquired.ok) throw new Error(acquired.error.code);
-    const effect = world.allocSharedRef('ParticleEffectAsset', {} as never);
+    const effect = runtimeAssetRegistry(world.assets)
+      .create(
+        runtimeEffectFixture(
+          world,
+          await cookedEffectFixture({
+            program: { emitters: [{ id: 'controls', capacity: 4, renderers: [] }] },
+          }),
+        ),
+      )
+      .unwrap();
     const player = world
       .spawn({
         component: ParticleEffectPlayer,
@@ -382,7 +347,7 @@ describe('GPU VFX public host', () => {
     });
 
     expect(await host.detachWorld({ world })).toMatchObject({ ok: true });
-    expect(await host.attachWorld({ world, assets: assets as never })).toMatchObject({ ok: true });
+    expect(await host.attachWorld({ world, assets })).toMatchObject({ ok: true });
     expect(acquired.value.replay({ player })).toMatchObject({
       ok: false,
       error: {
@@ -393,8 +358,8 @@ describe('GPU VFX public host', () => {
     expect(host.acquireControl(world)).toMatchObject({ ok: true, value: { generation: 2 } });
   });
 
-  it('declares every pending emitter program in one feature plan', () => {
-    const world = new World();
+  it('declares every pending emitter program in one feature plan', async () => {
+    const world = new World({ assets: new AssetRegistry() });
     const player = world.spawn().unwrap();
     const secondPlayer = world.spawn().unwrap();
     let committed = 0;
@@ -403,86 +368,87 @@ describe('GPU VFX public host', () => {
       id: string,
       owner: typeof player = player,
       renderers: VfxTickFixture['emitter']['renderers'] = [],
-    ): VfxTickFixture => ({
-      sequence: 1,
-      player: owner,
-      emitter: {
-        id,
-        module: `${id}.vfx.wgsl`,
-        capacity: 4,
-        backend: { required: 'gpu' },
-        space: 'local',
-        simulationWhenCulled: 'continue',
-        schedule: { rate: 0, bursts: [] },
-        bounds: { kind: 'sphere', center: [0, 0, 0], radius: 1 },
-        wgsl: `// ${id}`,
-        reflection: {
-          hooks: ['vfx_spawn', 'vfx_update'],
-          imports: [],
-          resources: [],
-          entryPoints: [
-            'forgeax_vfx_spawn_main',
-            'forgeax_vfx_update_main',
-            'forgeax_vfx_billboard_main',
-            'forgeax_vfx_mesh_main',
-            'forgeax_vfx_ribbon_main',
-            'forgeax_vfx_trail_history_main',
-            'forgeax_vfx_trail_offsets_main',
-            'forgeax_vfx_trail_main',
-            'forgeax_vfx_beam_main',
-          ],
-          bindings:
-            renderers.length === 0
-              ? []
-              : [
-                  {
-                    entries: [0, 1, 2, 3, 4, 5, 6, 8, 9].map((binding) => ({
-                      binding,
-                      visibility: 4,
-                      buffer: { type: binding === 1 ? 'uniform' : 'storage' },
-                    })),
-                  },
-                ],
-        } as never,
-        renderers,
-      },
-      programFingerprint: id,
-      reset: true,
-      fixedDelta: 1 / 60,
-      initialFixedDelta: 1 / 60,
-      phaseTick: 0,
-      tick: 0,
-      seed: 1,
-      playCycle: 0,
-      spawnCount: 1,
-      firstParticleId: 0,
-      instanceGeneration: 0,
-      instancePatchCount: 0,
-      parameterBlock: new Uint8Array(),
-      canonicalPayload: new Uint8Array(),
-      replayInput: {
-        seed: 1,
-        tick: 0,
-        generation: 0,
+    ): Promise<VfxTickFixture> =>
+      cookedTick({
         sequence: 1,
-        fingerprint: id,
-        payload: new Uint8Array(),
-        values: {},
+        player: owner,
+        emitter: {
+          id,
+          module: `${id}.vfx.wgsl`,
+          capacity: 4,
+          backend: { required: 'gpu' },
+          space: 'local',
+          simulationWhenCulled: 'continue',
+          schedule: { rate: 0, bursts: [] },
+          bounds: { kind: 'sphere', center: [0, 0, 0], radius: 1 },
+          wgsl: `// ${id}`,
+          reflection: {
+            hooks: ['vfx_spawn', 'vfx_update'],
+            imports: [],
+            resources: [],
+            entryPoints: [
+              'forgeax_vfx_spawn_main',
+              'forgeax_vfx_update_main',
+              'forgeax_vfx_billboard_main',
+              'forgeax_vfx_mesh_main',
+              'forgeax_vfx_ribbon_main',
+              'forgeax_vfx_trail_history_main',
+              'forgeax_vfx_trail_offsets_main',
+              'forgeax_vfx_trail_main',
+              'forgeax_vfx_beam_main',
+            ],
+            bindings:
+              renderers.length === 0
+                ? []
+                : [
+                    {
+                      entries: [0, 1, 2, 3, 4, 5, 6, 8, 9].map((binding) => ({
+                        binding,
+                        visibility: 4,
+                        buffer: { type: binding === 1 ? 'uniform' : 'storage' },
+                      })),
+                    },
+                  ],
+          } as never,
+          renderers,
+        },
+        programFingerprint: id,
+        reset: true,
+        fixedDelta: 1 / 60,
+        initialFixedDelta: 1 / 60,
+        phaseTick: 0,
+        tick: 0,
+        seed: 1,
+        playCycle: 0,
+        spawnCount: 1,
+        firstParticleId: 0,
+        instanceGeneration: 0,
+        instancePatchCount: 0,
+        parameterBlock: new Uint8Array(),
+        canonicalPayload: new Uint8Array(),
+        replayInput: {
+          seed: 1,
+          tick: 0,
+          generation: 0,
+          sequence: 1,
+          fingerprint: id,
+          payload: new Uint8Array(),
+          values: {},
+          channelInputs: [],
+          droppedCount: 0,
+        },
         channelInputs: [],
-        droppedCount: 0,
-      },
-      channelInputs: [],
-      eventCounters: {
-        queued: 0,
-        produced: 0,
-        consumed: 0,
-        dropped: 0,
-        overflow: 0,
-        fanOut: 0,
-        recursionDepth: 0,
-        lastSequence: -1,
-      },
-    });
+        eventCounters: {
+          queued: 0,
+          produced: 0,
+          consumed: 0,
+          dropped: 0,
+          overflow: 0,
+          fanOut: 0,
+          recursionDepth: 0,
+          lastSequence: -1,
+        },
+      });
     const feature = gpuParticleRenderFeature({ camera: { read: () => undefined } });
     const runtime = {
       isEmitterSessionEnabled: () => true,
@@ -508,9 +474,9 @@ describe('GPU VFX public host', () => {
             runtime,
             camera,
             intents: [
-              intent('first'),
-              intent('second', secondPlayer),
-              { ...intent('first'), reset: false, sequence: 3 },
+              await intent('first'),
+              await intent('second', secondPlayer),
+              { ...(await intent('first')), reset: false, sequence: 3 },
             ],
           },
         ],
@@ -524,23 +490,43 @@ describe('GPU VFX public host', () => {
       planResources(planned.value)
         .filter((resource) => resource.kind === 'compute-program')
         .map((resource) => resource.name),
-    ).toEqual([
-      expect.stringContaining(`.p-${Number(player).toString(36)}.e-0.`),
-      expect.stringContaining(`.p-${Number(secondPlayer).toString(36)}.e-1.`),
-    ]);
+    ).toEqual(['vfx.compute-program-0', 'vfx.compute-program-1']);
     expect(
       planResources(planned.value)
         .filter((resource) => resource.kind === 'compute-program')
         .map((resource) => resource.program.entryPoints),
     ).toEqual([
-      ['forgeax_vfx_spawn_main', 'forgeax_vfx_update_main'],
-      ['forgeax_vfx_spawn_main', 'forgeax_vfx_update_main'],
+      [
+        'forgeax_vfx_spawn_main',
+        'forgeax_vfx_update_main',
+        'forgeax_vfx_scan_blocks_main',
+        'forgeax_vfx_compact_main',
+        'forgeax_vfx_scan_compact_main',
+        'forgeax_vfx_update_compact_main',
+      ],
+      [
+        'forgeax_vfx_spawn_main',
+        'forgeax_vfx_update_main',
+        'forgeax_vfx_scan_blocks_main',
+        'forgeax_vfx_compact_main',
+        'forgeax_vfx_scan_compact_main',
+        'forgeax_vfx_update_compact_main',
+      ],
     ]);
+    const simulations = planPasses(planned.value).flatMap((pass) =>
+      pass.kind === 'compute' && pass.name.includes('.e-0.tick-')
+        ? pass.dispatches.map((dispatch) => ({
+            entryPoint: dispatch.entryPoint,
+            bindings: dispatch.bindings ?? pass.bindings,
+          }))
+        : [],
+    );
     expect(
-      planPasses(planned.value).filter(
-        (pass) => pass.kind === 'compute' && pass.name.includes('.e-0.tick-'),
+      simulations.filter((dispatch) =>
+        /^forgeax_vfx_update(?:_compact)?_main$/.test(dispatch.entryPoint),
       ),
     ).toHaveLength(2);
+    expect(new Set(simulations.map((dispatch) => dispatch.bindings)).size).toBe(2);
     expect(committed).toBe(0);
     expect(dispatchedEvents).toBe(0);
     feature.onFrameSubmitted?.({
@@ -563,7 +549,12 @@ describe('GPU VFX public host', () => {
     const warm = feature.plan(
       {
         worlds: [
-          { world, runtime, camera, intents: [{ ...intent('first'), reset: false, sequence: 4 }] },
+          {
+            world,
+            runtime,
+            camera,
+            intents: [{ ...(await intent('first')), reset: false, sequence: 4 }],
+          },
         ],
         frameNumber: 2,
       } as never,
@@ -573,7 +564,8 @@ describe('GPU VFX public host', () => {
     if (!warm.ok) return;
     expect(
       planResources(warm.value).some(
-        (resource) => resource.kind === 'compute-program' && resource.name.includes('.e-0.'),
+        (resource) =>
+          resource.kind === 'compute-program' && resource.program.wgsl.endsWith('// first'),
       ),
     ).toBe(true);
     const warmParticles = planResources(warm.value).find(
@@ -586,7 +578,12 @@ describe('GPU VFX public host', () => {
     const reset = feature.plan(
       {
         worlds: [
-          { world, runtime, camera, intents: [{ ...intent('first'), reset: true, sequence: 5 }] },
+          {
+            world,
+            runtime,
+            camera,
+            intents: [{ ...(await intent('first')), reset: true, sequence: 5 }],
+          },
         ],
         frameNumber: 3,
       } as never,
@@ -596,7 +593,8 @@ describe('GPU VFX public host', () => {
     if (reset.ok)
       expect(
         planResources(reset.value).some(
-          (resource) => resource.kind === 'compute-program' && resource.name.includes('.e-0.'),
+          (resource) =>
+            resource.kind === 'compute-program' && resource.program.wgsl.endsWith('// first'),
         ),
       ).toBe(true);
     feature.onFrameSubmitted?.({ worlds: [], frameNumber: 3 } as never);
@@ -609,7 +607,9 @@ describe('GPU VFX public host', () => {
             runtime,
             camera,
             intents: [
-              intent('projected', player, [{ kind: 'billboard', material: 'particle-material' }]),
+              await intent('projected', player, [
+                { kind: 'billboard', material: 'particle-material' },
+              ]),
             ],
           },
         ],
@@ -627,16 +627,16 @@ describe('GPU VFX public host', () => {
             camera,
             intents: [
               {
-                ...intent('projected', player, [
+                ...(await intent('projected', player, [
                   { kind: 'billboard', material: 'particle-material' },
-                ]),
+                ])),
                 reset: false,
                 sequence: 2,
               },
               {
-                ...intent('projected', player, [
+                ...(await intent('projected', player, [
                   { kind: 'billboard', material: 'particle-material' },
-                ]),
+                ])),
                 reset: false,
                 sequence: 3,
               },
@@ -662,75 +662,76 @@ describe('GPU VFX public host', () => {
       expect(secondBinding).toBeDefined();
       if (firstBinding?.kind === 'compute-bindings' && secondBinding?.kind === 'compute-bindings') {
         expect(firstBinding.entries).toEqual(secondBinding.entries);
-        expect(firstBinding.entries.find((entry) => entry.binding === 8)?.resource).toContain(
-          '.projection-event-inputs',
-        );
+        expect(
+          firstBinding.entries.some((entry) => entry.resource.includes('.projection-event-inputs')),
+        ).toBe(false);
       }
     }
   });
 
-  it('keeps masked bindings warm and sends effect-relative time to WGSL', () => {
-    const world = new World();
+  it('keeps masked bindings warm and sends effect-relative time to WGSL', async () => {
+    const world = new World({ assets: new AssetRegistry() });
     const player = world.spawn().unwrap();
-    const intent = (tick: number): VfxTickFixture => ({
-      sequence: tick + 1,
-      player,
-      emitter: {
-        id: 'masked',
-        module: 'masked.vfx.wgsl',
-        capacity: 4,
-        backend: { required: 'gpu' },
-        space: 'local',
-        simulationWhenCulled: 'continue',
-        schedule: { rate: 0, bursts: [] },
-        bounds: { kind: 'sphere', center: [0, 0, 0], radius: 1 },
-        wgsl: '// masked',
-        reflection: {
-          hooks: ['vfx_spawn', 'vfx_update'],
-          imports: [],
-          resources: [],
-          entryPoints: ['forgeax_vfx_spawn_main'],
-          bindings: [],
-        } as never,
-        renderers: [],
-      },
-      programFingerprint: 'masked-program',
-      reset: tick === 0,
-      fixedDelta: 1 / 60,
-      initialFixedDelta: 1 / 60,
-      phaseTick: tick + 7,
-      tick,
-      seed: 1,
-      playCycle: 0,
-      spawnCount: tick === 0 ? 1 : 0,
-      firstParticleId: 0,
-      instanceGeneration: 0,
-      instancePatchCount: 0,
-      parameterBlock: new Uint8Array(),
-      canonicalPayload: new Uint8Array(),
-      replayInput: {
-        seed: 1,
-        tick,
-        generation: 0,
+    const intent = (tick: number): Promise<VfxTickFixture> =>
+      cookedTick({
         sequence: tick + 1,
-        fingerprint: 'masked-program',
-        payload: new Uint8Array(),
-        values: {},
+        player,
+        emitter: {
+          id: 'masked',
+          module: 'masked.vfx.wgsl',
+          capacity: 4,
+          backend: { required: 'gpu' },
+          space: 'local',
+          simulationWhenCulled: 'continue',
+          schedule: { rate: 0, bursts: [] },
+          bounds: { kind: 'sphere', center: [0, 0, 0], radius: 1 },
+          wgsl: '// masked',
+          reflection: {
+            hooks: ['vfx_spawn', 'vfx_update'],
+            imports: [],
+            resources: [],
+            entryPoints: ['forgeax_vfx_spawn_main'],
+            bindings: [{ entries: [{ binding: 0, visibility: 4, buffer: { type: 'storage' } }] }],
+          } as never,
+          renderers: [],
+        },
+        programFingerprint: 'masked-program',
+        reset: tick === 0,
+        fixedDelta: 1 / 60,
+        initialFixedDelta: 1 / 60,
+        phaseTick: tick + 7,
+        tick,
+        seed: 1,
+        playCycle: 0,
+        spawnCount: tick === 0 ? 1 : 0,
+        firstParticleId: 0,
+        instanceGeneration: 0,
+        instancePatchCount: 0,
+        parameterBlock: new Uint8Array(),
+        canonicalPayload: new Uint8Array(),
+        replayInput: {
+          seed: 1,
+          tick,
+          generation: 0,
+          sequence: tick + 1,
+          fingerprint: 'masked-program',
+          payload: new Uint8Array(),
+          values: {},
+          channelInputs: [],
+          droppedCount: 0,
+        },
         channelInputs: [],
-        droppedCount: 0,
-      },
-      channelInputs: [],
-      eventCounters: {
-        queued: 0,
-        produced: 0,
-        consumed: 0,
-        dropped: 0,
-        overflow: 0,
-        fanOut: 0,
-        recursionDepth: 0,
-        lastSequence: -1,
-      },
-    });
+        eventCounters: {
+          queued: 0,
+          produced: 0,
+          consumed: 0,
+          dropped: 0,
+          overflow: 0,
+          fanOut: 0,
+          recursionDepth: 0,
+          lastSequence: -1,
+        },
+      });
     let sessionEnabled = true;
     const runtime = {
       isEmitterSessionEnabled: () => sessionEnabled,
@@ -752,7 +753,7 @@ describe('GPU VFX public host', () => {
         frameNumber,
       }) as never;
 
-    const active = feature.plan(frame([intent(0)], 1), context);
+    const active = feature.plan(frame([await intent(0)], 1), context);
     expect(active.ok).toBe(true);
     if (!active.ok) return;
     const runtimeWrite = planResources(active.value).find(
@@ -764,7 +765,7 @@ describe('GPU VFX public host', () => {
     const runtimeBytes = runtimeWrite?.kind === 'buffer' ? runtimeWrite.data : undefined;
     expect(new Uint32Array((runtimeBytes as Uint8Array).buffer)[1]).toBe(7);
     sessionEnabled = false;
-    const masked = feature.plan(frame([intent(1)], 2), context);
+    const masked = feature.plan(frame([await intent(1)], 2), context);
     expect(masked).toMatchObject({
       ok: true,
       value: {
@@ -775,75 +776,76 @@ describe('GPU VFX public host', () => {
       },
     });
     sessionEnabled = true;
-    const resumed = feature.plan(frame([intent(2)], 3), context);
+    const resumed = feature.plan(frame([await intent(2)], 3), context);
     expect(resumed.ok).toBe(true);
     if (resumed.ok) expect(planResources(resumed.value).length).toBeGreaterThan(0);
   });
 
-  it('acknowledges a skipped head and keeps a reset resource identity across retry', () => {
-    const world = new World();
+  it('acknowledges a skipped head and keeps a reset resource identity across retry', async () => {
+    const world = new World({ assets: new AssetRegistry() });
     const player = world.spawn().unwrap();
     const commits: number[] = [];
     let dispatched = 0;
-    const makeIntent = (id: string, sequence: number, reset: boolean): VfxTickFixture => ({
-      sequence,
-      player,
-      emitter: {
-        id,
-        module: `${id}.vfx.wgsl`,
-        capacity: 4,
-        backend: { required: 'gpu' },
-        space: 'world',
-        simulationWhenCulled: 'continue',
-        schedule: { rate: 0, bursts: [] },
-        bounds: { kind: 'sphere', center: [0, 0, 0], radius: 1 },
-        wgsl: `// ${id}`,
-        reflection: {
-          hooks: ['vfx_spawn', 'vfx_update'],
-          imports: [],
-          resources: [],
-          entryPoints: ['forgeax_vfx_spawn_main'],
-          bindings: [],
-        } as never,
-        renderers: [],
-      },
-      programFingerprint: `${id}-program`,
-      reset,
-      fixedDelta: 1 / 60,
-      initialFixedDelta: 1 / 60,
-      phaseTick: sequence,
-      tick: sequence,
-      seed: 1,
-      playCycle: 0,
-      spawnCount: 1,
-      firstParticleId: 0,
-      instanceGeneration: 0,
-      instancePatchCount: 0,
-      parameterBlock: new Uint8Array(),
-      canonicalPayload: new Uint8Array(),
-      replayInput: {
-        seed: 1,
-        tick: sequence,
-        generation: 0,
+    const makeIntent = (id: string, sequence: number, reset: boolean): Promise<VfxTickFixture> =>
+      cookedTick({
         sequence,
-        fingerprint: `${id}-program`,
-        payload: new Uint8Array(),
-        values: {},
+        player,
+        emitter: {
+          id,
+          module: `${id}.vfx.wgsl`,
+          capacity: 4,
+          backend: { required: 'gpu' },
+          space: 'world',
+          simulationWhenCulled: 'continue',
+          schedule: { rate: 0, bursts: [] },
+          bounds: { kind: 'sphere', center: [0, 0, 0], radius: 1 },
+          wgsl: `// ${id}`,
+          reflection: {
+            hooks: ['vfx_spawn', 'vfx_update'],
+            imports: [],
+            resources: [],
+            entryPoints: ['forgeax_vfx_spawn_main'],
+            bindings: [],
+          } as never,
+          renderers: [],
+        },
+        programFingerprint: `${id}-program`,
+        reset,
+        fixedDelta: 1 / 60,
+        initialFixedDelta: 1 / 60,
+        phaseTick: sequence,
+        tick: sequence,
+        seed: 1,
+        playCycle: 0,
+        spawnCount: 1,
+        firstParticleId: 0,
+        instanceGeneration: 0,
+        instancePatchCount: 0,
+        parameterBlock: new Uint8Array(),
+        canonicalPayload: new Uint8Array(),
+        replayInput: {
+          seed: 1,
+          tick: sequence,
+          generation: 0,
+          sequence,
+          fingerprint: `${id}-program`,
+          payload: new Uint8Array(),
+          values: {},
+          channelInputs: [],
+          droppedCount: 0,
+        },
         channelInputs: [],
-        droppedCount: 0,
-      },
-      channelInputs: [],
-      eventCounters: {
-        queued: 0,
-        produced: 0,
-        consumed: 0,
-        dropped: 0,
-        overflow: 0,
-        fanOut: 0,
-        recursionDepth: 0,
-        lastSequence: -1,
-      },
-    });
+        eventCounters: {
+          queued: 0,
+          produced: 0,
+          consumed: 0,
+          dropped: 0,
+          overflow: 0,
+          fanOut: 0,
+          recursionDepth: 0,
+          lastSequence: -1,
+        },
+      });
     const runtime = {
       renderGeneration: 1,
       isEmitterSessionEnabled: (_player: number, emitterId: string) => emitterId !== 'masked',
@@ -862,6 +864,10 @@ describe('GPU VFX public host', () => {
       viewProjection: new Float32Array([1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1]),
     };
     const feature = gpuParticleRenderFeature({ camera: { read: () => camera } });
+    const fixtureIntents = [
+      await makeIntent('masked', 1, false),
+      await makeIntent('visible', 2, true),
+    ];
     const frame = (frameNumber: number) =>
       ({
         worlds: [
@@ -869,7 +875,7 @@ describe('GPU VFX public host', () => {
             world,
             runtime,
             camera,
-            intents: [makeIntent('masked', 1, false), makeIntent('visible', 2, true)],
+            intents: fixtureIntents,
           },
         ],
         frameNumber,
@@ -881,7 +887,7 @@ describe('GPU VFX public host', () => {
     const firstProgram = planResources(first.value).find(
       (resource) => resource.kind === 'compute-program',
     );
-    expect(firstProgram?.name).toContain('.e-0.');
+    expect(firstProgram?.name).toBe('vfx.compute-program-0');
     feature.onFrameAborted?.(frame(1));
 
     const retry = feature.plan(frame(1), context);
@@ -896,7 +902,7 @@ describe('GPU VFX public host', () => {
     expect(dispatched).toBe(1);
   });
 
-  it('keeps resets ordered through retry and isolates storage by World', () => {
+  it('keeps resets ordered through retry and isolates storage by World', async () => {
     const camera = {
       position: new Float32Array(3),
       right: new Float32Array([1, 0, 0]),
@@ -908,79 +914,80 @@ describe('GPU VFX public host', () => {
       id: string,
       sequence: number,
       reset: boolean,
-      requiresDataInterface = false,
-    ): VfxTickFixture => ({
-      sequence,
-      player,
-      emitter: {
-        id,
-        module: `${id}.vfx.wgsl`,
-        capacity: 4,
-        backend: { required: 'gpu' },
-        space: 'world',
-        simulationWhenCulled: 'continue',
-        schedule: { rate: 0, bursts: [] },
-        bounds: { kind: 'sphere', center: [0, 0, 0], radius: 1 },
-        wgsl: `// ${id}`,
-        reflection: {
-          hooks: ['vfx_spawn', 'vfx_update'],
-          imports: [],
-          resources: [],
-          entryPoints: ['forgeax_vfx_spawn_main'],
-          bindings: [],
-          ...(requiresDataInterface
-            ? {
-                dataInterfaces: [
-                  {
-                    token: 'vfx:camera',
-                    kind: 'camera' as const,
-                    binding: 0,
-                    bindingType: 'uniform' as const,
-                    lifetime: 'generation' as const,
-                  },
-                ],
-              }
-            : {}),
-        } as never,
-        renderers: [],
-      },
-      programFingerprint: `${id}-program`,
-      reset,
-      fixedDelta: 1 / 60,
-      initialFixedDelta: 1 / 60,
-      phaseTick: sequence,
-      tick: sequence,
-      seed: 1,
-      playCycle: 0,
-      spawnCount: 1,
-      firstParticleId: 0,
-      instanceGeneration: 0,
-      instancePatchCount: 0,
-      parameterBlock: new Uint8Array(),
-      canonicalPayload: new Uint8Array(),
-      replayInput: {
-        seed: 1,
-        tick: sequence,
-        generation: 0,
+      requiresDataInterface = true,
+    ): Promise<VfxTickFixture> =>
+      cookedTick({
         sequence,
-        fingerprint: `${id}-program`,
-        payload: new Uint8Array(),
-        values: {},
+        player,
+        emitter: {
+          id,
+          module: `${id}.vfx.wgsl`,
+          capacity: 4,
+          backend: { required: 'gpu' },
+          space: 'world',
+          simulationWhenCulled: 'continue',
+          schedule: { rate: 0, bursts: [] },
+          bounds: { kind: 'sphere', center: [0, 0, 0], radius: 1 },
+          wgsl: `// ${id}`,
+          reflection: {
+            hooks: ['vfx_spawn', 'vfx_update'],
+            imports: [],
+            resources: [],
+            entryPoints: ['forgeax_vfx_spawn_main'],
+            bindings: [{ entries: [{ binding: 0, visibility: 4, buffer: { type: 'storage' } }] }],
+            ...(requiresDataInterface
+              ? {
+                  dataInterfaces: [
+                    {
+                      token: 'vfx:camera',
+                      kind: 'camera' as const,
+                      binding: 0,
+                      bindingType: 'uniform' as const,
+                      lifetime: 'generation' as const,
+                    },
+                  ],
+                }
+              : {}),
+          } as never,
+          renderers: [],
+        },
+        programFingerprint: `${id}-program`,
+        reset,
+        fixedDelta: 1 / 60,
+        initialFixedDelta: 1 / 60,
+        phaseTick: sequence,
+        tick: sequence,
+        seed: 1,
+        playCycle: 0,
+        spawnCount: 1,
+        firstParticleId: 0,
+        instanceGeneration: 0,
+        instancePatchCount: 0,
+        parameterBlock: new Uint8Array(),
+        canonicalPayload: new Uint8Array(),
+        replayInput: {
+          seed: 1,
+          tick: sequence,
+          generation: 0,
+          sequence,
+          fingerprint: `${id}-program`,
+          payload: new Uint8Array(),
+          values: {},
+          channelInputs: [],
+          droppedCount: 0,
+        },
         channelInputs: [],
-        droppedCount: 0,
-      },
-      channelInputs: [],
-      eventCounters: {
-        queued: 0,
-        produced: 0,
-        consumed: 0,
-        dropped: 0,
-        overflow: 0,
-        fanOut: 0,
-        recursionDepth: 0,
-        lastSequence: -1,
-      },
-    });
+        eventCounters: {
+          queued: 0,
+          produced: 0,
+          consumed: 0,
+          dropped: 0,
+          overflow: 0,
+          fanOut: 0,
+          recursionDepth: 0,
+          lastSequence: -1,
+        },
+      });
     const makeRuntime = () => {
       let enabled = true;
       const commits: number[] = [];
@@ -999,13 +1006,13 @@ describe('GPU VFX public host', () => {
         commits,
       };
     };
-    const world = new World();
-    const otherWorld = new World();
+    const world = new World({ assets: new AssetRegistry() });
+    const otherWorld = new World({ assets: new AssetRegistry() });
     const player = world.spawn().unwrap();
     const otherPlayer = otherWorld.spawn().unwrap();
     const runtime = makeRuntime();
     const otherRuntime = makeRuntime();
-    let dataReady = false;
+    let dataReady = true;
     const feature = gpuParticleRenderFeature({
       camera: { read: () => camera },
       dataInterfaces: {
@@ -1029,8 +1036,8 @@ describe('GPU VFX public host', () => {
           world,
           runtime,
           intents: [
-            makeIntent(player, 'ordered', 1, false),
-            makeIntent(player, 'ordered', 2, true),
+            await makeIntent(player, 'ordered', 1, false),
+            await makeIntent(player, 'ordered', 2, true),
           ],
         },
       ]),
@@ -1041,8 +1048,12 @@ describe('GPU VFX public host', () => {
     const programNames = planResources(first.value)
       .filter((resource) => resource.kind === 'compute-program')
       .map((resource) => resource.name);
-    expect(programNames).toEqual([expect.stringContaining('.e-0.compute-program')]);
-    expect(planPasses(first.value).map((pass) => pass.name)).toEqual([
+    expect(programNames).toEqual(['vfx.compute-program-0']);
+    expect(
+      planPasses(first.value)
+        .filter((pass) => pass.enabled !== false)
+        .map((pass) => pass.name),
+    ).toEqual([
       expect.stringContaining('.tick-0.simulate'),
       expect.stringContaining('.tick-1.reset'),
       expect.stringContaining('.tick-1.simulate'),
@@ -1059,8 +1070,8 @@ describe('GPU VFX public host', () => {
           world,
           runtime,
           intents: [
-            makeIntent(player, 'ordered', 1, false),
-            makeIntent(player, 'ordered', 2, true),
+            await makeIntent(player, 'ordered', 1, false),
+            await makeIntent(player, 'ordered', 2, true),
           ],
         },
       ]),
@@ -1085,7 +1096,7 @@ describe('GPU VFX public host', () => {
     // clear accepted storage or leak a fake GPU state into a later tick.
     runtime.enabled = false;
     const skipped = feature.plan(
-      frame(2, [{ world, runtime, intents: [makeIntent(player, 'ordered', 3, true)] }]),
+      frame(2, [{ world, runtime, intents: [await makeIntent(player, 'ordered', 3, true)] }]),
       context,
     );
     expect(skipped).toMatchObject({
@@ -1101,23 +1112,25 @@ describe('GPU VFX public host', () => {
     expect(runtime.commits).toEqual([[1, 2]]);
     runtime.enabled = true;
     const afterSkipped = feature.plan(
-      frame(3, [{ world, runtime, intents: [makeIntent(player, 'ordered', 4, false)] }]),
+      frame(3, [{ world, runtime, intents: [await makeIntent(player, 'ordered', 4, false)] }]),
       context,
     );
     expect(afterSkipped.ok).toBe(true);
     if (!afterSkipped.ok) return;
     expect(
       planResources(afterSkipped.value).some(
-        (resource) => resource.kind === 'compute-program' && resource.name.includes('.e-0.'),
+        (resource) =>
+          resource.kind === 'compute-program' && resource.program.wgsl.endsWith('// ordered'),
       ),
     ).toBe(true);
     feature.onFrameSubmitted?.(frame(3, [{ world, runtime, intents: [] }]));
 
     // Two deferred resets reuse storage but each initializes in command order
     // when the provider becomes available.
+    dataReady = false;
     const deferredIntents = [
-      makeIntent(player, 'ordered', 5, true, true),
-      makeIntent(player, 'ordered', 6, true, true),
+      await makeIntent(player, 'ordered', 5, true, true),
+      await makeIntent(player, 'ordered', 6, true, true),
     ];
     const deferred = feature.plan(
       frame(4, [{ world, runtime, intents: deferredIntents }]),
@@ -1163,7 +1176,7 @@ describe('GPU VFX public host', () => {
         {
           world: otherWorld,
           runtime: otherRuntime,
-          intents: [makeIntent(otherPlayer, 'ordered', 1, true)],
+          intents: [await makeIntent(otherPlayer, 'ordered', 1, true)],
         },
       ]),
       context,
@@ -1185,7 +1198,7 @@ describe('GPU VFX public host', () => {
         {
           world,
           runtime: replacementRuntime,
-          intents: [makeIntent(player, 'ordered', 1, true)],
+          intents: [await makeIntent(player, 'ordered', 1, true)],
         },
       ]),
       context,
@@ -1196,12 +1209,17 @@ describe('GPU VFX public host', () => {
         (resource) => resource.kind === 'compute-program',
       );
       expect(replacementProgram?.name).toContain('.compute-program');
-      expect(replacementProgram?.name).not.toBe(programNames[0]);
+      expect(replacementProgram?.name).toBe(programNames[0]);
+      const replacementParticles = planResources(replacement.value).find(
+        (resource) => resource.kind === 'buffer' && resource.name.endsWith('.particles'),
+      );
+      expect(replacementParticles).toBeDefined();
+      expect(replacementParticles?.name).not.toBe(resetParticles?.name);
     }
   });
 
-  it('defers a reset while player render consumption is paused', () => {
-    const world = new World();
+  it('defers a reset while player render consumption is paused', async () => {
+    const world = new World({ assets: new AssetRegistry() });
     const player = world.spawn().unwrap();
     const camera = {
       position: new Float32Array(3),
@@ -1209,7 +1227,7 @@ describe('GPU VFX public host', () => {
       up: new Float32Array([0, 1, 0]),
       viewProjection: new Float32Array([1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1]),
     };
-    const intent: VfxTickFixture = {
+    const intent: VfxTickFixture = await cookedTick({
       sequence: 1,
       player,
       emitter: {
@@ -1267,7 +1285,7 @@ describe('GPU VFX public host', () => {
         recursionDepth: 0,
         lastSequence: -1,
       },
-    };
+    });
     let consumptionEnabled = false;
     const commits: { readonly sequence: number; readonly published: readonly number[] }[] = [];
     const runtime = {
@@ -1316,8 +1334,8 @@ describe('GPU VFX public host', () => {
     expect(commits).toEqual([{ sequence: [1], published: [1] }]);
   });
 
-  it('keeps a paused reset barrier local to its player stream', () => {
-    const world = new World();
+  it('keeps a paused reset barrier local to its player stream', async () => {
+    const world = new World({ assets: new AssetRegistry() });
     const pausedPlayer = world.spawn().unwrap();
     const healthyPlayer = world.spawn().unwrap();
     const camera = {
@@ -1331,65 +1349,66 @@ describe('GPU VFX public host', () => {
       id: string,
       sequence: number,
       reset: boolean,
-    ): VfxTickFixture => ({
-      sequence,
-      player,
-      emitter: {
-        id,
-        module: `${id}.vfx.wgsl`,
-        capacity: 4,
-        backend: { required: 'gpu' },
-        space: 'world',
-        simulationWhenCulled: 'continue',
-        schedule: { rate: 0, bursts: [] },
-        bounds: { kind: 'sphere', center: [0, 0, 0], radius: 1 },
-        wgsl: `// ${id}`,
-        reflection: {
-          hooks: ['vfx_spawn', 'vfx_update'],
-          imports: [],
-          resources: [],
-          entryPoints: ['forgeax_vfx_spawn_main'],
-          bindings: [],
-        } as never,
-        renderers: [],
-      },
-      programFingerprint: id,
-      reset,
-      fixedDelta: 1 / 60,
-      initialFixedDelta: 1 / 60,
-      phaseTick: sequence,
-      tick: sequence,
-      seed: 1,
-      playCycle: 0,
-      spawnCount: 1,
-      firstParticleId: 0,
-      instanceGeneration: 0,
-      instancePatchCount: 0,
-      parameterBlock: new Uint8Array(),
-      canonicalPayload: new Uint8Array(),
-      replayInput: {
-        seed: 1,
-        tick: sequence,
-        generation: 0,
+    ): Promise<VfxTickFixture> =>
+      cookedTick({
         sequence,
-        fingerprint: id,
-        payload: new Uint8Array(),
-        values: {},
+        player,
+        emitter: {
+          id,
+          module: `${id}.vfx.wgsl`,
+          capacity: 4,
+          backend: { required: 'gpu' },
+          space: 'world',
+          simulationWhenCulled: 'continue',
+          schedule: { rate: 0, bursts: [] },
+          bounds: { kind: 'sphere', center: [0, 0, 0], radius: 1 },
+          wgsl: `// ${id}`,
+          reflection: {
+            hooks: ['vfx_spawn', 'vfx_update'],
+            imports: [],
+            resources: [],
+            entryPoints: ['forgeax_vfx_spawn_main'],
+            bindings: [],
+          } as never,
+          renderers: [],
+        },
+        programFingerprint: id,
+        reset,
+        fixedDelta: 1 / 60,
+        initialFixedDelta: 1 / 60,
+        phaseTick: sequence,
+        tick: sequence,
+        seed: 1,
+        playCycle: 0,
+        spawnCount: 1,
+        firstParticleId: 0,
+        instanceGeneration: 0,
+        instancePatchCount: 0,
+        parameterBlock: new Uint8Array(),
+        canonicalPayload: new Uint8Array(),
+        replayInput: {
+          seed: 1,
+          tick: sequence,
+          generation: 0,
+          sequence,
+          fingerprint: id,
+          payload: new Uint8Array(),
+          values: {},
+          channelInputs: [],
+          droppedCount: 0,
+        },
         channelInputs: [],
-        droppedCount: 0,
-      },
-      channelInputs: [],
-      eventCounters: {
-        queued: 0,
-        produced: 0,
-        consumed: 0,
-        dropped: 0,
-        overflow: 0,
-        fanOut: 0,
-        recursionDepth: 0,
-        lastSequence: -1,
-      },
-    });
+        eventCounters: {
+          queued: 0,
+          produced: 0,
+          consumed: 0,
+          dropped: 0,
+          overflow: 0,
+          fanOut: 0,
+          recursionDepth: 0,
+          lastSequence: -1,
+        },
+      });
     const runtime = {
       renderGeneration: 0,
       isEmitterSessionEnabled: () => true,
@@ -1411,8 +1430,8 @@ describe('GPU VFX public host', () => {
             runtime,
             camera,
             intents: [
-              intent(pausedPlayer, 'paused', 1, true),
-              intent(healthyPlayer, 'healthy', 2, true),
+              await intent(pausedPlayer, 'paused', 1, true),
+              await intent(healthyPlayer, 'healthy', 2, true),
             ],
           },
         ],
@@ -1425,9 +1444,7 @@ describe('GPU VFX public host', () => {
     const computePrograms = planResources(planned.value)
       .filter((resource) => resource.kind === 'compute-program')
       .map((resource) => resource.name);
-    expect(computePrograms).toEqual([
-      expect.stringContaining(`.p-${Number(healthyPlayer).toString(36)}.e-`),
-    ]);
+    expect(computePrograms).toEqual(['vfx.compute-program-0']);
     expect(
       planPasses(planned.value).some(
         (pass) =>
@@ -1445,7 +1462,8 @@ describe('GPU VFX public host', () => {
   });
 
   it('preserves a seed reset across a paused real runtime', async () => {
-    const world = new World();
+    const assets = new AssetRegistry();
+    const world = new World({ assets });
     const camera = {
       position: new Float32Array(3),
       right: new Float32Array([1, 0, 0]),
@@ -1484,13 +1502,12 @@ describe('GPU VFX public host', () => {
         ],
       },
     } as unknown;
-    const assets = {
-      loaders: { registerPackLoader: () => {} },
-      lookup: () => undefined,
-    };
+
     const host = createVfxRuntimeHost({ camera: { read: () => camera } });
-    expect(await host.attachWorld({ world, assets: assets as never })).toMatchObject({ ok: true });
-    const handle = world.allocSharedRef('ParticleEffectAsset', asV3Effect(effect));
+    expect(await host.attachWorld({ world, assets })).toMatchObject({ ok: true });
+    const handle = runtimeAssetRegistry(world.assets)
+      .create(runtimeEffectFixture(world, await asV3Effect(effect)))
+      .unwrap();
     const player = world
       .spawn({
         component: ParticleEffectPlayer,
@@ -1554,8 +1571,8 @@ describe('GPU VFX public host', () => {
     await host.detachWorld({ world });
   });
 
-  it('writes trail history once per fixed tick before the final projection', () => {
-    const world = new World();
+  it('writes trail history once per fixed tick before the final projection', async () => {
+    const world = new World({ assets: new AssetRegistry() });
     const player = world.spawn().unwrap();
     const camera = {
       position: new Float32Array(3),
@@ -1571,77 +1588,78 @@ describe('GPU VFX public host', () => {
       width: 0.1,
     };
     const disabledRenderer = { ...renderer, enabled: false as const };
-    const intent = (sequence: number, reset: boolean): VfxTickFixture => ({
-      sequence,
-      player,
-      emitter: {
-        id: 'trail',
-        module: 'trail.vfx.wgsl',
-        capacity: 4,
-        backend: { required: 'gpu' },
-        space: 'world',
-        simulationWhenCulled: 'continue',
-        schedule: { rate: 0, bursts: [] },
-        bounds: { kind: 'sphere', center: [0, 0, 0], radius: 1 },
-        wgsl: '// trail',
-        reflection: {
-          hooks: ['vfx_spawn', 'vfx_update'],
-          imports: [],
-          resources: [],
-          entryPoints: [
-            'forgeax_vfx_spawn_main',
-            'forgeax_vfx_trail_history_main',
-            'forgeax_vfx_trail_main',
-          ],
-          bindings: [
-            {
-              entries: [0, 1, 2, 3, 4, 5, 6, 8, 9].map((binding) => ({
-                binding,
-                visibility: 4,
-                buffer: { type: binding === 1 ? 'uniform' : 'storage' },
-              })),
-            },
-          ],
-        } as never,
-        renderers: [renderer, disabledRenderer],
-      },
-      programFingerprint: 'trail-program',
-      reset,
-      fixedDelta: 1 / 60,
-      initialFixedDelta: 1 / 60,
-      phaseTick: sequence,
-      tick: sequence,
-      seed: 1,
-      playCycle: 0,
-      spawnCount: 1,
-      firstParticleId: 0,
-      instanceGeneration: 0,
-      instancePatchCount: 0,
-      parameterBlock: new Uint8Array(),
-      canonicalPayload: new Uint8Array(),
-      replayInput: {
-        seed: 1,
-        tick: sequence,
-        generation: 0,
+    const intent = (sequence: number, reset: boolean): Promise<VfxTickFixture> =>
+      cookedTick({
         sequence,
-        fingerprint: 'trail-program',
-        payload: new Uint8Array(),
-        values: {},
+        player,
+        emitter: {
+          id: 'trail',
+          module: 'trail.vfx.wgsl',
+          capacity: 4,
+          backend: { required: 'gpu' },
+          space: 'world',
+          simulationWhenCulled: 'continue',
+          schedule: { rate: 0, bursts: [] },
+          bounds: { kind: 'sphere', center: [0, 0, 0], radius: 1 },
+          wgsl: '// trail',
+          reflection: {
+            hooks: ['vfx_spawn', 'vfx_update'],
+            imports: [],
+            resources: [],
+            entryPoints: [
+              'forgeax_vfx_spawn_main',
+              'forgeax_vfx_trail_history_main',
+              'forgeax_vfx_trail_main',
+            ],
+            bindings: [
+              {
+                entries: [0, 1, 2, 3, 4, 5, 6, 8, 9].map((binding) => ({
+                  binding,
+                  visibility: 4,
+                  buffer: { type: binding === 1 ? 'uniform' : 'storage' },
+                })),
+              },
+            ],
+          } as never,
+          renderers: [renderer, disabledRenderer],
+        },
+        programFingerprint: 'trail-program',
+        reset,
+        fixedDelta: 1 / 60,
+        initialFixedDelta: 1 / 60,
+        phaseTick: sequence,
+        tick: sequence,
+        seed: 1,
+        playCycle: 0,
+        spawnCount: 1,
+        firstParticleId: 0,
+        instanceGeneration: 0,
+        instancePatchCount: 0,
+        parameterBlock: new Uint8Array(),
+        canonicalPayload: new Uint8Array(),
+        replayInput: {
+          seed: 1,
+          tick: sequence,
+          generation: 0,
+          sequence,
+          fingerprint: 'trail-program',
+          payload: new Uint8Array(),
+          values: {},
+          channelInputs: [],
+          droppedCount: 0,
+        },
         channelInputs: [],
-        droppedCount: 0,
-      },
-      channelInputs: [],
-      eventCounters: {
-        queued: 0,
-        produced: 0,
-        consumed: 0,
-        dropped: 0,
-        overflow: 0,
-        fanOut: 0,
-        recursionDepth: 0,
-        lastSequence: -1,
-      },
-    });
+        eventCounters: {
+          queued: 0,
+          produced: 0,
+          consumed: 0,
+          dropped: 0,
+          overflow: 0,
+          fanOut: 0,
+          recursionDepth: 0,
+          lastSequence: -1,
+        },
+      });
     const runtime = {
       renderGeneration: 1,
       isEmitterSessionEnabled: () => true,
@@ -1652,17 +1670,26 @@ describe('GPU VFX public host', () => {
     const feature = gpuParticleRenderFeature({ camera: { read: () => camera } });
     const planned = feature.plan(
       {
-        worlds: [{ world, runtime, camera, intents: [intent(1, true), intent(2, false)] }],
+        worlds: [
+          { world, runtime, camera, intents: [await intent(1, true), await intent(2, false)] },
+        ],
         frameNumber: 1,
       } as never,
       { targets: [], caps: {}, frame: { frameNumber: 1 }, generation: 1 } as never,
     );
     expect(planned.ok).toBe(true);
     if (!planned.ok) return;
-    const historyPasses = planPasses(planned.value).filter(
-      (pass) => pass.kind === 'compute' && pass.name.endsWith('.history-bindings.write'),
+    const dispatches = planPasses(planned.value).flatMap((pass) =>
+      pass.kind === 'compute'
+        ? pass.dispatches.map((dispatch) => ({
+            entry: dispatch.entryPoint,
+            binding: dispatch.bindings ?? pass.bindings,
+          }))
+        : [],
     );
-    expect(historyPasses).toHaveLength(2);
+    expect(
+      dispatches.filter((dispatch) => dispatch.entry === 'forgeax_vfx_trail_history_main'),
+    ).toHaveLength(2);
     expect(
       planResources(planned.value).find(
         (resource) => resource.kind === 'buffer' && resource.name.endsWith('.renderer-0.history'),
@@ -1673,32 +1700,32 @@ describe('GPU VFX public host', () => {
         (resource) => resource.kind === 'buffer' && resource.name.includes('.renderer-1.history'),
       ),
     ).toBe(false);
-    expect(
-      planPasses(planned.value).findIndex((pass) => pass.name.includes('.tick-0.simulate')),
-    ).toBeLessThan(
-      planPasses(planned.value).findIndex((pass) =>
-        pass.name.includes('.tick-0.renderer-0.history-bindings.write'),
-      ),
+    const firstTick = dispatches.findIndex((dispatch) =>
+      dispatch.binding.includes('.tick-0.simulation-bindings'),
     );
-    expect(
-      planPasses(planned.value).findIndex((pass) =>
-        pass.name.includes('.tick-0.renderer-0.history-bindings.write'),
-      ),
-    ).toBeLessThan(
-      planPasses(planned.value).findIndex((pass) => pass.name.includes('.tick-1.simulate')),
+    const firstHistory = dispatches.findIndex(
+      (dispatch) =>
+        dispatch.entry === 'forgeax_vfx_trail_history_main' &&
+        dispatch.binding.includes('.tick-0.'),
     );
-    expect(historyPasses.map((pass) => pass.name)).toEqual([
-      expect.stringContaining('.tick-0.renderer-0.history-bindings.write'),
-      expect.stringContaining('.tick-1.renderer-0.history-bindings.write'),
-    ]);
+    const secondTick = dispatches.findIndex((dispatch) =>
+      dispatch.binding.includes('.tick-1.simulation-bindings'),
+    );
+    const secondHistory = dispatches.findIndex(
+      (dispatch) =>
+        dispatch.entry === 'forgeax_vfx_trail_history_main' &&
+        dispatch.binding.includes('.tick-1.'),
+    );
+    expect(firstTick).toBeGreaterThanOrEqual(0);
+    expect(firstHistory).toBeGreaterThan(firstTick);
+    expect(secondTick).toBeGreaterThan(firstHistory);
+    expect(secondHistory).toBeGreaterThan(secondTick);
   });
 
   it('rejects a second host without replacing the first World runtime', async () => {
-    const world = new World();
-    const assets = {
-      loaders: { registerPackLoader: () => {} },
-      lookup: () => undefined,
-    };
+    const assets = new AssetRegistry();
+    const world = new World({ assets });
+
     const options = {
       camera: {
         read: () => undefined,
@@ -1706,15 +1733,15 @@ describe('GPU VFX public host', () => {
     };
     const first = createVfxRuntimeHost(options);
     const second = createVfxRuntimeHost(options);
-    expect(await first.attachWorld({ world, assets: assets as never })).toMatchObject({ ok: true });
-    expect(await second.attachWorld({ world, assets: assets as never })).toMatchObject({
+    expect(await first.attachWorld({ world, assets })).toMatchObject({ ok: true });
+    expect(await second.attachWorld({ world, assets })).toMatchObject({
       ok: false,
       error: { code: 'vfx-host-world-attach-failed' },
     });
     expect(await first.detachWorld({ world })).toMatchObject({ ok: true });
   });
 
-  it('keeps depth readiness on the host contract for a real renderer frame', () => {
+  it('keeps depth readiness on the host contract for a real renderer frame', async () => {
     const host = createVfxRuntimeHost({
       camera: { read: () => undefined },
       providers: [
@@ -1738,11 +1765,14 @@ describe('GPU VFX public host', () => {
       ],
       generation: 1,
     });
-    expect(result).toMatchObject({ ok: true, value: { readiness: 'ready' } });
+    expect(result).toMatchObject({
+      ok: true,
+      value: { generation: 1, resources: [{ token: 'vfx:scene-depth' }] },
+    });
   });
 
   it('refreshes a paused emitter after the camera re-enters without a queued tick', async () => {
-    const world = new World();
+    const world = new World({ assets: new AssetRegistry() });
     const viewProjection = new Float32Array([1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1]);
     const camera = {
       position: new Float32Array(3),
@@ -1782,7 +1812,9 @@ describe('GPU VFX public host', () => {
         ],
       },
     } as unknown;
-    const handle = world.allocSharedRef('ParticleEffectAsset', asV3Effect(effect));
+    const handle = runtimeAssetRegistry(world.assets)
+      .create(runtimeEffectFixture(world, await asV3Effect(effect)))
+      .unwrap();
     const player = world
       .spawn({
         component: ParticleEffectPlayer,
@@ -1842,7 +1874,7 @@ describe('GPU VFX public host', () => {
   });
 
   it('keeps resource topology but preserves ordered draws when queued and retained emitters exchange positions', async () => {
-    const world = new World();
+    const world = new World({ assets: new AssetRegistry() });
     const camera = {
       position: new Float32Array(3),
       right: new Float32Array([1, 0, 0]),
@@ -1864,14 +1896,16 @@ describe('GPU VFX public host', () => {
       },
       renderers: [{ kind: 'billboard', material: 'material' }],
     }));
-    const effect = asV3Effect({
+    const effect = await asV3Effect({
       guid: 'alternating-effect',
       kind: 'particle-effect',
       programFingerprint: 'sha256:alternating',
       emitters: emitters.map(({ id, capacity }) => ({ id, capacity })),
       program: { fingerprint: 'sha256:alternating', emitters },
     });
-    const handle = world.allocSharedRef('ParticleEffectAsset', effect);
+    const handle = runtimeAssetRegistry(world.assets)
+      .create(runtimeEffectFixture(world, effect))
+      .unwrap();
     world
       .spawn({ component: ParticleEffectPlayer, data: { effect: handle, playing: true } })
       .unwrap();
@@ -1933,7 +1967,7 @@ describe('GPU VFX public host', () => {
   });
 
   it('retains committed particles for render frames without a fixed tick', async () => {
-    const world = new World();
+    const world = new World({ assets: new AssetRegistry() });
     const viewProjection = new Float32Array([1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1]);
     const camera = {
       position: new Float32Array(3),
@@ -1973,7 +2007,9 @@ describe('GPU VFX public host', () => {
         ],
       },
     } as unknown;
-    const handle = world.allocSharedRef('ParticleEffectAsset', asV3Effect(effect));
+    const handle = runtimeAssetRegistry(world.assets)
+      .create(runtimeEffectFixture(world, await asV3Effect(effect)))
+      .unwrap();
     world
       .spawn({
         component: ParticleEffectPlayer,
@@ -2073,7 +2109,7 @@ describe('GPU VFX public host', () => {
   });
 
   it('acknowledges a healthy player while another player reset remains deferred', async () => {
-    const world = new World();
+    const world = new World({ assets: new AssetRegistry() });
     const camera = {
       position: new Float32Array(3),
       right: new Float32Array([1, 0, 0]),
@@ -2112,7 +2148,9 @@ describe('GPU VFX public host', () => {
         ],
       },
     } as unknown;
-    const handle = world.allocSharedRef('ParticleEffectAsset', asV3Effect(effect));
+    const handle = runtimeAssetRegistry(world.assets)
+      .create(runtimeEffectFixture(world, await asV3Effect(effect)))
+      .unwrap();
     const pausedPlayer = world
       .spawn({
         component: ParticleEffectPlayer,
@@ -2175,13 +2213,11 @@ describe('GPU VFX public host', () => {
   });
 
   it('returns an empty keyed inspection aggregate before a player is present', async () => {
-    const world = new World();
-    const assets = {
-      loaders: { registerPackLoader: () => {} },
-      lookup: () => undefined,
-    };
+    const assets = new AssetRegistry();
+    const world = new World({ assets });
+
     const host = createVfxRuntimeHost({ camera: { read: () => undefined } });
-    await host.attachWorld({ world, assets: assets as never });
+    await host.attachWorld({ world, assets });
 
     expect(host.inspect(world)).toEqual({
       generation: 1,

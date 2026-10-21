@@ -1,8 +1,9 @@
 import type { RenderResourceScope } from './publication/resource-scope';
 import type { RenderSystemInternals } from './record/render-context';
 import type { FramePresentation, FramePresentationPendingReason } from './render-contract';
-import type { DispatchEntry, RenderableSnapshot } from './render-system-extract';
+import type { DispatchList, RenderableSnapshot } from './render-system-extract';
 import { createMaterialResidencyObserver } from './render-system-residency';
+import type { FrameList } from './scene/frame-list';
 
 /** The existing boolean remains the readiness authority; record only its first owner. */
 export function markPipelinePreparationPending(
@@ -55,9 +56,9 @@ export function createPresentationDraws() {
 
 /** Display workset used by recording and its later submitted-picture checks. */
 export function projectDisplayRenderables(
-  renderables: readonly RenderableSnapshot[],
-  dispatch: readonly DispatchEntry[],
-): readonly RenderableSnapshot[] {
+  renderables: FrameList<RenderableSnapshot>,
+  dispatch: DispatchList,
+): FrameList<RenderableSnapshot> {
   const displayRenderableIndices = new Set<number>();
   for (const entry of dispatch) {
     if (entry.renderableIndex === undefined) continue;
@@ -75,7 +76,7 @@ export function projectDisplayRenderables(
 
 /** Check material readiness once, after the display work has actually submitted. */
 export function projectFramePresentation(input: {
-  readonly renderables: readonly RenderableSnapshot[];
+  readonly renderables: FrameList<RenderableSnapshot>;
   readonly preparedWorlds: readonly RenderResourceScope[];
   readonly internals: RenderSystemInternals;
   readonly onPending?: (reason: FramePresentationPendingReason) => void;
@@ -84,7 +85,7 @@ export function projectFramePresentation(input: {
   for (const renderable of input.renderables) {
     const materialWorld = input.preparedWorlds[renderable.worldId];
     for (const material of renderable.materials) {
-      const readiness = observeResidency(materialWorld, material).readiness;
+      const readiness = observeResidency(materialWorld, material.snapshot).readiness;
       if (readiness === 'pending' || readiness === 'failed') {
         input.onPending?.({
           code: 'material-residency',

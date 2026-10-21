@@ -11,10 +11,7 @@ import {
   packLensFlareParams,
 } from '../features/lens-flare';
 import { lensFlareGuardBandSize } from '../features/lens-flare-graph';
-import {
-  createStandardOutputPlan,
-  validateStandardOutputPlan,
-} from '../pipeline/standard-output/graph';
+import { createStandardOutputPlan } from '../pipeline/standard-output/graph';
 import { extractCameraSnapshots } from '../render-system-extract';
 import { setActiveCamera } from '../systems/active-camera';
 
@@ -145,7 +142,6 @@ describe('camera LensFlare', () => {
 
   it('runs in linear HDR after Bloom and before exposure and tone mapping', () => {
     const request = {
-      lane: 'direct' as const,
       temporal: true,
       meter: true,
       bloom: true,
@@ -156,7 +152,6 @@ describe('camera LensFlare', () => {
       barrelDistortion: false,
       fxaa: false,
       lensEffects: false,
-      outputEncoding: 'explicit-oetf' as const,
     };
     const plan = createStandardOutputPlan(request);
     const stages = plan.logicalStages;
@@ -167,7 +162,6 @@ describe('camera LensFlare', () => {
       input: 'linear-hdr',
       output: 'linear-hdr',
     });
-    expect(validateStandardOutputPlan(plan).ok).toBe(true);
     expect(plan.incrementalResources).toEqual(
       expect.arrayContaining([
         'standard-lens-flare-prefilter',

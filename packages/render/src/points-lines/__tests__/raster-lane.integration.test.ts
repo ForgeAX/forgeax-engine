@@ -9,7 +9,7 @@ describe('Points/Lines raster lane integration contract', () => {
 
     expect(contract.lane).toBe(lane);
     expect(contract.material.shadingModel).toBe('unlit');
-    expect(contract.material.source).toBe('MaterialAsset');
+    expect(contract.material.source).toBe('material');
     expect(contract.graph.additionalAttachments).toBe(0);
     expect(contract.graph.additionalPasses).toBe(0);
     expect(contract.shadowDrawCount).toBe(0);

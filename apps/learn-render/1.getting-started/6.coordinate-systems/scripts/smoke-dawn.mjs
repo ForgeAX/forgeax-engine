@@ -7,9 +7,9 @@ import { drawReadyFrame } from '../../../../../scripts/test/ready-render-frame.m
 // per src/index.ts).
 //
 // Walks the LO 1.6 10-cube grid scene the demo runs in production:
-//   1. decodeImageFromFile(container.jpg) + registerWithGuid<TextureAsset>
-//      (LO 1.6 reuses the LO 1.4 wood JPG; WOOD_TEXTURE_GUID match).
-//   2. registerWithGuid<MeshAsset>(cubeGuid, HANDLE_CUBE asset).
+//   1. decodeImageFromFile(container.jpg) + assets.create(texture)
+//      (LO 1.6 reuses the LO 1.4 wood JPG).
+//   2. assets.create(mesh) creates the managed cube geometry.
 //   3. unlit material with baseColorTexture: woodHandle.
 //   4. spawn 10 cubes from the LO 1.6 cubePositions[] array (verbatim
 //      translation of the LearnOpenGL/src/1.getting_started/6.1.coordinate
@@ -36,6 +36,10 @@ import { dirname, resolve } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
 import { fileURLToPath } from 'node:url';
 import { emitSmokeReceipt } from '../../../../shared/scripts/smoke-receipt.mjs';
+import { AssetRegistry } from '@forgeax/engine-assets-runtime';
+
+import { createPrimitiveMesh } from '@forgeax/engine-geometry';
+
 
 const SMOKE_DURATION_MS = Number.parseInt(process.env.SMOKE_DURATION_MS ?? '5000', 10);
 const SMOKE_MIN_FRAMES = Number.parseInt(process.env.SMOKE_MIN_FRAMES ?? '60', 10);
@@ -180,9 +184,7 @@ const { decodeImageFromFile } = await import('@forgeax/engine-image/decode-image
 const { constructRuntimeRendererHost } = await import('@forgeax/engine-runtime/internal/renderer-host');
 const { Camera, DirectionalLight, MeshFilter, MeshRenderer } = await import('@forgeax/engine-render');
 const { Transform } = await import('@forgeax/engine-scene');
-const {
-  HANDLE_CUBE,
-} = await import('@forgeax/engine-assets-runtime');
+
 const { unwrapHandle } = await import('@forgeax/engine-types');
 
 const decodeRes = await decodeImageFromFile(CONTAINER_SRC_PATH);
@@ -231,7 +233,12 @@ const woodTexAsset = {
   mips: woodDecoded.mipmap ? { kind: 'generate' } : { kind: 'none' },
 };
 
-const world = new World();
+const world = new World({ assets: assets });
+const sceneAssets = world.assets;
+if (!(sceneAssets instanceof AssetRegistry)) throw new Error('Scene requires its runtime asset owner');
+
+const primitiveCube = sceneAssets.create(createPrimitiveMesh('cube').unwrap()).unwrap();
+
 const worldAttachment1 = renderer.attach(world);
 if (!worldAttachment1.ok) throw worldAttachment1.error;
 const lease = worldAttachment1.value;
@@ -240,17 +247,16 @@ const frameRequest = {
   camera: { lease: worldAttachment1.value },
   environment: { lease: worldAttachment1.value },
 };
-// Mint user-tier column handles (M8 D-17). The baseColorTexture slot
-// carries the resolved numeric Handle via unwrapHandle; the cube enters
-// the world via the engine builtin HANDLE_CUBE directly (no GUID round-trip).
-const woodTexHandle = unwrapHandle(world.allocSharedRef('TextureAsset', woodTexAsset));
-const woodMaterial = world.allocSharedRef('MaterialAsset', {
+// Bind the managed wood texture handle into the material; the cube mesh
+// is created in the same World asset registry.
+const woodTexHandle = unwrapHandle(world.assets.create(woodTexAsset).unwrap());
+const woodMaterial = world.assets.create({
   kind: 'material',
   passes: [
     { name: 'Forward', program: { module: 'forgeax::default-unlit' }, renderState: { tags: { LightMode: 'Forward' } }, queue: 2000 },
   ],
   values: { baseColor: [1.0, 1.0, 1.0, 1.0], baseColorTexture: woodTexHandle },
-});
+}).unwrap();
 // LO 1.6 cubePositions[] spawn loop -- 10 cubes scattered in 3D.
 for (let i = 0; i < CUBE_POSITIONS.length; i++) {
   const pos = CUBE_POSITIONS[i];
@@ -260,7 +266,7 @@ for (let i = 0; i < CUBE_POSITIONS.length; i++) {
       data: {
         pos: [pos[0], pos[1], pos[2]], quat: [0, 0, 0, 1], scale: [1, 1, 1],},
     },
-    { component: MeshFilter, data: { assetHandle: HANDLE_CUBE } },
+    { component: MeshFilter, data: { assetHandle: primitiveCube } },
     {
       component: MeshRenderer,
       data: { materials: [woodMaterial] },

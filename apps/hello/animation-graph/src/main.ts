@@ -49,7 +49,7 @@ import { EngineEnvironmentError } from '@forgeax/engine-runtime';
 import { SceneInstance } from '@forgeax/engine-render';
 import { DirectionalLight } from '@forgeax/engine-render';
 
-import { type AnimationClip, type SceneAsset } from '@forgeax/engine-types';
+
 import { forgeaxBundlerAdapter } from 'virtual:forgeax/bundler';
 import { refreshHud } from './hud';
 
@@ -104,12 +104,12 @@ async function bootstrap(target: HTMLCanvasElement): Promise<void> {
     console.error('[animation-graph] AssetGuid.parse(scene) failed');
     return;
   }
-  const sceneRes = await assets.loadByGuid<SceneAsset>(sceneGuidRes.value);
+  const sceneRes = await assets.load(sceneGuidRes.value, 'scene');
   if (!sceneRes.ok) {
-    console.error('[animation-graph] loadByGuid(scene) failed:', sceneRes.error);
+    console.error('[animation-graph] load(scene) failed:', sceneRes.error);
     return;
   }
-  const sceneHandle = world.allocSharedRef('SceneAsset', sceneRes.value);
+  const sceneHandle = sceneRes.value;
 
   for (const def of CLIPS) {
     const guidRes = AssetGuid.parse(def.guid);
@@ -117,9 +117,9 @@ async function bootstrap(target: HTMLCanvasElement): Promise<void> {
       console.error('[animation-graph] AssetGuid.parse failed for', def.name);
       return;
     }
-    const clipRes = await assets.loadByGuid<AnimationClip>(guidRes.value);
+    const clipRes = await assets.load(guidRes.value, 'animation-clip');
     if (!clipRes.ok) {
-      console.error('[animation-graph] loadByGuid failed for', def.name, clipRes.error);
+      console.error('[animation-graph] load failed for', def.name, clipRes.error);
       return;
     }
   }
@@ -151,10 +151,10 @@ async function bootstrap(target: HTMLCanvasElement): Promise<void> {
     console.error('[animation-graph] defineAnimationGraph failed:', graphResult.error.code);
     return;
   }
-  const graphHandle = world.allocSharedRef('AnimationGraph', graphResult.value);
+  const graphHandle = assets.create(graphResult.value).unwrap();
 
   // Instantiate Fox scene + find the Skin-bearing entity.
-  const instRes = assets.instantiate<SceneAsset>(sceneHandle, world);
+  const instRes = assets.instantiate(sceneHandle, world);
   if (!instRes.ok) {
     console.error('[animation-graph] instantiate failed:', (instRes.error as { code: string }).code);
     return;

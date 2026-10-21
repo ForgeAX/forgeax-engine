@@ -1,5 +1,6 @@
 import {
   type AudioBackend,
+  type AudioClipIdentity,
   type AudioIntent,
   type AudioPlayOptions,
   type AudioPreparationReceipt,
@@ -8,6 +9,7 @@ import {
   type MusicPreparation,
   validAudioStream,
 } from '@forgeax/engine-audio';
+import { audioClipKey, borrowAudioClip } from '@forgeax/engine-audio/internal';
 import { type AudioClipAsset, AudioError } from '@forgeax/engine-types';
 import { MusicTransport } from './music-transport';
 import { WebAudioEngine } from './web-audio-engine';
@@ -19,7 +21,7 @@ interface PendingPlay {
 export interface HostAudioConsumer {
   /** Host asset bytes stay here; Worker music intents carry controls only. */
   prepareMusic(requestId: number, score: MusicPreparation): void;
-  consume(intent: AudioIntent): void;
+  consume(intent: AudioIntent): AudioClipIdentity | undefined;
   state(): AudioState;
   dispose(): void;
   readonly engine: WebAudioEngine;
@@ -37,19 +39,24 @@ function decodeError(sourceKey: string, cause: unknown): AudioError {
   });
 }
 
-function sameBytes(left: Uint8Array, right: Uint8Array): boolean {
-  if (left.byteLength !== right.byteLength) return false;
-  for (let index = 0; index < left.byteLength; index += 1) {
-    if (left[index] !== right[index]) return false;
-  }
-  return true;
-}
-
 interface DecodeEntry {
   readonly kind: 'buffer';
+  readonly revision: number;
   readonly bytes: Uint8Array;
   promise: Promise<AudioBuffer> | undefined;
   decodedBytes: number;
+  holds: number;
+  decoding: boolean;
+  cached: boolean;
+  charged: boolean;
+}
+
+interface StreamEntry {
+  readonly kind: 'stream';
+  readonly revision: number;
+  readonly stream: NonNullable<AudioClipAsset['stream']>;
+  readonly size: number;
+  charged: boolean;
 }
 
 export interface HostAudioConsumerOptions {
@@ -70,27 +77,38 @@ export function createHostAudioConsumer(
     if (!Number.isSafeInteger(limit) || limit < 1)
       throw new RangeError('audio cache limits must be positive safe integers');
   }
-  const sources = new Map<
-    string,
-    | DecodeEntry
-    | {
-        readonly kind: 'stream';
-        readonly stream: NonNullable<AudioClipAsset['stream']>;
-        readonly size: number;
-      }
-  >();
+  const sources = new Map<string, DecodeEntry | StreamEntry>();
+  let encodedBytes = 0;
+  let decodedBytes = 0;
   let bytesHighWater = 0;
-  const cachedBytes = () =>
-    [...sources.values()].reduce(
-      (bytes, source) =>
-        bytes +
-        (source.kind === 'stream' ? source.size : source.bytes.byteLength + source.decodedBytes),
-      0,
-    );
+  const cachedBytes = () => encodedBytes + decodedBytes;
+  const releasableBytes = (entry: DecodeEntry | StreamEntry | undefined) =>
+    !entry
+      ? 0
+      : entry.kind === 'stream'
+        ? entry.size
+        : entry.decoding || entry.holds > 0
+          ? 0
+          : entry.bytes.byteLength + entry.decodedBytes;
+  const release = (entry: DecodeEntry | StreamEntry) => {
+    if (
+      !entry.charged ||
+      (entry.kind === 'buffer' && (entry.cached || entry.decoding || entry.holds > 0))
+    )
+      return;
+    entry.charged = false;
+    encodedBytes -= entry.kind === 'stream' ? entry.size : entry.bytes.byteLength;
+    if (entry.kind === 'buffer') decodedBytes -= entry.decodedBytes;
+  };
+  const retire = (entry: DecodeEntry | StreamEntry | undefined) => {
+    if (!entry) return;
+    if (entry.kind === 'buffer') entry.cached = false;
+    release(entry);
+  };
   engine.setStreamBudget(maxCachedBytes, cachedBytes);
   const music = new MusicTransport(() => engine.musicOutput());
   const pendingPlays = new Map<number, PendingPlay>();
-  let lastError: { sourceKey: string; error: AudioError } | undefined;
+  let lastError: { sourceKey: string; revision?: number; error: AudioError } | undefined;
   let disposed = false;
   let preparation: AudioPreparationReceipt | undefined;
   // A pending play adopts every control intent that arrives before its decode settles.
@@ -99,45 +117,79 @@ export function createHostAudioConsumer(
     if (pending !== undefined) pending.options = { ...pending.options, ...patch };
   };
   const prepareBuffer = (
+    asset: AudioClipIdentity,
     sourceKey: string,
     bytes?: Uint8Array,
   ): { entry: DecodeEntry; promise: Promise<AudioBuffer> } => {
-    let entry = sources.get(sourceKey);
-    if (bytes !== undefined && (entry?.kind !== 'buffer' || !sameBytes(entry.bytes, bytes))) {
-      const oldSize = entry
-        ? entry.kind === 'stream'
-          ? entry.size
-          : entry.bytes.byteLength + entry.decodedBytes
-        : 0;
+    const key = audioClipKey(asset);
+    let entry = sources.get(key);
+    if (entry?.revision !== asset.revision) {
+      if (bytes === undefined) throw new Error('audio asset version was not published');
+      // Ordered preparation may still decode an older fixed request after a new
+      // play. It completes that request without replacing the current cache.
+      const cached = entry === undefined || asset.revision > entry.revision;
       if (
         (!entry && sources.size >= maxCachedSources) ||
-        cachedBytes() - oldSize + bytes.byteLength + engine.streamingBytes > maxCachedBytes
+        cachedBytes() -
+          (cached ? releasableBytes(entry) : 0) +
+          bytes.byteLength +
+          engine.streamingBytes >
+          maxCachedBytes
       )
         throw new Error('audio cache publication budget exceeded');
-      engine.invalidateAudioPublication(sourceKey);
-      music.invalidate(sourceKey);
-      entry = { kind: 'buffer', bytes: bytes.slice(), promise: undefined, decodedBytes: 0 };
-      sources.set(sourceKey, entry);
+      if (cached) retire(entry);
+      entry = {
+        kind: 'buffer',
+        revision: asset.revision,
+        bytes: bytes.slice(),
+        promise: undefined,
+        decodedBytes: 0,
+        holds: 0,
+        decoding: false,
+        cached,
+        charged: true,
+      };
+      encodedBytes += bytes.byteLength;
+      if (cached) sources.set(key, entry);
       bytesHighWater = Math.max(bytesHighWater, cachedBytes());
     }
-    if (!entry || entry.kind !== 'buffer') throw new Error('buffered sourceKey was not published');
+    if (entry.kind !== 'buffer') throw new Error('asset version is not buffered audio');
     const current = entry;
     if (!current.promise) {
-      current.promise = engine.decode(current.bytes).then((buffer) => {
-        if (disposed || sources.get(sourceKey) !== current)
-          throw new Error('source publication retired during decode');
-        const size = (buffer.length ?? 0) * (buffer.numberOfChannels ?? 0) * 4;
-        if (cachedBytes() + size + engine.streamingBytes > maxCachedBytes)
-          throw new Error('decoded audio exceeds maxCachedBytes');
-        current.decodedBytes = size;
-        bytesHighWater = Math.max(bytesHighWater, cachedBytes());
-        if (lastError?.sourceKey === sourceKey) lastError = undefined;
-        return buffer;
-      });
+      current.decoding = true;
+      let decoded: Promise<AudioBuffer>;
+      try {
+        decoded = engine.decode(current.bytes);
+      } catch (cause) {
+        current.decoding = false;
+        release(current);
+        throw cause;
+      }
+      current.promise = decoded
+        .then((buffer) => {
+          if (disposed) throw new Error('audio consumer retired during decode');
+          const size = (buffer.length ?? 0) * (buffer.numberOfChannels ?? 0) * 4;
+          if (cachedBytes() + size + engine.streamingBytes > maxCachedBytes)
+            throw new Error('decoded audio exceeds maxCachedBytes');
+          current.decodedBytes = size;
+          decodedBytes += size;
+          bytesHighWater = Math.max(bytesHighWater, cachedBytes());
+          if (lastError?.sourceKey === key && (lastError.revision ?? 0) <= asset.revision)
+            lastError = undefined;
+          return buffer;
+        })
+        .finally(() => {
+          current.decoding = false;
+          release(current);
+        });
       void current.promise.catch((cause) => {
-        if (sources.get(sourceKey) !== current || disposed) return;
+        if (disposed) return;
         current.promise = undefined;
-        lastError = { sourceKey, error: decodeError(sourceKey, cause) };
+        lastError = {
+          sourceKey: key,
+          revision: asset.revision,
+          error: decodeError(sourceKey, cause),
+        };
       });
     }
     return { entry: current, promise: current.promise };
@@ -145,29 +197,51 @@ export function createHostAudioConsumer(
   const consumer: HostAudioConsumer = {
     engine,
     prepareMusic(requestId, score): void {
+      if (disposed) return;
       const epoch = music.beginPrepare({ kind: 'prepare', requestId, score });
       if (epoch === undefined) return;
+      const prepared: ReturnType<typeof prepareBuffer>[] = [];
+      let released = false;
+      const releasePrepared = () => {
+        if (released) return;
+        released = true;
+        for (const item of prepared) {
+          item.entry.holds--;
+          release(item.entry);
+        }
+        prepared.length = 0;
+      };
       try {
-        const prepared = score.stems.map((stem) =>
-          prepareBuffer(stem.clip.sourceKey, stem.clip.bytes),
-        );
+        const clips = score.stems.map((stem) => borrowAudioClip(score.assets, stem.clip));
+        if (clips.some(({ clip }) => clip.stream)) {
+          music.failPrepare(
+            requestId,
+            epoch,
+            'synchronized music requires buffered clips',
+            'unsupported-stream',
+          );
+          return;
+        }
+        for (const { identity, clip } of clips) {
+          const item = prepareBuffer(identity, clip.sourceKey, clip.bytes);
+          item.entry.holds++;
+          prepared.push(item);
+        }
+        let adopted = false;
         void Promise.all(prepared.map((item) => item.promise))
           .then((values) => {
-            if (
-              prepared.some(
-                (item, index) =>
-                  sources.get(score.stems[index]?.clip.sourceKey ?? '') !== item.entry,
-              )
-            )
-              music.failPrepare(requestId, epoch, 'source publication changed before adoption');
-            else music.finishPrepare(requestId, epoch, values);
+            if (!disposed) adopted = music.finishPrepare(requestId, epoch, values, releasePrepared);
           })
-          .catch((cause) => music.failPrepare(requestId, epoch, String(cause)));
+          .catch((cause) => music.failPrepare(requestId, epoch, String(cause)))
+          .finally(() => {
+            if (!adopted) releasePrepared();
+          });
       } catch (cause) {
+        releasePrepared();
         music.failPrepare(requestId, epoch, String(cause));
       }
     },
-    consume(intent): void {
+    consume(intent): AudioClipIdentity | undefined {
       if (disposed && intent.kind !== 'destroy') {
         if (intent.kind === 'music') music.command(intent.command);
         return;
@@ -203,7 +277,8 @@ export function createHostAudioConsumer(
             intent.requestId.length < 1 ||
             intent.requestId.length > 128 ||
             intent.clips.length > maxCachedSources ||
-            new Set(intent.clips.map((clip) => clip.sourceKey)).size !== intent.clips.length ||
+            new Set(intent.clips.map((clip) => audioClipKey(clip.asset))).size !==
+              intent.clips.length ||
             intent.clips.some(
               (clip) => typeof clip.sourceKey !== 'string' || clip.sourceKey.length < 1,
             )
@@ -213,24 +288,18 @@ export function createHostAudioConsumer(
           }
           // Bound each request to four native decoder jobs. Every entry uses the same
           // publication identity, cache budget and retry fences as real play.
-          const prepared: { sourceKey: string; entry: DecodeEntry }[] = [];
           let next = 0;
           const run = async () => {
             while (!disposed && preparation === receipt && next < intent.clips.length) {
               const clip = intent.clips[next++];
               if (!clip) return;
-              const result = prepareBuffer(clip.sourceKey, clip.bytes);
-              prepared.push({ sourceKey: clip.sourceKey, entry: result.entry });
+              const result = prepareBuffer(clip.asset, clip.sourceKey, clip.bytes);
               await result.promise;
             }
           };
           void Promise.all(Array.from({ length: Math.min(4, intent.clips.length) }, run))
             .then(() => {
               if (disposed || preparation !== receipt) return;
-              if (prepared.some((item) => sources.get(item.sourceKey) !== item.entry)) {
-                reject('source publication changed before preparation completed');
-                return;
-              }
               preparation = { ...receipt, status: 'ready' };
             })
             .catch(reject);
@@ -260,12 +329,14 @@ export function createHostAudioConsumer(
           engine.stop(intent.entityId);
           const fail = (cause: unknown) => {
             lastError = {
-              sourceKey: intent.sourceKey,
+              sourceKey: audioClipKey(intent.asset),
+              revision: intent.asset.revision,
               error: decodeError(intent.sourceKey, cause),
             };
           };
-          let entry = sources.get(intent.sourceKey);
-          if (intent.stream) {
+          const key = audioClipKey(intent.asset);
+          let entry = sources.get(key);
+          if (intent.stream && entry?.revision !== intent.asset.revision) {
             if (!validAudioStream(intent.stream)) {
               lastError = {
                 sourceKey: intent.sourceKey,
@@ -280,32 +351,36 @@ export function createHostAudioConsumer(
                   },
                 }),
               };
-              return;
+              return intent.asset;
             }
             const size = JSON.stringify(intent.stream).length * 2;
-            const oldSize = entry
-              ? entry.kind === 'stream'
-                ? entry.size
-                : entry.bytes.byteLength + entry.decodedBytes
-              : 0;
+            const cached = entry === undefined || intent.asset.revision > entry.revision;
             if (
               (!entry && sources.size >= maxCachedSources) ||
-              cachedBytes() - oldSize + size + engine.streamingBytes > maxCachedBytes
+              cachedBytes() - (cached ? releasableBytes(entry) : 0) + size + engine.streamingBytes >
+                maxCachedBytes
             ) {
               fail('audio stream publication exceeds the shared Host source/byte budget');
-              return;
+              return intent.asset;
             }
-            if (
-              entry?.kind !== 'stream' ||
-              JSON.stringify(entry.stream) !== JSON.stringify(intent.stream)
-            ) {
-              engine.invalidateAudioPublication(intent.sourceKey);
-              entry = { kind: 'stream', stream: structuredClone(intent.stream), size };
-              sources.set(intent.sourceKey, entry);
-              bytesHighWater = Math.max(bytesHighWater, cachedBytes());
-            }
+            if (cached) retire(entry);
+            entry = {
+              kind: 'stream',
+              revision: intent.asset.revision,
+              stream: structuredClone(intent.stream),
+              size,
+              charged: true,
+            };
+            encodedBytes += size;
+            if (cached) sources.set(key, entry);
+            else release(entry);
+            bytesHighWater = Math.max(bytesHighWater, cachedBytes());
           }
-          if (intent.bytes === undefined && entry?.kind === 'stream') {
+          if (
+            intent.bytes === undefined &&
+            entry?.kind === 'stream' &&
+            entry.revision === intent.asset.revision
+          ) {
             engine.play(
               intent.entityId,
               {
@@ -318,17 +393,16 @@ export function createHostAudioConsumer(
             );
             return;
           }
+          if (pendingPlays.size >= maxPendingPlays) {
+            fail('maxPendingPlays reached; stop pending entities or increase the Host budget');
+            return intent.asset;
+          }
           let prepared: ReturnType<typeof prepareBuffer>;
           try {
-            prepared = prepareBuffer(intent.sourceKey, intent.bytes);
+            prepared = prepareBuffer(intent.asset, intent.sourceKey, intent.bytes);
           } catch (cause) {
             fail(cause);
-            return;
-          }
-          const current = prepared.entry;
-          if (!pendingPlays.has(intent.entityId) && pendingPlays.size >= maxPendingPlays) {
-            fail('maxPendingPlays reached; stop pending entities or increase the Host budget');
-            return;
+            return intent.asset;
           }
           const pending: PendingPlay = {
             options: {
@@ -341,11 +415,7 @@ export function createHostAudioConsumer(
           pendingPlays.set(intent.entityId, pending);
           void prepared.promise
             .then((buffer) => {
-              if (
-                !disposed &&
-                sources.get(intent.sourceKey) === current &&
-                pendingPlays.get(intent.entityId) === pending
-              ) {
+              if (!disposed && pendingPlays.get(intent.entityId) === pending) {
                 engine.play(intent.entityId, buffer, pending.options);
               }
             })
@@ -421,14 +491,8 @@ export function createHostAudioConsumer(
         music: musical,
         cache: {
           sources: sources.size,
-          encodedBytes: [...sources.values()].reduce(
-            (sum, entry) => sum + (entry.kind === 'buffer' ? entry.bytes.byteLength : entry.size),
-            0,
-          ),
-          decodedBytes: [...sources.values()].reduce(
-            (sum, entry) => sum + (entry.kind === 'buffer' ? entry.decodedBytes : 0),
-            0,
-          ),
+          encodedBytes,
+          decodedBytes,
           bytesHighWater,
           pendingPlays: pendingPlays.size,
         },
@@ -442,6 +506,7 @@ export function createHostAudioConsumer(
       music.dispose();
       pendingPlays.clear();
       preparation = undefined;
+      for (const entry of sources.values()) retire(entry);
       sources.clear();
       lastError = undefined;
       engine.destroy();

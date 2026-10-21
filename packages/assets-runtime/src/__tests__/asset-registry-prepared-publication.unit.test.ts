@@ -1,7 +1,9 @@
 import { createRuntimePackPublication } from '@forgeax/engine-pack/runtime';
+import { materialContribution } from '@forgeax/engine-render';
 import type { Asset, CatalogEntry, MaterialAsset } from '@forgeax/engine-types';
 import { expect, it } from 'vitest';
 import { AssetRegistry } from '../asset-registry.js';
+import type { CatalogListener } from '../catalog-source';
 import { createCatalogSource } from '../catalog-source.js';
 import { prepareAssetPayload } from '../prepare-payload.js';
 import { defined } from './assert-defined.js';
@@ -22,7 +24,7 @@ async function fixture() {
         {
           guid,
           kind: 'material',
-          payload: { passes: [{ program: { module: 'test' } }], values: {} },
+          payload: { passes: [{ name: 'forward', program: { module: 'test' } }], values: {} },
           refs: [],
           artifacts: {},
         },
@@ -39,19 +41,71 @@ async function fixture() {
       publication: publication.publication,
     },
   ];
-  const registry = new AssetRegistry({} as never);
-  registry.setCatalogSource(createCatalogSource({ entries: [] }), fetcher);
+  const registry = new AssetRegistry({ scopeId: 'prepared-test' });
+  registry.installDecoder(materialContribution.kind, materialContribution.decoder);
+  let listener: CatalogListener | undefined;
+  registry.setCatalogSource(
+    createCatalogSource({
+      entries: [],
+      subscribe(next) {
+        listener = next;
+        return () => {
+          listener = undefined;
+        };
+      },
+    }),
+    fetcher,
+  );
+  const publishedRows = structuredClone(rows);
+  const publish = () =>
+    listener?.({
+      scopeId: 'prepared-test',
+      generation: 0,
+      added: publishedRows,
+      changed: [],
+      removed: [],
+    });
   const prepare = () =>
     registry.preparePublication(rows, fetcher, undefined, { pack: publication.pack });
-  return { registry, pack: publication.pack, rows, prepare };
+  return { registry, pack: publication.pack, rows, prepare, publish };
 }
 
+it('adopts prepared edits atomically without publishing them as saved source content', async () => {
+  const { registry, pack, prepare, publish } = await fixture();
+  try {
+    (await prepare()).unwrap();
+    registry.commitPreparedPublication(pack);
+    publish();
+    const handle = (await registry.load(guid, 'material')).unwrap();
+    const origin = registry.sourceOf(handle);
+    const row = registry.catalogEntry(guid);
+    (await prepare()).unwrap();
+    expect(registry.adoptPreparedContent(pack).ok).toBe(true);
+    expect(registry.sourceOf(handle)).toMatchObject({
+      modified: true,
+      publication: origin?.publication,
+    });
+    expect(registry.catalogEntry(guid)).toEqual(row);
+    expect(registry.adoptPreparedContent(pack).ok).toBe(false);
+    (await prepare()).unwrap();
+    registry.update(handle, { values: { color: [0.1, 0.2, 0.3, 1] } }).unwrap();
+    expect(registry.adoptPreparedContent(pack)).toMatchObject({
+      ok: false,
+      error: { code: 'asset-write-conflict' },
+    });
+    expect(registry.read(handle).unwrap().values.color).toEqual([0.1, 0.2, 0.3, 1]);
+    registry.release(handle).unwrap();
+  } finally {
+    registry.dispose();
+  }
+});
+
 it('keeps unpublished payloads private and ignores edits to source, rows, returned maps and reads', async () => {
-  const { registry, pack, rows, prepare } = await fixture();
+  const { registry, pack, rows, prepare, publish } = await fixture();
   try {
     const result = (await prepare()).unwrap();
-    expect(registry.lookup(guid)).toBeUndefined();
-    expect(registry.loadState.get(guid)).toBeUndefined();
+    expect(registry.catalogEntry(guid)).toBeUndefined();
+    expect(registry.inspectSource()?.ready).toEqual([]);
     const read = defined(result.get(guid));
     const payload = typeof read === 'function' ? await read() : read;
     Object.assign(payload, invalid());
@@ -60,7 +114,10 @@ it('keeps unpublished payloads private and ignores edits to source, rows, return
     rows.length = 0;
     expect(prepareAssetPayload(invalid()).ok).toBe(false);
     registry.commitPreparedPublication(pack);
-    const loaded = (await registry.loadByGuid<MaterialAsset>(registry.parseGuid(guid))).unwrap();
+    expect(registry.catalogEntry(guid)).toBeUndefined();
+    publish();
+    const handle = (await registry.load(guid, 'material')).unwrap();
+    const loaded = registry.read(handle).unwrap();
     expect(loaded.passes).toHaveLength(1);
     Object.assign(loaded, invalid());
     const retained = typeof read === 'function' ? await read() : read;
@@ -68,9 +125,10 @@ it('keeps unpublished payloads private and ignores edits to source, rows, return
     expect(() => registry.commitPreparedPublication(pack)).toThrow();
     // Public registration remains validated even for a previously prepared object.
     Object.assign(loaded, invalid());
-    expect(registry.catalog(guid, loaded).ok).toBe(false);
+    expect(registry.replace(handle, loaded).ok).toBe(false);
+    registry.release(handle).unwrap();
   } finally {
-    registry.clearCatalogSource();
+    registry.dispose();
   }
 });
 
@@ -84,26 +142,26 @@ it.each([
 ] as const)('rejects a candidate after %s invalidation', async (fault) => {
   const { registry, pack, rows, prepare } = await fixture();
   try {
-    await registry.ensurePackIndexCache();
+    await registry.enumerateCatalog();
     const pending = prepare();
     if (fault === 'changed-rows') rows.length = 0;
     if (fault === 'guid-before-await') registry.invalidate(guid);
     (await pending).unwrap();
-    if (fault === 'clear') registry.clearCatalogSource();
+    if (fault === 'clear') registry.dispose();
     if (fault === 'replace')
       registry.setCatalogSource(createCatalogSource({ entries: [] }), fetcher);
     if (fault === 'all') registry.invalidateAll();
     if (fault === 'guid' || fault === 'changed-rows') registry.invalidate(guid);
     expect(() => registry.commitPreparedPublication(pack)).toThrow();
-    expect(registry.loadState.getPrepared(guid)).toBeUndefined();
+    expect(registry.inspectSource()?.ready ?? []).not.toContain(guid);
   } finally {
-    registry.clearCatalogSource();
+    registry.dispose();
   }
 });
 
 it('rejects cross-owner, copied and synchronously reentered candidate proofs', async () => {
   const { registry, pack, prepare } = await fixture();
-  const foreign = new AssetRegistry({} as never);
+  const foreign = new AssetRegistry({ scopeId: 'prepared-test' });
   try {
     (await prepare()).unwrap();
     expect(() => foreign.commitPreparedPublication(pack)).toThrow();
@@ -111,10 +169,10 @@ it('rejects cross-owner, copied and synchronously reentered candidate proofs', a
     expect(() =>
       registry.commitPreparedPublication(pack, () => registry.commitPreparedPublication(pack)),
     ).toThrow();
-    expect(registry.loadState.getPrepared(guid)).toBeUndefined();
+    expect(registry.inspectSource()?.ready ?? []).not.toContain(guid);
   } finally {
-    registry.clearCatalogSource();
-    foreign.clearCatalogSource();
+    registry.dispose();
+    foreign.dispose();
   }
 });
 
@@ -125,9 +183,9 @@ it('checks publication context again after provider notification', async () => {
     expect(() =>
       registry.commitPreparedPublication(pack, () => registry.invalidateAll()),
     ).toThrow();
-    expect(registry.loadState.getPrepared(guid)).toBeUndefined();
+    expect(registry.inspectSource()?.ready ?? []).not.toContain(guid);
   } finally {
-    registry.clearCatalogSource();
+    registry.dispose();
   }
 });
 
@@ -156,7 +214,7 @@ it('rejects shared mutable bytes and accessors before preparing any owner payloa
     expect(reads).toBe(0);
     expect(() => registry.commitPreparedPublication(pack)).toThrow();
   } finally {
-    registry.clearCatalogSource();
+    registry.dispose();
   }
 });
 
@@ -194,9 +252,19 @@ it.each([
       JSON.stringify(String(input) === parent.row.packageUrl ? parent.pack : dependent.pack),
     );
   for (const prepared of [false, true]) {
-    const registry = new AssetRegistry({} as never);
+    const registry = new AssetRegistry({ scopeId: 'prepared-test' });
+    registry.installDecoder(materialContribution.kind, materialContribution.decoder);
+    let listener: CatalogListener | undefined;
     registry.setCatalogSource(
-      createCatalogSource({ entries: [parent.row, ...(prepared ? [] : [dependent.row])] }),
+      createCatalogSource({
+        entries: [parent.row, ...(prepared ? [] : [dependent.row])],
+        subscribe(next) {
+          listener = next;
+          return () => {
+            listener = undefined;
+          };
+        },
+      }),
       read,
     );
     try {
@@ -208,12 +276,21 @@ it.each([
           })
         ).unwrap();
         registry.commitPreparedPublication(dependent.pack);
+        listener?.({
+          scopeId: 'prepared-test',
+          generation: 0,
+          added: [dependent.row],
+          changed: [],
+          removed: [],
+        });
       }
-      const result = await registry.loadByGuid(registry.parseGuid(child));
+      const result = await registry.load(child, 'material');
+      if (validParent && !result.ok) throw result.error;
       expect(result.ok).toBe(validParent);
-      if (!result.ok) expect(result.error.hint).toContain('loading parent material ');
+      if (!result.ok) expect(result.error.code).toBe('asset-dependency-failed');
+      else registry.release(result.value).unwrap();
     } finally {
-      registry.clearCatalogSource();
+      registry.dispose();
     }
   }
 });
@@ -236,4 +313,98 @@ it('normalizes a wire parentGuid child once and reports child-contract failures'
     ok: false,
     error: { code: 'asset-parse-failed', detail: { field: 'material-child-contract' } },
   });
+});
+
+it('repeated prepared generations keep GUID handles and roll back every sibling on an invalid Scene', async () => {
+  const { World, defineComponent } = await import('@forgeax/engine-ecs');
+  const { sceneAssetContribution, ChildOf, Children } = await import('@forgeax/engine-scene');
+  const { registry, pack, prepare, publish } = await fixture();
+  const world = new World({ assets: registry });
+  const Light = defineComponent('AuthorLight', { intensity: 'f32' });
+  const Instance = defineComponent('SceneInstance', {
+    source: 'asset<scene>',
+    mapping: 'array<entity>',
+    state: 'unique<SceneInstanceState>',
+  });
+  for (const component of [Light, Instance, ChildOf, Children])
+    world.components.register(component).unwrap();
+  registry.installDecoder(sceneAssetContribution.kind, sceneAssetContribution.decoder);
+  const sceneGuid = '01900000-0000-7000-8000-000000000992';
+  try {
+    (await prepare()).unwrap();
+    registry.commitPreparedPublication(pack);
+    publish();
+    const handle = (await registry.load(guid, 'material')).unwrap();
+    const catalog = registry.catalogEntry(guid);
+    const candidate = async (color: number, intensity: unknown) => {
+      const prepared = createRuntimePackPublication({
+        scopeId: 'prepared-test',
+        sourcePath: 'candidate.pack.ts',
+        sourceRevision: 'draft',
+        packageUrl,
+        pack: {
+          assets: [
+            {
+              guid,
+              kind: 'material',
+              refs: [],
+              artifacts: {},
+              payload: {
+                passes: [{ name: 'forward', program: { module: 'test' } }],
+                values: { color: [color, 0, 0, 1] },
+              },
+            },
+            {
+              guid: sceneGuid,
+              kind: 'scene',
+              refs: [],
+              artifacts: {},
+              payload: { entities: { light: { components: { AuthorLight: { intensity } } } } },
+            },
+          ],
+        },
+      });
+      const rows: CatalogEntry[] = prepared.pack.assets.map((asset) => ({
+        guid: asset.guid,
+        kind: asset.kind,
+        refs: [],
+        sourcePath: 'candidate.pack.ts',
+        packageUrl,
+        publication: prepared.publication,
+      }));
+      (
+        await registry.preparePublication(rows, fetcher, undefined, { pack: prepared.pack })
+      ).unwrap();
+      return prepared.pack;
+    };
+    registry.adoptPreparedContent(await candidate(0.2, 1)).unwrap();
+    expect(registry.read(handle).unwrap().values.color).toEqual([0.2, 0, 0, 1]);
+    registry
+      .adoptPreparedContent(await candidate(0.3, 2), [
+        { guid, path: ['values', 'color'], value: [0, 1, 0, 1] },
+      ])
+      .unwrap();
+    expect(registry.read(handle).unwrap().values.color).toEqual([0, 1, 0, 1]);
+    const observer = registry.observe().unwrap();
+    observer.read().unwrap().accept();
+    const rejected = await candidate(0.8, 4);
+    expect(() =>
+      registry.adoptPreparedContent(rejected, [], () => {
+        throw new Error('Scene consumer rejected candidate');
+      }),
+    ).toThrow('Scene consumer rejected candidate');
+    expect(registry.read(handle).unwrap().values.color).toEqual([0, 1, 0, 1]);
+    expect(observer.read().unwrap().changes).toHaveLength(0);
+    expect(registry.adoptPreparedContent(await candidate(0.9, 'invalid')).ok).toBe(false);
+    expect(observer.read().unwrap().changes).toHaveLength(0);
+    observer.dispose();
+    expect(registry.read(handle).unwrap().values.color).toEqual([0, 1, 0, 1]);
+    expect(registry.catalogEntry(guid)).toEqual(catalog);
+    expect(registry.catalogEntry(sceneGuid)).toBeUndefined();
+    expect((await registry.load(guid, 'material')).unwrap()).toBe(handle);
+    registry.release(handle).unwrap();
+    registry.release(handle).unwrap();
+  } finally {
+    registry.dispose();
+  }
 });

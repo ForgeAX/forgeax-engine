@@ -1,16 +1,16 @@
+import { AssetRegistry } from '@forgeax/engine-assets-runtime';
+import { runtimeAssetRegistry } from '@forgeax/engine-assets-runtime/internal';
 import { World } from '@forgeax/engine-ecs';
 import { componentDefinition, componentSchema } from '@forgeax/engine-ecs/internal';
-import type { Handle, ParticleEffectAsset } from '@forgeax/engine-types';
+import type { AssetHandle } from '@forgeax/engine-types';
 import { describe, expect, expectTypeOf, it } from 'vitest';
 import { ParticleEffectPlayer, type ParticleEffectPlayerData } from '../index.js';
+import { cookedEffectFixture } from './cooked-effect-fixture';
+import { runtimeEffectFixture } from './runtime-effect-fixture';
 
-const asset: ParticleEffectAsset = {
-  kind: 'particle-effect',
-  schemaVersion: 3,
-  programFingerprint: 'sha256:test',
-  emitters: [],
-  program: { format: 'forgeax-vfx-program-4', fingerprint: 'sha256:test', emitters: [] },
-};
+const asset = await cookedEffectFixture({
+  program: { emitters: [{ id: 'player', capacity: 4, renderers: [] }] },
+});
 
 describe('ParticleEffectPlayer ECS contract', () => {
   it('exposes author intent and opt-in preparation with stable defaults with stable defaults', () => {
@@ -22,7 +22,7 @@ describe('ParticleEffectPlayer ECS contract', () => {
       'timeScale',
     ]);
     expect(componentSchema(ParticleEffectPlayer)).toEqual({
-      effect: 'shared<ParticleEffectAsset>',
+      effect: 'asset<particle-effect>',
       playing: 'bool',
       preparePipelines: 'bool',
       seed: 'u32',
@@ -34,15 +34,17 @@ describe('ParticleEffectPlayer ECS contract', () => {
       seed: 0,
       timeScale: 1,
     });
-    expect(ParticleEffectPlayer.fields.effect.type).toBe('shared<ParticleEffectAsset>');
+    expect(ParticleEffectPlayer.fields.effect.type).toBe('asset<particle-effect>');
     expect(ParticleEffectPlayer.fields.playing.default).toBe(true);
     expect(ParticleEffectPlayer.fields.seed.default).toBe(0);
     expect(ParticleEffectPlayer.fields.timeScale.default).toBe(1);
   });
 
   it('round-trips a scene-compatible player payload without changing intent', () => {
-    const world = new World();
-    const effect = world.allocSharedRef('ParticleEffectAsset', asset);
+    const world = new World({ assets: new AssetRegistry() });
+    const effect = runtimeAssetRegistry(world.assets)
+      .create(runtimeEffectFixture(world, asset))
+      .unwrap();
     const payload: ParticleEffectPlayerData = {
       effect,
       playing: false,
@@ -56,8 +58,10 @@ describe('ParticleEffectPlayer ECS contract', () => {
   });
 
   it('uses the shared asset identity in a real spawn and QueryRow loop', () => {
-    const world = new World();
-    const effect = world.allocSharedRef('ParticleEffectAsset', asset);
+    const world = new World({ assets: new AssetRegistry() });
+    const effect = runtimeAssetRegistry(world.assets)
+      .create(runtimeEffectFixture(world, asset))
+      .unwrap();
     const entity = world
       .spawn({
         component: ParticleEffectPlayer,
@@ -69,7 +73,7 @@ describe('ParticleEffectPlayer ECS contract', () => {
 
     for (const row of query) {
       const player = row.get(ParticleEffectPlayer);
-      expectTypeOf(player.effect).toEqualTypeOf<Handle<'ParticleEffectAsset', 'shared'>>();
+      expectTypeOf(player.effect).toEqualTypeOf<AssetHandle<'particle-effect'>>();
       expectTypeOf(player.playing).toBeBoolean();
       expectTypeOf(player.seed).toBeNumber();
       expectTypeOf(player.timeScale).toBeNumber();
@@ -82,13 +86,12 @@ describe('ParticleEffectPlayer ECS contract', () => {
   });
 
   it('keeps the shared-ref data shape assignable to the public handle contract', () => {
-    const world = new World();
-    const effect: Handle<'ParticleEffectAsset', 'shared'> = world.allocSharedRef(
-      'ParticleEffectAsset',
-      asset,
-    );
+    const world = new World({ assets: new AssetRegistry() });
+    const effect: AssetHandle<'particle-effect'> = runtimeAssetRegistry(world.assets)
+      .create(runtimeEffectFixture(world, asset))
+      .unwrap();
     expectTypeOf<ParticleEffectPlayerData['effect']>().toEqualTypeOf<
-      Handle<'ParticleEffectAsset', 'shared'>
+      AssetHandle<'particle-effect'>
     >();
     expect(effect).toBeGreaterThan(0);
   });

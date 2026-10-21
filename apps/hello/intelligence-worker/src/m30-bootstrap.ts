@@ -4,7 +4,7 @@ import type {
   ExecutionBootstrapValue,
   Plugin,
 } from '@forgeax/engine-app';
-import { HANDLE_CUBE } from '@forgeax/engine-assets-runtime';
+
 import {
   activityId,
   createIntelligencePortClient,
@@ -15,6 +15,10 @@ import {
 import { Camera, DirectionalLight, MeshFilter, MeshRenderer } from '@forgeax/engine-render';
 import { Transform } from '@forgeax/engine-scene';
 import { M30_LIMITS, M30_PROVIDER_A_ID, M30_PROVIDER_B_ID } from './m30-provider';
+import { AssetRegistry } from '@forgeax/engine-assets-runtime';
+
+import { createPrimitiveMesh } from '@forgeax/engine-geometry';
+
 
 interface M30Proof {
   pendingA: string;
@@ -150,6 +154,11 @@ const bootstrap: ExecutionBootstrapEntry = (data) => {
     inject: ['world', 'intelligence'],
     apply(ctx) {
       const world = ctx.world;
+const sceneAssets = world.assets;
+if (!(sceneAssets instanceof AssetRegistry)) throw new Error('Scene requires its runtime asset owner');
+
+const primitiveCube = sceneAssets.create(createPrimitiveMesh('cube').unwrap()).unwrap();
+
       const clientA = ctx.intelligence as IntelligencePortClient | undefined;
       if (clientA === undefined) throw new Error('M30 provider-A intelligence service was not provided');
 
@@ -440,7 +449,7 @@ const bootstrap: ExecutionBootstrapEntry = (data) => {
         world
           .spawn(
             { component: Transform, data: { pos: [0, 0, 0] } },
-            { component: MeshFilter, data: { assetHandle: HANDLE_CUBE } },
+            { component: MeshFilter, data: { assetHandle: primitiveCube } },
             { component: MeshRenderer, data: {} },
           )
           .unwrap(),

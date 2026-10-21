@@ -36,13 +36,17 @@ import {
   type EntityHandle,
   type World,
 } from '@forgeax/engine-ecs';
-import { HANDLE_CUBE } from '@forgeax/engine-assets-runtime';
+
 import { Transform } from '@forgeax/engine-scene';
 import { Camera, DirectionalLight, MeshFilter, MeshRenderer } from '@forgeax/engine-render';
 import { perspective } from '@forgeax/engine-render';
 import { Materials } from '@forgeax/engine-render';
-import type { MaterialAsset } from '@forgeax/engine-runtime';
+
 import { quat, vec3 } from '@forgeax/engine-math';
+import { AssetRegistry } from '@forgeax/engine-assets-runtime';
+
+import { createPrimitiveMesh } from '@forgeax/engine-geometry';
+
 
 /** Units/second the cube slides along its local X (Bevy's `Movable { speed: 2.0 }`). */
 export const MOVE_SPEED = 2.0;
@@ -71,22 +75,21 @@ export const Movable = defineComponent('Movable', {
  * frame and reverses at the band edge.
  */
 export function buildTranslationWorld(world: World): void {
+const sceneAssets = world.assets;
+if (!(sceneAssets instanceof AssetRegistry)) throw new Error('Scene requires its runtime asset owner');
+
+const primitiveCube = sceneAssets.create(createPrimitiveMesh('cube').unwrap()).unwrap();
+
   // ── Ground plane (flat-scaled cube), white PBR ────────────────────────
-  const groundMat = world.allocSharedRef<'MaterialAsset', MaterialAsset>(
-    'MaterialAsset',
-    Materials.standard({ baseColor: [1, 1, 1, 1] }),
-  );
+  const groundMat = sceneAssets.create(Materials.standard({ baseColor: [1, 1, 1, 1] })).unwrap();
   world.spawn(
     { component: Transform, data: { pos: [0, -1.5, 0], quat: [0, 0, 0, 1], scale: [16, 0.02, 16] } },
-    { component: MeshFilter, data: { assetHandle: HANDLE_CUBE } },
+    { component: MeshFilter, data: { assetHandle: primitiveCube } },
     { component: MeshRenderer, data: { materials: [groundMat] } },
   );
 
   // ── The sliding cube (Bevy Color::WHITE), yawed 45° at spawn ──────────
-  const cubeMat = world.allocSharedRef<'MaterialAsset', MaterialAsset>(
-    'MaterialAsset',
-    Materials.standard({ baseColor: [0.9, 0.9, 0.9, 1] }),
-  );
+  const cubeMat = sceneAssets.create(Materials.standard({ baseColor: [0.9, 0.9, 0.9, 1] })).unwrap();
   const spawnQuat = quat.eulerY(INITIAL_YAW);
   world.spawn(
     {
@@ -97,7 +100,7 @@ export function buildTranslationWorld(world: World): void {
         scale: [2, 2, 2],
       },
     },
-    { component: MeshFilter, data: { assetHandle: HANDLE_CUBE } },
+    { component: MeshFilter, data: { assetHandle: primitiveCube } },
     { component: MeshRenderer, data: { materials: [cubeMat] } },
     { component: Movable, data: { spawn: [0, 0, 0], maxDistance: MAX_DISTANCE, speed: MOVE_SPEED } },
   );

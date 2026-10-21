@@ -37,9 +37,8 @@ function isSupportedMime(mime: string): mime is SupportedMime {
  *
  * Runtime SDK entry for AI users who hold image bytes (fetched over the
  * network, embedded as base64, produced by an out-of-tree decoder, etc.) and
- * want to feed them into `world.allocSharedRef('TextureAsset', pod)` +
- * `GpuResourceStore.ensureResident` without the disk-side importer / build
- * pipeline in the loop (charter P1 progressive disclosure: one-step "bytes
+ * want to create a managed texture with `assets.create(pod)` without
+ * the disk-side importer / build pipeline in the loop (charter P1 progressive disclosure: one-step "bytes
  * in, POD out").
  *
  * v1 supports the two universally-decodable mime types: `image/png` and
@@ -80,7 +79,7 @@ function isSupportedMime(mime: string): mime is SupportedMime {
  *   }
  *   return;
  * }
- * const handle = world.allocSharedRef('TextureAsset', result.value);
+ * const handle = assets.create(result.value).unwrap();
  * ```
  */
 export async function decodeImageBytes(

@@ -16,7 +16,7 @@ import type {
 } from '@forgeax/engine-types';
 import { err, ok } from '@forgeax/engine-types';
 import { describe, expect, it } from 'vitest';
-import { createAssetRegistry, createCatalogSource, defineAssetKind } from '../index.js';
+import { AssetRegistry, createCatalogSource, defineAssetKind } from '../index.js';
 
 type VoxelShapePayload = {
   readonly schemaVersion: 'voxel-shape/1';
@@ -248,7 +248,7 @@ describe('external voxel provider cold-load route', () => {
         ? new Response('not found', { status: 404 })
         : new Response(body as unknown as BodyInit);
     };
-    const registry = createAssetRegistry({
+    const registry = new AssetRegistry({
       catalog: createCatalogSource({ entries: catalogEntries }),
       fetcher,
       scopeId,
@@ -256,7 +256,7 @@ describe('external voxel provider cold-load route', () => {
     const lease = registry.installDecoder(voxelShapeKind, decoder());
 
     const loaded = await registry.load(brickGuid, voxelShapeKind);
-    expect(loaded).toEqual({
+    expect(registry.read(loaded.unwrap())).toEqual({
       ok: true,
       value: { schemaVersion: 'voxel-shape/1', cellSize: 1, filled: [[-1, 0, 2]] },
     });
@@ -269,7 +269,7 @@ describe('external voxel provider cold-load route', () => {
 
     const replacement = registry.installDecoder(voxelShapeKind, decoder());
     const reloaded = await registry.load(reloadGuid, voxelShapeKind);
-    expect(reloaded).toEqual({
+    expect(registry.read(reloaded.unwrap())).toEqual({
       ok: true,
       value: { schemaVersion: 'voxel-shape/1', cellSize: 1, filled: [[1, 0, 0]] },
     });

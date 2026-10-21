@@ -104,37 +104,30 @@ export async function bakeProceduralScene({ scene, cooked, guid, device, compile
  * what `installDistCatalog` (and the browser runtime) resolves.
  */
 export async function writeBakedCatalog(dir, cooked) {
-  const render = await import('@forgeax/engine-render/internal');
+  const { IRRADIANCE_VOLUME_KIND } = await import('@forgeax/engine-render/internal');
+  const { createRuntimePackPublication, finalizePackageTransportSource } = await import('@forgeax/engine-pack/build');
   mkdirSync(dir, { recursive: true });
   const index = [];
-  for (const { product, bytes } of cooked) {
-    const file = `${product.guid}.fxiv`;
-    writeFileSync(resolve(dir, file), bytes);
-    const pack = {
-      schemaVersion: '2.0.0',
-      kind: 'internal-text-package',
-      assets: [
-        {
-          guid: product.guid,
-          kind: render.IRRADIANCE_VOLUME_KIND,
-          payload: product.payload,
-          refs: [],
-          artifacts: {
-            [render.IRRADIANCE_VOLUME_ARTIFACT]: {
-              path: file,
-              mediaType: render.IRRADIANCE_VOLUME_MEDIA_TYPE,
-              byteLength: bytes.byteLength,
-            },
-          },
-        },
-      ],
-    };
-    writeFileSync(resolve(dir, `${product.guid}.pack.json`), `${JSON.stringify(pack, null, 2)}\n`);
+  for (const { product } of cooked) {
+    const packagePath = `${product.guid}.pack.json`;
+    const sourcePath = `${product.guid}.fxiv`;
+    const finalized = await finalizePackageTransportSource({ assets: [{ ...product, kind: IRRADIANCE_VOLUME_KIND }] }, {
+      base: '/', packagePath, artifactPath: () => sourcePath,
+    });
+    for (const artifact of finalized.artifacts) writeFileSync(resolve(dir, artifact.path), artifact.bytes);
+    const published = createRuntimePackPublication({
+      pack: finalized.pack, scopeId: 'asset-runtime', sourcePath,
+      sourceRevision: finalized.sourceRevision, inputFingerprint: product.inputFingerprint,
+      packageUrl: finalized.packageUrl,
+    });
+    writeFileSync(resolve(dir, packagePath), `${JSON.stringify(published.pack, null, 2)}\n`);
     index.push({
       guid: product.guid,
-      packageUrl: `/${product.guid}.pack.json`,
-      kind: render.IRRADIANCE_VOLUME_KIND,
-      sourcePath: file,
+      packageUrl: finalized.packageUrl,
+      kind: IRRADIANCE_VOLUME_KIND,
+      refs: [],
+      sourcePath,
+      publication: published.publication,
     });
   }
   writeFileSync(resolve(dir, 'pack-index.json'), `${JSON.stringify(index, null, 2)}\n`);

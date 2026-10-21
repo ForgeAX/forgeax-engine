@@ -1,11 +1,13 @@
+import { AssetRegistry } from '@forgeax/engine-assets-runtime';
 import { createWorldContext, World } from '@forgeax/engine-ecs';
 import { rhi } from '@forgeax/engine-rhi-null';
 import { ok } from '@forgeax/engine-types';
 import {
   ParticleEffectPlayer,
+  particleEffectContribution,
+  prepareVfxGpuEffect,
   VFX_GPU_RUNTIME_RESOURCE_KEY,
   type VfxGpuRuntime,
-  vfxGpuEffectPackLoader,
   vfxGpuRuntimePlugin,
 } from '@forgeax/engine-vfx';
 import { cookParticleCodeEffect } from '@forgeax/engine-vfx-compiler';
@@ -21,7 +23,7 @@ const camera = {
   up: new Float32Array([0, 1, 0]),
   viewProjection: new Float32Array([1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1]),
 };
-async function fixture(storageLimit = 8, rawEffect = false) {
+async function fixture(storageLimit = 8, nativePlanning = true) {
   const cooked = (
     await cookParticleCodeEffect(
       {
@@ -50,33 +52,43 @@ fn vfx_update(ctx:VfxUpdateContext,p:ptr<function,VfxParticle>,c:ptr<function,Vf
     )
   ).unwrap();
   const effect = (
-    await vfxGpuEffectPackLoader.load(
-      {
-        guid: '019e2cc6-0c86-79da-aa76-b0984c86d45c',
-        kind: 'particle-effect',
-        payload: cooked.asset as unknown as Record<string, unknown>,
-        artifacts: {
-          'particle-effect/program.json': {
-            descriptor: {
-              path: 'program.json',
-              mediaType: 'application/vnd.forgeax.vfx-program+json',
-            },
-            bytes: cooked.artifact.bytes,
+    await prepareVfxGpuEffect({
+      guid: '019e2cc6-0c86-79da-aa76-b0984c86d45c',
+      kind: 'particle-effect',
+      payload: cooked.asset as unknown as Record<string, unknown>,
+      artifacts: {
+        'particle-effect/program.json': {
+          descriptor: {
+            path: 'program.json',
+            mediaType: 'application/vnd.forgeax.vfx-program+json',
           },
+          bytes: cooked.artifact.bytes,
         },
       },
-      {
-        fetchBinary: async () => {
-          throw Error('unexpected fetch');
-        },
-        resolveRef: async () => ok(0),
-        transcodeCaps: { bc: false, etc2: false, astc: false },
-        device: undefined,
-      },
-    )
+    })
   ).unwrap();
-  const world = new World(),
-    handle = world.allocSharedRef('ParticleEffectAsset', rawEffect ? { ...effect } : effect),
+  const assets = new AssetRegistry();
+  assets.installDecoder(particleEffectContribution.kind, particleEffectContribution.decoder);
+  const material = assets
+    .create({
+      kind: 'material',
+      passes: [{ name: 'forward', program: { module: 'forgeax::unlit' } }],
+      values: { baseColor: [1, 1, 1, 1] },
+    })
+    .unwrap();
+  const world = new World({ assets }),
+    handle = assets
+      .create({
+        ...effect,
+        program: {
+          ...effect.program,
+          emitters: effect.program.emitters.map((emitter) => ({
+            ...emitter,
+            renderers: emitter.renderers.map((renderer) => ({ ...renderer, material })),
+          })),
+        },
+      })
+      .unwrap(),
     players = [0, 1].map((seed) =>
       world
         .spawn({
@@ -85,7 +97,8 @@ fn vfx_update(ctx:VfxUpdateContext,p:ptr<function,VfxParticle>,c:ptr<function,Vf
         })
         .unwrap(),
     );
-  world.sharedRefs.release(handle).unwrap();
+  assets.release(handle).unwrap();
+  assets.release(material).unwrap();
   const context = await createWorldContext(world, [vfxGpuRuntimePlugin()]),
     runtime = world.getResource<VfxGpuRuntime>(VFX_GPU_RUNTIME_RESOURCE_KEY),
     device = (await (await rhi.requestAdapter()).unwrap().requestDevice()).unwrap(),
@@ -103,7 +116,7 @@ fn vfx_update(ctx:VfxUpdateContext,p:ptr<function,VfxParticle>,c:ptr<function,Vf
     raw = gpuParticleRenderFeature({
       camera: { read: () => camera },
       instanceArenas: true,
-      nativePlanning: true,
+      nativePlanning,
       retainedResources: true,
       isolateViewGraph: true,
     });
@@ -208,6 +221,9 @@ fn vfx_update(ctx:VfxUpdateContext,p:ptr<function,VfxParticle>,c:ptr<function,Vf
       gpu.dispose().unwrap();
       host.dispose().unwrap();
       await context.fiber.dispose();
+      for (const player of players)
+        if (world.get(player, ParticleEffectPlayer).ok) world.despawn(player).unwrap();
+      assets.dispose();
     },
   };
 }
@@ -295,10 +311,10 @@ it('uses only the job table for current batch projection runtime bytes', async (
   }
 });
 it.each([
-  ['device fallback', 7, false],
-  ['raw effect', 8, true],
-] as const)('keeps projection uniform admission and current uploads for %s', async (_label, limit, raw) => {
-  const f = await fixture(limit, raw);
+  ['device fallback', 7, true],
+  ['ordinary planning', 8, false],
+] as const)('keeps projection uniform admission and current uploads for %s', async (_label, limit, nativePlanning) => {
+  const f = await fixture(limit, nativePlanning);
   try {
     f.world.update(1 / 60).unwrap();
     const row = f.frame();
@@ -307,22 +323,30 @@ it.each([
         .flatMap((work) => work.resources)
         .some((resource) => resource.name.endsWith('.table')),
     ).toBe(false);
-    if (raw) {
-      const uniforms = row.work
-        .flatMap((work) => work.resources)
-        .filter(
-          (resource) =>
-            resource.kind === 'buffer' &&
-            resource.usage.includes('uniform') &&
-            resource.name.includes('.renderer-') &&
-            resource.name.endsWith('.runtime'),
-        );
-      expect(uniforms).toHaveLength(4);
-      expect(
-        uniforms.every(
-          (resource) => resource.kind === 'buffer' && resource.data?.byteLength === 304,
-        ),
-      ).toBe(true);
+    if (!nativePlanning) {
+      const projections = row.work.flatMap((work) => {
+        const resources = new Map(work.resources.map((resource) => [resource.name, resource]));
+        return work.resources.flatMap((resource) => {
+          if (resource.kind !== 'compute-bindings' || !resource.name.includes('.renderer-'))
+            return [];
+          const binding = resource.entries.find((entry) => entry.binding === 1);
+          return binding === undefined
+            ? []
+            : [{ binding, buffer: resources.get(binding.resource) }];
+        });
+      });
+      expect(projections).toHaveLength(4);
+      for (const { binding, buffer } of projections) {
+        expect(binding.size).toBe(304);
+        expect(buffer?.kind).toBe('buffer');
+        if (buffer?.kind !== 'buffer') throw new Error('Missing ordinary projection uniform');
+        expect(buffer.usage).toContain('uniform');
+        expect(
+          buffer.uploads?.some(
+            (upload) => upload.offset === (binding.offset ?? 0) && upload.data.byteLength === 304,
+          ),
+        ).toBe(true);
+      }
     } else {
       expect(f.admissions.filter((entry) => entry.scope !== 'frame')).toHaveLength(4);
       expect(

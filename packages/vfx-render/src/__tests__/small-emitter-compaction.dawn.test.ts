@@ -1,11 +1,11 @@
+import { runtimeAssets } from '@forgeax/engine-assets-runtime/internal';
 /// <reference types="@webgpu/types" />
-import { resolveAssetHandle } from '@forgeax/engine-assets-runtime';
+
 import { World } from '@forgeax/engine-ecs';
 import { cookParticleCodeProgram } from '@forgeax/engine-vfx-compiler';
 import { expect, it } from 'vitest';
 import { gpuParticleRenderFeature } from '../feature/gpu-particle-feature.js';
-import { vfxTestIntent } from './vfx-frame-fixture';
-import { planPasses, singleViewContext } from './vfx-frame-fixture.js';
+import { planPasses, singleViewContext, vfxTestEmitter } from './vfx-frame-fixture.js';
 
 const entries = [
   'spawn',
@@ -71,21 +71,20 @@ fn vfx_update(ctx:VfxUpdateContext,p:ptr<function,VfxParticle>){ (*p).position.x
     viewProjection: identity(),
   };
   const feature = gpuParticleRenderFeature({ camera: { read: () => camera } });
-  const definition = vfxTestIntent({
-    emitter,
-    programFingerprint: cooked.fingerprint,
-  } as never).effect;
-  const reference = {
-    id: emitter.id,
-    effect: world.internSharedRef('ParticleEffectAsset', definition),
-  };
+  const reference = vfxTestEmitter(world, emitter as never, cooked.fingerprint);
   let sequence = 0;
   const plannedDispatches = (tick: number, cycle: number, spawnCount: number) => {
     const intent = {
       sequence: ++sequence,
       player,
       emitter: reference,
-      programFingerprint: cooked.fingerprint,
+
+      programFingerprint: runtimeAssets(world.assets)
+        .resolveAsset<import('@forgeax/engine-vfx').VfxGpuEffectAssetAny>(
+          reference.effect,
+          reference.revision,
+        )
+        .unwrap().program.fingerprint,
       reset: tick === 0,
       fixedDelta: 1 / 60,
       phaseTick: tick,
@@ -116,7 +115,12 @@ fn vfx_update(ctx:VfxUpdateContext,p:ptr<function,VfxParticle>){ (*p).position.x
           emitterState: new Map([
             [
               `${Number(player)}:${emitter.id}`,
-              { enabled: true, localToWorld: identity(), player, emitter: reference },
+              {
+                enabled: true,
+                localToWorld: identity(),
+                player,
+                emitter: reference,
+              },
             ],
           ]),
         },
@@ -128,7 +132,8 @@ fn vfx_update(ctx:VfxUpdateContext,p:ptr<function,VfxParticle>){ (*p).position.x
         singleViewContext({
           targets: [],
           caps: {} as never,
-          resolveAsset: (_index, handle) => resolveAssetHandle(world, handle),
+          resolveAsset: (_index, handle, revision) =>
+            runtimeAssets(world.assets).resolveAsset(handle, revision),
           generation: 0,
           frame: { frameNumber: sequence } as never,
           sceneData: {} as never,

@@ -4,6 +4,13 @@ import { viewportToWorld } from '@forgeax/engine-picking';
 import { Camera, cameraProjectionFromF32 } from '@forgeax/engine-render';
 import { ChildOf, GlobalTransform, Transform } from '@forgeax/engine-scene';
 import {
+  GIZMO_AXES,
+  GIZMO_PLANE_MAX,
+  GIZMO_PLANE_MIN,
+  GIZMO_PLANES,
+  type GizmoHandle,
+} from './gizmo-handles';
+import {
   add,
   cross,
   dot,
@@ -19,7 +26,6 @@ import {
 
 export type GizmoMode = 'translate' | 'rotate' | 'scale';
 export type GizmoSpace = 'world' | 'local';
-export type GizmoHandle = 'X' | 'Y' | 'Z' | 'XY' | 'YZ' | 'XZ' | 'XYZ';
 export interface GizmoOptions {
   mode?: GizmoMode;
   space?: GizmoSpace;
@@ -56,14 +62,8 @@ interface Drag {
   previousAngle: number;
   angle: number;
 }
-const AXES = ['X', 'Y', 'Z'] as const;
-const PAIRS = ['XY', 'YZ', 'XZ'] as const;
-const UNIT: readonly [V3, V3, V3] = [
-  [1, 0, 0],
-  [0, 1, 0],
-  [0, 0, 1],
-];
-const indices = (h: GizmoHandle): number[] => AXES.flatMap((a, i) => (h.includes(a) ? [i] : []));
+const indices = (h: GizmoHandle): number[] =>
+  GIZMO_AXES.flatMap(({ handle }, i) => (h.includes(handle) ? [i] : []));
 const snapped = (x: number, s: number): number => (s > 0 ? Math.round(x / s) * s : x);
 
 /** Input and World mutation only; DOM capture, selection and undo belong to the host. */
@@ -235,11 +235,9 @@ export class TransformGizmo {
     const orientation = quat.identity(quat.create());
     if (this.options.space === 'local' || this.options.mode === 'scale')
       quat.multiply(orientation, parent.rotation, pose.quat);
-    const axes = UNIT.map((a) => tuple(quat.transformVec3(vec3.create(), orientation, a))) as [
-      V3,
-      V3,
-      V3,
-    ];
+    const axes = GIZMO_AXES.map(({ direction }) =>
+      tuple(quat.transformVec3(vec3.create(), orientation, direction)),
+    ) as [V3, V3, V3];
     const eye = orthographic
       ? norm([
           cg.value.world[8] as number,
@@ -263,20 +261,19 @@ export class TransformGizmo {
       return [((ndc[0] + 1) * width) / 2, ((1 - ndc[1]) * height) / 2, ndc[2]];
     };
     const visible: GizmoHandle[] = [];
-    for (let i = 0; i < 3; i++)
+    for (const [i, { handle }] of GIZMO_AXES.entries())
       if (
         this.options.mode === 'rotate'
           ? Math.abs(dot(axes[i] as V3, eye)) > 0.15
           : Math.abs(dot(axes[i] as V3, eye)) < 0.97
       )
-        visible.push(AXES[i] as 'X' | 'Y' | 'Z');
+        visible.push(handle);
     if (this.options.mode === 'translate')
-      for (const pair of PAIRS) {
-        const ix = indices(pair);
+      for (const { handle, axes: ix } of GIZMO_PLANES) {
         if (
           Math.abs(dot(cross(axes[ix[0] as number] as V3, axes[ix[1] as number] as V3), eye)) > 0.2
         )
-          visible.push(pair);
+          visible.push(handle);
       }
     if (this.options.mode !== 'rotate') visible.push('XYZ');
     this.frame = {
@@ -322,7 +319,13 @@ export class TransformGizmo {
           const d = mul(sub(p, f.origin), 1 / f.radius);
           const a = dot(d, f.axes[ix[0] as number] as V3),
             b = dot(d, f.axes[ix[1] as number] as V3);
-          if (a > 0.22 && a < 0.46 && b > 0.22 && b < 0.46) return h;
+          if (
+            a > GIZMO_PLANE_MIN &&
+            a < GIZMO_PLANE_MAX &&
+            b > GIZMO_PLANE_MIN &&
+            b < GIZMO_PLANE_MAX
+          )
+            return h;
         }
       } else if (this.options.mode === 'rotate') {
         const i = ix[0] as number,

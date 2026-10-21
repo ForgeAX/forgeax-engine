@@ -3,7 +3,7 @@ import { createStandaloneRuntimeAssetBinding } from '@forgeax/engine-types';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { AssetRegistry } from '../asset-registry.js';
 import { createCatalogSource } from '../catalog-source.js';
-import { fetchPackIndex, parseCatalog } from '../registry/catalog.js';
+import { parseCatalog } from '../registry/catalog.js';
 
 const packageRow = {
   guid: '11111111-1111-4111-8111-111111111111',
@@ -60,46 +60,52 @@ describe('catalog source v2', () => {
       ['stale generation', { ...staticSnapshot, generation: 2 }],
       ['unfenced array', [packageRow]],
     ])('rejects %s after catalog URL selection', async (_label, snapshot) => {
-      const registry = new AssetRegistry(new ShaderRegistry({ manifestUrl: undefined }));
-      registry.configureRuntimeBinding(createStandaloneRuntimeAssetBinding('static-game'));
-      registry.configurePackIndex(url);
+      const registry = new AssetRegistry({
+        shaderRegistry: new ShaderRegistry({ manifestUrl: undefined }),
+      });
       const fetch = vi.fn(async () => new Response(JSON.stringify(snapshot)));
       vi.stubGlobal('fetch', fetch);
 
-      const result = await fetchPackIndex(registry);
+      registry.configureRuntimeBinding(createStandaloneRuntimeAssetBinding('static-game'));
+      registry.configurePackIndex(url);
+      const result = await registry.enumerateCatalog();
 
       expect(result.ok).toBe(false);
       if (!result.ok) expect(result.error.code).toBe('asset-parse-failed');
-      expect(fetch).toHaveBeenCalledWith(url, { cache: 'no-store' });
+      expect(fetch).toHaveBeenCalledWith(url);
     });
 
     it('admits the matching scope and generation after catalog URL selection', async () => {
-      const registry = new AssetRegistry(new ShaderRegistry({ manifestUrl: undefined }));
-      registry.configureRuntimeBinding(createStandaloneRuntimeAssetBinding('static-game'));
-      registry.configurePackIndex(url);
+      const registry = new AssetRegistry({
+        shaderRegistry: new ShaderRegistry({ manifestUrl: undefined }),
+      });
       vi.stubGlobal(
         'fetch',
         vi.fn(async () => new Response(JSON.stringify(staticSnapshot))),
       );
 
-      const result = await fetchPackIndex(registry);
+      registry.configureRuntimeBinding(createStandaloneRuntimeAssetBinding('static-game'));
+      registry.configurePackIndex(url);
+      const result = await registry.enumerateCatalog();
 
       expect(result.ok).toBe(true);
-      if (result.ok) expect(result.value.has(packageRow.guid)).toBe(true);
+      if (result.ok) expect(result.value.some((row) => row.guid === packageRow.guid)).toBe(true);
     });
   });
 
   it('retains array catalogs for a registry without a runtime binding', async () => {
-    const registry = new AssetRegistry(new ShaderRegistry({ manifestUrl: undefined }));
-    registry.configurePackIndex('https://example.test/game/pack-index.json');
+    const registry = new AssetRegistry({
+      shaderRegistry: new ShaderRegistry({ manifestUrl: undefined }),
+    });
     vi.stubGlobal(
       'fetch',
       vi.fn(async () => new Response(JSON.stringify([packageRow]))),
     );
     try {
-      const result = await fetchPackIndex(registry);
+      registry.configurePackIndex('https://example.test/game/pack-index.json');
+      const result = await registry.enumerateCatalog();
       expect(result.ok).toBe(true);
-      if (result.ok) expect(result.value.has(packageRow.guid)).toBe(true);
+      if (result.ok) expect(result.value.some((row) => row.guid === packageRow.guid)).toBe(true);
     } finally {
       vi.unstubAllGlobals();
     }

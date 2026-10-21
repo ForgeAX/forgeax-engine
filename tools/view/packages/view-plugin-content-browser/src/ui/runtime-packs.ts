@@ -1,5 +1,4 @@
 import type { WorkspaceState } from '@forgeax/view-workspace-core/contract';
-import type { AssetReferenceServiceState } from '@forgeax/view-workspace-core/asset-references';
 export type RuntimeParameter = { name: string; type: string; default: unknown; minimum?: number; maximum?: number; values?: (string | number | boolean)[] };
 /** UI drafts only; Engine validates parameters and owns all execution state. */
 export function parameterDrafts(parameters: readonly RuntimeParameter[], values: Record<string, unknown> = {}): Record<string, string> {
@@ -8,7 +7,6 @@ export function parameterDrafts(parameters: readonly RuntimeParameter[], values:
     return [parameter.name, typeof value === 'string' ? value : JSON.stringify(value) ?? ''];
   }));
 }
-
 export function parameterValues(parameters: readonly RuntimeParameter[], drafts: Record<string, string>): Record<string, unknown> {
   return Object.fromEntries(parameters.map(parameter => {
     const text = drafts[parameter.name];
@@ -28,14 +26,4 @@ export function runtimePackTarget(workspace: WorkspaceState | null | undefined) 
   const target = workspace?.projectTarget;
   if (!workspace?.project?.id || !target?.targetId || !target?.worldId || target.worldId.startsWith('pending:')) return undefined;
   return { projectId: workspace.project.id, targetId: target.targetId, worldId: target.worldId };
-}
-
-export function runtimeToolingOwnership(state: AssetReferenceServiceState | undefined, target: { projectId: string; targetId: string; worldId: string }) {
-  const scope = state?.scope;
-  return scope?.projectId === target.projectId && scope.targetId === target.targetId && scope.worldId === target.worldId ? state : undefined;
-}
-
-/** Preserve all user packages, excluding only the exact View-owned definition. */
-export function userRuntimePacks<T extends { source: { packageId: string } }>(packs: readonly T[], packageId?: string) {
-  return packs.filter(pack => !packageId || pack.source.packageId !== packageId);
 }

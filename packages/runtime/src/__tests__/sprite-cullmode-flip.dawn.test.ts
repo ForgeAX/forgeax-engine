@@ -1,3 +1,5 @@
+import { createPrimitiveMesh } from '@forgeax/engine-geometry';
+import { testAssets } from './helpers/runtime-assets';
 import { shaderManifestUrl } from './shader-manifest-url.fixture';
 // sprite-cullmode-flip.dawn.test.ts -
 // feat-20260608-tilemap-object-layer-rendering M2 / m2-t5.
@@ -21,7 +23,6 @@ import { shaderManifestUrl } from './shader-manifest-url.fixture';
 // Anchors: plan-tasks m2-t5; plan-strategy §D-8 (sprite cullMode 'none')
 // + §R-5 (sprite single-frame baseline non-degradation).
 
-import { HANDLE_QUAD } from '@forgeax/engine-assets-runtime';
 import { World } from '@forgeax/engine-ecs';
 import {
   ANTIALIAS_NONE,
@@ -102,7 +103,12 @@ function spawnFlippedSpriteScene(
         scale: [sx, sy, 1],
       },
     },
-    { component: MeshFilter, data: { assetHandle: HANDLE_QUAD } },
+    {
+      component: MeshFilter,
+      data: {
+        assetHandle: testAssets(world).create(createPrimitiveMesh('quad').unwrap()).unwrap(),
+      },
+    },
     { component: MeshRenderer, data: { materials: [spriteMaterial as never] } },
   );
   world.spawn(
@@ -234,48 +240,54 @@ describe('feat-20260608 M2 m2-t5: sprite pipeline cullMode "none" lets H/V flipp
       colorSpace: 'srgb' as const,
       mips: { kind: 'none' as const },
     };
-    const textureHandle = worldFlip.allocSharedRef('TextureAsset', synthPod as never);
-    const samplerHandle = worldFlip.allocSharedRef('SamplerAsset', {
-      kind: 'sampler',
-      magFilter: 'linear',
-      minFilter: 'linear',
-      addressModeU: 'repeat',
-      addressModeV: 'repeat',
-    } as never);
+    const textureHandle = testAssets(worldFlip)
+      .create(synthPod as never)
+      .unwrap();
+    const samplerHandle = testAssets(worldFlip)
+      .create({
+        kind: 'sampler',
+        magFilter: 'linear',
+        minFilter: 'linear',
+        addressModeU: 'repeat',
+        addressModeV: 'repeat',
+      } as never)
+      .unwrap();
 
-    const spriteMaterial = worldFlip.allocSharedRef('MaterialAsset', {
-      kind: 'material',
-      passes: [
-        // feat-20260625-refactor-sprite-as-transparent-mesh M2 / w6 (Q3=b):
-        // transparent first-pass flag drives LDR split + premultiplied-alpha
-        // blend pipeline selection. Mandatory after w15 (the legacy
-        // shadingModel='sprite' arm was ablated; transparent is now SSOT).
-        // feat-20260626-sprite-transparent-collapse M1/M4: the boolean
-        // `transparent` field has collapsed into `renderState.blend` as the
-        // single asset-side SSOT; `SPRITE_PREMULTIPLIED_ALPHA_BLEND` is the
-        // exported preset for sprite-like premultiplied-alpha composition.
-        {
-          name: 'Forward',
-          program: { module: 'forgeax::sprite' },
-          renderState: {
-            ...{ blend: SPRITE_PREMULTIPLIED_ALPHA_BLEND },
-            tags: { LightMode: 'Forward' },
-            queue: 3000,
+    const spriteMaterial = testAssets(worldFlip)
+      .create({
+        kind: 'material',
+        passes: [
+          // feat-20260625-refactor-sprite-as-transparent-mesh M2 / w6 (Q3=b):
+          // transparent first-pass flag drives LDR split + premultiplied-alpha
+          // blend pipeline selection. Mandatory after w15 (the legacy
+          // shadingModel='sprite' arm was ablated; transparent is now SSOT).
+          // feat-20260626-sprite-transparent-collapse M1/M4: the boolean
+          // `transparent` field has collapsed into `renderState.blend` as the
+          // single asset-side SSOT; `SPRITE_PREMULTIPLIED_ALPHA_BLEND` is the
+          // exported preset for sprite-like premultiplied-alpha composition.
+          {
+            name: 'Forward',
+            program: { module: 'forgeax::sprite' },
+            renderState: {
+              ...{ blend: SPRITE_PREMULTIPLIED_ALPHA_BLEND },
+              tags: { LightMode: 'Forward' },
+              queue: 3000,
+            },
           },
+        ],
+        values: {
+          // feat-20260625 M3 / w11 (D-4): values field names are UBO-aligned
+          // to sprite.material.json paramSchema 1:1 (colorTint / region /
+          // pivotAndSize / baseColorTexture). The legacy baseColor / texture /
+          // pivot field names lose their backwards-compat fold post-R1.
+          colorTint: [1.0, 1.0, 1.0, 1.0],
+          baseColorTexture: textureHandle,
+          sampler: samplerHandle,
+          region: [0, 0, 1, 1],
+          pivotAndSize: [0.5, 0.5, 1, 1],
         },
-      ],
-      values: {
-        // feat-20260625 M3 / w11 (D-4): values field names are UBO-aligned
-        // to sprite.material.json paramSchema 1:1 (colorTint / region /
-        // pivotAndSize / baseColorTexture). The legacy baseColor / texture /
-        // pivot field names lose their backwards-compat fold post-R1.
-        colorTint: [1.0, 1.0, 1.0, 1.0],
-        baseColorTexture: textureHandle,
-        sampler: samplerHandle,
-        region: [0, 0, 1, 1],
-        pivotAndSize: [0.5, 0.5, 1, 1],
-      },
-    } as never);
+      } as never)
+      .unwrap();
 
     // Render an H-flipped sprite (scale.x < 0). With cullMode='back' this
     // would be culled and the centre would stay clear-colour-black.
@@ -386,48 +398,54 @@ describe('feat-20260608 M2 m2-t5: sprite pipeline cullMode "none" lets H/V flipp
       colorSpace: 'srgb' as const,
       mips: { kind: 'none' as const },
     };
-    const textureHandle = worldFlipBoth.allocSharedRef('TextureAsset', synthPod as never);
-    const samplerHandle = worldFlipBoth.allocSharedRef('SamplerAsset', {
-      kind: 'sampler',
-      magFilter: 'linear',
-      minFilter: 'linear',
-      addressModeU: 'repeat',
-      addressModeV: 'repeat',
-    } as never);
+    const textureHandle = testAssets(worldFlipBoth)
+      .create(synthPod as never)
+      .unwrap();
+    const samplerHandle = testAssets(worldFlipBoth)
+      .create({
+        kind: 'sampler',
+        magFilter: 'linear',
+        minFilter: 'linear',
+        addressModeU: 'repeat',
+        addressModeV: 'repeat',
+      } as never)
+      .unwrap();
 
-    const spriteMaterial = worldFlipBoth.allocSharedRef('MaterialAsset', {
-      kind: 'material',
-      passes: [
-        // feat-20260625-refactor-sprite-as-transparent-mesh M2 / w6 (Q3=b):
-        // transparent first-pass flag drives LDR split + premultiplied-alpha
-        // blend pipeline selection. Mandatory after w15 (the legacy
-        // shadingModel='sprite' arm was ablated; transparent is now SSOT).
-        // feat-20260626-sprite-transparent-collapse M1/M4: the boolean
-        // `transparent` field has collapsed into `renderState.blend` as the
-        // single asset-side SSOT; `SPRITE_PREMULTIPLIED_ALPHA_BLEND` is the
-        // exported preset for sprite-like premultiplied-alpha composition.
-        {
-          name: 'Forward',
-          program: { module: 'forgeax::sprite' },
-          renderState: {
-            ...{ blend: SPRITE_PREMULTIPLIED_ALPHA_BLEND },
-            tags: { LightMode: 'Forward' },
-            queue: 3000,
+    const spriteMaterial = testAssets(worldFlipBoth)
+      .create({
+        kind: 'material',
+        passes: [
+          // feat-20260625-refactor-sprite-as-transparent-mesh M2 / w6 (Q3=b):
+          // transparent first-pass flag drives LDR split + premultiplied-alpha
+          // blend pipeline selection. Mandatory after w15 (the legacy
+          // shadingModel='sprite' arm was ablated; transparent is now SSOT).
+          // feat-20260626-sprite-transparent-collapse M1/M4: the boolean
+          // `transparent` field has collapsed into `renderState.blend` as the
+          // single asset-side SSOT; `SPRITE_PREMULTIPLIED_ALPHA_BLEND` is the
+          // exported preset for sprite-like premultiplied-alpha composition.
+          {
+            name: 'Forward',
+            program: { module: 'forgeax::sprite' },
+            renderState: {
+              ...{ blend: SPRITE_PREMULTIPLIED_ALPHA_BLEND },
+              tags: { LightMode: 'Forward' },
+              queue: 3000,
+            },
           },
+        ],
+        values: {
+          // feat-20260625 M3 / w11 (D-4): values field names are UBO-aligned
+          // to sprite.material.json paramSchema 1:1 (colorTint / region /
+          // pivotAndSize / baseColorTexture). The legacy baseColor / texture /
+          // pivot field names lose their backwards-compat fold post-R1.
+          colorTint: [1.0, 1.0, 1.0, 1.0],
+          baseColorTexture: textureHandle,
+          sampler: samplerHandle,
+          region: [0, 0, 1, 1],
+          pivotAndSize: [0.5, 0.5, 1, 1],
         },
-      ],
-      values: {
-        // feat-20260625 M3 / w11 (D-4): values field names are UBO-aligned
-        // to sprite.material.json paramSchema 1:1 (colorTint / region /
-        // pivotAndSize / baseColorTexture). The legacy baseColor / texture /
-        // pivot field names lose their backwards-compat fold post-R1.
-        colorTint: [1.0, 1.0, 1.0, 1.0],
-        baseColorTexture: textureHandle,
-        sampler: samplerHandle,
-        region: [0, 0, 1, 1],
-        pivotAndSize: [0.5, 0.5, 1, 1],
-      },
-    } as never);
+      } as never)
+      .unwrap();
 
     spawnFlippedSpriteScene(worldFlipBoth, spriteMaterial, /* sx= */ -1, /* sy= */ -1);
     const attachmentBoth = renderer.attach(worldFlipBoth);

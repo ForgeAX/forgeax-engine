@@ -1,5 +1,8 @@
 #!/usr/bin/env node
 import { encodePng } from '@forgeax/engine-image/png';
+import { createPrimitiveMesh } from '@forgeax/engine-geometry';
+import { constructRuntimeRendererHost } from '@forgeax/engine-runtime/internal/renderer-host';
+let smokeAssets;
 import { createSmokeRenderer, drawSmokeFrame, rendererBackend, subscribeSmokeErrors } from "../../scripts/renderer-smoke.mjs";
 // bevy-orthographic headless dawn smoke — orthographic camera view of green
 // plane + 4 brown cubes + PointLight.
@@ -104,7 +107,7 @@ const { createRenderer } = await import('@forgeax/engine-runtime');
 const { Materials } = await import('@forgeax/engine-render');
 const { orthographic } = await import('@forgeax/engine-render');
 const { Transform } = await import('@forgeax/engine-scene');
-const { HANDLE_CUBE } = await import('@forgeax/engine-assets-runtime');
+
 const { quat } = await import('@forgeax/engine-math');
 
 const here = dirname(fileURLToPath(import.meta.url));
@@ -113,7 +116,9 @@ const MANIFEST_URL = `data:application/json,${encodeURIComponent(readFileSync(MA
 
 let renderer;
 try {
-  renderer = await createSmokeRenderer(createRenderer, mockCanvas, {}, { shaderManifestUrl: MANIFEST_URL });
+  const hostResult = await constructRuntimeRendererHost(mockCanvas, {}, { shaderManifestUrl: MANIFEST_URL });
+if (!hostResult.ok) throw hostResult.error;
+({ renderer, assets: smokeAssets } = hostResult.value);
 } catch (err) {
   console.error(`[smoke] FAIL - createRenderer threw: ${err instanceof Error ? err.message : String(err)}`);
   process.exit(1);
@@ -130,23 +135,24 @@ subscribeSmokeErrors(renderer, (err) => errors.push({ code: err.code, hint: err.
 const ORTHO_HEIGHT = 6;
 const ORTHO_WIDTH = ORTHO_HEIGHT * (16 / 9);
 
-const world = new World();
+const world = new World({ assets: smokeAssets });
+const primitiveCube = world.assets.create(createPrimitiveMesh('cube').unwrap()).unwrap();
 const worldAttachment1 = renderer.attach(world);
 if (!worldAttachment1.ok) throw worldAttachment1.error;
 
-const planeMat = world.allocSharedRef('MaterialAsset', Materials.standard({ baseColor: [0.3, 0.5, 0.3, 1] }));
+const planeMat = world.assets.create(Materials.standard({ baseColor: [0.3, 0.5, 0.3, 1] })).unwrap();
 world.spawn(
   { component: Transform, data: { pos: [0, 0, 0], quat: [0, 0, 0, 1], scale: [5, 0.02, 5] } },
-  { component: MeshFilter, data: { assetHandle: HANDLE_CUBE } },
+  { component: MeshFilter, data: { assetHandle: primitiveCube } },
   { component: MeshRenderer, data: { materials: [planeMat] } },
 );
 
-const cubeMat = world.allocSharedRef('MaterialAsset', Materials.standard({ baseColor: [0.8, 0.7, 0.6, 1] }));
+const cubeMat = world.assets.create(Materials.standard({ baseColor: [0.8, 0.7, 0.6, 1] })).unwrap();
 for (const x of [-1.5, 1.5]) {
   for (const z of [-1.5, 1.5]) {
     world.spawn(
       { component: Transform, data: { pos: [x, 0.5, z], quat: [0, 0, 0, 1], scale: [1, 1, 1] } },
-      { component: MeshFilter, data: { assetHandle: HANDLE_CUBE } },
+      { component: MeshFilter, data: { assetHandle: primitiveCube } },
       { component: MeshRenderer, data: { materials: [cubeMat] } },
     );
   }

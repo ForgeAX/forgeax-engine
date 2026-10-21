@@ -4,7 +4,7 @@ import { createHash } from 'node:crypto';
 import { cpus,platform,arch } from 'node:os';
 import { performance } from 'node:perf_hooks';
 import { World,createWorldContext } from '../../ecs/dist/index.mjs';
-import { Name,Transform } from '../../scene/dist/index.mjs';
+import { sceneAssetContribution,Name,Transform } from '../../scene/dist/index.mjs';
 import { SceneInstance } from '../../render/dist/index.mjs';
 import { AssetRegistry } from '../../assets-runtime/dist/index.mjs';
 import { ShaderRegistry } from '../../shader/dist/index.mjs';
@@ -17,15 +17,17 @@ export const distribution=(values)=>{const sorted=[...values].sort((a,b)=>a-b);r
 // Budgets fixed before the first measurements. Point-follower budgets remain independent.
 export const budgets={neighbors1000Ms:10,solver1000Ms:1000/60,world100Ms:1000/60,world1000Ms:100,bakeSmallMs:1000,bakeMediumMs:5000,bakeLargeMs:10000,queryP95Ms:50};
 export async function runCrowd({name,geometry=[floor()],starts,goals,frames=1200,trace=true,nav=navigation,instrument=false,bakeSettings={...settings,radius:0.35},scene,avoidanceOptions}={}) {
-  const asset=(await bakeNavigationMesh({geometry,settings:bakeSettings})).unwrap(),mesh=nav.createNavigationMesh(asset).unwrap(),world=new World();
+  const asset=(await bakeNavigationMesh({geometry,settings:bakeSettings})).unwrap(),registry=new AssetRegistry({ shaderRegistry: new ShaderRegistry({manifestUrl:undefined}) });
+  registry.installDecoder(nav.navigationMeshContribution.kind,nav.navigationMeshContribution.decoder);
+  const mesh=registry.create(asset).unwrap(),world=new World({assets:registry});
   const samples=[],stages={};let accumulated={};
   if(instrument){const wrap=system=>({...system,fn(...args){const start=performance.now();try{return system.fn(...args);}finally{accumulated[system.name]=(accumulated[system.name]??0)+performance.now()-start;}}}),add=world.addSystem.bind(world),adds=world.addSystems.bind(world);world.addSystem=(schedule,system)=>add(schedule,wrap(system));world.addSystems=(schedule,set,systems)=>adds(schedule,set,systems.map(wrap));}
   const ctx=await createWorldContext(world,[physicsPlugin('rapier-3d'),nav.navigationCharacterPlugin(mesh,avoidanceOptions)]);
-  const registry=new AssetRegistry(new ShaderRegistry({manifestUrl:undefined}));world.components.register(SceneInstance).unwrap();
+  registry.release(mesh).unwrap();registry.installDecoder(sceneAssetContribution.kind,sceneAssetContribution.decoder);world.components.register(SceneInstance).unwrap();
   const trajectories=[],heapBefore=process.memoryUsage();let motorMs=0;let minimum=Infinity,overlapFrames=0;
   try {
     const authored=scene??{kind:'scene',entities:Object.fromEntries([...geometry.map((g,i)=>[`geometry-${i}`,{components:g.components}]),...starts.map(([x,z],i)=>[`actor-${i}`,{components:{...actor(x,z).components,Name:{value:String(i)}}}])])};
-    registry.instantiateFlat(world.allocSharedRef('SceneAsset',authored),world).unwrap();
+    registry.instantiateFlat(registry.create(authored).unwrap(),world).unwrap();
     const entities=Array.from(world.query({with:[nav.NavigationCharacter]}).unwrap(),row=>row.entity).sort((a,b)=>Number(world.get(a,Name).unwrap().value)-Number(world.get(b,Name).unwrap().value));
     const latency=[],destinations=[];
     for(let i=0;i<entities.length;i++){const t=performance.now();nav.setNavigationTarget(world,entities[i],goals[i],{maxProjection:0.3}).unwrap();latency.push(performance.now()-t);const path=world.get(entities[i],nav.NavigationAgent).unwrap().path;destinations.push([...path.slice(-3)]);}
@@ -40,7 +42,7 @@ export async function runCrowd({name,geometry=[floor()],starts,goals,frames=1200
     const arrived=states.filter(s=>s.status===nav.NavigationAgentStatus.arrived).length,blocked=states.filter(s=>s.status===nav.NavigationAgentStatus.blocked).length;
     assert.ok(states.every(s=>s.status!==nav.NavigationAgentStatus.arrived||s.distance<=0.081),'actual arrival oracle');
     return {name,agents:entities.length,frames,dt:1/60,instrumented:instrument,settings:bakeSettings,avoidanceOptions:avoidanceOptions??{neighborDistance:4,maxNeighbors:16,horizon:1.5,maxCandidates:128},asset,geometry:geometry.map(g=>g.components),starts,goals,destinations,states,arrived,blocked,arrivalRate:arrived/entities.length,stuckRate:blocked/entities.length,minimumSeparation:minimum,overlapFrames,queryLatency:{...distribution(latency),samples:latency},fullWorld:{...distribution(samples),samples},stages:Object.fromEntries(Object.entries(stages).map(([k,v])=>[k,{...distribution(v),samples:v}])),memory:{before:heapBefore,after:process.memoryUsage()},trajectories};
-  }finally{await ctx.fiber.dispose();}
+  }finally{await ctx.fiber.dispose();registry.dispose();}
 }
 export async function effectCases(nav=navigation){
   const crossStarts=[[-3,-0.6],[-3,0.6],[3,-0.6],[3,0.6],[-0.6,-3],[0.6,-3],[-0.6,3],[0.6,3]];

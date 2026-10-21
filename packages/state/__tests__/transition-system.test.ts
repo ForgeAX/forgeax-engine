@@ -1,3 +1,6 @@
+import { AssetRegistry } from '@forgeax/engine-assets-runtime';
+import { sceneAssetContribution } from '@forgeax/engine-scene';
+import type { AssetHandle } from '@forgeax/engine-types';
 import { Update } from '@forgeax/engine-ecs';
 // @forgeax/engine-state -- transition-system unit tests (M3 / m3w3 + m3w5)
 //
@@ -20,7 +23,7 @@ import { describe, expect, it } from 'vitest';
 import { defineComponent, Entity, type EntityHandle, World } from '@forgeax/engine-ecs';
 import { ChildOf, Children, worldInstantiateScene } from '@forgeax/engine-scene';
 import { defineState } from '../src/define-state';
-import { stateResourceKey, nextStateResourceKey, previousStateResourceKey } from '../src/resources';
+import { type StatePayload, stateResourceKey } from '../src/resources';
 import { registerStatesPlugin } from '../src/register-plugin';
 import { setNextState, setNextStateForce, getState, getPreviousState } from '../src/set-next-state';
 import { addOnEnter } from '../src/on-enter-on-exit';
@@ -65,8 +68,8 @@ describe('transitionStatesSystem', () => {
     const sBefore = getState(world, LevelId);
     expect(sBefore.ok && sBefore.value).toBe('main-menu');
 
-    const nsKey = nextStateResourceKey(LevelId);
-    const nsBefore = world.getResource<{ value: number; force: boolean } | undefined>(nsKey);
+    const nsKey = stateResourceKey(LevelId);
+    const nsBefore = world.getResource<StatePayload>(nsKey).next;
     expect(nsBefore).toBeDefined();
 
     // Run one frame — triggers transitionStatesSystem
@@ -79,7 +82,7 @@ describe('transitionStatesSystem', () => {
     const psAfter = getPreviousState(world, LevelId);
     expect(psAfter.ok && psAfter.value).toBe('main-menu');
 
-    const nsAfter = world.getResource<{ value: number; force: boolean } | undefined>(nsKey);
+    const nsAfter = world.getResource<StatePayload>(nsKey).next;
     expect(nsAfter).toBeUndefined();
   });
 
@@ -104,8 +107,8 @@ describe('transitionStatesSystem', () => {
     expect(r2.ok).toBe(true);
 
     // NextState remains undefined
-    const nsKey = nextStateResourceKey(LevelId);
-    const ns = world.getResource<{ value: number; force: boolean } | undefined>(nsKey);
+    const nsKey = stateResourceKey(LevelId);
+    const ns = world.getResource<StatePayload>(nsKey).next;
     expect(ns).toBeUndefined();
   });
 
@@ -130,8 +133,8 @@ describe('transitionStatesSystem', () => {
     expect(eData.ok).toBe(true);
 
     // NextState cleared
-    const nsKey = nextStateResourceKey(LevelId);
-    const ns = world.getResource<{ value: number; force: boolean } | undefined>(nsKey);
+    const nsKey = stateResourceKey(LevelId);
+    const ns = world.getResource<StatePayload>(nsKey).next;
     expect(ns).toBeUndefined();
   });
 
@@ -161,8 +164,8 @@ describe('transitionStatesSystem', () => {
     expect(eData.ok).toBe(false);
 
     // NextState cleared
-    const nsKey = nextStateResourceKey(LevelId);
-    const ns = world.getResource<{ value: number; force: boolean } | undefined>(nsKey);
+    const nsKey = stateResourceKey(LevelId);
+    const ns = world.getResource<StatePayload>(nsKey).next;
     expect(ns).toBeUndefined();
   });
 
@@ -304,14 +307,14 @@ describe('transitionStatesSystem', () => {
     expect(result.ok).toBe(true);
 
     // Pending NextState has force=true
-    const nsKey = nextStateResourceKey(LevelId);
-    const ns = world.getResource<{ value: number; force: boolean } | undefined>(nsKey);
+    const nsKey = stateResourceKey(LevelId);
+    const ns = world.getResource<StatePayload>(nsKey).next;
     expect(ns?.force).toBe(true);
 
     world.update(1 / 60).unwrap();
 
     // After transition, NextState cleared — force consumed
-    const nsAfter = world.getResource<{ value: number; force: boolean } | undefined>(nsKey);
+    const nsAfter = world.getResource<StatePayload>(nsKey).next;
     expect(nsAfter).toBeUndefined();
   });
 });
@@ -384,8 +387,8 @@ describe('AC-18: multi-token independence', () => {
     expect(s2.ok && s2.value).toBe('menu');
 
     // GameMode NextState remains undefined
-    const nsKey = nextStateResourceKey(GameMode);
-    const ns = world.getResource<{ value: number; force: boolean } | undefined>(nsKey);
+    const nsKey = stateResourceKey(GameMode);
+    const ns = world.getResource<StatePayload>(nsKey).next;
     expect(ns).toBeUndefined();
   });
 
@@ -509,7 +512,7 @@ describe('M41: invalid variant atomic refusal', () => {
       got: invalid,
       valid: ['main-menu', 'tutorial'],
     });
-    expect(world.getResource<{ value: number; force: boolean } | undefined>(nextStateResourceKey(M41Primary))).toBeUndefined();
+    expect(world.getResource<StatePayload>(stateResourceKey(M41Primary)).next).toBeUndefined();
     expect(world.inspect().entityCount).toBe(before.entityCount);
     expect(executionSignature()).toEqual(before.execution);
     expect(getState(world, M41Primary)).toEqual(before.level);
@@ -521,7 +524,7 @@ describe('M41: invalid variant atomic refusal', () => {
     expect(world.get(enterEntity, Entity).ok).toBe(true);
 
     world.update(1 / 60).unwrap();
-    expect(world.getResource<{ value: number; force: boolean } | undefined>(nextStateResourceKey(M41Primary))).toBeUndefined();
+    expect(world.getResource<StatePayload>(stateResourceKey(M41Primary)).next).toBeUndefined();
     expect(getState(world, M41Primary)).toMatchObject({ ok: true, value: 'main-menu' });
     expect(getPreviousState(world, M41Primary)).toMatchObject({ ok: true, value: 'main-menu' });
     expect(callbackRuns).toBe(0);
@@ -540,7 +543,7 @@ describe('M41: invalid variant atomic refusal', () => {
     expect(world.get(enterEntity, Entity).ok).toBe(false);
     expect(repairedEntity).toBeDefined();
     expect(repairedEntity === undefined ? false : world.get(repairedEntity, Entity).ok).toBe(true);
-    expect(world.getResource<{ value: number; force: boolean } | undefined>(nextStateResourceKey(M41Primary))).toBeUndefined();
+    expect(world.getResource<StatePayload>(stateResourceKey(M41Primary)).next).toBeUndefined();
 
     setNextState(world, M41Primary, 'main-menu');
     world.update(1 / 60).unwrap();
@@ -549,7 +552,7 @@ describe('M41: invalid variant atomic refusal', () => {
     world.update(1 / 60).unwrap();
     expect(repairedEntity === undefined ? false : world.get(repairedEntity, Entity).ok).toBe(false);
     expect(callbackRuns).toBe(1);
-    expect(world.getResource<{ value: number; force: boolean } | undefined>(nextStateResourceKey(M41Primary))).toBeUndefined();
+    expect(world.getResource<StatePayload>(stateResourceKey(M41Primary)).next).toBeUndefined();
 
     removeCallback();
   });
@@ -785,13 +788,13 @@ describe('AC-13: schedule anchors', () => {
 //   SceneInstance members are NOT despawned by state transitions.
 // ──────────────────────────────────────────────────────────────────────────────
 
-import type { Handle, SceneAsset, SceneEntity } from '@forgeax/engine-types';
+import type { SceneAsset, SceneEntity } from '@forgeax/engine-types';
 
 // SceneInstance must be registered for instantiateScene to resolve it.
 // Schema mirrors the runtime definition in @forgeax/engine-runtime
 // (feat-20260614: handle<T> -> shared<T>, ref<T> -> unique<T>).
 const SceneInstance = defineComponent('SceneInstance', {
-  source: { type: 'shared<SceneAsset>' },
+  source: { type: 'asset<scene>' },
   mapping: { type: 'array<entity>' },
   state: { type: 'unique<SceneInstanceState>' },
 });
@@ -803,13 +806,19 @@ function buildScene(nodes: readonly (SceneEntity & { readonly key: string })[]):
   };
 }
 
-function registerSceneAsset(world: World, asset: SceneAsset): Handle<'SceneAsset', 'shared'> {
+function registerSceneAsset(world: World, asset: SceneAsset): AssetHandle<'scene'> {
   for (const component of [Children, ChildOf, SceneInstance]) {
     if (world.components.resolve(component.name) === undefined) {
       world.components.register(component).unwrap();
     }
   }
-  return world.allocSharedRef('SceneAsset', asset);
+  let assets = world.assets;
+  if (!(assets instanceof AssetRegistry)) {
+    assets = new AssetRegistry();
+    assets.installDecoder(sceneAssetContribution.kind, sceneAssetContribution.decoder);
+    world.bindAssets(assets).unwrap();
+  }
+  return (assets as AssetRegistry).create(asset).unwrap();
 }
 
 /** Read mapping from root's SceneInstance component. */

@@ -1,6 +1,6 @@
 import { LineCapValue } from '../components/lines';
 import type { PointsLinesExpandedGeometry } from './expansion-cache';
-import type { PointsLinesRetainedSnapshot, PointsLinesStyle } from './snapshot';
+import type { PointsLinesPreparedSnapshot, PointsLinesStyle } from './snapshot';
 
 export const POINTS_LINES_MATERIAL_SHADER_ID = 'forgeax::points-lines';
 
@@ -23,7 +23,7 @@ export interface PointsLinesLaneContract {
   readonly authoring: 'shared';
   readonly evidence: 'runtime' | 'structural-only';
   readonly material: {
-    readonly source: 'MaterialAsset';
+    readonly source: 'material';
     readonly shaderId: typeof POINTS_LINES_MATERIAL_SHADER_ID;
     readonly shadingModel: 'unlit';
     readonly clusteredLighting: false;
@@ -41,20 +41,16 @@ export interface PointsLinesLaneContract {
   };
 }
 
-export interface PointsLinesRecordPlan {
-  readonly lane: PointsLinesLane;
-  readonly backend: PointsLinesBackend;
+export interface PointsLinesRecordPlan
+  extends Pick<PointsLinesLaneContract, 'lane' | 'backend' | 'shadowDrawCount' | 'graph'>,
+    Pick<PointsLinesPreparedSnapshot, 'meshGeneration' | 'materialGeneration'> {
   readonly materialShaderId: typeof POINTS_LINES_MATERIAL_SHADER_ID;
   readonly component: 'Points' | 'Lines';
-  readonly meshGeneration: number;
-  readonly materialGeneration: number;
   readonly vertexCount: number;
   readonly indexCount: number;
   readonly drawCount: 0 | 1;
-  readonly shadowDrawCount: 0;
   /** Raster margin in the style's own width units (pixels or world). */
   readonly conservativeMargin: number;
-  readonly graph: PointsLinesLaneContract['graph'];
 }
 
 /**
@@ -72,7 +68,7 @@ export function createPointsLinesLaneContract(
     authoring: 'shared',
     evidence: backend === 'null' ? 'structural-only' : 'runtime',
     material: {
-      source: 'MaterialAsset',
+      source: 'material',
       shaderId: POINTS_LINES_MATERIAL_SHADER_ID,
       shadingModel: 'unlit',
       clusteredLighting: false,
@@ -90,7 +86,7 @@ export function createPointsLinesLaneContract(
  * so the limits are exactly four vertices and six indices per primitive.
  */
 export function createPointsLinesRecordPlan(
-  snapshot: PointsLinesRetainedSnapshot,
+  snapshot: PointsLinesPreparedSnapshot,
   geometry: PointsLinesExpandedGeometry,
   contract: PointsLinesLaneContract,
 ): PointsLinesRecordPlan {
@@ -116,10 +112,10 @@ export function createPointsLinesRecordPlan(
   };
 }
 
-export interface PointsLinesLaneAdapter {
+interface PointsLinesLaneAdapter {
   readonly contract: PointsLinesLaneContract;
   createRecordPlan(
-    snapshot: PointsLinesRetainedSnapshot,
+    snapshot: PointsLinesPreparedSnapshot,
     geometry: PointsLinesExpandedGeometry,
   ): PointsLinesRecordPlan;
 }

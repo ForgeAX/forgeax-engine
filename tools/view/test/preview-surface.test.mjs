@@ -269,7 +269,7 @@ describe('dedicated asset preview surfaces', () => {
     assert.equal(bound.error.code, 'view-preview-surface-unavailable');
   });
 
-  it('selects extra type-preview targets and skips the Scene preview', () => {
+  it('requires the exact admitted type-preview and skips the Scene preview', () => {
     const snapshot = {
       scenePreview: { asset: { guid: 'scene-1', kind: 'scene' }, target: { targetId: 'scene-target' } },
       preview: { asset: { guid: 'mat-1', kind: 'material' }, target: { targetId: 'scene-target' } },
@@ -282,6 +282,8 @@ describe('dedicated asset preview surfaces', () => {
         { asset: { guid: 'mat-1', kind: 'material' }, target: { targetId: 'material-preview-target' } },
       ],
     };
+    assert.equal(selectWorkspaceResourcePreview(snapshot, 'mat-1'), undefined);
+    snapshot.openRequest.preview = snapshot.previews[1];
     const preview = selectWorkspaceResourcePreview(snapshot, 'mat-1');
     assert.equal(preview.target.targetId, 'material-preview-target');
     const missing = selectWorkspaceResourcePreview({

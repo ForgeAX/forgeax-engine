@@ -1,3 +1,5 @@
+import { AssetRegistry } from '@forgeax/engine/assets-runtime';
+import { createPrimitiveMesh } from '@forgeax/engine/geometry';
 import {
   Atmosphere,
   DirectionalLight,
@@ -5,7 +7,7 @@ import {
   TONEMAP_ACES_FILMIC,
 } from '@forgeax/engine/render';
 import { defineFeature, type FeatureCheck } from '../../lab/feature';
-import { MESH, spawnCamera, spawnMesh, standard } from '../../lab/stage';
+import { spawnCamera, spawnMesh, standard } from '../../lab/stage';
 import { proceduralEquirect } from './support/scene';
 
 interface Snapshot {
@@ -25,16 +27,26 @@ export default defineFeature({
   expect:
     'Checks: the image source becomes active, switching to Atmosphere produces a different signature and a newer generation, and an LKG signature is recorded.',
   async setup({ world, app, frames }) {
+    const primitiveAssets = world.assets;
+    if (!(primitiveAssets instanceof AssetRegistry))
+      throw new Error('Scene requires its runtime asset owner');
+
+    const stageSphere = primitiveAssets.create(createPrimitiveMesh('sphere').unwrap()).unwrap();
+
+    const sceneAssets = world.assets;
+    if (!(sceneAssets instanceof AssetRegistry))
+      throw new Error('Scene requires its runtime asset owner');
+
     spawnCamera(world, {
       eye: [0, 0.3, 4],
       target: [0, 0.5, 0],
       data: { tonemap: TONEMAP_ACES_FILMIC },
     });
-    spawnMesh(world, MESH.sphere, standard(world, { baseColor: [0.9, 0.9, 0.9, 1] }), {
+    spawnMesh(world, stageSphere, standard(world, { baseColor: [0.9, 0.9, 0.9, 1] }), {
       pos: [0, 0.3, 0],
       scale: [0.5, 0.5, 0.5],
     });
-    const equirect = world.allocSharedRef('EquirectAsset', proceduralEquirect());
+    const equirect = sceneAssets.create(proceduralEquirect()).unwrap();
     const snapshot = (): Snapshot => {
       const env = app.renderer.inspect().environment;
       return {

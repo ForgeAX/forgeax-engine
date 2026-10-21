@@ -24,7 +24,6 @@
 import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
-import { SHADOW_CASTER_PASS_SELECTOR } from '../../../render/src/systems/pass-selector';
 
 // ── Helpers ─────────────────────────────────────────────────────────────────
 
@@ -153,17 +152,8 @@ describe('production-path shadow instanceBuffers world-aware key', () => {
     const start = src.indexOf('export function encodeSpotShadowPass(');
     expect(start).toBeGreaterThanOrEqual(0);
     expect(src.slice(start)).toContain('recordShadowCasterDraws(');
-    expect(src.slice(start)).toContain(
-      'const dispatchProjection = shadowResidualSelection(c, claimedKeys);',
-    );
-    expect(src.slice(start)).toContain('dispatchProjection.matchedIndices');
-    expect(src.slice(start)).toContain('dispatchProjection.matchedMaterialHandles');
-    // The shared projection derives renderable membership from the selected materials.
-    expect(SHADOW_CASTER_PASS_SELECTOR).toEqual({ LightMode: ['ShadowCaster'] });
-    expect(src).toMatch(
-      /const matchedMaterialHandles = buildMatchedMaterialHandlesByRenderable\(\s*dispatch,\s*SHADOW_CASTER_PASS_SELECTOR,?\s*\)/,
-    );
-    expect(src).toContain('new Set(matchedMaterialHandles.keys())');
+    // Cross-World buffer identity and all three light front doors are exercised
+    // by render's shadow-instance-residency and shadow-dispatch-projection tests.
   });
 });
 

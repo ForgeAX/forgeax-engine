@@ -1,10 +1,12 @@
+import { AssetRegistry } from '@forgeax/engine/assets-runtime';
+import { createPrimitiveMesh } from '@forgeax/engine/geometry';
 import {
   DepthOfField,
   DepthOfFieldQualityValue,
   DepthOfFieldSideValue,
 } from '@forgeax/engine/render';
 import { CheckList, defineFeature } from '../../lab/feature';
-import { MESH, spawnMesh, spawnStage, standard } from '../../lab/stage';
+import { spawnMesh, spawnStage, standard } from '../../lab/stage';
 
 const DOF = {
   focusDistance: 2.5,
@@ -24,6 +26,12 @@ export default defineFeature({
   expect:
     'ON: the near red sphere (at the 2.5 m focus distance) is sharp while the spheres receding behind it turn into soft, blurry discs. OFF: every sphere is equally sharp.',
   setup({ app, world, frames }) {
+    const primitiveAssets = world.assets;
+    if (!(primitiveAssets instanceof AssetRegistry))
+      throw new Error('Scene requires its runtime asset owner');
+
+    const stageSphere = primitiveAssets.create(createPrimitiveMesh('sphere').unwrap()).unwrap();
+
     const { camera } = spawnStage(world, { eye: [0, 1, 3.5], target: [0, 0.6, -6] });
     const colors = [
       [1, 0.1, 0.1, 1],
@@ -33,7 +41,7 @@ export default defineFeature({
       [0.8, 0.2, 1, 1],
     ] as const;
     colors.forEach((baseColor, i) => {
-      spawnMesh(world, MESH.sphere, standard(world, { baseColor, roughness: 0.4 }), {
+      spawnMesh(world, stageSphere, standard(world, { baseColor, roughness: 0.4 }), {
         pos: [-0.9 + i * 0.6, 0.5, 1 - i * 2.5],
         scale: [0.5, 0.5, 0.5],
       });

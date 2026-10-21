@@ -38,8 +38,10 @@ describe('replica epoch and packet order', () => {
   it('re-acks duplicates without mutating and rejects gaps atomically', () => {
     const replica = createReplicaCoordinator(new World(), profile());
     const baseline = packet('baseline', 1, 1, 1);
-    expect(applyReplicationPacket(replica, baseline).ok).toBe(true);
-    expect(applyReplicationPacket(replica, baseline).ok).toBe(true);
+    const accepted = applyReplicationPacket(replica, baseline);
+    const duplicate = applyReplicationPacket(replica, baseline);
+    expect(accepted.unwrap()).toBe('accepted');
+    expect(duplicate.unwrap()).toBe('duplicate');
     expect(applyReplicationPacket(replica, packet('delta', 1, 2, 2)).ok).toBe(true);
 
     const before = replica.snapshot();
@@ -56,9 +58,7 @@ describe('replica epoch and packet order', () => {
     const oldEpoch = applyReplicationPacket(replica, packet('delta', 0, 2, 2));
     expect(oldEpoch.ok).toBe(true);
     expect(replica.snapshot()).toEqual(before);
-    expect((replica as unknown as { lastPacketOutcome: string }).lastPacketOutcome).toBe(
-      'ignored-old-epoch',
-    );
+    expect(oldEpoch.unwrap()).toBe('ignored-old-epoch');
     expect(applyReplicationPacket(replica, packet('baseline', 2, 1, 3)).ok).toBe(true);
   });
 
@@ -70,7 +70,6 @@ describe('replica epoch and packet order', () => {
 
     const nextEpoch = packet('baseline', 2, 1, 2);
     expect(applyReplicationPacket(replica, nextEpoch).ok).toBe(true);
-    expect(applyReplicationPacket(replica, packet('delta', 2, 2, 3)).ok).toBe(true);
-    expect(replica.lastPacketOutcome).toBe('accepted');
+    expect(applyReplicationPacket(replica, packet('delta', 2, 2, 3)).unwrap()).toBe('accepted');
   });
 });

@@ -1,12 +1,6 @@
-import {
-  buildProfileModel,
-  type ProfileModel,
-  type ProfilePhaseModel,
-  type ProfileSummaryModel,
-  phaseKey,
-} from './model.js';
+import { buildProfileModel, type ProfileModel, type ProfilePhaseModel, phaseKey } from './model.js';
 import type { ProfileArtifactError } from './schema.js';
-import type { ProfileCapture, ProfileResult } from './types.js';
+import type { ProfileResult } from './types.js';
 
 export type ProfileComparisonPhaseIdentity = Pick<
   ProfilePhaseModel,
@@ -31,10 +25,7 @@ export interface ProfileComparisonPhaseRow {
   readonly delta?: ProfileComparisonPhaseDelta;
 }
 
-export interface ProfileComparisonSide {
-  readonly summary: ProfileSummaryModel;
-  readonly completeness: ProfileCapture['completeness'];
-}
+export type ProfileComparisonSide = Pick<ProfileModel, 'summary'>;
 
 export interface ProfileComparisonProjection {
   readonly left: ProfileComparisonSide;
@@ -48,7 +39,10 @@ export type ProfileComparisonError = ProfileArtifactError & {
   };
 };
 
-function withSide(side: 'left' | 'right', error: ProfileArtifactError): ProfileComparisonError {
+function withSide(
+  side: ProfileComparisonError['detail']['side'],
+  error: ProfileArtifactError,
+): ProfileComparisonError {
   return {
     ...error,
     detail: { ...error.detail, side },
@@ -91,35 +85,32 @@ function projectPhases(
   left: ProfileModel,
   right: ProfileModel,
 ): readonly ProfileComparisonPhaseRow[] {
-  const leftByKey = new Map(left.phases.map((phase) => [phaseKey(phase), phase]));
-  const rightByKey = new Map(right.phases.map((phase) => [phaseKey(phase), phase]));
-  const keys = [...new Set([...leftByKey.keys(), ...rightByKey.keys()])].sort();
+  const rows = new Map<string, ProfileComparisonPhaseRow>();
   const comparableTimeUnit = left.summary.timeUnit === right.summary.timeUnit;
-
-  return keys.map((key) => {
-    const leftPhase = leftByKey.get(key);
-    const rightPhase = rightByKey.get(key);
-    const leftFact = leftPhase === undefined ? undefined : phaseFact(leftPhase);
-    const rightFact = rightPhase === undefined ? undefined : phaseFact(rightPhase);
-    const delta = phaseDelta(leftFact, rightFact, comparableTimeUnit);
-    return {
-      identity: phaseIdentity(leftPhase ?? (rightPhase as ProfilePhaseModel)),
-      ...(leftFact === undefined ? {} : { left: leftFact }),
-      ...(rightFact === undefined ? {} : { right: rightFact }),
+  for (const phase of left.phases) {
+    rows.set(phaseKey(phase), { identity: phaseIdentity(phase), left: phaseFact(phase) });
+  }
+  for (const phase of right.phases) {
+    const key = phaseKey(phase);
+    const row = rows.get(key);
+    const rightFact = phaseFact(phase);
+    const delta = phaseDelta(row?.left, rightFact, comparableTimeUnit);
+    rows.set(key, {
+      ...(row ?? { identity: phaseIdentity(phase) }),
+      right: rightFact,
       ...(delta === undefined ? {} : { delta }),
-    };
-  });
+    });
+  }
+  return [...rows].sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0)).map(([, row]) => row);
 }
 
 function projectModels(left: ProfileModel, right: ProfileModel): ProfileComparisonProjection {
   return {
     left: {
       summary: left.summary,
-      completeness: left.completeness,
     },
     right: {
       summary: right.summary,
-      completeness: right.completeness,
     },
     phases: projectPhases(left, right),
   };

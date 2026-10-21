@@ -7,43 +7,52 @@ import {
 } from '@forgeax/engine-shader';
 import { expect, onTestFinished } from 'vitest';
 import type { MeshGpuHandles } from '../device/gpu-residency';
-import {
-  BatchTopology,
-  batchVisibleSpan,
-  type GpuDrivenCandidate,
-  type SubmissionPlan,
-} from '../gpu-driven/batch-topology';
-import { materialBindingKey } from '../gpu-driven/material-bindings';
+import { prepareBatchExecution } from '../gpu-driven/batch-execution';
+import { batchVisibleSpan } from '../gpu-driven/batch-layout';
+import { BatchTopology, type SubmissionPlan } from '../gpu-driven/batch-topology';
+import { FilteredPlanContributionOwner } from '../gpu-driven/filtered-plan-contributions';
 import { assemblePreparedPlan, prepareBatchRows } from '../gpu-driven/production-raster-prepare';
 import { GpuBuffer } from '../gpu-resource';
 import { GPU_BUFFER_USAGE_INDEX, GPU_BUFFER_USAGE_VERTEX } from '../gpu-usage';
+import { MaterialResource } from '../material-resource';
 import type { RenderableSnapshot } from '../render-system-extract';
 import { RenderScene } from '../scene/render-scene';
 import { preparedPbrSnapshot } from './gpu-driven-production-fixture';
 
-export function createFilterPlanFixture() {
+export function createFilterPlanFixture(
+  options: { sharedGeometry?: boolean; instances?: number } = {},
+) {
+  const instanceCount = options.instances ?? 2;
+  const shared = new MaterialResource({
+    baseColor: vec3.create(1, 1, 1),
+    metallic: 0,
+    roughness: 1,
+    passes: [
+      {
+        name: 'forward',
+        program: { module: 'forgeax::default-standard-pbr' },
+        renderState: { tags: { LightMode: 'Forward' } },
+      },
+    ],
+  });
   const scene = new RenderScene();
   scene.apply(
     [0, 1, 2].map((index) => {
       const world = mat4.identity(mat4.create());
-      const material = {
-        baseColor: vec3.create(1, 1, 1),
-        metallic: 0,
-        roughness: 1,
-        materialHandle: 100 + index,
-      };
       const snapshot: RenderableSnapshot = preparedPbrSnapshot({
         worldId: 0,
         entityKey: index + 1,
-        assetHandle: 3,
+        assetHandle: options.sharedGeometry ? 3 : 3 + index,
         transform: { world },
         localAabb: new Float32Array([-1, -1, -1, 1, 1, 1]),
-        material,
-        materials: [material],
+        material: shared,
+        materials: [shared],
         materialBindingSources: ['engine-default'],
         instances: {
-          transforms: new Float32Array([...world, ...world]),
-          instanceCount: 2,
+          transforms: new Float32Array(
+            Array.from({ length: instanceCount }, () => [...world]).flat(),
+          ),
+          instanceCount,
           cacheKey: index + 1,
           archVersion: 1,
         },
@@ -61,40 +70,19 @@ export function createFilterPlanFixture() {
           },
         ],
       });
-      return { kind: 'update' as const, worldId: 0, entityKey: index + 1, snapshot };
+      return {
+        kind: 'update' as const,
+        worldId: 0,
+        entityKey: index + 1,
+        snapshot: { ...snapshot, material: shared, materials: [shared] },
+      };
     }),
   );
   const slots = scene.slotsSnapshot();
   const topology = new BatchTopology();
   topology.rebuild(slots);
-  const root = defined(topology.plan().batches[0]);
-  expect(topology.plan().batches).toHaveLength(1);
-  const candidate = (primitiveIndex: number, instanceOrdinal: number): GpuDrivenCandidate => ({
-    primitiveIndex,
-    instanceOrdinal,
-    generation: defined(slots[primitiveIndex]).generation,
-    drawItemIndex: 0,
-  });
-  const partitions = [
-    [candidate(2, 0), candidate(1, 0)],
-    [candidate(0, 0), candidate(2, 1)],
-    [candidate(1, 1), candidate(0, 1)],
-  ];
-  // Distinct authored LOD ranges split source batches; residency supplies the
-  // same canonical physical range, so filtering must merge across partitions.
-  const source: SubmissionPlan = {
-    ...topology.plan(),
-    batches: partitions.map((candidates, batchId) => ({
-      ...root,
-      key: { ...root.key },
-      batchId,
-      candidates,
-      lod: {
-        coverages: [1, 0.5],
-        ranges: [{ first: 100 * (batchId + 1), count: 3, baseVertex: 0 }],
-      },
-    })),
-  };
+  const source = topology.query(topology.sourcePlan(), undefined);
+  expect(source.batches).toHaveLength(options.sharedGeometry ? 1 : 3);
   const receipt = createStandardPbrArtifactReceipt();
   const artifact = {
     material: 'forgeax::default-standard-pbr',
@@ -147,28 +135,36 @@ export function createFilterPlanFixture() {
     indexed: true,
     lodRanges: [[{ first: 0, count: 3, baseVertex: 0 }], [{ first: 3, count: 3, baseVertex: 0 }]],
   };
-  const inputs = {
-    slotAt: scene.slotAt,
-    meshBySlot: new Map(slots.map((slot) => [slot.slot, mesh])),
-    worldKeys: undefined,
-    materialArtifact: artifact,
-    skinArtifact: undefined,
-    materialArtifacts: undefined,
-  };
-  const prepare = (plan = source) =>
-    assemblePreparedPlan(
-      plan,
-      plan.batches.map((batch) => prepareBatchRows(batch, inputs)),
-      slots,
+  const prepare = (plan: SubmissionPlan = source) => {
+    const rows = plan.batches.map((source) => {
+      const binding = defined(source.binding);
+      const execution = prepareBatchExecution(
+        binding.geometry,
+        binding.material.snapshot,
+        { kind: 'forward', shaderId: artifact.material },
+        () => artifact,
+      ).unwrap();
+      const batch =
+        execution.route === 'gpu' ? { ...source, prepared: execution.prepared } : source;
+      return prepareBatchRows(batch, { mesh, worldKeys: undefined, execution });
+    });
+    return assemblePreparedPlan(
+      { ...plan, batches: rows.map((row) => row.source) },
+      rows,
       undefined,
     );
+  };
   const bindings = new Map(
-    slots.map((slot) => [
-      materialBindingKey(slot.snapshot, slot.snapshot.material.materialHandle ?? -1),
-      slot.slot === 1 ? 'B' : 'A',
-    ]),
+    slots.map((slot) => [`${slot.worldId}:${slot.entityKey}`, slot.slot === 1 ? 'B' : 'A']),
   );
-  return { source, slots, prepare, bindings };
+  return { source, slots, prepare, bindings, mesh, material: shared };
+}
+
+export function freshFilteredPlan(
+  prepared: import('../gpu-driven/production-raster-prepare').PreparedProductionPlan,
+  bindings?: ReadonlyMap<string, string>,
+) {
+  return new FilteredPlanContributionOwner().update(prepared, bindings);
 }
 
 function defined<T>(value: T | undefined): T {
@@ -185,7 +181,7 @@ export const expectFilteredPlanContent = (
   const content = (
     plan: import('../gpu-driven/production-raster-prepare').FilteredProductionPlan,
   ) => {
-    const batchContent = (batch: (typeof plan.plan.batches)[number]) => {
+    const batchContent = (batch: import('../gpu-driven/batch-topology').GpuDrivenBatch) => {
       const {
         batchId: _id,
         generation: _generation,
@@ -198,7 +194,6 @@ export const expectFilteredPlanContent = (
     };
     const { visibleCapacity: _capacity, ...planFacts } = plan.plan;
     return {
-      ...plan,
       plan: { ...planFacts, batches: plan.plan.batches.map(batchContent) },
       batches: plan.batches.map((row) => ({ ...row, batch: batchContent(row.batch) })),
       materialBatches: plan.materialBatches.map((row) => ({
@@ -215,9 +210,7 @@ export const expectFilteredPlanContent = (
     const next = windows[index + 1];
     if (next !== undefined) expect(end).toBeLessThanOrEqual(next.visibleBase);
   });
-  expect(
-    value.batches.map((row) => [row.mesh, row.artifact, row.primitiveSlot, row.slotGeneration]),
-  ).toEqual(
-    expected.batches.map((row) => [row.mesh, row.artifact, row.primitiveSlot, row.slotGeneration]),
+  expect(value.materialBatches.map((row) => value.batches.indexOf(row))).toEqual(
+    expected.materialBatches.map((row) => expected.batches.indexOf(row)),
   );
 };

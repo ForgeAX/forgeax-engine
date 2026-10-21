@@ -1,4 +1,5 @@
-import { resolveAssetHandle } from '@forgeax/engine-assets-runtime';
+import { AssetRegistry } from '@forgeax/engine-assets-runtime';
+import { runtimeAssetRegistry, runtimeAssets } from '@forgeax/engine-assets-runtime/internal';
 import { createWorldContext, FixedTime, World } from '@forgeax/engine-ecs';
 import type { ParticleEffectAsset } from '@forgeax/engine-types';
 import {
@@ -16,6 +17,7 @@ import {
   renderFeaturePlanSignature,
   renderFeaturePlanSignatureSnapshotEquals,
 } from '../../../render/src/features/plan';
+import { runtimeEffectFixture } from '../../../vfx/src/__tests__/runtime-effect-fixture';
 import { gpuParticleRenderFeature } from '../feature/gpu-particle-feature.js';
 import {
   freezeVfxPlan as freezeRenderFeaturePlan,
@@ -23,6 +25,18 @@ import {
   planResources,
   singleViewContext,
 } from './vfx-frame-fixture';
+
+function activeUpdates(plan: Parameters<typeof planPasses>[0]) {
+  return planPasses(plan).flatMap((pass) =>
+    pass.kind === 'compute' && pass.enabled !== false
+      ? pass.dispatches.filter(
+          (dispatch) =>
+            dispatch.entryPoint === 'forgeax_vfx_update_compact_main' &&
+            (dispatch.kind !== 'direct' || dispatch.workgroups[0] > 0),
+        )
+      : [],
+  );
+}
 
 it.each([
   false,
@@ -74,8 +88,10 @@ fn vfx_update(ctx: VfxUpdateContext, particle: ptr<function, VfxParticle>) { (*p
     emitters: [{ id: 'persistent', capacity: 4 }],
     program: { ...result.value.program, fingerprint: result.value.fingerprint },
   };
-  const world = new World();
-  const handle = world.allocSharedRef('ParticleEffectAsset', { ...asset, guid: 'effect' });
+  const world = new World({ assets: new AssetRegistry() });
+  const handle = runtimeAssetRegistry(world.assets)
+    .create(runtimeEffectFixture(world, { ...asset, guid: 'effect' }))
+    .unwrap();
   const player = world
     .spawn({
       component: ParticleEffectPlayer,
@@ -116,10 +132,10 @@ fn vfx_update(ctx: VfxUpdateContext, particle: ptr<function, VfxParticle>) { (*p
         structuredClone(extracted),
         singleViewContext({
           targets,
-          resolveAsset: (index, handle) => {
+          resolveAsset: (index, handle, revision) => {
             const source = worlds[index];
             if (source === undefined) throw new Error(`Missing fixture source World ${index}`);
-            return resolveAssetHandle(source, handle);
+            return runtimeAssets(source.assets).resolveAsset(handle, revision);
           },
           caps: {} as never,
           frame: { frameNumber },
@@ -178,7 +194,8 @@ fn vfx_update(ctx: VfxUpdateContext, particle: ptr<function, VfxParticle>) { (*p
         sealed,
         singleViewContext({
           targets,
-          resolveAsset: (_index, handle) => resolveAssetHandle(world, handle),
+          resolveAsset: (_index, handle, revision) =>
+            runtimeAssets(world.assets).resolveAsset(handle, revision),
           caps: {} as never,
           frame: { frameNumber },
           generation: 0,
@@ -186,14 +203,14 @@ fn vfx_update(ctx: VfxUpdateContext, particle: ptr<function, VfxParticle>) { (*p
         }),
       )
       .unwrap();
-    expect(planPasses(successor).filter((pass) => pass.name.endsWith('.simulate'))).toHaveLength(0);
+    expect(activeUpdates(successor)).toHaveLength(0);
     expect(planPasses(successor).filter((pass) => pass.kind === 'raster')).toHaveLength(1);
     expect(particleName(successor)).toBe(particleName(first.plan));
     consumer.onFrameSubmitted?.(sealed);
     expect(runtime.snapshot()).toHaveLength(1);
     feature.onSourceFrameSubmitted?.(retry.extracted, structuredClone(retry.plan.sourceFeedback));
     expect(runtime.snapshot()).toHaveLength(0);
-    const presentation = frame([new World(), world]);
+    const presentation = frame([new World({ assets: new AssetRegistry() }), world]);
     expect(particleName(presentation.plan)).toBe(particleName(first.plan));
     expect(planPasses(presentation.plan).filter((pass) => pass.kind === 'raster')).toHaveLength(1);
     expect(
@@ -210,9 +227,15 @@ fn vfx_update(ctx: VfxUpdateContext, particle: ptr<function, VfxParticle>) { (*p
     world.update(1 / 60).unwrap();
     const catchup = frame();
     expect(runtime.snapshot()).toHaveLength(2);
-    expect(planPasses(catchup.plan).filter((pass) => pass.name.endsWith('.simulate'))).toHaveLength(
-      2,
+    const updates = planPasses(catchup.plan).flatMap((pass) =>
+      pass.kind === 'compute'
+        ? pass.dispatches
+            .filter((dispatch) => dispatch.entryPoint === 'forgeax_vfx_update_compact_main')
+            .map((dispatch) => dispatch.bindings ?? pass.bindings)
+        : [],
     );
+    expect(updates).toHaveLength(2);
+    expect(new Set(updates).size).toBe(2);
     expect(planPasses(catchup.plan).filter((pass) => pass.kind === 'raster')).toHaveLength(1);
     expect(particleName(catchup.plan)).toBe(particleName(first.plan));
     expect(
@@ -234,15 +257,11 @@ fn vfx_update(ctx: VfxUpdateContext, particle: ptr<function, VfxParticle>) { (*p
     };
     const heldAfterCatchup = frame();
     expect(frameSignature(heldAfterCatchup.plan)).toBe(frameSignature(catchup.plan));
-    expect(planPasses(heldAfterCatchup.plan).some((pass) => pass.name.endsWith('.simulate'))).toBe(
-      false,
-    );
+    expect(activeUpdates(heldAfterCatchup.plan).length > 0).toBe(false);
     world.update(1 / 60).unwrap();
     const singleTick = frame();
     expect(frameSignature(singleTick.plan)).toBe(frameSignature(catchup.plan));
-    expect(
-      planPasses(singleTick.plan).filter((pass) => pass.name.endsWith('.simulate')),
-    ).toHaveLength(1);
+    expect(activeUpdates(singleTick.plan)).toHaveLength(1);
     const queuedContinuation = runtime.snapshot()[0];
     expect(queuedContinuation).toMatchObject({ phaseTick: 3, reset: false });
     if (queuedContinuation === undefined) throw new Error('queued continuation unavailable');
@@ -260,15 +279,11 @@ fn vfx_update(ctx: VfxUpdateContext, particle: ptr<function, VfxParticle>) { (*p
       { phaseTick: 2, reset: false, spawnCount: 0 },
     ]);
     const rejectedCandidate = frame([world], 1);
-    expect(
-      planPasses(rejectedCandidate.plan).filter((pass) => pass.name.endsWith('.simulate')),
-    ).toHaveLength(4);
+    expect(activeUpdates(rejectedCandidate.plan)).toHaveLength(4);
     consumer.onFrameAborted?.(rejectedCandidate.extracted);
     expect(runtime.snapshot()).toEqual([queuedContinuation]);
     const replacementDevice = frame([world], 1);
-    expect(
-      planPasses(replacementDevice.plan).filter((pass) => pass.name.endsWith('.simulate')),
-    ).toHaveLength(4);
+    expect(activeUpdates(replacementDevice.plan)).toHaveLength(4);
     expect(
       planResources(replacementDevice.plan).find(
         (resource) => resource.kind === 'buffer' && resource.name.endsWith('.particles'),
@@ -289,9 +304,7 @@ fn vfx_update(ctx: VfxUpdateContext, particle: ptr<function, VfxParticle>) { (*p
     );
     expect(runtime.eventCounters(player)).toEqual(countersBeforeRecovery);
     const recoveredPresentation = frame([world], 1);
-    expect(
-      planPasses(recoveredPresentation.plan).filter((pass) => pass.name.endsWith('.simulate')),
-    ).toHaveLength(0);
+    expect(activeUpdates(recoveredPresentation.plan)).toHaveLength(0);
     expect(
       planResources(recoveredPresentation.plan).find(
         (resource) => resource.kind === 'buffer' && resource.name.endsWith('.particles'),
@@ -299,9 +312,7 @@ fn vfx_update(ctx: VfxUpdateContext, particle: ptr<function, VfxParticle>) { (*p
     ).not.toHaveProperty('data');
 
     const emptyQueueReplacement = frame([world], 2);
-    expect(
-      planPasses(emptyQueueReplacement.plan).filter((pass) => pass.name.endsWith('.simulate')),
-    ).toHaveLength(4);
+    expect(activeUpdates(emptyQueueReplacement.plan)).toHaveLength(4);
     expect(
       planResources(emptyQueueReplacement.plan).find(
         (resource) => resource.kind === 'buffer' && resource.name.endsWith('.particles'),
@@ -315,9 +326,7 @@ fn vfx_update(ctx: VfxUpdateContext, particle: ptr<function, VfxParticle>) { (*p
       emptyQueueReplacement.extracted,
       structuredClone(emptyQueueReplacement.plan.sourceFeedback),
     );
-    expect(
-      planPasses(frame([world], 2).plan).filter((pass) => pass.name.endsWith('.simulate')),
-    ).toHaveLength(0);
+    expect(activeUpdates(frame([world], 2).plan)).toHaveLength(0);
 
     const priorPlayCycle = runtime.lastCommittedEmitter(player, 'persistent')?.playCycle;
     runtime.replay(player);
@@ -326,9 +335,7 @@ fn vfx_update(ctx: VfxUpdateContext, particle: ptr<function, VfxParticle>) { (*p
     expect(replayIntent).toMatchObject({ phaseTick: 0, reset: true });
     expect(replayIntent?.playCycle).not.toBe(priorPlayCycle);
     const replayOnReplacement = frame([world], 3);
-    expect(
-      planPasses(replayOnReplacement.plan).filter((pass) => pass.name.endsWith('.simulate')),
-    ).toHaveLength(1);
+    expect(activeUpdates(replayOnReplacement.plan)).toHaveLength(1);
     expect(particleName(replayOnReplacement.plan)).toBe(particleName(first.plan));
     consumer.onFrameSubmitted?.(replayOnReplacement.extracted);
     feature.onSourceFrameSubmitted?.(
@@ -341,17 +348,21 @@ fn vfx_update(ctx: VfxUpdateContext, particle: ptr<function, VfxParticle>) { (*p
     world.update(1 / 60).unwrap();
     expect(runtime.snapshot()).toHaveLength(1);
     world.despawn(player).unwrap();
-    world.sharedRefs.release(handle).unwrap();
+    runtimeAssetRegistry(world.assets).release(handle).unwrap();
     world.update(0).unwrap();
     const removed = frame([world], 3);
     expect(removed.extracted.worlds[0]?.intents).toEqual([]);
     expect(removed.extracted.worlds[0]?.retained).toEqual([]);
     expect(planResources(removed.plan)).toEqual([]);
     expect(runtime.inspectPlayers()).toEqual([]);
-    const replacementHandle = world.allocSharedRef('ParticleEffectAsset', {
-      ...asset,
-      guid: 'effect',
-    });
+    const replacementHandle = runtimeAssetRegistry(world.assets)
+      .create(
+        runtimeEffectFixture(world, {
+          ...asset,
+          guid: 'effect',
+        }),
+      )
+      .unwrap();
     const replacement = world
       .spawn({
         component: ParticleEffectPlayer,
@@ -361,7 +372,7 @@ fn vfx_update(ctx: VfxUpdateContext, particle: ptr<function, VfxParticle>) { (*p
     world.update(1 / 60).unwrap();
     expect(runtime.snapshot()).toHaveLength(1);
     world.removeComponent(replacement, ParticleEffectPlayer).unwrap();
-    world.sharedRefs.release(replacementHandle).unwrap();
+    runtimeAssetRegistry(world.assets).release(replacementHandle).unwrap();
     world.update(0).unwrap();
     const removedComponent = frame([world], 3);
     expect(removedComponent.extracted.worlds[0]?.intents).toEqual([]);
@@ -369,7 +380,9 @@ fn vfx_update(ctx: VfxUpdateContext, particle: ptr<function, VfxParticle>) { (*p
     expect(planResources(removedComponent.plan)).toEqual([]);
     expect(runtime.inspectPlayers()).toEqual([]);
     expect(planResources(frame([], 3).plan)).toEqual([]);
-    const initialHandle = world.allocSharedRef('ParticleEffectAsset', { ...asset, guid: 'effect' });
+    const initialHandle = runtimeAssetRegistry(world.assets)
+      .create(runtimeEffectFixture(world, { ...asset, guid: 'effect' }))
+      .unwrap();
     const initialPlayer = world
       .spawn({
         component: ParticleEffectPlayer,
@@ -388,9 +401,7 @@ fn vfx_update(ctx: VfxUpdateContext, particle: ptr<function, VfxParticle>) { (*p
       phaseTick: 0,
     });
     expect(world.getResource(FixedTime).tick).toBe(fixedTick);
-    expect(
-      planPasses(initialFrame.plan).filter((pass) => pass.name.endsWith('.simulate')),
-    ).toHaveLength(1);
+    expect(activeUpdates(initialFrame.plan)).toHaveLength(1);
     expect(frame([world], 3).extracted.worlds[0]?.intents).toEqual(
       initialFrame.extracted.worlds[0]?.intents,
     );
@@ -403,7 +414,7 @@ fn vfx_update(ctx: VfxUpdateContext, particle: ptr<function, VfxParticle>) { (*p
       phaseTick: 1,
     });
     world.despawn(initialPlayer).unwrap();
-    world.sharedRefs.release(initialHandle).unwrap();
+    runtimeAssetRegistry(world.assets).release(initialHandle).unwrap();
     expect(frame([world], 3).extracted.worlds[0]?.intents).toEqual([]);
   } finally {
     await context.fiber.dispose();

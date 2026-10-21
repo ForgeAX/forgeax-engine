@@ -126,7 +126,7 @@ describe('DDC multiprocess lifecycle', () => {
       }
       await store.write({ ...entry, receipt: { ...entry.receipt, outputDigest: ddcOutputDigest(entry) } });
       const committed = await lifecycle.commit(lease, key);
-      console.log(JSON.stringify({ result: committed.result, revision: committed.revision, generation: lease.generation }));
+      console.log(JSON.stringify({ result: committed.result, revision: committed.result === 'current' ? committed.head.revision : committed.revision, generation: lease.generation }));
     `;
     const [first, second] = await Promise.all([
       runWorker(root, script, [entryModule, 'first']),

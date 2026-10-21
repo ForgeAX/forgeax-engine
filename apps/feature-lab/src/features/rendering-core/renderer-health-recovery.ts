@@ -1,6 +1,8 @@
+import { AssetRegistry } from '@forgeax/engine/assets-runtime';
+import { createPrimitiveMesh } from '@forgeax/engine/geometry';
 import { MeshRenderer } from '@forgeax/engine/render';
 import { CheckList, defineFeature } from '../../lab/feature';
-import { MESH, spawnMesh, spawnStage, standard } from '../../lab/stage';
+import { spawnMesh, spawnStage, standard } from '../../lab/stage';
 
 export default defineFeature({
   title: 'Renderer health and recovery',
@@ -11,8 +13,14 @@ export default defineFeature({
   expect:
     "All checks pass: state 'alive' with no recovery phase, recover() on a healthy renderer is refused with a structured code, the surface goes 'released' then 'available', and frames resume afterwards.",
   async setup({ app, world, frames }) {
+    const primitiveAssets = world.assets;
+    if (!(primitiveAssets instanceof AssetRegistry))
+      throw new Error('Scene requires its runtime asset owner');
+
+    const stageCube = primitiveAssets.create(createPrimitiveMesh('cube').unwrap()).unwrap();
+
     spawnStage(world);
-    const cube = spawnMesh(world, MESH.cube, standard(world, { baseColor: [0.9, 0.2, 0.6, 1] }), {
+    const cube = spawnMesh(world, stageCube, standard(world, { baseColor: [0.9, 0.2, 0.6, 1] }), {
       pos: [0, 0.5, 0],
     });
     await frames(3);

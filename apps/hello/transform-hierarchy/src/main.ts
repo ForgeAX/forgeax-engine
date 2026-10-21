@@ -1,3 +1,4 @@
+import { AssetRegistry } from '@forgeax/engine-assets-runtime';
 import { Update, type EntityHandle } from '@forgeax/engine-ecs';
 // apps/hello/transform-hierarchy -- ChildOf hierarchy "parent moves, child
 // follows" visual exemplar
@@ -30,7 +31,7 @@ import { Update, type EntityHandle } from '@forgeax/engine-ecs';
 // sphere sits off to the side and is NOT part of the hierarchy, giving the
 // eye (and the smoke's stability check) a fixed landmark.
 
-import { HANDLE_CUBE, HANDLE_SPHERE } from '@forgeax/engine-assets-runtime';
+
 import {
   ChildOf,
   projectHierarchy,
@@ -49,6 +50,10 @@ import { World } from '@forgeax/engine-ecs';
 import type { MaterialAsset } from '@forgeax/engine-types';
 import { forgeaxBundlerAdapter } from 'virtual:forgeax/bundler';
 import { setMalformedParentEdge } from './test-fixtures/malformed-hierarchy-edge';
+import { createPrimitiveMesh } from '@forgeax/engine-geometry';
+const BUILTIN_CUBE = createPrimitiveMesh('cube').unwrap();
+const BUILTIN_SPHERE = createPrimitiveMesh('sphere').unwrap();
+
 
 const DATAFLOW_WORKLOADS = [
   { id: 'flat-dynamic', entityCount: 10_000, movers: 10_000, shape: 'flat' },
@@ -90,7 +95,10 @@ async function bootstrap(target: HTMLCanvasElement): Promise<void> {
   // GlobalTransform.world each frame so the ChildOf entity follows its parent.
   // The world matrix is owned by GlobalTransform; Transform's generic ECS
   // requirement materializes that derived column at spawn without a scene scan.
-  const world = new World();
+  const assets = new AssetRegistry();
+  const world = new World({ assets });
+  const cubeHandle = assets.create(BUILTIN_CUBE).unwrap();
+  const sphereHandle = assets.create(BUILTIN_SPHERE).unwrap();
   const worldAttachment1 = renderer.attach(world);
   if (!worldAttachment1.ok) throw worldAttachment1.error;
   const frameRequest = {
@@ -102,7 +110,7 @@ async function bootstrap(target: HTMLCanvasElement): Promise<void> {
   registerPropagateTransforms(world);
 
   // Step 3: register the standard PBR material shared by every body.
-  const materialHandle = world.allocSharedRef<'MaterialAsset', MaterialAsset>('MaterialAsset', {
+  const materialHandle = assets.create({
     kind: 'material',
     passes: [
       { name: 'Forward', program: { module: 'forgeax::default-standard-pbr' }, renderState: { tags: { LightMode: 'Forward' }, queue: 2000 } },
@@ -112,7 +120,7 @@ async function bootstrap(target: HTMLCanvasElement): Promise<void> {
       metallic: 0.0,
       roughness: 0.4,
     },
-  } as MaterialAsset);
+  } as MaterialAsset).unwrap();
 
   // Step 4: spawn the hierarchy. Parent is non-identity (offset -0.6 on X).
   const parent = world
@@ -121,7 +129,7 @@ async function bootstrap(target: HTMLCanvasElement): Promise<void> {
         component: Transform,
         data: { pos: [-0.6, -0.4, 0], quat: [0, 0, 0, 1], scale: [0.4, 0.4, 0.4]},
       },
-      { component: MeshFilter, data: { assetHandle: HANDLE_CUBE } },
+      { component: MeshFilter, data: { assetHandle: cubeHandle } },
       { component: MeshRenderer, data: { materials: [materialHandle] } },
     )
     .unwrap();
@@ -136,7 +144,7 @@ async function bootstrap(target: HTMLCanvasElement): Promise<void> {
         data: { pos: [0, 2.0, 0], quat: [0, 0, 0, 1], scale: [1, 1, 1]},
       },
       { component: ChildOf, data: { parent } },
-      { component: MeshFilter, data: { assetHandle: HANDLE_CUBE } },
+      { component: MeshFilter, data: { assetHandle: cubeHandle } },
       { component: MeshRenderer, data: { materials: [materialHandle] } },
     )
     .unwrap();
@@ -149,7 +157,7 @@ async function bootstrap(target: HTMLCanvasElement): Promise<void> {
         component: Transform,
         data: { pos: [1.4, 0.0, 0], quat: [0, 0, 0, 1], scale: [0.4, 0.4, 0.4]},
       },
-      { component: MeshFilter, data: { assetHandle: HANDLE_SPHERE } },
+      { component: MeshFilter, data: { assetHandle: sphereHandle } },
       { component: MeshRenderer, data: { materials: [materialHandle] } },
     )
     .unwrap();

@@ -1,3 +1,5 @@
+import { createPrimitiveMesh } from '@forgeax/engine-geometry';
+import { testAssets } from './helpers/runtime-assets';
 import { shaderManifestUrl } from './shader-manifest-url.fixture';
 // fullscreen-post-process-pass.dawn.test.ts - feat-20260604-resource-owning-render-graph
 // and-fullscreen-postpr M2 / w10.
@@ -17,7 +19,6 @@ import { shaderManifestUrl } from './shader-manifest-url.fixture';
 // Follows fxaa-pixel-diff.dawn.test.ts pattern for canvas mock, device capture,
 // and pixel readback.
 
-import { HANDLE_CUBE } from '@forgeax/engine-assets-runtime';
 import { World } from '@forgeax/engine-ecs';
 import type { Renderer } from '@forgeax/engine-render';
 import {
@@ -238,7 +239,12 @@ function spawnCubeScene(world: World, antialias: number): void {
         scale: [1, 1, 1],
       },
     },
-    { component: MeshFilter, data: { assetHandle: HANDLE_CUBE } },
+    {
+      component: MeshFilter,
+      data: {
+        assetHandle: testAssets(world).create(createPrimitiveMesh('cube').unwrap()).unwrap(),
+      },
+    },
     { component: MeshRenderer, data: {} },
   );
   world.spawn(
@@ -265,7 +271,9 @@ function spawnCubeScene(world: World, antialias: number): void {
 }
 
 function spawnTemporalCubeScene(world: World) {
-  const material = world.allocSharedRef('MaterialAsset', Materials.unlit([0.9, 0.3, 0.25, 1]));
+  const material = testAssets(world)
+    .create(Materials.unlit([0.9, 0.3, 0.25, 1]))
+    .unwrap();
   const cube = world
     .spawn(
       {
@@ -276,7 +284,12 @@ function spawnTemporalCubeScene(world: World) {
           scale: [1, 1, 1],
         },
       },
-      { component: MeshFilter, data: { assetHandle: HANDLE_CUBE } },
+      {
+        component: MeshFilter,
+        data: {
+          assetHandle: testAssets(world).create(createPrimitiveMesh('cube').unwrap()).unwrap(),
+        },
+      },
       { component: MeshRenderer, data: { materials: [material] } },
     )
     .unwrap();

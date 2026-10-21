@@ -11,6 +11,7 @@ import { MeshRenderer } from '../components/mesh-renderer';
 import { Materials } from '../materials';
 import { prepareExtractContext } from '../render-system-extract';
 import { extractFrame } from '../render-system-extract-tail';
+import { testAssets } from './helpers/runtime-assets';
 
 it.each([
   false,
@@ -18,8 +19,8 @@ it.each([
 ])('expands CPU and GPU bounds before culling, and refreshes material changes (instances=%s)', (instanced) => {
   const world = new World();
   registerPropagateTransforms(world);
-  const assets = new AssetRegistry(
-    new ShaderRegistry({
+  const assets = new AssetRegistry({
+    shaderRegistry: new ShaderRegistry({
       device: {
         createShaderModule() {
           throw new Error('No shader compilation during extract');
@@ -27,7 +28,8 @@ it.each([
       },
       manifestUrl: undefined,
     }),
-  );
+  });
+  world.bindAssets(assets).unwrap();
   const extract = () => extractFrame(world, prepareExtractContext(world, { assets }));
   world
     .spawn(
@@ -39,29 +41,31 @@ it.each([
     )
     .unwrap();
   const geometry = createPlaneGeometry(1, 1).unwrap();
-  const mesh = world.allocSharedRef('MeshAsset', geometry);
-  const flat = world.allocSharedRef(
-    'MaterialAsset',
-    Materials.standard({ baseColor: [1, 1, 1, 1] }),
-  );
-  const displaced = world.allocSharedRef(
-    'MaterialAsset',
-    Materials.standard({
-      baseColor: [1, 1, 1, 1],
-      displacementTexture: {
-        texture: world.allocSharedRef('TextureAsset', {
-          kind: 'texture',
-          shape: { viewDimension: '2d', extent: { width: 1, height: 1 } },
-          format: 'rgba8unorm',
-          colorSpace: 'linear',
-          mips: { kind: 'none' },
-          data: new Uint8Array([255, 0, 0, 255]),
-        }),
-      },
-      displacementScale: -2,
-      displacementBias: 1,
-    }),
-  );
+  const mesh = testAssets(world).create(geometry).unwrap();
+  const flat = testAssets(world)
+    .create(Materials.standard({ baseColor: [1, 1, 1, 1] }))
+    .unwrap();
+  const displaced = testAssets(world)
+    .create(
+      Materials.standard({
+        baseColor: [1, 1, 1, 1],
+        displacementTexture: {
+          texture: testAssets(world)
+            .create({
+              kind: 'texture',
+              shape: { viewDimension: '2d', extent: { width: 1, height: 1 } },
+              format: 'rgba8unorm',
+              colorSpace: 'linear',
+              mips: { kind: 'none' },
+              data: new Uint8Array([255, 0, 0, 255]),
+            })
+            .unwrap(),
+        },
+        displacementScale: -2,
+        displacementBias: 1,
+      }),
+    )
+    .unwrap();
   const transforms = new Float32Array([1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, -10, 0, 0, 1]);
   const entity = world
     .spawn(
@@ -81,7 +85,7 @@ it.each([
   world.update(0).unwrap();
   const result = extract().renderables;
   expect(result).toHaveLength(1);
-  expect(Array.from(result[0]?.localAabb ?? [])).toEqual([-1.5, -1.5, -1, 1.5, 1.5, 1]);
+  expect(Array.from(result.at(0)?.localAabb ?? [])).toEqual([-1.5, -1.5, -1, 1.5, 1.5, 1]);
   expect(Array.from(geometry.aabb ?? [])).toEqual([-0.5, -0.5, 0, 0.5, 0.5, 0]);
   world.set(entity, MeshRenderer, { materials: [flat] }).unwrap();
   world.update(0).unwrap();

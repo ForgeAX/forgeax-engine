@@ -1,5 +1,8 @@
 #!/usr/bin/env node
 import { encodePng } from '@forgeax/engine-image/png';
+import { createPrimitiveMesh } from '@forgeax/engine-geometry';
+import { constructRuntimeRendererHost } from '@forgeax/engine-runtime/internal/renderer-host';
+let smokeAssets;
 import { createSmokeRenderer, drawSmokeFrame, rendererBackend, subscribeSmokeErrors } from "../../scripts/renderer-smoke.mjs";
 // bevy-texture headless dawn smoke — reproduces the app's texture World in
 // node-dawn and asserts a real textured render (unlit + baseColorTexture).
@@ -100,9 +103,8 @@ const { createRenderer } = await import('@forgeax/engine-runtime');
 const { Materials } = await import('@forgeax/engine-render');
 const { perspective } = await import('@forgeax/engine-render');
 const { Transform } = await import('@forgeax/engine-scene');
-const { HANDLE_CUBE } = await import('@forgeax/engine-assets-runtime');
+
 const { quat } = await import('@forgeax/engine-math');
-const { unwrapHandle } = await import('@forgeax/engine-types');
 
 const here = dirname(fileURLToPath(import.meta.url));
 const MANIFEST_PATH = resolve(here, '..', 'dist', 'shaders', 'manifest.json');
@@ -110,7 +112,9 @@ const MANIFEST_URL = `data:application/json,${encodeURIComponent(readFileSync(MA
 
 let renderer;
 try {
-  renderer = await createSmokeRenderer(createRenderer, mockCanvas, {}, { shaderManifestUrl: MANIFEST_URL });
+  const hostResult = await constructRuntimeRendererHost(mockCanvas, {}, { shaderManifestUrl: MANIFEST_URL });
+if (!hostResult.ok) throw hostResult.error;
+({ renderer, assets: smokeAssets } = hostResult.value);
 } catch (err) {
   console.error(`[smoke] FAIL - createRenderer threw: ${err instanceof Error ? err.message : String(err)}`);
   process.exit(1);
@@ -123,7 +127,8 @@ const errors = [];
 subscribeSmokeErrors(renderer, (err) => errors.push({ code: err.code, hint: err.hint }));
 
 
-const world = new World();
+const world = new World({ assets: smokeAssets });
+const primitiveCube = world.assets.create(createPrimitiveMesh('cube').unwrap()).unwrap();
 const worldAttachment1 = renderer.attach(world);
 if (!worldAttachment1.ok) throw worldAttachment1.error;
 
@@ -153,31 +158,31 @@ const texPod = {
   colorSpace: 'srgb',
   mips: { kind: 'none' },
 };
-const texHandle = world.allocSharedRef('TextureAsset', texPod);
-const texId = unwrapHandle(texHandle);
+const texHandle = world.assets.create(texPod).unwrap();
+const texId = texHandle;
 
 // Upload texture to GPU
 
-const normalMat = world.allocSharedRef('MaterialAsset', Materials.unlit([1, 1, 1, 1], { baseColorTexture: texId }));
-const redMat = world.allocSharedRef('MaterialAsset', Materials.unlit([1, 0, 0, 0.5], { baseColorTexture: texId }));
-const blueMat = world.allocSharedRef('MaterialAsset', Materials.unlit([0, 0, 1, 0.5], { baseColorTexture: texId }));
+const normalMat = world.assets.create(Materials.unlit([1, 1, 1, 1], { baseColorTexture: texId })).unwrap();
+const redMat = world.assets.create(Materials.unlit([1, 0, 0, 0.5], { baseColorTexture: texId })).unwrap();
+const blueMat = world.assets.create(Materials.unlit([0, 0, 1, 0.5], { baseColorTexture: texId })).unwrap();
 
 // Normal quad at z=1.5
 world.spawn(
   { component: Transform, data: { pos: [0, 0, 1.5], quat: [0, 0, 0, 1], scale: [4, 1, 0.01] } },
-  { component: MeshFilter, data: { assetHandle: HANDLE_CUBE } },
+  { component: MeshFilter, data: { assetHandle: primitiveCube } },
   { component: MeshRenderer, data: { materials: [normalMat] } },
 );
 // Red-tinted quad at z=0
 world.spawn(
   { component: Transform, data: { pos: [0, 0, 0], quat: [0, 0, 0, 1], scale: [4, 1, 0.01] } },
-  { component: MeshFilter, data: { assetHandle: HANDLE_CUBE } },
+  { component: MeshFilter, data: { assetHandle: primitiveCube } },
   { component: MeshRenderer, data: { materials: [redMat] } },
 );
 // Blue-tinted quad at z=-1.5
 world.spawn(
   { component: Transform, data: { pos: [0, 0, -1.5], quat: [0, 0, 0, 1], scale: [4, 1, 0.01] } },
-  { component: MeshFilter, data: { assetHandle: HANDLE_CUBE } },
+  { component: MeshFilter, data: { assetHandle: primitiveCube } },
   { component: MeshRenderer, data: { materials: [blueMat] } },
 );
 world.spawn(

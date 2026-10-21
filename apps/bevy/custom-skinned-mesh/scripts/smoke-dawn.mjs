@@ -1,5 +1,6 @@
 #!/usr/bin/env node
 import { encodePng } from '@forgeax/engine-image/png';
+import { constructRuntimeRendererHost } from '@forgeax/engine-runtime/internal/renderer-host';
 import { createSmokeRenderer, drawSmokeFrame, rendererBackend, subscribeSmokeErrors } from "../../scripts/renderer-smoke.mjs";
 import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
@@ -82,10 +83,12 @@ const { createRenderer } = await import('@forgeax/engine-runtime');
 const { scenePlugin, Transform } = await import('@forgeax/engine-scene');
 const { buildWorld } = await import(resolve(appRoot, 'src/main.ts'));
 const manifest = readFileSync(resolve(appRoot, 'dist/shaders/manifest.json'), 'utf8');
-const renderer = await createSmokeRenderer(createRenderer, canvas, {}, { shaderManifestUrl: `data:application/json,${encodeURIComponent(manifest)}` });
+const hostResult = await constructRuntimeRendererHost(canvas, {}, { shaderManifestUrl: `data:application/json,${encodeURIComponent(manifest)}` });
+if (!hostResult.ok) throw hostResult.error;
+const { renderer, assets: smokeAssets } = hostResult.value;
 const errors = [];
 subscribeSmokeErrors(renderer, (error) => errors.push(error));
-const world = new World();
+const world = new World({ assets: smokeAssets });
 const worldAttachment1 = renderer.attach(world);
 if (!worldAttachment1.ok) throw worldAttachment1.error;
 const { createWorldContext } = await import('@forgeax/engine-ecs');

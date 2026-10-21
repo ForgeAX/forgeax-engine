@@ -1,0 +1,35 @@
+<!doctype html>
+<html lang="zh">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<link rel="icon" href="data:,">
+<title>Forgeax × Three.js 渲染对照</title>
+<style>
+body{margin:0;background:#101820;color:#e6edf4;font:16px/1.65 system-ui}
+main{max-width:1060px;margin:64px auto;padding:0 24px}h1{font-size:36px;line-height:1.3;margin-bottom:16px}
+p{color:#b8c6d5;max-width:860px}nav{display:grid;grid-template-columns:repeat(auto-fit,minmax(290px,1fr));gap:20px;margin:36px 0}
+a.card{display:block;padding:24px;background:#192530;border:1px solid #324656;border-radius:12px;text-decoration:none;color:inherit}
+a.card:hover{border-color:#80c6d9;background:#20323e}h2{font-size:22px;margin:8px 0}small{color:#8ac7d8}a{color:#8ac7d8}
+.note{padding:20px;border-left:3px solid #80c6d9;background:#192530}
+</style>
+<main>
+<small>THREE.JS r184 · FORGEAX NATIVE</small>
+<h1>同场景，逐阶段看渲染差异</h1>
+<p>保持相同的几何、相机、光照与输入纹理，分别比较反射、阴影、透明和环境遮蔽。Forgeax 的 Skylight 继续同时提供环境漫反射和环境反射。</p>
+<nav>
+<a class="card" href="environment-response.html"><small>01 / 环境反射</small><h2>粗糙度与 HDR 高光</h2><p>三种材质、三档粗糙度，切换环境与旋转，查看 Forward / Deferred 和 Three 的空间误差。</p></a>
+<a class="card" href="shadow-response.html"><small>03 / 阴影</small><h2>Point / Spot 过滤与投影</h2><p>五次 Vogel 采样、物体自身阴影和墙面投影，分别检查过滤宽度、距离和法线偏移。</p></a>
+<a class="card" href="transparency-response.html"><small>05 / 透明与输出</small><h2>HDR 合成、雾与离屏目标</h2><p>切换预乘透明、雾、画布透明度和 tone mapping，检查线性目标与最终输出。</p></a>
+<a class="card" href="gtao-response.html"><small>06 / GTAO</small><h2>原始积分与降噪</h2><p>同一组深度和法线，分别显示原始遮蔽与各自的空间降噪，检查开放斜面和接触边缘。</p></a>
+<a class="card" id="temporal" href="https://github.com/ForgeaX-Games/forgeax-engine/tree/main/apps/hello/ssr"><small>07 / SSR · TAA · TAAU</small><h2>运动、遮挡与历史</h2><p>SSR 使用完整内部像素网格；运行真实场景，检查反射、相机运动和动态分辨率下的历史。</p></a>
+</nav>
+<p class="note">这是原生渲染对照。Three 的透明参考显式使用 HDR 离屏合成；GTAONode 默认不附带降噪。保留的策略差异会直接写在对应页面上。</p>
+</main>
+<script type="module">
+const value = new URLSearchParams(location.search).get('ssr');
+if (value) {
+  const url = new URL(value, location.href);
+  if (url.protocol === 'http:' || url.protocol === 'https:') document.querySelector('#temporal').href = url.href;
+}
+</script>
+</html>

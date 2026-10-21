@@ -1,3 +1,4 @@
+import { AssetRegistry } from '@forgeax/engine/assets-runtime';
 import { createBoxGeometry, createMeshBuilder } from '@forgeax/engine/geometry';
 import { MeshRenderer } from '@forgeax/engine/render';
 import type { MeshAsset } from '@forgeax/engine/types';
@@ -31,10 +32,14 @@ export default defineFeature({
   expect:
     'ON: the box shows red side faces (slot 0) and blue top/front faces (slot 1). OFF: both slots use red, so the whole box is red.',
   setup({ app, world, frames }) {
+    const sceneAssets = world.assets;
+    if (!(sceneAssets instanceof AssetRegistry))
+      throw new Error('Scene requires its runtime asset owner');
+
     spawnStage(world, { eye: [3, 2.6, 4], target: [0, 1, 0] });
     const red = standard(world, { baseColor: [0.95, 0.1, 0.1, 1] });
     const blue = standard(world, { baseColor: [0.1, 0.3, 1, 1] });
-    const mesh = world.allocSharedRef('MeshAsset', twoSlotBox());
+    const mesh = sceneAssets.create(twoSlotBox()).unwrap();
     const entity = spawnMesh(world, mesh, red, { pos: [0, 1, 0] });
     world.set(entity, MeshRenderer, { materials: [red, blue] } as never);
     return {

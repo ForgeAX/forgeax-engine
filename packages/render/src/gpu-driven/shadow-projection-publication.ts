@@ -26,8 +26,8 @@ export function sameShadowProjectionLayout(left: SubmissionPlan, right: Submissi
   if (left === right) return true;
   if (left.batches.length !== right.batches.length) return false;
   for (let index = 0; index < left.batches.length; index++) {
-    const a = left.batches[index];
-    const b = right.batches[index];
+    const a = left.batches.at(index);
+    const b = right.batches.at(index);
     if (a === b) continue;
     if (
       a === undefined ||
@@ -47,8 +47,8 @@ export function sameShadowProjectionLayout(left: SubmissionPlan, right: Submissi
     if (a.candidates === b.candidates) continue;
     if (a.candidates.length !== b.candidates.length) return false;
     for (let member = 0; member < a.candidates.length; member++) {
-      const before = a.candidates[member];
-      const after = b.candidates[member];
+      const before = a.candidates.at(member);
+      const after = b.candidates.at(member);
       if (before === after) continue;
       if (
         before === undefined ||

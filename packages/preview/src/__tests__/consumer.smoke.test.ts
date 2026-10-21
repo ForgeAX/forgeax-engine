@@ -72,12 +72,7 @@ describe('native preview plugin consumer', () => {
         projectRoot: '/fixture',
         backend: 'webgpu',
         signal: new AbortController().signal,
-        assets: {
-          loadByGuid: async <TAsset>() => ({
-            ok: true as const,
-            value: material as unknown as TAsset,
-          }),
-        },
+        subject: { guid: 'material-1', asset: material },
         renderer: {
           rendererReady: true,
           worldReady: true,

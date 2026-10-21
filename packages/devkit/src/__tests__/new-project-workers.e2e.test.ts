@@ -67,6 +67,7 @@ it('new game-3d defaults to combined workers with visible UI, input, physics and
   let delegated = false;
   const root = resolve(scratch, 'game');
   const errors: string[] = [];
+  const pageLifecycle: string[] = [];
   const iblDiagnostic =
     process.env.FOCUS_SELECTOR ===
     'packages/devkit/src/__tests__/view-ibl-startup-diagnostic.integration.test.ts';
@@ -160,6 +161,14 @@ it('new game-3d defaults to combined workers with visible UI, input, physics and
     });
     page = await browser.newPage({ viewport: testQuality.viewport });
     const currentPage = page;
+    page.on('framenavigated', (frame) => {
+      if (pageLifecycle.length < 64 && frame === currentPage.mainFrame())
+        pageLifecycle.push(`navigate ${frame.url()}`);
+    });
+    page.on('requestfailed', (request) => {
+      if (pageLifecycle.length < 64)
+        pageLifecycle.push(`request ${request.url()} ${request.failure()?.errorText}`);
+    });
     await page.addInitScript(() => {
       const NativeWorker = Worker;
       globalThis.__forgeaxWorkerEvents = [];
@@ -196,6 +205,8 @@ it('new game-3d defaults to combined workers with visible UI, input, physics and
     });
     page.on('pageerror', (error) => errors.push(error.message));
     page.on('console', (message) => {
+      if (pageLifecycle.length < 64 && message.text().startsWith('[vite]'))
+        pageLifecycle.push(message.text());
       if (iblDiagnostic && message.text().startsWith('[view-ibl-startup]')) {
         const event = JSON.parse(message.text().slice('[view-ibl-startup]'.length));
         iblEvents.push(event);
@@ -522,7 +533,7 @@ it('new game-3d defaults to combined workers with visible UI, input, physics and
     await mkdir(failureEvidence, { recursive: true });
     await writeFile(
       resolve(failureEvidence, 'failure.json'),
-      JSON.stringify({ error: String(error), state, errors }, null, 2),
+      JSON.stringify({ error: String(error), state, errors, pageLifecycle }, null, 2),
     );
     await page?.screenshot({ path: resolve(failureEvidence, 'failure.png') }).catch(() => {});
     if (iblDiagnostic) {
@@ -577,7 +588,9 @@ it('new game-3d defaults to combined workers with visible UI, input, physics and
         ?.value?.path;
       if (capturePath) await cp(capturePath, resolve(diagnosticRoot, 'diagnostic-frame.rhitape'));
     }
-    throw new Error(`${String(error)}\n${JSON.stringify({ state, errors })}`, { cause: error });
+    throw new Error(`${String(error)}\n${JSON.stringify({ state, errors, pageLifecycle })}`, {
+      cause: error,
+    });
   } finally {
     const cleanupErrors: unknown[] = [];
     for (const close of [

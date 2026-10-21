@@ -1,7 +1,10 @@
 import { mkdir, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
-import { blitMipmapsSync, getOrCreateMipmapPipeline } from '@forgeax/engine-assets-runtime';
-import { World } from '@forgeax/engine-ecs';
+import {
+  AssetRegistry,
+  blitMipmapsSync,
+  getOrCreateMipmapPipeline,
+} from '@forgeax/engine-assets-runtime';
 import type { RhiDevice, Texture } from '@forgeax/engine-rhi';
 import { attachRecorder, buildFrameModel, decodeTape } from '@forgeax/engine-rhi-debug';
 import * as gpu from '@forgeax/engine-rhi-webgpu';
@@ -75,29 +78,18 @@ for (const mode of ['eager', 'resident', 'recovery'] as const)
       store.configureGpuDevice(
         device,
         (_device, descriptor) => recorder.backend.createShaderModule(device, descriptor),
-        () => {
-          throw new Error('array mip generation does not use cubemap projection');
-        },
         device.caps,
       );
       if (mode !== 'eager') (await store.prewarmMipmapPipeline(device, [format])).unwrap();
-      const world = new World();
+      const assets = new AssetRegistry();
       const colorSpace = format.endsWith('-srgb') ? 'srgb' : 'linear';
       const upload = async (pod: TextureAsset) => {
-        const handle = world.allocSharedRef('TextureAsset', pod);
-        if (mode === 'eager')
-          (
-            await store.uploadTexture(
-              handle,
-              pod,
-              { bytes: pod.data, width, height, colorSpace, mime: 'image/png', mipmap: true },
-              world,
-            )
-          ).unwrap();
-        else if (mode === 'resident') store.ensureResident(handle, pod, world).unwrap();
+        const handle = assets.create(pod).unwrap();
+        if (mode === 'eager') (await store.uploadTexture(handle, pod)).unwrap();
+        else if (mode === 'resident') store.ensureResident(handle, pod).unwrap();
         else {
           const submit = vi.spyOn(device.queue, 'submit');
-          const prepared = store.prepareResidentForRecovery(handle, pod, world).unwrap();
+          const prepared = store.prepareResidentForRecovery(handle, pod).unwrap();
           expect(submit).not.toHaveBeenCalled();
           submit.mockRestore();
           assert(prepared.mipmapWork);
@@ -106,7 +98,13 @@ for (const mode of ['eager', 'resident', 'recovery'] as const)
           device.queue.submit([command]).unwrap();
           prepared.mipmapWork.discard();
         }
-        const texture = store._getTextureGpuTexture(handle, world);
+        const mipWork = store.prepareTextureMips().unwrap();
+        if (mipWork !== undefined) {
+          assert(mipWork.buffer);
+          device.queue.submit([mipWork.buffer]).unwrap();
+          mipWork.complete(true);
+        }
+        const texture = store._getTextureGpuTexture(handle);
         assert(texture);
         return texture.handle;
       };
@@ -170,6 +168,7 @@ for (const mode of ['eager', 'resident', 'recovery'] as const)
         expect(errors).toEqual([]);
       } finally {
         store.destroyAll();
+        assets.dispose();
         (await recorder.dispose()).unwrap();
         raw.destroy();
       }

@@ -1,46 +1,4 @@
-// smoke-browser.mjs -- bug-20260709-builtin-quad-withoutaabb-disables-sprite-frustum-cu (M3 / m3-1)
-//
-// Playwright e2e for AC-04 (requirements IN-5): assert
-// LOW-LEVEL HARNESS EXCEPTION: `renderer.frustumStats.total > 0` AND
-// `renderer.frustumStats.culled > 0` is a renderer-internal browser diagnostic.
-// on the asi-world scene (605x56 tilemap + 12387 objects, all sprite
-// entities riding HANDLE_QUAD). This probe is the entity-level frustum-
-// cull activation signal: pre-M1 fix, `withoutAabb(BUILTIN_QUAD)` in
-// packages/runtime/src/builtin-asset-registry.ts stripped the aabb field
-// from the builtin quad payload, and the `aabb === undefined` branch in
-// packages/runtime/src/render-system-extract.ts short-circuited the
-// entity-level cull loop -- `frustumStats.total` never incremented for
-// any HANDLE_QUAD-backed entity. Post-M1 fix (commit 6281311d) the aabb
-// field is restored + the M2.5 pendingDispatch / flushPendingDispatch
-// pairing keeps dispatch/renderable slots aligned when entities are
-// culled; asi-world observably drops from fps 7-9 / drawIndexed 208 to
-// fps 22-24 / drawIndexed 65 with frustumStats { total: 1575, culled:
-// 1274, visible: 301 } (editor main-tree measurement).
-//
-// Why a separate script (not smoke-dawn.mjs): smoke-dawn.mjs boots a
-// createRenderer + hand-built World over dawn-node, which never exercises
-// the full vite dev pack path (`JSON.stringify -> fetch -> JSON.parse`),
-// the browser WebGPU device, or the live rAF loop that populates the
-// 12387 per-cell object TileLayer entities before the extract stage
-// visits them. AC-04 is inherently a browser-path assertion: the cull
-// path activates only once the scene has spawned the sprite entities in
-// steady-state (>= 1 frame of rAF), and only the browser reveals the
-// WebGPU-side dispatch / renderable behaviour that the M2.5 pairing
-// protects.
-//
-// Invocation: `pnpm -F @forgeax/hello-asi-world smoke:browser`
-//
-// Exit codes:
-//   0 = green (frustumStats.total > 0 AND culled > 0)
-//   1 = red (assertion failed; falsify anchor: temporarily restore
-//       withoutAabb() at packages/runtime/src/builtin-asset-registry.ts
-//       -> probe must exit 1 with total === 0)
-//   2 = harness error (vite did not boot / playwright launch failed)
-//
-// Local-only gate today (plan-decisions PL-2); CI inclusion gated on a
-// Chrome-with-WebGPU runner. Mirrors apps/hello/skin/scripts/smoke-
-// browser.mjs and apps/hello/cube/scripts/smoke-browser.mjs.
-
+// Real Vite/WebGPU scene: 60 completed frames and public frustum evidence.
 import { chromium } from 'playwright';
 import { spawn } from 'node:child_process';
 import { setTimeout as sleep } from 'node:timers/promises';
@@ -98,19 +56,14 @@ page.on('console', (msg) => {
   if (msg.type() === 'error') errors.push(`CONSOLE-ERR: ${msg.text()}`);
 });
 
-await page.goto(portUrl, { waitUntil: 'networkidle', timeout: 30000 });
-// asi-world bootstrap fetches 5 JSON docs + 4 PNGs before spawning the
-// tilemap / player / object TileLayer, then app.start() begins rAF.
-// 3s covers the fetch + first-frame settling on a typical machine; the
-// object TileLayer chunk-extract system finishes its per-cell entity
-// materialization within the first few frames of app.start().
-await page.waitForTimeout(3000);
+await page.goto(`${portUrl}?smoke=1`, { waitUntil: 'networkidle', timeout: 30000 });
+await page.waitForFunction(()=>globalThis.__forgeax?.completedFrames?.()>=60,{},{timeout:60_000});
 
 const stats = await page.evaluate(() => {
-  const g = /** @type {{__forgeax?: {renderer?: {frustumStats?: {total: number, culled: number}}}}} */ (
+  const g = /** @type {{__forgeax?: {renderer?: {inspect(): {frustumStats: {total: number, culled: number}}}}}} */ (
     globalThis
   );
-  const s = g.__forgeax?.renderer?.frustumStats;
+  const s = g.__forgeax?.renderer?.inspect().frustumStats;
   if (!s) return null;
   return { total: s.total, culled: s.culled };
 });
@@ -133,17 +86,8 @@ if (stats === null) {
   process.exit(1);
 }
 
-// This browser probe intentionally remains on the low-level diagnostic field:
-// the public Renderer.inspect() contract is POD-only and does not expose
-// frustum counts, while this script must prove entity-level culling through
-// the Vite/WebGPU path without changing the app source surface.
-// AC-04 primary gate. The default orthographic camera centers on the
-// spawn cell (camHalfW x camHalfH cells visible), so 12387 - visible
-// objects sit outside the frustum and must be culled every frame.
-// `total > 0` proves the entity-level cull loop reached the decision
-// point; `culled > 0` is the load-bearing assertion that the per-entity
-// cull path actually rejected at least one HANDLE_QUAD entity. Either
-// zero -> the pre-M1 silent bypass (withoutAabb short-circuit) is back.
+if(errors.length>0){console.error(errors);process.exit(1);}
+// Visible chunk projection and exact cell bounds must still reject off-camera work.
 if (stats.total <= 0 || stats.culled <= 0) {
   console.error(
     `\n[smoke-browser] AC-04 RED -- frustumStats.total=${stats.total} culled=${stats.culled}; ` +
@@ -157,6 +101,6 @@ if (stats.total <= 0 || stats.culled <= 0) {
 
 console.log(
   `\n[smoke-browser] AC-04 GREEN -- frustumStats.total=${stats.total} culled=${stats.culled}; ` +
-    'HANDLE_QUAD entities participate in the entity-level frustum cull path.',
+    'Native visible Tilemap draws participate in frustum culling.',
 );
 process.exit(0);

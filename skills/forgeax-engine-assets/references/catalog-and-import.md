@@ -36,51 +36,40 @@ Editor consumers must pin an Engine revision containing this contract; an unpinn
 link is not cross-repository evidence. The editor packages/engine gitlink and
 CI assertions own the tested pin and composition gate.
 
-**refs owns the reference graph.** AssetEnvelope.refs carries dependency GUIDs and loadByGuid traverses it without kind dispatch. Historical collectRefs kind switches, storedNameOf side tables, and assetBrand switches were replaced by envelope refs/name and the ASSET_BRAND record.
+## Verified closure and runtime identity
 
-### AssetRef edge metadata
+`AssetEnvelopeV2.refs` contains dependency GUID strings. The source owner walks
+that graph once, validates complete publication tuples and artifact integrity,
+and invokes installed decoders. Ordinary references are eager; a decoder may
+explicitly declare deferred references, as Plugin definitions do. Runtime
+admission publishes the prepared content and dependencies together.
 
-```ts
-interface AssetRef {
-  readonly guid: string;                              // Referenced asset GUID.
-  readonly sourceField?: {
-    readonly componentName?: string;                  // Such as MeshRenderer or MeshFilter.
-    readonly fieldName: string;                       // Handle field: mesh, materials, parent.
-    readonly arrayIndex?: number;                     // Index for array<handle<T>>.
-  };
-  readonly sceneEntityId?: number;                    // Scene-local entity ID for scene references.
-}
-```
+Schema field metadata belongs to the relevant Scene/authoring projection.
+Consumers must not infer reference kinds from numeric values or parse field
+names. At the runtime boundary, `asset(kind)` fields hold asset handles;
+ordinary numeric/string fields retain their original meaning.
 
-**sourceField is structured metadata**: consume componentName/fieldName/arrayIndex through properties, not string parsing. Texture edges lack entity-field provenance and leave sourceField undefined. sceneEntityId exists only for scene handle-field references.
+The pipeline keeps four owners:
 
-### Kind-independent recursive loading
+- Source plus Meta or Pack owns authored GUID identity and conversion settings.
+- Import/Cook validates source and produces complete outputs and receipts.
+- Catalog provides navigation and publication evidence, including `name`, `packageId`, `sourcePath`, `sourceKey` and dependency facts.
+- AssetRegistry owns runtime content and handles. Use `create` for code content and `load(guid, kind)` for source content; `read(handle)` returns a detached payload.
 
-loadByGuid iterates envelope.refs and recursively loads ref.guid. There are no separate material-texture/parent preload paths. Parent-material breadcrumbs inspect sourceField.fieldName === 'parent' within that shared loop.
-
-## Mental model
-
-GUID is asset identity; paths are not. Display names use packagePath.name through resolveName. Names are derived outside POD/Package. The pipeline has four stages:
-
-- **Disk authoring**: sources needing conversion use source.meta.json and an importer; prepared/hand-authored payloads use name.pack.json. Prefer ui.html + matching ui.css + meta for readable UI, letting the UI importer produce UiAsset. Direct Pack UI is for intentionally prepared small final payloads.
-- **CLI scan**: asset scan/verify performs fail-fast validation.
-- **Build projection**: vite-plugin-pack produces pack-index.json with optional entry names.
-- **Runtime payload/identity**: register/registerWithGuid handles known payloads; configurePackIndex then loadByGuid handles disk assets. resolveName derives display identity. The GUID-keyed AssetEnvelope catalog stores payload, refs, and optional name; refs owns recursive dependencies and name owns stored per-GUID naming.
-
-### Package identity
-
-Each imported source file is a Package shared by all its output assets. AssetRegistry tracks packageOf and derives names from explicit entry names, otherwise the package basename. Builtin/in-memory assets have null package; unnamed ones yield an empty name. When a package grows from one asset to multiple, previously unnamed assets idempotently freeze their derived names as stored names.
-
-Package is discoverable through engine-types. packageOf(guid) returns Package, null for no package, or undefined for an unknown GUID.
+A Catalog row change never overwrites gameplay content. Repeated `load` retains
+the existing identity; use explicit `reload(handle, { conflict })` for current
+source adoption. Source-backed and runtime-created assets use the same runtime
+owner, while source provenance remains available through `source` / `sourceOf`.
+Runtime edits do not rename source, create Catalog rows or save files.
 
 ### Compression pipeline
 
 > [!NOTE]
-> zstd packing and KTX2 containers are transparent to loadByGuid consumers; fetchBinary handles decoding.
+> Stored compression and KTX2 containers are transparent to `assets.load(guid, kind)` consumers; the source, codec and texture owners validate their representations.
 
 PackIndexEntry.compression accepts none, zstd, basis-etc1s, basis-uastc, or basis-uastc-hdr, also reflected in image metadata/sidecars. zstd wraps binary assets; basis values identify KTX2 block encoding. Missing/none means uncompressed. Mesh binaries default to zstd; texture policy comes from compressionMode, default auto.
 
-fetchBinary(url, { compression }) decompresses zstd through engine-codec. Basis payloads pass through to the texture loader's selectTranscodeTarget/transcodeKtx2 path. Failures become asset-fetch-failed with codec details, preserving decompression-failed/codec-init-failed inside detail.
+Stored zstd encoding is decoded through the runtime-safe Codec path. Texture preparation preserves the admitted source representation and Render selects device residency from real capabilities. Follow the structured source/decode failure; do not fetch artifact URLs or transcode compressed textures independently in game code.
 
 ### Texture compressionMode sidecar
 
@@ -103,21 +92,23 @@ The image-pipeline isolation gate forbids runtime imports of codec/encode while 
 
 ### AssetEnvelope shape
 
-AssetEnvelope is the shared shape across import, catalog registration, and recursive loading:
+The verified decoder input is `AssetEnvelopeV2<P>`:
 
 ```ts
-interface AssetEnvelope {
+interface AssetEnvelopeV2<P> {
   readonly guid: string;
-  readonly kind: string;          // Asset.kind discriminant.
-  readonly name?: string;         // Stored per-GUID name consumed by resolveName.
-  readonly payload: Asset;        // Closed Asset union member.
-  readonly refs: readonly AssetRef[];  // Dependency GUIDs and edge metadata.
+  readonly kind: string;
+  readonly name?: string;
+  readonly payload: P;
+  readonly refs: readonly string[];
+  readonly artifacts: Readonly<Record<string, AssetRuntimeArtifactDescriptor>>;
 }
 ```
 
-Recursive loading traverses refs without kind switches. name is the sole stored-name location, replacing storedNameOf; resolveName uses package path only as fallback.
-
-ASSET_BRAND: Record<Asset['kind'], AssetBrand> lives beside AssetBrand in engine-types and replaces the old switch. New kinds require a record entry; TypeScript detects omissions.
+The containing Pack owns the atomic scope, generation, digest and output-set
+digest. Artifact descriptors carry lengths and integrity before a decoder may
+read their bytes. A custom payload's optional `kind` property does not bypass
+its token/decoder contract or select built-in preparation.
 
 ## Register a custom host importer
 
@@ -128,7 +119,7 @@ ASSET_BRAND: Record<Asset['kind'], AssetBrand> lives beside AssetBrand in engine
 |:--|:--|:--|
 | Declare | Meta importer key and subAssets kind, such as reel-game-blob. Both schema fields accept open strings. | assets/source.meta.json |
 | Inject importer | pluginPack({ importers: [myImporter()] }) registers it at build time. | vite.config.ts |
-| Register loader | assetLoaderPlugin(myLoader()) contributes a reversible loader through app.pluginContext; loadByGuid<T> returns host payload T outside the Engine Asset union. | Host runtime |
+| Install decoder | Share a `defineAssetKind<P>()` token through `assetDecoderPlugin({ kind, decoder, consumer })` or `assets.installDecoder(kind, decoder)`; load returns a typed handle. | Host runtime |
 
 ### Passthrough projection
 
@@ -153,7 +144,7 @@ export function reelGameBlobImporter(): Importer {
 buildCatalog projects registered host importers directly into index rows; an unregistered key remains raw source. Host kinds conflicting with Engine-owned texture/mesh/material/scene/audio/font kinds fail with catalog-host-kind-conflict instead of overriding loaders.
 
 > [!TIP]
-> Without a registered runtime loader, loadByGuid<T> returns the raw host payload and kind; with a loader, it dispatches there. Host payloads remain outside the closed Asset union. End-to-end contract: host-custom-kind-contract.test.ts.
+> A source load requires the matching decoder lease; absence returns `asset-decoder-missing`. `decode` validates source input. Add synchronous `prepare` for runtime creation or writes. Host payloads remain outside the closed built-in Asset union; see [custom kinds](scene-and-custom-kinds.md#open-registration-for-host-kinds).
 
 ## Choose a sidecar by source conversion needs
 
@@ -163,8 +154,8 @@ buildCatalog projects registered host importers directly into index rows; an unr
 | Aspect | source.meta.json (external-asset-package) | name.pack.json (internal-text-package) |
 |:--|:--|:--|
 | Use | Convert images, glTF, fonts, UI, or custom binary into POD. | Author a complete final JSON payload directly. |
-| Payload producer | Build-time importer returns ImportedAsset[]. | Author writes assets[].payload. |
-| Build action | Import into DDC and project index rows. | Index the self-contained payload directly. |
+| Payload producer | Build-time importer returns ImportedAsset[]. | Author writes the direct Pack `assets[sourceKey]` map. |
+| Build action | Import/Cook into DDC and publish verified Pack/Catalog outputs. | Validate and Cook the declared output map, then publish Pack/Catalog outputs. |
 | Typical kind | Engine or host imported kinds. | Hand-authored data or intentionally final UI. |
 | importer field | Required. | Not applicable. |
 
@@ -173,7 +164,7 @@ Source bytes needing programmatic conversion use meta plus importer; complete fi
 ## Runtime image-byte decoding
 
 > [!IMPORTANT]
-> Build-known assets use sidecar/import/loadByGuid. decodeImageBytes handles bytes first available at runtime, such as fetched URLs, embedded base64, or external decoder output. Both produce TextureAsset POD and use allocSharedRef/ensureResident downstream.
+> Build-known assets use sidecar/Import/Cook and `assets.load(guid, 'texture')`. `decodeImageBytes` handles bytes first available at runtime, such as fetched URLs, embedded base64, or external decoder output. Capture its Texture POD with `assets.create` and bind the returned handle; Render owns residency.
 
 ### Signature and options
 
@@ -194,9 +185,9 @@ async function decodeImageBytes(
 ### Boundaries
 
 - No network fetch: callers supply bytes.
-- No GPU upload: use the existing allocSharedRef/ensureResident path after decoding.
+- No GPU upload: use `assets.create(decodedTexture)` and bind the handle; Render owns upload and retirement.
 - Supports PNG/JPEG. GIF/WebP/SVG/AVIF/KTX2/HDR report image-format-unsupported; convert offline or use richer build-time importers.
-- Static binary/KTX2 assets still use loadByGuid; this API handles runtime-only bytes.
+- Static binary/KTX2 assets still use `assets.load(guid, 'texture')`; this API handles runtime-only bytes.
 - Requires browser/Worker createImageBitmap and OffscreenCanvas, not Node decoding. Missing capabilities produce image-decode-failed.
 
 ### Image error subset
@@ -234,7 +225,8 @@ if (!result.ok) {
   return;
 }
 // Bytes in, POD out; downstream behavior matches static textures.
-const handle = world.allocSharedRef('TextureAsset', result.value);
+const handle = assets.create(result.value).unwrap();
+// Release this caller reference after a component/material has retained it.
 ```
 
 ### Isolation gate

@@ -4,14 +4,14 @@ import { fileURLToPath } from 'node:url';
 import {
   AnimationPlayer,
   AnimationTargetId,
+  animationClipContribution,
   animationPlugin,
   bindAnimationTargets,
 } from '@forgeax/engine-animation';
-import { animationClipLoader } from '@forgeax/engine-assets-runtime';
 import { createWorldContext, World } from '@forgeax/engine-ecs';
 import { ChildOf, scenePlugin, Transform } from '@forgeax/engine-scene';
-import type { AnimationClip, LoadContext } from '@forgeax/engine-types';
 import { describe, expect, it } from 'vitest';
+import { importedSource } from '../../../import/src/__tests__/fixtures/runtime-import';
 import { initFbxWasm, parseFbxToObject } from '../index';
 import { type FbxRawAnimDoc, parseAnimationClips } from '../parse-animation-clip';
 
@@ -56,19 +56,33 @@ describe('FBX source curves through JSON Cook and ordinary ECS playback', () => 
           ArrayBuffer.isView(value) ? Array.from(value as Float32Array) : value,
         ),
       );
-      const clip = animationClipLoader.load(cooked, undefined, {} as LoadContext) as AnimationClip;
+      const guid = '019d0000-0000-7000-8000-000000000111';
+      const { assets } = importedSource({
+        assets: [
+          {
+            guid,
+            kind: 'animation-clip',
+            payload: { ...cooked, kind: 'animation-clip' },
+            refs: [],
+            artifacts: {},
+          },
+        ],
+      });
+      assets.installDecoder(animationClipContribution.kind, animationClipContribution.decoder);
+      const clipHandle = (await assets.load(guid, 'animation-clip')).unwrap();
+      const clip = assets.read(clipHandle).unwrap();
       const reference = oracles.find((row) => row.name === pod.name);
       if (reference === undefined) throw new Error('missing source oracle');
       const source = raw.clips?.find((row) => row.name === pod.name);
       if (source === undefined) throw new Error('missing native clip');
-      const world = new World();
+      const world = new World({ assets });
       await createWorldContext(world, [scenePlugin(), animationPlugin()]);
       const player = world.spawn({ component: Transform, data: {} }).unwrap();
       world
         .addComponent(player, {
           component: AnimationPlayer,
           data: {
-            clips: [world.allocSharedRef('AnimationClip', clip)],
+            clips: [clipHandle],
             times: [0],
             weights: [1],
             speeds: [0],

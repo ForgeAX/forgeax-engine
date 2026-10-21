@@ -86,7 +86,7 @@ export interface RawBufferLike {
    * exactly once per handle and bookkeeps the rest in TS (D-6).
    */
   destroy?(): void;
-  readonly mapState?: 'unmapped' | 'pending' | 'mapped';
+  readonly mapState?: Buffer['mapState'];
 }
 
 /**
@@ -228,7 +228,7 @@ class RhiWgpuBufferImpl {
    * Defaults to 'unmapped' when the raw handle does not expose the field
    * (charter proposition 4 explicit-failure baseline — no throw).
    */
-  get mapState(): 'unmapped' | 'pending' | 'mapped' {
+  get mapState(): Buffer['mapState'] {
     return this.raw.mapState ?? 'unmapped';
   }
 }

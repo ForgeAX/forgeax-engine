@@ -6,6 +6,7 @@ import { OBJExporter } from 'three/addons/exporters/OBJExporter.js';
 import { STLExporter } from 'three/addons/exporters/STLExporter.js';
 import { formatFailure } from './errors.js';
 import { exportObject, type MeshExportItem } from './geometry.js';
+import { runMeshWorker } from './worker.js';
 
 export type MeshExportFormat = 'gltf' | 'glb' | 'obj' | 'stl';
 
@@ -46,38 +47,24 @@ export async function exportMeshes(
         parentPort.postMessage({ bytes }, [bytes.buffer]);
       })().catch(error => parentPort.postMessage({ error: error.message }));
     `;
-    return await new Promise((resolve) => {
-      const worker = new Worker(source, {
-        eval: true,
-        workerData: {
-          object: object.value.toJSON(),
-          binary: format === 'glb',
-          three: pathToFileURL(require.resolve('three')).href,
-          exporter: pathToFileURL(require.resolve('three/addons/exporters/GLTFExporter.js')).href,
-        },
-      });
-      const timer = setTimeout(() => {
-        void worker.terminate();
-        resolve(formatFailure('export', 'export exceeded thirty seconds'));
-      }, 30_000);
-      worker.once('error', (error) => {
-        clearTimeout(timer);
-        resolve(formatFailure('export', error.message));
-      });
-      worker.once('exit', (code) => {
-        clearTimeout(timer);
-        if (code !== 0) resolve(formatFailure('export', `worker exited with ${code}`));
-      });
-      worker.once('message', (result: { bytes?: Uint8Array; error?: string }) => {
-        clearTimeout(timer);
-        void worker.terminate();
-        resolve(
-          result.bytes === undefined
-            ? formatFailure('export', result.error ?? 'worker produced no bytes')
-            : ok(result.bytes),
-        );
-      });
+    const worker = new Worker(source, {
+      eval: true,
+      workerData: {
+        object: object.value.toJSON(),
+        binary: format === 'glb',
+        three: pathToFileURL(require.resolve('three')).href,
+        exporter: pathToFileURL(require.resolve('three/addons/exporters/GLTFExporter.js')).href,
+      },
     });
+    const result = await runMeshWorker<{ bytes?: Uint8Array; error?: string }>(
+      worker,
+      'export',
+      'export exceeded thirty seconds',
+    );
+    if (!result.ok) return result;
+    return result.value.bytes === undefined
+      ? formatFailure('export', result.value.error ?? 'worker produced no bytes')
+      : ok(result.value.bytes);
   } catch (cause) {
     return formatFailure('export', cause instanceof Error ? cause.message : String(cause));
   } finally {

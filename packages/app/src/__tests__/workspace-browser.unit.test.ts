@@ -10,17 +10,20 @@ import {
 import { createAppObservation } from '../observation';
 import type { App } from '../types';
 import { engineWorkspaceBrowserPlugin } from '../workspace-browser';
+import { publishWorkspaceAssets } from './workspace-asset-fixture';
 
 const guid = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
 
 describe('workspace browser plugin lifecycle', () => {
   it('dispatches actual World tools and revokes its handler and borrowed preview through the Fiber', async () => {
-    const world = new World();
+    const assets = new AssetRegistry();
+    const world = new World({ assets });
     for (const component of [Camera, SceneInstance, ChildOf, Children, GlobalTransform, Transform])
       world.components.register(component).unwrap();
     const entity = world.spawn({ component: Name, data: { value: 'Persistent' } }).unwrap();
-    const assets = new AssetRegistry({} as never);
-    assets.catalog(guid, { kind: 'scene', entities: { root: { components: {} } } }).unwrap();
+    publishWorkspaceAssets(assets, [
+      { guid, asset: { kind: 'scene', entities: { root: { components: {} } } } },
+    ]);
     const setInputAllowed = vi.fn();
     const app = {
       world,
@@ -215,7 +218,11 @@ describe('workspace browser plugin lifecycle', () => {
               childCreation.entered();
               await childCreation.resume;
             }
-            const childWorld = new World();
+            const childAssets = new AssetRegistry();
+            publishWorkspaceAssets(childAssets, [
+              { guid, asset: { kind: 'scene', entities: { root: { components: {} } } } },
+            ]);
+            const childWorld = new World({ assets: childAssets });
             childWorldIdentity = childWorld.identity;
             for (const binding of childInspection.meshMaterialBindings)
               binding.worldIdentity = childWorld.identity;
@@ -244,6 +251,7 @@ describe('workspace browser plugin lifecycle', () => {
             return {
               ...app,
               world: childWorld,
+              assets: childAssets,
               renderer: { inspect: () => childInspection },
               execution: { report: () => ({ world: { identity: childWorld.identity } }) },
               stepFrame: childStepFrame,
@@ -252,6 +260,7 @@ describe('workspace browser plugin lifecycle', () => {
                 draining = true;
                 await frame;
                 await owner.dispose();
+                childAssets.dispose();
                 return { ok: true, value: undefined };
               },
             } as unknown as App;

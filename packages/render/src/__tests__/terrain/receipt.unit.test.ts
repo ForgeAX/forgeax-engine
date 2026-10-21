@@ -1,3 +1,4 @@
+import { encodeTerrainHeight } from '@forgeax/engine-terrain';
 import { describe, expect, it } from 'vitest';
 import type { FrameReceipt } from '../../render-contract.js';
 import {
@@ -17,6 +18,7 @@ const section = (high = 1): SubmittedTerrainSection => ({
   entity: 7,
   section: 0,
   asset: 1,
+  version: 1,
   sectionOrigin: [0, 0],
   translation: [10, 2, 20],
   surface: {
@@ -24,10 +26,10 @@ const section = (high = 1): SubmittedTerrainSection => ({
     width: 1,
     lod: 0,
     neighbors: [0, 0, 0, 0],
-    heightRange: [0, high],
-    heights: new Uint8Array([
-      0, 0, 128, 128, 0, 0, 128, 128, 0, 0, 128, 128, 255, 255, 128, 128, 0, 0, 128, 128,
-    ]),
+    textureWidth: 2,
+    textureHeight: 2,
+    sectionIndex: 0,
+    heights: new Uint8Array([0, 0, 0, high, 0].flatMap(encodeTerrainHeight)),
   },
 });
 const request = { worldId: 0, entity: 7, x: 10.8, z: 20.4 };
@@ -64,6 +66,47 @@ describe('submitted terrain receipt contract', () => {
     expect(
       (await querySubmittedTerrainHeight(a, { ...request, view: 'right', expectedAsset: 1 })).ok,
     ).toBe(true);
+    expect(
+      (
+        await querySubmittedTerrainHeight(a, {
+          ...request,
+          view: 'right',
+          expectedAsset: 1,
+          expectedVersion: 2,
+        })
+      ).ok,
+    ).toBe(false);
+    expect(
+      (
+        await querySubmittedTerrainHeight(a, {
+          ...request,
+          view: 'right',
+          expectedAsset: 1,
+          expectedVersion: 1,
+        })
+      ).ok,
+    ).toBe(true);
+    const newer = receipt(2);
+    owner.register(newer, [{ view: 'primary', sections: [{ ...section(5), version: 2 }] }]);
+    expect(
+      (
+        await querySubmittedTerrainHeight(newer, {
+          ...request,
+          expectedAsset: 1,
+          expectedVersion: 2,
+        })
+      ).unwrap(),
+    ).toBeCloseTo(3);
+    expect(
+      (
+        await querySubmittedTerrainHeight(a, {
+          ...request,
+          view: 'right',
+          expectedAsset: 1,
+          expectedVersion: 2,
+        })
+      ).ok,
+    ).toBe(false);
     current = false;
     expect((await querySubmittedTerrainHeight(a, { ...request, view: 'left' })).ok).toBe(false);
     const pending = { ...receipt(1), presentation: 'pending' as const };

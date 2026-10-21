@@ -94,7 +94,7 @@ const manifestPath = resolve(here, '..', 'dist', 'shaders', 'manifest.json');
 const manifestUrl = `data:application/json,${encodeURIComponent(readFileSync(manifestPath, 'utf8'))}`;
 const { World } = await import('@forgeax/engine-ecs');
 const { DEFAULT_STANDARD_PROFILE } = await import('@forgeax/engine-render');
-const { createRenderer } = await import('@forgeax/engine-runtime');
+const { constructRuntimeRendererHost } = await import('@forgeax/engine-runtime/internal/renderer-host');
 const { rhi } = await import('@forgeax/engine-rhi-webgpu');
 const { buildSsaoWorld } = await import(resolve(here, '..', 'src', 'ssao.ts'));
 
@@ -118,10 +118,7 @@ async function createStandardRenderer(ssao, label) {
       };
     },
   };
-  return {
-    ok: true,
-    value: await createSmokeRenderer(
-      createRenderer,
+  const hostResult = await constructRuntimeRendererHost(
       canvas,
       {
         rhi,
@@ -132,7 +129,11 @@ async function createStandardRenderer(ssao, label) {
         },
       },
       { shaderManifestUrl: manifestUrl },
-    ),
+    );
+if (!hostResult.ok) throw hostResult.error;
+return {
+    ok: true,
+    value: hostResult.value,
   };
 }
 
@@ -173,10 +174,10 @@ const targetFrames = Math.max(SMOKE_MIN_FRAMES, 60);
 async function runVariant(ssao, label) {
   const constructed = await createStandardRenderer(ssao, label);
   if (!constructed.ok) throw constructed.error;
-  const renderer = constructed.value;
+  const { renderer, assets } = constructed.value;
   const errors = [];
   subscribeSmokeErrors(renderer, (err) => errors.push(err));
-  const world = new World();
+  const world = new World({ assets });
   const attached = renderer.attach(world);
   if (!attached.ok) throw attached.error;
   const scene = buildSsaoWorld(world, WIDTH / HEIGHT);

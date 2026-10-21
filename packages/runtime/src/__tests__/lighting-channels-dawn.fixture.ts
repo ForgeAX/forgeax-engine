@@ -52,6 +52,7 @@ export async function runChannelDawnCase(
   const devices: GPUDevice[] = [];
   try {
     const samples = await verifyLightingChannels(host.renderer, {
+      assets: host.assets,
       receiver,
       paths,
       async preparePhysicalMaterial(source) {
@@ -62,9 +63,8 @@ export async function runChannelDawnCase(
         const record = validateCookedMaterialRecord(
           (cooked.payload as { cooked: unknown }).cooked,
         ).unwrap();
-        await prepareChannelPhysicalMaterial(
+        return await prepareChannelPhysicalMaterial(
           host.assets,
-          source,
           serializeCookedMaterialRecord(record),
         );
       },

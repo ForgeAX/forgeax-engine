@@ -37,6 +37,17 @@ const moved: RenderSceneBounds = { min: [0, 0, 0], max: [600, 2, 512] };
 const rowBoxes = new Float32Array([10, 0, 10, 12, 2, 12, 598, 0, 10, 600, 2, 12]);
 
 describe('GpuSceneChangeLog row boxes', () => {
+  it('keeps material-only changes independent of object membership and reports removed slots', () => {
+    const log = new GpuSceneChangeLog();
+    log.record(1, delta({ createdSlots: [slot] }));
+    log.record(2, delta({}));
+    expect(log.changedSlotsSince(1, 2)).toEqual([]);
+    expect(log.changedSince(1, 2)).toEqual(new Float32Array());
+    log.record(3, delta({ removedSlots: [slot] }));
+    expect(log.changedSlotsSince(2, 3)).toEqual([slot.slot]);
+    expect(log.changedSince(2, 3)).toBe('unbounded');
+  });
+
   it('retains mesh-content evidence for independent views and skips unrelated slots', () => {
     const log = new GpuSceneChangeLog();
     log.record(1, delta({ createdSlots: [slot] }), () => union);

@@ -195,14 +195,14 @@ const world = app.world;
 
 // --- 5. Spawn scene ---
 
-const roomMat = world.allocSharedRef('MaterialAsset', Materials.standard({
+const roomMat = world.assets.create(Materials.standard({
     baseColor: [0.4, 0.4, 0.5, 1],
     metallic: 0,
     roughness: 0.5,
     occlusionStrength: 1,
-}));
-const roomMesh = world.allocSharedRef('MeshAsset', createSceneCubeMesh(FALSIFY !== 'outward-room'));
-const cubeMesh = world.allocSharedRef('MeshAsset', createSceneCubeMesh(false));
+})).unwrap();
+const roomMesh = world.assets.create(createSceneCubeMesh(FALSIFY !== 'outward-room')).unwrap();
+const cubeMesh = world.assets.create(createSceneCubeMesh(false)).unwrap();
 
 // Room cube: the source renderCube spans [-1, 1], while HANDLE_CUBE spans
 // [-0.5, 0.5]. Transform scale=10 therefore preserves the source's [-5, 5]
@@ -235,7 +235,7 @@ const innerObjects = [
 for (const obj of innerObjects) {
   const [r, g, b] = obj.color;
   const mat = Materials.standard({ baseColor: [r, g, b, 1] });
-  const matHandle = world.allocSharedRef('MaterialAsset', mat);
+  const matHandle = world.assets.create(mat).unwrap();
   world.spawn(
     {
       component: Transform,

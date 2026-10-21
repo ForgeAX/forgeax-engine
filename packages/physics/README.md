@@ -73,7 +73,7 @@ own their pose after creation and write it back through the physics step.
 | `cuboid` | `halfExtents × abs(worldScale)` componentwise | `halfExtents.xy × abs(worldScale.xy)` |
 | `sphere` | `radius × max(abs(worldScale))` | `radius × max(abs(worldScale.xy))` |
 | `cylinder` / `cone` | Y half-height × `abs(scaleY)`; radius × `max(abs(scaleX), abs(scaleZ))` | Unsupported; rejected before native allocation |
-| `convexHull` / `trimesh` | Cooked positions × `abs(worldScale)` componentwise | Unsupported; rejected before native allocation |
+| `convexHull` / `trimesh` | Mesh positions × `abs(worldScale)` componentwise | Unsupported; rejected before native allocation |
 | `capsule` | Y-axis half-height × `abs(scaleY)`; radius × `max(abs(scaleX), abs(scaleZ))` | Y-axis half-height × `abs(scaleY)`; radius × `abs(scaleX)` |
 
 Negative scale is treated as its absolute magnitude; it does not mirror a
@@ -114,7 +114,7 @@ RigidBodyTypeValue.dynamic   // 1
 RigidBodyTypeValue.kinematic // 2
 ```
 
-Narrowing helper: `rigidBodyTypeFromF32(n: number): RigidBodyType` returns `'static' | 'dynamic' | 'kinematic'`.
+Narrowing helper: `rigidBodyTypeFromF32(n: number): RigidBodyType` returns the `@forgeax/engine-types` `RigidBodyType` union (`'static' | 'dynamic' | 'kinematic'`), also carried by `controller-requires-kinematic` detail.
 
 ### ColliderShape
 
@@ -146,14 +146,28 @@ Backends read a Collider row as `ColliderData` (derived from the schema; `halfEx
 | `angularDamping` | `f32` | `0` | Angular velocity damping per second |
 | `gravityScale` | `f32` | `1` | Multiplier for world gravity |
 | `ccdEnabled` | `bool` | `false` | Continuous collision detection |
+| `lockRotation` | `bool` | `false` | Lock all simulated rotation axes (the Z axis in 2D), preserving the current orientation |
 | `additionalSolverIterations` | `u32` | `0` | Integer [0,32]; additional Rapier iterations for the connected contact/joint island. Both backends apply authored changes. Higher precision increases native step cost. |
+
+Rapier3D completes collider and additional-mass initialization during
+`physicsSyncBackend`. Gameplay systems ordered after that phase can apply an
+impulse immediately; they do not need a preliminary simulation step to obtain
+the authored total mass.
+
+`lockRotation` clears angular velocity when enabled. Contacts, torque, angular
+impulses and restored motion cannot spin a locked body; linear movement, collider
+geometry and authored mass properties remain unchanged. Explicit pose writes can
+still orient the body. Disabling the field restores angular response without
+restoring discarded angular velocity. Ordinary edits and derived shape/body-type
+changes retain the policy. Restore ECS `RigidBody` data before restoring derived
+physics geometry so the same policy also governs restored motion.
 
 ### Collider
 
 | Field | Type | Default | Description |
 |:--|:--|:--|:--|
 | `shape` | `enum` | `0` (cuboid) | See `ColliderShapeValue`; the 2D backend supports the original three primitives |
-| `mesh` | `shared<MeshAsset>` | `0` (unbound) | Ordinary cooked MeshAsset for convexHull/trimesh |
+| `mesh` | `asset<mesh>` | `0` (unbound) | Managed Mesh identity for convexHull/trimesh |
 | `halfExtents` | `array<f32, 3>` | `[0.5, 0.5, 0.5]` | Cuboid half-width/height/depth |
 | `radius` | `f32` | `0.5` | Sphere, capsule, cylinder, or cone radius |
 | `halfHeight` | `f32` | `0.5` | Capsule, cylinder, or cone half-height (along Y) |
@@ -166,36 +180,39 @@ Backends read a Collider row as `ColliderData` (derived from the schema; `halfEx
 
 ### Source mesh collision
 
-`Collider.mesh` uses the existing World shared-reference route. Load a cooked
-MeshAsset from Catalog (same mesh GUID), allocate it through
-`world.sharedRefs.alloc('MeshAsset', mesh)`, and supply that ref with
-`ColliderShapeValue.convexHull` or `ColliderShapeValue.trimesh`. The entity
-retains its ordinary shared lease; release the author allocation when ownership
-has transferred. No separate collision asset registry is required.
+`Collider.mesh` holds an `asset<mesh>` owned by `world.assets`. Create geometry
+with `assets.create(mesh)` or load the Mesh with `assets.load(guid, 'mesh')`,
+then bind its handle with `ColliderShapeValue.convexHull` or `ColliderShapeValue.trimesh`.
+The component and native geometry retain their own asset holds; the author can
+release its original hold after binding.
 
 | Shape | Body policy | Geometry |
 |:--|:--|:--|
-| `convexHull` | Static, kinematic, dynamic | Native Rapier hull of cooked mesh positions; concavities become solid |
-| `trimesh` | Static or kinematic | Cooked triangle coverage preserves cavities; dynamic use is rejected |
+| `convexHull` | Static, kinematic, dynamic | Native Rapier hull of mesh positions; concavities become solid |
+| `trimesh` | Static or kinematic | Triangle coverage preserves cavities; dynamic use is rejected |
 
-Produce the attachment with `buildMeshCollision` from Geometry or opt into
-`importSettings.meshCollision: true` in glTF/FBX import. See
-[Import collision cooking](../import/README.md#mesh-collision-cooking).
-Skinned/morphed sources, automatic convex decomposition, and dynamic concave
-bodies are outside this contract. All relevant dimensions and resolved scales
-must be finite and positive in magnitude.
+Source attachments prepared with `buildMeshCollision` or
+`importSettings.meshCollision: true` are validated once per Mesh version. Runtime
+geometry edits invalidate those attachments; the same Geometry-owned preparation
+kernel supplies collision from the edited Mesh. Skinned/morphed sources, automatic
+convex decomposition and dynamic concave bodies remain outside this contract.
 
-Admission validates the attachment against its source once per immutable mesh.
-Stable ticks and pose-only motion reuse native shapes; a changed mesh reference
-or scale rebuilds the shape. Authored replacement stages its new native collider
-before retiring the old one, preserving the body, velocities and joints on
-failure. Runtime mesh vertex edits invalidate cooked collision; publish a newly
-cooked source rather than silently retaining the old shape. Fresh PhysicsWorld
-recovery re-admits the same source and scale.
+The backend owns one native geometry root per Mesh and collider kind. Asset edits
+replace that immutable root at fixed sync without recreating colliders, scanning
+instances or marking each consumer dirty. The native spatial hierarchy composes
+current root bounds with instance transforms. Real queries and solver work resolve
+the current geometry; fixed snapshots keep the previous version. Affected dynamic
+bodies, including sleeping isolates and complete contact/joint/multibody closures,
+prepare current mass, center of mass, inertia and CCD extents and integrate in the
+same step. Removing support is solver work even when no new contact exists.
 
-Mesh shape scale comparisons allow four relative Float32 epsilons of matrix
-decomposition noise. They compare against the committed shape, so parent rotation
-does not recook unchanged geometry and cumulative authored scale edits still resize it.
+Authored reference or scale changes use the ordinary entity mutation path,
+preserving body, velocity and joint identity. Scale-specific shapes are prepared
+when requested and cached by immutable native version, with at most eight entries
+and 16 MiB of requested shape allocations per version; oversized or unsupported
+cache accounting remains query-local. Scale comparison uses four relative Float32
+epsilons against the last admitted native scale, preserving both rotation-noise
+stability and accumulated scale edits.
 
 #### Reproduce the collider behavior
 
@@ -424,6 +441,13 @@ and mixing groups are refused. Cancelling any member retires the complete group.
 A later preparation failure releases all earlier disabled native colliders. Input
 copying and native preparation run behind the existing native-execution fence.
 
+Candidate input metadata is detached during preparation. Its public `shapes`
+snapshot copies the private geometry on first inspection and retains that copy
+for later reads, including after cancellation. Reading entity/revision and
+admitting the token do not allocate a second geometry snapshot. Mutating the
+inspected buffers cannot alter native admission. The candidate byte budget
+continues to reserve both copies, including the optional inspection snapshot.
+
 For settling, waking, or another body-type-only policy, call
 `prepareDerivedBodyTypeCandidates([{ publication, bodyType }])` with each exact
 current receipt returned by `getDerivedPublication`. Admit that complete group
@@ -638,10 +662,24 @@ retain their own meaning.
 
 ## Terrain heightfield admission (3D)
 
-`HeightfieldShapeInput` participates in the existing derived-shape candidate transaction, retirement and recovery snapshot. `Terrain + RigidBody(static)` derives this shape after body reconciliation and before the fixed step. It admits finite translation, identity rotation and unit scale. Author samples are X-fast; the pure terrain adapter transposes them into the backend's column-major rectangular matrix. Mesh, gameplay query and Rapier use the same 10→01 cell diagonal.
+`HeightfieldShapeInput` remains available to explicit derived-shape transactions.
+Ordinary `Terrain + RigidBody(static)` instead binds one shared native geometry
+root per Terrain asset. Its persistent ECS projection handles entity admission,
+reference changes, pose validation, removal and Disabled; asset changes reach only
+the geometry root. Author height edits and spacing/topology changes use the same
+fixed-sync boundary as Mesh adoption. Recentring belongs inside the shared shape,
+so extent edits never move every collider instance.
 
-A root-handle replacement derives a new candidate; unchanged roots skip native shape work. Removal or Disabled clears the old derived set using the backend's existing committed entity collection. Ordinary worlds without Terrain perform no new full-World scan. A positive `getDerivedPublication(entity).fixedStep` proves physical adoption; it says nothing about rendering readiness. See [Terrain](../terrain/README.md).
+Terrain admits finite translation, identity rotation and unit scale. Author
+samples are X-fast; the pure terrain adapter transposes them into the backend's
+column-major rectangular matrix. Mesh, gameplay query and Rapier use the same
+10→01 cell diagonal. The actual completed physics step establishes collision and
+solve adoption; an asset read or rendered frame does not. See
+[Terrain](../terrain/README.md).
 
+Terrain collider readiness uses `getTerrainAssetVersion?(entity)`: its `{asset, version}`
+reflects the source bytes successfully adopted at fixed sync. Author updates retaining
+the handle cannot advance this fact until the backend applies them.
 ## Navigation character composition
 
 `physicsPlugin` installs Scene before binding physics systems, so moveAndSlide
@@ -670,3 +708,22 @@ transaction, including automatic or explicit mass and portable recovery.
 Preparation bounds native expansion, not just compressed input length, and
 copies accepted buffers before staging. This contract carries a complete shape;
 raw native batch edits do not imply a published Engine revision.
+
+### Guarded admission and explicit activation
+
+The optional `admitDerivedShapeCandidatesGuarded(candidates, guard, commitGeometry?)`
+uses the ordinary bounded candidate transaction. Before native mutation it gives one
+synchronous predicate a frozen, detached roster of every candidate's current body
+motion and producer identity. Only literal `true` admits the complete group; false,
+exceptions and asynchronous results retain the previous state. Managed physics access
+is fenced during the predicate. The later geometry commit and rollback rules are
+unchanged; the roster is not permission to read a partially committed World.
+
+| Capability | Contract |
+|:--|:--|
+| `sleepBody(entity)` | Explicitly stops native motion and invalidates contact readiness. Callers choose eligibility; body type, colliders, ownership and automatic wake behavior remain native-owned. |
+| `wakeBody(entity)` | Requests continued solving without setting pose or velocity. |
+| `getBodyConstraintCount(entity)` | Counts current native impulse and multibody joints for one live body. No native handle escapes. |
+
+Discover optional operations on the selected backend. Activation and joint reads fail
+for missing/retired owners, during native execution/admission, or after disposal.

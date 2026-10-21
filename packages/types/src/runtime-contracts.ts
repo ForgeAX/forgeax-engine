@@ -2,9 +2,6 @@
 // catalog/loader bridges, and the EngineMetrics protocol.  Kept as one leaf so
 // the public index remains a small, explicit barrel without duplicate values.
 
-import type { ArtifactDescriptor } from './asset.js';
-import type { Asset } from './core-contracts.js';
-
 // Closed union of runtime-layer error code literals. Defined here as the
 // single source of truth for code-string discovery (charter F1: AI users
 // grep '@forgeax/engine-types' for all error code families). The error
@@ -157,7 +154,60 @@ export type StoreOp = GPUStoreOp;
  * loaded and consumed by `@forgeax/engine-shader` — the schema's single source of truth lives
  * in this package across all three sides (charter proposition 5: consistent abstraction).
  */
+/** Compile-time reads from one selected shader entry and its reachable helpers. */
+export interface ShaderBindingReads {
+  readonly group: number;
+  readonly binding: number;
+  /** Struct fields; omitted means the complete bound resource. */
+  readonly fields?: readonly string[];
+}
+export interface ShaderEntryPointReads {
+  readonly name: string;
+  readonly stage: 'vertex' | 'fragment' | 'compute';
+  readonly bindings: readonly ShaderBindingReads[];
+}
+
+export function isShaderEntryPointReads(value: unknown): value is readonly ShaderEntryPointReads[] {
+  if (!Array.isArray(value)) return false;
+  const identities = new Set<string>();
+  return value.every((entry: unknown) => {
+    if (entry === null || typeof entry !== 'object') return false;
+    const row = entry as Record<string, unknown>;
+    if (
+      typeof row.name !== 'string' ||
+      row.name.length === 0 ||
+      !['vertex', 'fragment', 'compute'].includes(String(row.stage)) ||
+      !Array.isArray(row.bindings)
+    )
+      return false;
+    const identity = `${row.stage}:${row.name}`;
+    if (identities.has(identity)) return false;
+    identities.add(identity);
+    const coordinates = new Set<string>();
+    return row.bindings.every((binding: unknown) => {
+      if (binding === null || typeof binding !== 'object') return false;
+      const read = binding as Record<string, unknown>;
+      if (
+        !Number.isSafeInteger(read.group) ||
+        Number(read.group) < 0 ||
+        !Number.isSafeInteger(read.binding) ||
+        Number(read.binding) < 0 ||
+        (read.fields !== undefined &&
+          (!Array.isArray(read.fields) ||
+            read.fields.some((field: unknown) => typeof field !== 'string' || field.length === 0) ||
+            new Set(read.fields).size !== read.fields.length))
+      )
+        return false;
+      const coordinate = `${read.group}:${read.binding}`;
+      if (coordinates.has(coordinate)) return false;
+      coordinates.add(coordinate);
+      return true;
+    });
+  });
+}
+
 export interface ManifestEntry {
+  readonly entryPoints?: readonly ShaderEntryPointReads[];
   readonly hash: string;
   readonly wgsl: string;
   readonly glsl: string | undefined;
@@ -1090,79 +1140,7 @@ export interface InspectSnapshot {
   readonly assets: ReadonlyArray<InspectEntry>;
 }
 
-// === Loader contract SSOT (feat-20260603-asset-import-loader-injection M1 / w3) ===
-//
-// Decision anchors:
-//   - plan-strategy D-1 (runtime LoaderRegistry dispatches on `asset.kind`;
-//     host injects loaders via `wireDefaultLoaders`, mirroring Console
-//     `wireDefaultInspectors`) + D-2 (contract SSOT lives here in
-//     `@forgeax/engine-types`, math-free, so `@forgeax/engine-runtime` only
-//     depends on the interface, never reverse-imports a concrete loader)
-//   - requirements core principle (third DIP instance after RHI / Console)
-//   - charter P3 (structured failure) + P4 (consistent abstraction)
-//
-// A `Loader` is the runtime-side half of the import/load split: it turns an
-// already-imported internal artefact (a `.pack.json` payload, or fetched
-// bytes for texture / font) into an in-memory `Asset` POD. It stays pure of
-// the registry's bookkeeping — `registerWithGuid` is the AssetRegistry's job,
-// never the loader's (plan-strategy D-2).
-//
-// Two dispatch shapes share this one contract (the asymmetry is intentional,
-// matching the two pre-existing AssetRegistry load paths the M1 refactor
-// converges; research Finding 1 + Finding 2):
-//   (a) inline pack-payload kinds (mesh / scene / material /
-//       skeleton / skin / animation-clip) parse synchronously and return
-//       `Asset | undefined` (`undefined` = parse rejected, the caller maps it
-//       to a structured `AssetError`).
-//   (b) upstream-branch kinds (texture / font / equirect) fetch + decode
-//       asynchronously and return a `Promise<LoaderAsyncResult>` carrying either
-//       the produced `Asset` POD or a structured error.
-
-/**
- * Result envelope returned by the async branch of {@link Loader.load}
- * (texture / font). Mirrors the `Result<T, E>` shape used across the engine
- * (`.ok` discriminant) but is declared math-free here so
- * `@forgeax/engine-types` need not import `@forgeax/engine-rhi`. The error is
- * left as `unknown` so the runtime can surface its own
- * `AssetError | ImageError | RhiError` union without leaking those classes
- * into the types package (charter P4 — the runtime narrows; types stays
- * dependency-free).
- */
-export type LoaderAsyncResult<P = Asset> =
-  | { readonly ok: true; readonly value: P }
-  | { readonly ok: false; readonly error: unknown };
-
-/**
- * Output of {@link Loader.load}. The synchronous arm returns `Asset` (parse
- * succeeded) or `undefined` (parse rejected); the asynchronous arm returns a
- * `Promise<LoaderAsyncResult>`.
- */
-export type LoaderOutput<P = Asset> =
-  | P
-  | undefined
-  | { readonly ok: false; readonly error: ParseErrorDetail }
-  | Promise<LoaderAsyncResult<P>>;
-
-/**
- * Capabilities the host wires into a {@link Loader} at load time. A loader
- * receives this context so it never reaches back into AssetRegistry
- * internals (pipeline isolation, architecture-principles #4).
- *
- * Exactly three capabilities (plan-strategy D-3 rationale):
- *   - `fetchBinary(url)` — fetch raw bytes for the artefact (texture import
- *     `.bin`, `.hdr`, source image, font pack JSON).
- *   - `resolveRef(guid)` — recursively resolve a referenced sub-asset GUID to
- *     its registered handle id (font atlas / sampler). Returns the raw handle
- *     number so the loader can stamp it into the produced POD; the runtime
- *     performs the recursive `loadByGuid` + registration underneath.
- *   - `device` — opaque GPU device slot, present for future GPU-touching
- *     loaders; current loaders register CPU PODs only and never touch it
- *     (research Finding 3 — texture GPU upload is decoupled from load time via
- *     the pull-model `GpuResourceStore`). Typed `unknown` so types stays
- *     RHI-free.
- *
- * F21 (feat-20260621): the error-contextualization callback has been removed.
- */
+/** Keyed SceneAsset parse failure context. */
 export interface ParseErrorDetail {
   /** Keyed SceneAsset context. */
   readonly entityKey: string;
@@ -1179,107 +1157,12 @@ export interface ParseErrorDetail {
  * Three independent booleans mirror the WebGPU `texture-compression-{bc,etc2,
  * astc}` device features (and the `RhiCaps.textureCompression{Bc,Etc2,Astc}`
  * triple they are projected from — createRenderer does the one-line RhiCaps ->
- * TranscodeCaps projection). This shape is structurally identical to the codec
- * package's own `TranscodeCaps` (`@forgeax/engine-codec`): the codec keeps a
- * LOCAL copy on purpose (D-8 — codec is a pure, dependency-light transcode
- * library and must not take a `@forgeax/engine-types` edge just to name its
- * pure-function input). The runtime passes a value of this type straight into
- * `selectTranscodeTarget` by structural compatibility; there is exactly one
- * value threaded through `LoadContext`, so no fact is duplicated at runtime.
+ * TranscodeCaps projection). Codec and runtime consume this same input contract.
  */
 export interface TranscodeCaps {
   readonly bc: boolean;
   readonly etc2: boolean;
   readonly astc: boolean;
-}
-
-export interface LoadContext {
-  /**
-   * Fetch raw bytes for an asset artefact, with optional decompression.
-   *
-   * feat-20260706 M3 / w19: extended signature per D-2 — a `compression`
-   * opt triggers the decompression gate inside the closure
-   * (`@forgeax/engine-codec` lazy-init). `undefined` / `'none'` = E1
-   * pass-through (backward-compat for legacy catalog rows).
-   */
-  fetchBinary(
-    url: string,
-    opts?: { readonly compression?: AssetCompression },
-  ): Promise<
-    | { readonly ok: true; readonly value: Uint8Array }
-    | { readonly ok: false; readonly error: unknown }
-  >;
-  resolveRef(
-    guid: string,
-  ): Promise<
-    { readonly ok: true; readonly value: number } | { readonly ok: false; readonly error: unknown }
-  >;
-  /**
-   * feat-20260613-material-paramschema-driven-binding M4 / w22 (D-5 graceful):
-   * derive(paramSchema).textureFieldNames for the given material-shader id,
-   * built from the registered shader's paramSchema. Used by materialLoader
-   * to know which material value fields carry refs[] indices vs scalar values
-   * (replacing the deleted hardcoded texture-field allowlist Set per AC-03).
-   *
-   * Returns `undefined` when the shader is not yet registered (the cross-
-   * worktree shader-late-register path of plan R-4): the loader then falls
-   * back to a graceful "try every int paramValue as a refs index" walk that
-   * may misclassify scalar f32 fields whose value happens to land in
-   * [0, refs.length); the extract layer (M4 / w23) catches mis-typed
-   * handles via paramSchema validation and falls back to MISSING_TEXTURE_HANDLE.
-   */
-  getMaterialShaderTextureFieldNames?(shaderId: string): ReadonlySet<string> | undefined;
-  /**
-   * feat-20260707 M5 / w33 (D-11): device compression caps the texture / equirect
-   * Basis arms feed to `selectTranscodeTarget` to pick a transcode target. Wired
-   * by `createRenderer` from `RhiCaps` (D-8 one-line projection); a bare
-   * AssetRegistry (test / headless path) defaults to all-false, which drives the
-   * uncompressed `rgba8unorm` / `rgba16float` fallback (section 8 P3, AC-04).
-   * Extends the single ctx input face rather than opening a new loader channel
-   * (Pipeline Isolation — inputs declared explicitly).
-   */
-  readonly transcodeCaps: TranscodeCaps;
-  readonly device: unknown;
-}
-
-/**
- * Runtime-side loader injected into the `LoaderRegistry`. One loader per
- * `asset.kind`; the registry dispatches `loadByGuid` on the kind.
- *
- * `load` is pure of registry bookkeeping (no `registerWithGuid`); it only
- * produces the `Asset` POD (or a structured error / `undefined`). See the
- * module comment above for the sync vs async dispatch asymmetry.
- */
-export interface Loader<P = Asset> {
-  readonly kind: string;
-  readonly references?: 'eager' | 'deferred';
-  /** Optional Pack v2 dispatch that retains asset-local artifact bytes. */
-  readonly loadPack?: (
-    input: {
-      readonly guid: string;
-      readonly kind: string;
-      readonly payload: Record<string, unknown>;
-      readonly refs: readonly string[];
-      readonly streams?: Readonly<
-        Record<string, { readonly descriptor: ArtifactDescriptor; readonly url: string }>
-      >;
-      readonly artifacts: Readonly<
-        Record<
-          string,
-          {
-            readonly descriptor: ArtifactDescriptor;
-            readonly bytes: Uint8Array;
-          }
-        >
-      >;
-    },
-    ctx: LoadContext,
-  ) => LoaderOutput<P>;
-  load(
-    payload: Record<string, unknown>,
-    refs: readonly string[] | undefined,
-    ctx: LoadContext,
-  ): LoaderOutput<P>;
 }
 
 export type {

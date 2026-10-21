@@ -1,6 +1,8 @@
+import { AssetRegistry } from '@forgeax/engine/assets-runtime';
+import { createPrimitiveMesh } from '@forgeax/engine/geometry';
 import { PointLightShadow, Skylight, TONEMAP_ACES_FILMIC } from '@forgeax/engine/render';
 import { defineFeature } from '../../lab/feature';
-import { MESH, spawnCamera, spawnGround, spawnMesh, standard, unlit } from '../../lab/stage';
+import { spawnCamera, spawnGround, spawnMesh, standard, unlit } from '../../lab/stage';
 import { spawnPointLight } from './support/scene';
 
 export default defineFeature({
@@ -12,6 +14,14 @@ export default defineFeature({
   expect:
     'ON: dark radial shadows point outward from every pillar like clock hands. OFF: PointLightShadow is removed; the light still shines but no pillar casts a shadow.',
   setup({ world, app }) {
+    const primitiveAssets = world.assets;
+    if (!(primitiveAssets instanceof AssetRegistry))
+      throw new Error('Scene requires its runtime asset owner');
+
+    const stageCube = primitiveAssets.create(createPrimitiveMesh('cube').unwrap()).unwrap();
+
+    const stageSphere = primitiveAssets.create(createPrimitiveMesh('sphere').unwrap()).unwrap();
+
     spawnGround(world);
     spawnCamera(world, {
       eye: [0, 5, 5],
@@ -24,12 +34,12 @@ export default defineFeature({
     const mat = standard(world, { baseColor: [0.3, 0.6, 1, 1] });
     for (let i = 0; i < 6; i++) {
       const a = (i / 6) * Math.PI * 2;
-      spawnMesh(world, MESH.cube, mat, {
+      spawnMesh(world, stageCube, mat, {
         pos: [Math.cos(a) * 1.1, 0.5, Math.sin(a) * 1.1],
         scale: [0.25, 1, 0.25],
       });
     }
-    spawnMesh(world, MESH.sphere, unlit(world, [1, 0.9, 0.6, 1]), {
+    spawnMesh(world, stageSphere, unlit(world, [1, 0.9, 0.6, 1]), {
       pos: [0, 0.6, 0],
       scale: [0.1, 0.1, 0.1],
     });

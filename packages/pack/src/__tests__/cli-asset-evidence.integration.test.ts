@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto';
-import { mkdir, mkdtemp, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
@@ -202,4 +202,43 @@ describe('asset evidence CLI contract', () => {
       detail: expect.any(Object),
     });
   });
+});
+
+it.each([
+  'valid',
+  'outside-corruption',
+  'window-corruption',
+  'out-of-bounds',
+])('verifies stored chunk and selected artifact in offline evidence: %s', async (mode) => {
+  const project = await evidenceFixture('array');
+  const file = join(project, 'assets', 'config.pack.json');
+  const pack = JSON.parse(await readFile(file, 'utf8'));
+  const stored = Buffer.from('_data_');
+  pack.assets[0].artifacts.data.byteRange = {
+    offset: 1,
+    length: mode === 'out-of-bounds' ? 99 : 4,
+    containerDigest: `sha256:${createHash('sha256').update(stored).digest('hex')}`,
+  };
+  if (mode === 'outside-corruption') stored[0] = 0;
+  if (mode === 'window-corruption') stored[2] = 0;
+  await writeFile(file, JSON.stringify(pack));
+  await writeFile(join(project, 'assets', 'artifacts', 'data.bin'), stored);
+  const stdout: string[] = [];
+  const code = await runCliAsset(
+    [
+      'lookup',
+      '--guid',
+      guid,
+      '--project',
+      project,
+      '--catalog',
+      join(project, 'catalog.json'),
+      '--json',
+    ],
+    { stdoutWrite: (line) => stdout.push(line), stderrWrite: () => {} },
+  );
+  expect(code).toBe(0);
+  expect(JSON.parse(stdout.join('')).artifacts.data.verification).toBe(
+    mode === 'valid' ? 'passed' : 'failed',
+  );
 });

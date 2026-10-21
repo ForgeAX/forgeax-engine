@@ -1,3 +1,4 @@
+import { IMPORT_ERROR_HINTS } from '@forgeax/engine-types';
 import { describe, expect, it } from 'vitest';
 import {
   containsSourcePackageError,
@@ -58,5 +59,16 @@ describe('source-package error normalization', () => {
         detail: { reason: 'timeout' },
       }),
     ).toBe(false);
+  });
+
+  it('recognizes every ImportError code and rejects inherited object keys', () => {
+    for (const code of Object.keys(IMPORT_ERROR_HINTS)) {
+      const error = { code, expected: 'an import', hint: 'repair', detail: {} };
+      expect(containsSourcePackageError(error)).toBe(true);
+    }
+    for (const code of ['toString', 'constructor']) {
+      const error = { code, expected: 'an import', hint: 'repair', detail: {} };
+      expect(containsSourcePackageError(error)).toBe(false);
+    }
   });
 });

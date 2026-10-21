@@ -4,6 +4,7 @@ import {
   validateMeta as metaValidator,
   validatePack as packValidator,
 } from './generated/schema-validators.cjs';
+import { decodeMaterialProgramWire } from './material-program-wire.js';
 export const validateMeta: ValidateFunction = metaValidator;
 export const validatePack: ValidateFunction = packValidator;
 export function validatePackV2(value: unknown): value is PackV2 {
@@ -27,6 +28,9 @@ function isPackV2Shape(value: unknown): value is PackV2 {
 }
 
 export function parsePackV2(value: unknown): Result<PackV2, PackV2Error> {
+  const decoded = decodeMaterialProgramWire(value);
+  if (!decoded.ok) return decoded;
+  value = decoded.value;
   if (!validatePackV2(value)) {
     return err({
       code: 'pack-v2-envelope-invalid',

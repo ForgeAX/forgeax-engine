@@ -10,14 +10,25 @@ export type {
 export { terrainDerivedClosureValid } from './closure.js';
 export { Terrain } from './component.js';
 export {
+  decodeTerrainHeight,
+  encodeTerrainHeight,
+  terrainHeightAtlas,
+  terrainHeightMipOffset,
+} from './height-atlas.js';
+export {
   terrainAxisEndpoint,
   terrainHeightBounds,
   terrainTranslationValid,
 } from './height-bounds.js';
+export {
+  createTerrainLayerPlan,
+  TERRAIN_CHANNEL_TEXTURES,
+  type TerrainMaterialChannels,
+  terrainMaterialChannels,
+} from './layer-plan.js';
 export { terrainLayerWeights } from './layers.js';
 export { terrainLod, terrainVertexCoordinates } from './lod.js';
-export { terrainHeight, terrainHeightfield } from './query.js';
-
+export { terrainHeight, terrainHeightfield, terrainSampleHeight } from './query.js';
 export {
   type TerrainSurface,
   terrainSurfaceHeight,

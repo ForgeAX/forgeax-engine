@@ -28,7 +28,7 @@ import { Update } from '@forgeax/engine-ecs';
 import { createApp } from '@forgeax/engine-app/browser';
 import type { CanvasAppError } from '@forgeax/engine-app';
 
-import { HANDLE_CUBE } from '@forgeax/engine-assets-runtime';
+
 import { Transform } from '@forgeax/engine-scene';
 
 import {
@@ -43,6 +43,8 @@ import { EngineEnvironmentError } from '@forgeax/engine-runtime';
 import { PointLight, SpotLight } from '@forgeax/engine-render';
 
 import { forgeaxBundlerAdapter } from 'virtual:forgeax/bundler';
+import { createPrimitiveMesh } from '@forgeax/engine-geometry';
+
 
 const FALSIFY = (() => {
   if (typeof window !== 'undefined') {
@@ -88,14 +90,17 @@ async function bootstrap(target: HTMLCanvasElement): Promise<void> {
     return;
   }
   const app = appRes.value;
+if (app.assets === undefined) throw new Error('This scene requires the App asset owner');
+
   console.warn(`[standard-lighting] backend=${app.renderer.inspect().capabilities.backendKind}`);
 
 
   const world = app.world;
+const primitiveCube = app.assets.create(createPrimitiveMesh('cube').unwrap()).unwrap();
 
-  // Step 2: alloc a standard PBR material for the lit floor + lit cube as a
-  // user-tier shared ref on the World (D-19).
-  const materialHandle = world.allocSharedRef('MaterialAsset', {
+
+  // Step 2: create a managed standard PBR material for the lit floor and cube.
+  const materialHandle = app.assets.create({
     kind: 'material',
     passes: [
       { name: 'Forward', program: { module: 'forgeax::default-standard-pbr' }, renderState: { tags: { LightMode: 'Forward' }, queue: 2000 } },
@@ -105,7 +110,7 @@ async function bootstrap(target: HTMLCanvasElement): Promise<void> {
       metallic: 0.0,
       roughness: 0.6,
     },
-  });
+  }).unwrap();
 
   // Step 4: spawn the lit floor cube (large flat slab) + a hero cube.
   world.spawn(
@@ -113,7 +118,7 @@ async function bootstrap(target: HTMLCanvasElement): Promise<void> {
       component: Transform,
       data: { pos: [0, -0.5, 0], quat: [0, 0, 0, 1], scale: [6, 0.1, 6]},
     },
-    { component: MeshFilter, data: { assetHandle: HANDLE_CUBE } },
+    { component: MeshFilter, data: { assetHandle: primitiveCube } },
     { component: MeshRenderer, data: { materials: [materialHandle] } },
   ).unwrap();
   world.spawn(
@@ -121,7 +126,7 @@ async function bootstrap(target: HTMLCanvasElement): Promise<void> {
       component: Transform,
       data: { pos: [0, 0.6, 0], quat: [0, 0, 0, 1], scale: [1, 1, 1]},
     },
-    { component: MeshFilter, data: { assetHandle: HANDLE_CUBE } },
+    { component: MeshFilter, data: { assetHandle: primitiveCube } },
     { component: MeshRenderer, data: { materials: [materialHandle] } },
   ).unwrap();
 

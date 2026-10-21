@@ -2,6 +2,7 @@ import { rhi } from '@forgeax/engine-rhi-null';
 import { ok } from '@forgeax/engine-types';
 import { expect, it } from 'vitest';
 import { shadowDirtyRects } from '../gpu-driven/shadow-views';
+import { updateGpuView, updateShadowView } from './helpers/gpu-input-read-domain';
 import { shadowSourceFixture, shadowSourceSnapshot } from './shadow-source-content.fixture';
 
 async function fixture() {
@@ -15,7 +16,7 @@ it('clears bounded old/new footprints when a changed source caster leaves the st
   const f = await fixture();
   try {
     const before = f.input();
-    const warm = f.pool.update(before).unwrap();
+    const warm = updateShadowView(f.pool, before).unwrap();
     f.pool._commitResourceReplacement();
     const revision = f.scene.contentRevision;
     const transform = f.scene.transformBuffer;
@@ -38,12 +39,12 @@ it('clears bounded old/new footprints when a changed source caster leaves the st
     expect(history).toContainEqual([-15, -1, -1, -13, 1, 1]);
     const expected = shadowDirtyRects(next.matrix, [boxes]);
     expect(expected).toHaveLength(2);
-    const result = f.pool.update(next).unwrap();
+    const result = updateShadowView(f.pool, next).unwrap();
     expect(result.cache).toBe('invalidated');
     expect(f.scene.transformBuffer).toBe(transform);
     expect(result.view.inspect().resourceGeneration).toBe(resourceGeneration);
     expect(f.pool.dirtyRects(f.identity)).toEqual(expected);
-    expect(f.pool.invalidationReason(f.identity)).toBe('content-changed');
+    expect(f.pool.invalidationReason(f.identity)).toBe('membership-changed');
   } finally {
     f.dispose();
   }
@@ -52,15 +53,26 @@ it('clears bounded old/new footprints when a changed source caster leaves the st
 it('adopts an equivalent rebuilt source without invalidating retained depth', async () => {
   const f = await fixture();
   try {
-    const before = f.pool.update(f.input()).unwrap();
+    const before = updateShadowView(f.pool, f.input()).unwrap();
+    const oldSource = before.sourcePlan;
+    const oldBatches = oldSource.batches;
     f.pool._commitResourceReplacement();
     f.topology.rebuild(f.projection.slotsSnapshot());
     const next = f.input();
     expect(next.sourcePlan).not.toBe(before.sourcePlan);
-    const result = f.pool.update(next).unwrap();
+    const result = updateShadowView(f.pool, next).unwrap();
     expect(result.cache).toBe('hit');
     expect(result.plan.candidateCount).toBe(before.plan.candidateCount);
-    expect(result.sourcePlan).toBe(next.sourcePlan);
+    expect(result.sourcePlan).not.toBe(oldSource);
+    expect(result.sourcePlan.revision).toBe(next.sourcePlan.revision);
+    expect(result.sourcePlan.batches.map((batch) => [...batch.candidates])).toEqual(
+      next.sourcePlan.batches.map((batch) => [...batch.candidates]),
+    );
+    expect(before.sourcePlan).toBe(oldSource);
+    expect(before.sourcePlan.batches).toBe(oldBatches);
+    expect(result.plan.batches.map((batch) => [...batch.candidates])).toEqual(
+      before.plan.batches.map((batch) => [...batch.candidates]),
+    );
     expect(f.pool.dirtyRects(f.identity)).toBeUndefined();
   } finally {
     f.dispose();
@@ -70,7 +82,7 @@ it('adopts an equivalent rebuilt source without invalidating retained depth', as
 it('adds a declared static caster using only its bounded footprint', async () => {
   const f = await fixture();
   try {
-    f.pool.update(f.input()).unwrap();
+    updateShadowView(f.pool, f.input()).unwrap();
     f.pool._commitResourceReplacement();
     const revision = f.scene.contentRevision;
     const delta = f.update({ ...shadowSourceSnapshot(3, 20), mobility: 'static' });
@@ -81,7 +93,7 @@ it('adds a declared static caster using only its bounded footprint', async () =>
     expect(next.ignoredChangeSlots.has(added ?? -1)).toBe(false);
     const boxes = f.scene.slotBoundsSince(revision, [added ?? -1]);
     if (boxes === 'unbounded') throw Error('expected bounded created caster');
-    const result = f.pool.update(next).unwrap();
+    const result = updateShadowView(f.pool, next).unwrap();
     expect(result.cache).toBe('invalidated');
     expect(result.plan.candidateCount).toBe(3);
     expect(f.pool.dirtyRects(f.identity)).toEqual(shadowDirtyRects(next.matrix, [boxes]));
@@ -94,7 +106,7 @@ it('adds a declared static caster using only its bounded footprint', async () =>
 it('clears removed caster footprints, including the last caster, then retains the empty layer', async () => {
   const f = await fixture();
   try {
-    f.pool.update(f.input()).unwrap();
+    updateShadowView(f.pool, f.input()).unwrap();
     f.pool._commitResourceReplacement();
     for (const entityKey of [1, 2]) {
       const revision = f.scene.contentRevision;
@@ -104,13 +116,13 @@ it('clears removed caster footprints, including the last caster, then retains th
       const boxes = f.scene.changedBoundsSince(revision, next.ignoredChangeSlots);
       if (boxes === 'unbounded') throw Error('expected bounded removed caster');
       expect(boxes.length).toBeGreaterThan(0);
-      const result = f.pool.update(next).unwrap();
+      const result = updateShadowView(f.pool, next).unwrap();
       expect(result.cache).toBe('invalidated');
       expect(result.plan.candidateCount).toBe(2 - entityKey);
       expect(f.pool.dirtyRects(f.identity)).toEqual(shadowDirtyRects(next.matrix, [boxes]));
       expect(f.pool.dirtyRects(f.identity)).toHaveLength(1);
       f.pool._commitResourceReplacement();
-      expect(f.pool.update(f.input()).unwrap().cache).toBe('hit');
+      expect(updateShadowView(f.pool, f.input()).unwrap().cache).toBe('hit');
     }
     expect(f.pool.dirtyRects(f.identity)).toBeUndefined();
   } finally {
@@ -126,7 +138,7 @@ it.each([
   const frame = () => {
     const input = f.input();
     const views = [0, 1, 2].map((index) =>
-      f.pool.update({ ...input, identity: { ...f.identity, index } }).unwrap(),
+      updateShadowView(f.pool, { ...input, identity: { ...f.identity, index } }).unwrap(),
     );
     f.pool._commitResourceReplacement();
     return { input, views };
@@ -178,7 +190,7 @@ it.each([
   const f = await fixture();
   const frame = () => {
     const input = f.input();
-    const view = f.pool.update(input).unwrap();
+    const view = updateShadowView(f.pool, input).unwrap();
     f.pool._commitResourceReplacement();
     return { input, view };
   };
@@ -199,7 +211,7 @@ it.each([
     expect(reused?.slot).toBe(created.slot);
     expect(reused?.generation).not.toBe(created.generation);
     const next = frame();
-    expect(next.input.candidatePrimitiveIndices.includes(created.slot)).toBe(declaredStatic);
+    expect(next.input.candidatePrimitiveIndices.has(created.slot)).toBe(declaredStatic);
     expect(next.view.cache).toBe(declaredStatic ? 'invalidated' : 'hit');
     expect(next.view.plan.candidateCount).toBe(declaredStatic ? 3 : 2);
     if (declaredStatic) expect(f.pool.dirtyRects(f.identity)).toHaveLength(1);
@@ -212,7 +224,7 @@ it('clears a removed static footprint when its slot is reused by a dynamic caste
   const f = await fixture();
   try {
     const first = f.input();
-    f.pool.update(first).unwrap();
+    updateShadowView(f.pool, first).unwrap();
     f.pool._commitResourceReplacement();
     const old = f.projection.slotsSnapshot().find((slot) => slot.entityKey === 1);
     if (old === undefined) throw Error('expected static caster');
@@ -225,10 +237,10 @@ it('clears a removed static footprint when its slot is reused by a dynamic caste
     expect(delta.createdSlots[0]?.generation).not.toBe(old.generation);
     const next = f.input();
     expect(next.ignoredChangeSlots.has(old.slot)).toBe(true);
-    expect(f.pool.update(next).unwrap().cache).toBe('invalidated');
+    expect(updateShadowView(f.pool, next).unwrap().cache).toBe('invalidated');
     expect(f.pool.dirtyRects(f.identity)?.length).toBeGreaterThan(0);
     f.pool._commitResourceReplacement();
-    expect(f.pool.update(f.input()).unwrap().cache).toBe('hit');
+    expect(updateShadowView(f.pool, f.input()).unwrap().cache).toBe('hit');
   } finally {
     f.dispose();
   }
@@ -237,14 +249,14 @@ it('clears a removed static footprint when its slot is reused by a dynamic caste
 it('adds a dynamic caster to static depth when it gains the static declaration', async () => {
   const f = await fixture();
   try {
-    f.pool.update(f.input()).unwrap();
+    updateShadowView(f.pool, f.input()).unwrap();
     f.pool._commitResourceReplacement();
     const source = shadowSourceSnapshot(3, 0);
     f.update(source);
-    expect(f.pool.update(f.input()).unwrap().cache).toBe('hit');
+    expect(updateShadowView(f.pool, f.input()).unwrap().cache).toBe('hit');
     f.pool._commitResourceReplacement();
     f.update({ ...source, mobility: 'static' });
-    const next = f.pool.update(f.input()).unwrap();
+    const next = updateShadowView(f.pool, f.input()).unwrap();
     expect(next.cache).toBe('invalidated');
     expect(next.plan.candidateCount).toBe(3);
     expect(f.pool.dirtyRects(f.identity)).toHaveLength(1);
@@ -256,18 +268,18 @@ it('adds a dynamic caster to static depth when it gains the static declaration',
 it('retries an aborted bounded source update with a full redraw', async () => {
   const f = await fixture();
   try {
-    f.pool.update(f.input()).unwrap();
+    updateShadowView(f.pool, f.input()).unwrap();
     f.pool._commitResourceReplacement();
     f.update(shadowSourceSnapshot(1, -14, 4));
-    f.pool.update(f.input()).unwrap();
+    updateShadowView(f.pool, f.input()).unwrap();
     expect(f.pool.dirtyRects(f.identity)).toHaveLength(2);
     f.pool._abortResourceReplacement();
     expect(f.pool.dirtyRects(f.identity)).toBeUndefined();
-    expect(f.pool.update(f.input()).unwrap().cache).toBe('invalidated');
+    expect(updateShadowView(f.pool, f.input()).unwrap().cache).toBe('invalidated');
     expect(f.pool.invalidationReason(f.identity)).toBe('submit-aborted');
     expect(f.pool.dirtyRects(f.identity)).toBeUndefined();
     f.pool._commitResourceReplacement();
-    expect(f.pool.update(f.input()).unwrap().cache).toBe('hit');
+    expect(updateShadowView(f.pool, f.input()).unwrap().cache).toBe('hit');
   } finally {
     f.dispose();
   }
@@ -277,9 +289,9 @@ it('redraws fully when the scene is replaced despite equivalent source content',
   const f = await fixture();
   const replacement = shadowSourceFixture(f.device, f.shaderModuleFactory);
   try {
-    f.pool.update(f.input()).unwrap();
+    updateShadowView(f.pool, f.input()).unwrap();
     f.pool._commitResourceReplacement();
-    expect(f.pool.update(replacement.input()).unwrap().cache).toBe('invalidated');
+    expect(updateShadowView(f.pool, replacement.input()).unwrap().cache).toBe('invalidated');
     expect(f.pool.invalidationReason(f.identity)).toBe('source-changed');
     expect(f.pool.dirtyRects(f.identity)).toBeUndefined();
   } finally {
@@ -291,16 +303,16 @@ it('redraws fully when the scene is replaced despite equivalent source content',
 it('redraws fully when scene buffers grow even if every added caster is ignored', async () => {
   const f = await fixture();
   try {
-    f.pool.update(f.input()).unwrap();
+    updateShadowView(f.pool, f.input()).unwrap();
     f.pool._commitResourceReplacement();
     const transform = f.scene.transformBuffer;
     for (let entityKey = 3; entityKey <= 9; entityKey++)
       f.update(shadowSourceSnapshot(entityKey, 20));
     const next = f.input();
-    expect(next.candidatePrimitiveIndices).toHaveLength(2);
+    expect(next.candidatePrimitiveIndices.size).toBe(2);
     expect(next.ignoredChangeSlots.size).toBe(7);
     expect(f.scene.transformBuffer).not.toBe(transform);
-    expect(f.pool.update(next).unwrap().cache).toBe('invalidated');
+    expect(updateShadowView(f.pool, next).unwrap().cache).toBe('invalidated');
     expect(f.pool.invalidationReason(f.identity)).toBe('source-changed');
     expect(f.pool.dirtyRects(f.identity)).toBeUndefined();
   } finally {
@@ -311,7 +323,7 @@ it('redraws fully when scene buffers grow even if every added caster is ignored'
 it('redraws fully after physical view resources change outside retained publication', async () => {
   const f = await fixture();
   try {
-    const before = f.pool.update(f.input()).unwrap();
+    const before = updateShadowView(f.pool, f.input()).unwrap();
     f.pool._commitResourceReplacement();
     const generation = before.view.inspect().resourceGeneration;
     const transform = f.scene.transformBuffer;
@@ -320,10 +332,10 @@ it('redraws fully after physical view resources change outside retained publicat
     const next = f.input();
     // The view's public update can replace its allocations before the pool
     // receives the next publication. A stable scene is insufficient for reuse.
-    before.view.update(next.sourcePlan, next.scene, next.planes).unwrap();
+    updateGpuView(before.view, next.sourcePlan, next.scene, next.planes).unwrap();
     expect(before.view.inspect().resourceGeneration).toBeGreaterThan(generation);
     expect(f.scene.transformBuffer).toBe(transform);
-    expect(f.pool.update(next).unwrap().cache).toBe('invalidated');
+    expect(updateShadowView(f.pool, next).unwrap().cache).toBe('invalidated');
     expect(f.pool.invalidationReason(f.identity)).toBe('source-changed');
     expect(f.pool.dirtyRects(f.identity)).toBeUndefined();
   } finally {
@@ -334,11 +346,11 @@ it('redraws fully after physical view resources change outside retained publicat
 it('does not turn explicit invalidation into a partial source-content update', async () => {
   const f = await fixture();
   try {
-    f.pool.update(f.input()).unwrap();
+    updateShadowView(f.pool, f.input()).unwrap();
     f.pool._commitResourceReplacement();
     f.update(shadowSourceSnapshot(1, -14, 4));
     f.pool.invalidate('artifact-changed', f.identity);
-    expect(f.pool.update(f.input()).unwrap().cache).toBe('invalidated');
+    expect(updateShadowView(f.pool, f.input()).unwrap().cache).toBe('invalidated');
     expect(f.pool.invalidationReason(f.identity)).toBe('artifact-changed');
     expect(f.pool.dirtyRects(f.identity)).toBeUndefined();
   } finally {
@@ -349,7 +361,7 @@ it('does not turn explicit invalidation into a partial source-content update', a
 it('redraws fully when a changed caster leaving the static class has unbounded history', async () => {
   const f = await fixture();
   try {
-    f.pool.update(f.input()).unwrap();
+    updateShadowView(f.pool, f.input()).unwrap();
     f.pool._commitResourceReplacement();
     const revision = f.scene.contentRevision;
     const { localAabb: _localAabb, ...unbounded } = shadowSourceSnapshot(1, -14, 4);
@@ -357,7 +369,7 @@ it('redraws fully when a changed caster leaving the static class has unbounded h
     const next = f.input();
     expect(f.scene.changedBoundsSince(revision, next.ignoredChangeSlots)).toHaveLength(0);
     expect(f.scene.slotBoundsSince(revision, next.ignoredChangeSlots)).toBe('unbounded');
-    expect(f.pool.update(next).unwrap().cache).toBe('invalidated');
+    expect(updateShadowView(f.pool, next).unwrap().cache).toBe('invalidated');
     expect(f.pool.dirtyRects(f.identity)).toBeUndefined();
   } finally {
     f.dispose();

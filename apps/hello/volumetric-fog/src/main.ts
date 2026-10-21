@@ -1,3 +1,4 @@
+import type { AssetHandle } from '@forgeax/engine-types';
 import { forgeaxBundlerAdapter } from 'virtual:forgeax/bundler';
 import {
   configureRuntimeAssetCatalog,
@@ -26,16 +27,9 @@ import {
 } from '@forgeax/engine-render';
 import { ChildOf, Transform } from '@forgeax/engine-scene';
 import { Skin, skinningPlugin } from '@forgeax/engine-skinning';
-import type {
-  Handle,
-  MaterialAsset,
-  MeshAsset,
-  SceneAsset,
-  TextureAsset,
-} from '@forgeax/engine-types';
+import type { TextureAsset } from '@forgeax/engine-types';
 import { deriveOfficialScenePose } from './scene-pose';
 import { spawnVolumetricSpot } from './spot-demo';
-import { volumetricDensityLoader } from './volumetric-density-importer';
 
 const DENSITY_GUID = '019f0000-0000-7000-8000-0000000003f1';
 const PROJECTOR_GUID = '019f0000-0000-7000-8000-0000000003f2';
@@ -102,15 +96,14 @@ app.renderer.subscribe((event) => {
 });
 const assets = app.assets;
 if (assets === undefined) throw new Error('volumetric-fog asset registry unavailable');
-assets.loaders.register(volumetricDensityLoader());
 configureRuntimeAssetCatalog(assets, runtimeBinding);
 let foxSkinEntityCount = 0;
 if (variant === 'transparent-subject') {
-  const foxSceneResult = await assets.loadByGuid<SceneAsset>(assets.parseGuid(FOX_SCENE_GUID));
+  const foxSceneResult = await assets.load(assets.parseGuid(FOX_SCENE_GUID), 'scene');
   if (!foxSceneResult.ok) {
     throw new Error(`volumetric-fog Fox scene load failed: ${foxSceneResult.error.code}`);
   }
-  const foxSceneHandle = app.world.allocSharedRef('SceneAsset', foxSceneResult.value);
+  const foxSceneHandle = foxSceneResult.value;
   const foxInstance = assets.instantiate(foxSceneHandle, app.world);
   if (!foxInstance.ok) {
     throw new Error(`volumetric-fog Fox scene instantiate failed: ${foxInstance.error.code}`);
@@ -130,10 +123,10 @@ if (variant === 'transparent-subject') {
   }
 }
 const densityGuid = assets.parseGuid(DENSITY_GUID);
-const densityResult = await assets.loadByGuid<TextureAsset>(densityGuid);
+const densityResult = await assets.load(densityGuid, 'texture');
 if (!densityResult.ok)
   throw new Error(`volumetric-fog density load failed: ${densityResult.error.code}`);
-const density = densityResult.value;
+const density = assets.read(densityResult.value).unwrap();
 const densityForVariant: TextureAsset = (() => {
   if (variant === 'empty-density' || variant === 'density-zero') {
     return { ...density, data: new Uint8Array(density.data.length) };
@@ -145,8 +138,9 @@ const densityForVariant: TextureAsset = (() => {
   uniform.fill(Math.round(total / density.data.length));
   return { ...density, data: uniform };
 })();
-const densityHandle = app.world.allocSharedRef('TextureAsset', densityForVariant);
-const projectorResult = await assets.loadByGuid<TextureAsset>(assets.parseGuid(PROJECTOR_GUID));
+const densityHandle = densityResult.value;
+if (densityForVariant !== density) assets.update(densityHandle, { data: densityForVariant.data }).unwrap();
+const projectorResult = await assets.load(assets.parseGuid(PROJECTOR_GUID), 'texture');
 if (!projectorResult.ok)
   throw new Error(`volumetric-fog projector load failed: ${projectorResult.error.code}`);
 // Three's SpotLight.map is a data cookie (its DataTexture keeps the source
@@ -154,15 +148,14 @@ if (!projectorResult.ok)
 // is intentionally sRGB for ordinary image consumers, so the parity scene
 // derives the same byte-preserving linear upload at this owner boundary.
 const projectorAsset: TextureAsset = {
-  ...projectorResult.value,
+  ...assets.read(projectorResult.value).unwrap(),
   format: 'rgba8unorm',
   colorSpace: 'linear',
 };
-const projectorHandle = app.world.allocSharedRef('TextureAsset', projectorAsset);
+const projectorHandle = projectorResult.value;
+assets.update(projectorHandle, projectorAsset).unwrap();
 
-const stoneMaterial = app.world.allocSharedRef<'MaterialAsset', MaterialAsset>(
-  'MaterialAsset',
-  Materials.standard({
+const stoneMaterial = assets.create(Materials.standard({
     baseColor: [1, 1, 1, 1],
     metallic: 0,
     // Three's MeshStandardMaterial default for the teapot is roughness=1.0.
@@ -172,33 +165,26 @@ const stoneMaterial = app.world.allocSharedRef<'MaterialAsset', MaterialAsset>(
     // patch windings visible while the procedural patch normals remain the
     // lighting authority.
     renderState: { cullMode: 'none' },
-  }),
-);
+  })).unwrap();
 const straightAlphaBlend = {
   color: { srcFactor: 'src-alpha', dstFactor: 'one-minus-src-alpha', operation: 'add' },
   alpha: { srcFactor: 'one', dstFactor: 'one-minus-src-alpha', operation: 'add' },
 } as const;
-const transparentMaterial = app.world.allocSharedRef<'MaterialAsset', MaterialAsset>(
-  'MaterialAsset',
-  Materials.standard({
+const transparentMaterial = assets.create(Materials.standard({
     baseColor: [0.18, 0.34, 0.62, 0.4],
     metallic: 0,
     roughness: 0.42,
     renderState: { blend: straightAlphaBlend, depthWriteEnabled: false },
-  }),
-);
-const floorMaterial = app.world.allocSharedRef<'MaterialAsset', MaterialAsset>(
-  'MaterialAsset',
-  Materials.standard({
+  })).unwrap();
+const floorMaterial = assets.create(Materials.standard({
     baseColor: [1, 1, 1, 1],
     metallic: 0,
     // Three's MeshStandardMaterial default for the floor is roughness=1.
     roughness: 1,
-  }),
-);
+  })).unwrap();
 
 const spawnMesh = (
-  meshHandle: Handle<'MeshAsset', 'shared'>,
+  meshHandle: AssetHandle<'mesh'>,
   pos: [number, number, number],
   scale: [number, number, number],
   material = stoneMaterial,
@@ -218,24 +204,15 @@ if (!teapotResult.ok)
 const floorResult = createPlaneGeometry(100, 100);
 if (!floorResult.ok)
   throw new Error(`volumetric-fog floor build failed: ${floorResult.error.code}`);
-const teapotHandle = app.world.allocSharedRef<'MeshAsset', MeshAsset>(
-  'MeshAsset',
-  teapotResult.value,
-);
-const floorHandle = app.world.allocSharedRef<'MeshAsset', MeshAsset>(
-  'MeshAsset',
-  floorResult.value,
-);
+const teapotHandle = assets.create(teapotResult.value).unwrap();
+const floorHandle = assets.create(floorResult.value).unwrap();
 const diagnosticOccluderResult = createBoxGeometry(0.82, 0.45, 0.82);
 if (!diagnosticOccluderResult.ok) {
   throw new Error(
     `volumetric-fog diagnostic occluder build failed: ${diagnosticOccluderResult.error.code}`,
   );
 }
-const diagnosticOccluderHandle = app.world.allocSharedRef<'MeshAsset', MeshAsset>(
-  'MeshAsset',
-  diagnosticOccluderResult.value,
-);
+const diagnosticOccluderHandle = assets.create(diagnosticOccluderResult.value).unwrap();
 
 const transparentSubject =
   variant === 'transparent-subject'

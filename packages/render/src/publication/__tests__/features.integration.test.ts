@@ -1,42 +1,39 @@
-import {
-  AssetRegistry,
-  HANDLE_CUBE,
-  RuntimeMeshVertices,
-  resolveAssetHandle,
-} from '@forgeax/engine-assets-runtime';
+import { AssetRegistry } from '@forgeax/engine-assets-runtime';
+import { runtimeAssets } from '@forgeax/engine-assets-runtime/internal';
 import { World } from '@forgeax/engine-ecs';
+import { createPrimitiveMesh } from '@forgeax/engine-geometry';
 import { AssetGuid } from '@forgeax/engine-pack/guid';
 import { Transform } from '@forgeax/engine-scene';
 import { ShaderRegistry } from '@forgeax/engine-shader';
-import { type Handle, type MeshAsset, ok } from '@forgeax/engine-types';
+import { type MeshAsset, ok } from '@forgeax/engine-types';
 import { expect, it } from 'vitest';
+import { publishRuntimeAssets } from '../../../../assets-runtime/src/__tests__/fixtures/runtime-publication';
 import { MeshFilter, MeshRenderer } from '../../components';
 import { createFullscreenRenderFeature } from '../../features/fullscreen';
 import type { RenderFeature } from '../../features/types';
-import { internSharedRefFromGuid } from '../../render-system-extract';
 import { renderPublicationTransfers } from '../contract';
 import { createRenderPublisher } from '../publisher';
 import { RenderPublicationReceiver } from '../receiver';
 
-it('admits feature references only for the exact current World projection and canonical GUID handle', () => {
-  const world = new World();
-  const assets = new AssetRegistry(new ShaderRegistry({ manifestUrl: undefined }));
-  const guid = '12345678-1234-1234-1234-123456789abc';
-  const mesh = assets
-    .catalog(guid, resolveAssetHandle<MeshAsset>(world, HANDLE_CUBE).unwrap())
-    .unwrap();
-  const handle = internSharedRefFromGuid(world, assets, guid, 'MeshAsset');
-  if (handle === undefined) throw new Error('Expected the canonical mesh handle');
+const BUILTIN_CUBE = createPrimitiveMesh('cube').unwrap();
+
+it('admits feature references only for the current owner borrow and canonical handle', () => {
+  const assets = new AssetRegistry({
+    shaderRegistry: new ShaderRegistry({ manifestUrl: undefined }),
+  });
+  const world = new World({ assets });
+  const handle = assets.create(BUILTIN_CUBE).unwrap();
+  const mesh = runtimeAssets(world.assets).resolveAsset<MeshAsset>(handle).unwrap();
   let captured = mesh;
-  const feature: RenderFeature<{ handle: Handle<string, 'shared'> | undefined }> = {
+  const feature: RenderFeature<{ handle: number | undefined }> = {
     identity: 'captured-mesh',
     extract: (context) => {
       const reference = context.referenceAsset;
       if (reference === undefined) throw new Error('Expected publication admission');
-      expect(reference(1, guid, captured)).toBeUndefined();
+      expect(reference(1, handle, captured)).toBeUndefined();
       expect(reference(0, 'missing-mesh', captured)).toBeUndefined();
-      expect(reference(0, guid, { ...captured })).toBeUndefined();
-      return ok({ handle: reference(0, guid, captured) });
+      expect(reference(0, handle, { ...captured })).toBeUndefined();
+      return ok({ handle: reference(0, handle, captured) });
     },
     assetDependencies: (data) => (data.handle === undefined ? [] : [data.handle]),
     plan: () => ok({ work: [{ scope: 'frame', resources: [], passes: [] }] }),
@@ -56,20 +53,12 @@ it('admits feature references only for the exact current World projection and ca
   };
   try {
     expect(prepare()).toEqual({ handle });
-    const vertices = new Float32Array(mesh.vertices);
-    vertices[0] = Number(vertices[0]) + 0.25;
-    const content = world
-      .spawn({ component: RuntimeMeshVertices, data: { asset: handle, vertices } })
-      .unwrap();
-    world.update(0).unwrap();
-    expect(prepare()).toEqual({ handle: undefined });
-    captured = resolveAssetHandle<MeshAsset>(world, handle).unwrap();
-    expect(captured).not.toBe(mesh);
+    assets.replace(handle, { ...BUILTIN_CUBE, materialSlots: [{ slotName: 'changed' }] }).unwrap();
+    captured = runtimeAssets(world.assets).resolveAsset<MeshAsset>(handle).unwrap();
+    expect(captured.materialSlots).toEqual([{ slotName: 'changed' }]);
     expect(prepare()).toEqual({ handle });
-    world.despawn(content).unwrap();
-    world.update(0).unwrap();
-    expect(prepare()).toEqual({ handle: undefined });
-    captured = mesh;
+    assets.replace(handle, BUILTIN_CUBE).unwrap();
+    captured = runtimeAssets(world.assets).resolveAsset<MeshAsset>(handle).unwrap();
     expect(prepare()).toEqual({ handle });
   } finally {
     publisher.dispose();
@@ -77,8 +66,10 @@ it('admits feature references only for the exact current World projection and ca
 });
 
 it('acknowledges only submitted source data, rejecting stale and duplicate receipts atomically', () => {
-  const world = new World();
-  const assets = new AssetRegistry(new ShaderRegistry({ manifestUrl: undefined }));
+  const assets = new AssetRegistry({
+    shaderRegistry: new ShaderRegistry({ manifestUrl: undefined }),
+  });
+  const world = new World({ assets });
   const consumed: unknown[] = [];
   let value = 1;
   const feature: RenderFeature<unknown> = {
@@ -119,12 +110,15 @@ it('acknowledges only submitted source data, rejecting stale and duplicate recei
   publisher.dispose();
 });
 
-it('publishes feature-only GUID resources and retires them when the producer drops the root', () => {
-  const world = new World();
-  const assets = new AssetRegistry(new ShaderRegistry({ manifestUrl: undefined }));
+it('publishes feature-only GUID resources and retires them when the producer drops the root', async () => {
+  const assets = new AssetRegistry({
+    shaderRegistry: new ShaderRegistry({ manifestUrl: undefined }),
+  });
+  const world = new World({ assets });
   const guid = '12345678-1234-1234-1234-123456789abc';
-  const mesh = resolveAssetHandle<MeshAsset>(world, HANDLE_CUBE).unwrap();
-  assets.catalog(guid, mesh);
+  const mesh = BUILTIN_CUBE;
+  publishRuntimeAssets(assets, [{ guid, asset: mesh }]);
+  const loaded = (await assets.load(guid, 'mesh')).unwrap();
   let roots = [guid];
   const feature: RenderFeature<unknown> = {
     identity: 'guid-consumer',
@@ -139,7 +133,9 @@ it('publishes feature-only GUID resources and retires them when the producer dro
   const packet = structuredClone(first.packet);
   first.accept();
   const accepted = receiver.accept(packet).unwrap();
-  expect(accepted.resources.lookupAsset(guid)).toEqual(mesh);
+  expect(accepted.resources.lookupAsset(guid)).toEqual(
+    runtimeAssets(assets).resolveAsset(loaded).unwrap(),
+  );
   expect(packet.assets.filter((row) => row.guid === guid)).toHaveLength(1);
   publisher.recycle(1, renderPublicationTransfers(packet)).unwrap();
   roots = [];
@@ -151,18 +147,23 @@ it('publishes feature-only GUID resources and retires them when the producer dro
   publisher.dispose();
 });
 
-it('publishes LOD GUID dependencies and rejects a missing lower-detail asset before acceptance', () => {
-  const world = new World();
-  const assets = new AssetRegistry(new ShaderRegistry({ manifestUrl: undefined }));
+it('publishes LOD GUID dependencies and rejects a missing lower-detail asset before acceptance', async () => {
+  const assets = new AssetRegistry({
+    shaderRegistry: new ShaderRegistry({ manifestUrl: undefined }),
+  });
+  const world = new World({ assets });
   const guid = '12345678-1234-1234-1234-123456789abc';
-  const mesh = resolveAssetHandle<MeshAsset>(world, HANDLE_CUBE).unwrap();
-  assets.catalog(guid, mesh);
+  const mesh = BUILTIN_CUBE;
+  publishRuntimeAssets(assets, [{ guid, asset: mesh }]);
+  (await assets.load(guid, 'mesh')).unwrap();
   const parsed = AssetGuid.parse(guid);
   if (!parsed.ok) throw parsed.error;
-  const assetHandle = world.allocSharedRef('MeshAsset', {
-    ...mesh,
-    lods: [{ mesh: parsed.value, screenCoverage: 0.5 }],
-  });
+  const assetHandle = assets
+    .create({
+      ...mesh,
+      lods: [{ mesh: parsed.value, screenCoverage: 0.5 }],
+    })
+    .unwrap();
   world
     .spawn(
       { component: Transform, data: {} },
@@ -187,8 +188,10 @@ it('publishes LOD GUID dependencies and rejects a missing lower-detail asset bef
 });
 
 it('keeps two sealed publications and their feedback independent of later source mutation', async () => {
-  const world = new World();
-  const assets = new AssetRegistry(new ShaderRegistry({ manifestUrl: undefined }));
+  const assets = new AssetRegistry({
+    shaderRegistry: new ShaderRegistry({ manifestUrl: undefined }),
+  });
+  const world = new World({ assets });
   let value = 1;
   const consumed: unknown[] = [];
   const feature: RenderFeature<unknown> = {
@@ -238,8 +241,10 @@ it('keeps two sealed publications and their feedback independent of later source
 });
 
 it('publishes a late fullscreen declaration once and retains only per-frame enable data', () => {
-  const world = new World();
-  const assets = new AssetRegistry(new ShaderRegistry({ manifestUrl: undefined }));
+  const assets = new AssetRegistry({
+    shaderRegistry: new ShaderRegistry({ manifestUrl: undefined }),
+  });
+  const world = new World({ assets });
   let enabled = false;
   const features: RenderFeature<unknown>[] = [];
   const feature = createFullscreenRenderFeature({

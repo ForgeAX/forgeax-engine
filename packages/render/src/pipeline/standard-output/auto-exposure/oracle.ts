@@ -5,6 +5,12 @@ const RGB_TO_XYZ_D65 = [
   [0.2126729, 0.7151522, 0.072175],
   [0.0193339, 0.119192, 0.9503041],
 ] as const;
+// Inverse of RGB_TO_XYZ_D65, preserving the linear sRGB working space.
+const XYZ_TO_RGB_D65 = [
+  [3.2404548, -1.5371389, -0.4985315],
+  [-0.9692664, 1.8760109, 0.0415561],
+  [0.0556434, -0.2040259, 1.0572252],
+] as const;
 const D65_XYZ = [0.95047, 1, 1.08883] as const;
 const BRADFORD = [
   [0.8951, 0.2664, -0.1614],
@@ -175,5 +181,5 @@ export function bradfordAdaptD65(
     adaptedLms[1] * scale[1],
     adaptedLms[2] * scale[2],
   ]);
-  return [adaptedXyz[0] / 0.95047, adaptedXyz[1], adaptedXyz[2] / 1.08883];
+  return multiply3(XYZ_TO_RGB_D65, adaptedXyz);
 }

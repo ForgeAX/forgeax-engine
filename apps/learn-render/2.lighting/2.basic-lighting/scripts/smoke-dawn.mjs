@@ -16,6 +16,10 @@ import { drawReadyFrame } from '../../../../../scripts/test/ready-render-frame.m
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { emitSmokeReceipt } from '../../../../shared/scripts/smoke-receipt.mjs';
+import { AssetRegistry } from '@forgeax/engine-assets-runtime';
+
+import { createPrimitiveMesh } from '@forgeax/engine-geometry';
+
 
 const SMOKE_MIN_FRAMES = Number.parseInt(process.env.SMOKE_MIN_FRAMES ?? '60', 10);
 const SMOKE_PIXEL_THRESHOLD = Number.parseFloat(process.env.SMOKE_PIXEL_THRESHOLD ?? '0.05');
@@ -2248,9 +2252,7 @@ const { constructRuntimeRendererHost } = await import('@forgeax/engine-runtime/i
 const { Materials } = await import('@forgeax/engine-render');
 const { unwrapHandle } = await import('@forgeax/engine-types');
 const { Transform } = await import('@forgeax/engine-scene');
-const {
-  HANDLE_CUBE,
-} = await import('@forgeax/engine-assets-runtime');
+
 const { createBoxGeometry, PROCEDURAL_FLOATS_PER_VERTEX } = await import('@forgeax/engine-geometry');
 
 const METALLIC_ROUGHNESS_TEXTURE_UV1 = [0.75, 0.25];
@@ -2325,7 +2327,12 @@ renderer.subscribe((event) => {
 });
 
 
-const world = new World();
+const world = new World({ assets: assets });
+const sceneAssets = world.assets;
+if (!(sceneAssets instanceof AssetRegistry)) throw new Error('Scene requires its runtime asset owner');
+
+const primitiveCube = sceneAssets.create(createPrimitiveMesh('cube').unwrap()).unwrap();
+
 const worldAttachment1 = renderer.attach(world);
 if (!worldAttachment1.ok) throw worldAttachment1.error;
 const lease = worldAttachment1.value;
@@ -2338,7 +2345,7 @@ const baseColorTextureHandle = FALSIFY_MATERIAL_BASE_COLOR_TEXTURE === '' &&
   FALSIFY_MATERIAL_BASE_COLOR_TEXTURE_UV_SET === ''
   ? undefined
   : unwrapHandle(
-      world.allocSharedRef('TextureAsset', {
+      world.assets.create({
         kind: 'texture',
         shape: {
           viewDimension: '2d',
@@ -2371,14 +2378,14 @@ const baseColorTextureHandle = FALSIFY_MATERIAL_BASE_COLOR_TEXTURE === '' &&
             : new Uint8Array([0, 64, 255, 255]),
         colorSpace: 'linear',
         mips: { kind: 'none' },
-      }),
+      }).unwrap(),
     );
 const baseColorTextureSamplerHandle =
   FALSIFY_MATERIAL_BASE_COLOR_TEXTURE_SAMPLER === 'nearest' ||
   FALSIFY_MATERIAL_BASE_COLOR_TEXTURE_UV_TRANSFORM === '1' ||
   FALSIFY_MATERIAL_BASE_COLOR_TEXTURE_UV_SET === '1'
   ? unwrapHandle(
-      world.allocSharedRef('SamplerAsset', {
+      world.assets.create({
         kind: 'sampler',
         magFilter: 'nearest',
         minFilter: 'nearest',
@@ -2386,7 +2393,7 @@ const baseColorTextureSamplerHandle =
         addressModeU: 'clamp-to-edge',
         addressModeV: 'clamp-to-edge',
         addressModeW: 'clamp-to-edge',
-      }),
+      }).unwrap(),
     )
   : undefined;
 const metallicRoughnessTextureHandle = FALSIFY_MATERIAL_METALLIC_ROUGHNESS_TEXTURE === '' &&
@@ -2397,7 +2404,7 @@ const metallicRoughnessTextureHandle = FALSIFY_MATERIAL_METALLIC_ROUGHNESS_TEXTU
   FALSIFY_MATERIAL_ROUGHNESS_CHANNEL === ''
   ? undefined
   : unwrapHandle(
-      world.allocSharedRef('TextureAsset', {
+      world.assets.create({
         kind: 'texture',
         shape: {
           viewDimension: '2d',
@@ -2434,14 +2441,14 @@ const metallicRoughnessTextureHandle = FALSIFY_MATERIAL_METALLIC_ROUGHNESS_TEXTU
               : new Uint8Array([0, 0, 255, 255]),
         colorSpace: 'linear',
         mips: { kind: 'none' },
-      }),
+      }).unwrap(),
     );
 const metallicRoughnessTextureSamplerHandle = FALSIFY_MATERIAL_METALLIC_ROUGHNESS_TEXTURE_SAMPLER === '' &&
   FALSIFY_MATERIAL_METALLIC_ROUGHNESS_TEXTURE_UV_TRANSFORM === '' &&
   FALSIFY_MATERIAL_METALLIC_ROUGHNESS_TEXTURE_UV_SET === ''
   ? undefined
   : unwrapHandle(
-      world.allocSharedRef('SamplerAsset', {
+      world.assets.create({
         kind: 'sampler',
         magFilter: 'nearest',
         minFilter: 'nearest',
@@ -2449,10 +2456,10 @@ const metallicRoughnessTextureSamplerHandle = FALSIFY_MATERIAL_METALLIC_ROUGHNES
         addressModeU: 'clamp-to-edge',
         addressModeV: 'clamp-to-edge',
         addressModeW: 'clamp-to-edge',
-      }),
+      }).unwrap(),
     );
 const normalTextureHandle = unwrapHandle(
-  world.allocSharedRef('TextureAsset', {
+  world.assets.create({
     kind: 'texture',
     shape: {
       viewDimension: '2d',
@@ -2518,7 +2525,7 @@ const normalTextureHandle = unwrapHandle(
             ]),
     colorSpace: 'linear',
     mips: { kind: 'none' },
-  }),
+  }).unwrap(),
 );
 const occlusionTextureHandle =
   FALSIFY_MATERIAL_OCCLUSION_STRENGTH === '' &&
@@ -2527,21 +2534,21 @@ const occlusionTextureHandle =
   FALSIFY_MATERIAL_OCCLUSION_TEXTURE_UV_SET === ''
   ? undefined
   : unwrapHandle(
-      world.allocSharedRef('TextureAsset', {
+      world.assets.create({
         kind: 'texture',
         shape: { viewDimension: '2d', extent: { width: 1, height: 1 } },
         format: 'rgba8unorm',
         data: new Uint8Array([0, 0, 0, 255]),
         colorSpace: 'linear',
         mips: { kind: 'none' },
-    }),
+    }).unwrap(),
   );
 const occlusionTextureSamplerHandle =
   FALSIFY_MATERIAL_OCCLUSION_TEXTURE_SAMPLER === 'nearest' ||
   FALSIFY_MATERIAL_OCCLUSION_TEXTURE_UV_TRANSFORM === '1' ||
   FALSIFY_MATERIAL_OCCLUSION_TEXTURE_UV_SET === '1'
     ? unwrapHandle(
-        world.allocSharedRef('SamplerAsset', {
+        world.assets.create({
           kind: 'sampler',
           magFilter: 'nearest',
           minFilter: 'nearest',
@@ -2549,7 +2556,7 @@ const occlusionTextureSamplerHandle =
           addressModeU: 'clamp-to-edge',
           addressModeV: 'clamp-to-edge',
           addressModeW: 'clamp-to-edge',
-        }),
+        }).unwrap(),
       )
     : undefined;
 const specularColorTextureHandle =
@@ -2559,7 +2566,7 @@ const specularColorTextureHandle =
   FALSIFY_MATERIAL_SPECULAR_COLOR_TEXTURE_UV_SET === ''
   ? undefined
   : unwrapHandle(
-      world.allocSharedRef('TextureAsset', {
+      world.assets.create({
         kind: 'texture',
         shape: {
           viewDimension: '2d',
@@ -2589,7 +2596,7 @@ const specularColorTextureHandle =
             : new Uint8Array([0, 64, 255, 255]),
         colorSpace: 'linear',
         mips: { kind: 'none' },
-      }),
+      }).unwrap(),
     );
 const specularColorTextureSamplerHandle =
   FALSIFY_MATERIAL_SPECULAR_COLOR_TEXTURE !== '' ||
@@ -2597,7 +2604,7 @@ const specularColorTextureSamplerHandle =
   FALSIFY_MATERIAL_SPECULAR_COLOR_TEXTURE_UV_TRANSFORM !== '' ||
   FALSIFY_MATERIAL_SPECULAR_COLOR_TEXTURE_UV_SET !== ''
     ? unwrapHandle(
-        world.allocSharedRef('SamplerAsset', {
+        world.assets.create({
           kind: 'sampler',
           magFilter: 'nearest',
           minFilter: 'nearest',
@@ -2605,13 +2612,13 @@ const specularColorTextureSamplerHandle =
           addressModeU: 'clamp-to-edge',
           addressModeV: 'clamp-to-edge',
           addressModeW: 'clamp-to-edge',
-        }),
+        }).unwrap(),
       )
     : undefined;
 const emissiveTextureHandle = FALSIFY_MATERIAL_EMISSIVE_TEXTURE === ''
   ? undefined
   : unwrapHandle(
-      world.allocSharedRef('TextureAsset', {
+      world.assets.create({
         kind: 'texture',
         shape: {
           viewDimension: '2d',
@@ -2641,14 +2648,14 @@ const emissiveTextureHandle = FALSIFY_MATERIAL_EMISSIVE_TEXTURE === ''
           : new Uint8Array([0, 64, 255, 255]),
         colorSpace: 'linear',
         mips: { kind: 'none' },
-      }),
+      }).unwrap(),
     );
 const emissiveTextureSamplerHandle = FALSIFY_MATERIAL_EMISSIVE_TEXTURE_SAMPLER === ''
   && FALSIFY_MATERIAL_EMISSIVE_TEXTURE_UV_TRANSFORM === ''
   && FALSIFY_MATERIAL_EMISSIVE_TEXTURE_UV_SET === ''
   ? undefined
   : unwrapHandle(
-      world.allocSharedRef('SamplerAsset', {
+      world.assets.create({
         kind: 'sampler',
         magFilter: 'nearest',
         minFilter: 'nearest',
@@ -2656,7 +2663,7 @@ const emissiveTextureSamplerHandle = FALSIFY_MATERIAL_EMISSIVE_TEXTURE_SAMPLER =
         addressModeU: 'clamp-to-edge',
         addressModeV: 'clamp-to-edge',
         addressModeW: 'clamp-to-edge',
-      }),
+      }).unwrap(),
     );
 const normalTextureSamplerHandle =
   FALSIFY_MATERIAL_NORMAL_TEXTURE === '' &&
@@ -2673,7 +2680,7 @@ const normalTextureSamplerHandle =
   FALSIFY_MATERIAL_NORMAL_TEXTURE_SAMPLER_MAX_ANISOTROPY === ''
     ? undefined
     : unwrapHandle(
-        world.allocSharedRef('SamplerAsset', {
+        world.assets.create({
           kind: 'sampler',
           magFilter:
             FALSIFY_MATERIAL_NORMAL_TEXTURE_SAMPLER_MAX_ANISOTROPY !== '' ||
@@ -2728,7 +2735,7 @@ const normalTextureSamplerHandle =
                     ? 16
                     : undefined,
               }),
-        }),
+        }).unwrap(),
       );
 const standardMaterial = Materials.standard({
     baseColor: OBJECT_BASE_COLOR,
@@ -2881,9 +2888,7 @@ const standardMaterial = Materials.standard({
       ? {}
       : { occlusionStrength: OBJECT_OCCLUSION_STRENGTH }),
   });
-const objectMatHandle = world.allocSharedRef(
-  'MaterialAsset',
-  FALSIFY_MATERIAL_OCCLUSION_STRENGTH === '' &&
+const objectMatHandle = world.assets.create(FALSIFY_MATERIAL_OCCLUSION_STRENGTH === '' &&
   FALSIFY_MATERIAL_OCCLUSION_TEXTURE_SAMPLER === '' &&
   FALSIFY_MATERIAL_OCCLUSION_TEXTURE_UV_TRANSFORM === '' &&
   FALSIFY_MATERIAL_OCCLUSION_TEXTURE_UV_SET === ''
@@ -2912,17 +2917,14 @@ const objectMatHandle = world.allocSharedRef(
                 : {}),
           },
         },
-      },
-);
-const lampMatHandle = world.allocSharedRef('MaterialAsset', Materials.unlit([1.0, 1.0, 1.0, 1.0]));
+      }).unwrap();
+const lampMatHandle = world.assets.create(Materials.unlit([1.0, 1.0, 1.0, 1.0])).unwrap();
 const objectMeshHandle =
   FALSIFY_MATERIAL_METALLIC_ROUGHNESS_TEXTURE_UV_SET === '1' ||
   FALSIFY_MATERIAL_BASE_COLOR_TEXTURE_UV_SET === '1' ||
   FALSIFY_MATERIAL_OCCLUSION_TEXTURE_UV_SET === '1' ||
   FALSIFY_MATERIAL_SPECULAR_COLOR_TEXTURE_UV_SET === '1'
-    ? world.allocSharedRef(
-        'MeshAsset',
-        createUvSetMesh(
+    ? world.assets.create(createUvSetMesh(
           FALSIFY_MATERIAL_BASE_COLOR_TEXTURE_UV_SET === '1'
             ? BASE_COLOR_TEXTURE_UV1
             : FALSIFY_MATERIAL_METALLIC_ROUGHNESS_TEXTURE_UV_SET === '1'
@@ -2930,9 +2932,8 @@ const objectMeshHandle =
               : FALSIFY_MATERIAL_OCCLUSION_TEXTURE_UV_SET === '1'
                 ? OCCLUSION_TEXTURE_UV1
                 : SPECULAR_COLOR_TEXTURE_UV1,
-        ),
-      )
-    : HANDLE_CUBE;
+        )).unwrap()
+    : primitiveCube;
 
 // Spawn colored cube at origin.
 world
@@ -2960,7 +2961,7 @@ if (FALSIFY_NO_LIGHT) {
   world
     .spawn(
       lamp,
-      { component: MeshFilter, data: { assetHandle: HANDLE_CUBE } },
+      { component: MeshFilter, data: { assetHandle: primitiveCube } },
       { component: MeshRenderer, data: { materials: [lampMatHandle] } },
     )
     .unwrap();
@@ -2968,7 +2969,7 @@ if (FALSIFY_NO_LIGHT) {
   world
     .spawn(
       lamp,
-      { component: MeshFilter, data: { assetHandle: HANDLE_CUBE } },
+      { component: MeshFilter, data: { assetHandle: primitiveCube } },
       { component: MeshRenderer, data: { materials: [lampMatHandle] } },
       {
         component: PointLight,

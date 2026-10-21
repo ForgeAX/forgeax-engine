@@ -43,6 +43,7 @@ it('verifies lens effect pixels, live/replay equality and missing-draw falsifier
   try {
     await verifyLensEffects(
       host.renderer,
+      host.assets,
       recorder,
       (name, bytes) => {
         writeFileSync(`${directory}/${name}`, bytes);

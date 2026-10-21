@@ -1,5 +1,6 @@
+import type { AssetHandle } from '@forgeax/engine-types';
 import { renderFeaturePlugin, type GameHost, type GameProjectionValue } from '@forgeax/engine-app';
-import type { AssetRegistry } from '@forgeax/engine-assets-runtime';
+import { AssetRegistry } from '@forgeax/engine-assets-runtime';
 import {
   FixedTime,
   FixedUpdate,
@@ -19,12 +20,6 @@ import { mat4, quat, vec3 } from '@forgeax/engine-math';
 import { AssetGuid, PackageId } from '@forgeax/engine-pack/guid';
 import type { Context } from '@forgeax/engine-plugin';
 import {
-  type Handle,
-  type MaterialAsset,
-  type MeshAsset,
-  type SceneAsset,
-} from '@forgeax/engine-types';
-import {
   ANTIALIAS_FXAA,
   Camera,
   MeshFilter,
@@ -34,7 +29,7 @@ import {
   SceneInstance,
 } from '@forgeax/engine-render';
 import { Transform, worldDespawnScene } from '@forgeax/engine-scene';
-import type { UiAsset } from '@forgeax/engine-ui';
+import { type UiAsset, uiAssetContribution } from '@forgeax/engine-ui';
 import { loadVfxGpuEffect, ParticleEffectPlayer } from '@forgeax/engine-vfx';
 import { createVfxRuntimeHost } from '@forgeax/engine-vfx-render';
 import {
@@ -107,7 +102,7 @@ export const BROTATO_INPUT_MAP: readonly ActionConfig[] = [
   { action: 'restart', bindings: [{ type: 'key', key: 'r' }, { type: 'key', key: 'R' }, { type: 'gamepadButton', button: 1 }] },
 ];
 
-type MaterialHandle = Handle<'MaterialAsset', 'shared'>;
+type MaterialHandle = AssetHandle<'material'>;
 
 interface BrotatoMaterials {
   readonly floor: MaterialHandle;
@@ -126,19 +121,19 @@ interface BrotatoMaterials {
 }
 
 interface BrotatoMeshes {
-  readonly player: Handle<'MeshAsset', 'shared'>;
-  readonly weapon: Handle<'MeshAsset', 'shared'>;
-  readonly enemy: Handle<'MeshAsset', 'shared'>;
-  readonly elite: Handle<'MeshAsset', 'shared'>;
-  readonly projectile: Handle<'MeshAsset', 'shared'>;
-  readonly pickup: Handle<'MeshAsset', 'shared'>;
+  readonly player: AssetHandle<'mesh'>;
+  readonly weapon: AssetHandle<'mesh'>;
+  readonly enemy: AssetHandle<'mesh'>;
+  readonly elite: AssetHandle<'mesh'>;
+  readonly projectile: AssetHandle<'mesh'>;
+  readonly pickup: AssetHandle<'mesh'>;
 }
 
 interface BrotatoScenes {
-  readonly arena: SceneAsset;
-  readonly player: SceneAsset;
-  readonly enemy: SceneAsset;
-  readonly weapon: SceneAsset;
+  readonly arena: AssetHandle<'scene'>;
+  readonly player: AssetHandle<'scene'>;
+  readonly enemy: AssetHandle<'scene'>;
+  readonly weapon: AssetHandle<'scene'>;
 }
 
 export interface BrotatoState {
@@ -173,66 +168,51 @@ export interface BrotatoGameOptions {
   readonly disableParticles?: boolean;
 }
 
-async function loadAsset<P extends { readonly kind: string }>(
-  assets: AssetRegistry,
-  guidText: string,
-  kind: P['kind'],
-): Promise<P> {
-  const parsed = AssetGuid.parse(guidText);
-  if (!parsed.ok) throw new Error(`Brotato asset GUID is invalid: ${guidText}`);
-  const loaded = await assets.loadByGuid<P>(parsed.value);
-  if (!loaded.ok) throw new Error(`Brotato asset load failed for ${guidText}: ${loaded.error.code} ${loaded.error.hint}`);
-  if (loaded.value.kind !== kind) {
-    throw new Error(`Brotato asset kind mismatch for ${guidText}: expected ${kind}, received ${loaded.value.kind}`);
-  }
-  return loaded.value;
+async function loadMaterial(assets: AssetRegistry, guid: string): Promise<MaterialHandle> {
+  return (await assets.load(guid, 'material')).unwrap();
 }
 
-async function loadMaterial(world: World, assets: AssetRegistry, guidText: string): Promise<MaterialHandle> {
-  return world.allocSharedRef('MaterialAsset', await loadAsset<MaterialAsset>(assets, guidText, 'material'));
+async function loadMesh(assets: AssetRegistry, guid: string): Promise<AssetHandle<'mesh'>> {
+  return (await assets.load(guid, 'mesh')).unwrap();
 }
 
-async function loadMesh(world: World, assets: AssetRegistry, guidText: string): Promise<Handle<'MeshAsset', 'shared'>> {
-  return world.allocSharedRef('MeshAsset', await loadAsset<MeshAsset>(assets, guidText, 'mesh'));
-}
-
-async function loadMaterials(world: World, assets: AssetRegistry): Promise<BrotatoMaterials> {
+async function loadMaterials(assets: AssetRegistry): Promise<BrotatoMaterials> {
   const [floor, tileA, tileB, wall, player, playerHit, weapon, weaponAccent, enemy, elite, projectile, pickup, vfx] = await Promise.all([
-    loadMaterial(world, assets, brotatoAssetGuid("material/arena-floor")),
-    loadMaterial(world, assets, brotatoAssetGuid("material/arena-tile-a")),
-    loadMaterial(world, assets, brotatoAssetGuid("material/arena-tile-b")),
-    loadMaterial(world, assets, brotatoAssetGuid("material/arena-wall")),
-    loadMaterial(world, assets, brotatoAssetGuid("material/player")),
-    loadMaterial(world, assets, brotatoAssetGuid("material/player-hit")),
-    loadMaterial(world, assets, brotatoAssetGuid("material/weapon")),
-    loadMaterial(world, assets, brotatoAssetGuid("material/weapon-accent")),
-    loadMaterial(world, assets, brotatoAssetGuid("material/enemy")),
-    loadMaterial(world, assets, brotatoAssetGuid("material/elite")),
-    loadMaterial(world, assets, brotatoAssetGuid("material/projectile")),
-    loadMaterial(world, assets, brotatoAssetGuid("material/pickup")),
-    loadMaterial(world, assets, brotatoImpactAssetGuid("material/vfx")),
+    loadMaterial(assets, brotatoAssetGuid("material/arena-floor")),
+    loadMaterial(assets, brotatoAssetGuid("material/arena-tile-a")),
+    loadMaterial(assets, brotatoAssetGuid("material/arena-tile-b")),
+    loadMaterial(assets, brotatoAssetGuid("material/arena-wall")),
+    loadMaterial(assets, brotatoAssetGuid("material/player")),
+    loadMaterial(assets, brotatoAssetGuid("material/player-hit")),
+    loadMaterial(assets, brotatoAssetGuid("material/weapon")),
+    loadMaterial(assets, brotatoAssetGuid("material/weapon-accent")),
+    loadMaterial(assets, brotatoAssetGuid("material/enemy")),
+    loadMaterial(assets, brotatoAssetGuid("material/elite")),
+    loadMaterial(assets, brotatoAssetGuid("material/projectile")),
+    loadMaterial(assets, brotatoAssetGuid("material/pickup")),
+    loadMaterial(assets, brotatoImpactAssetGuid("material/vfx")),
   ]);
   return { floor, tileA, tileB, wall, player, playerHit, weapon, weaponAccent, enemy, elite, projectile, pickup, vfx };
 }
 
-async function loadMeshes(world: World, assets: AssetRegistry): Promise<BrotatoMeshes> {
+async function loadMeshes(assets: AssetRegistry): Promise<BrotatoMeshes> {
   const [player, weapon, enemy, elite, projectile, pickup] = await Promise.all([
-    loadMesh(world, assets, brotatoAssetGuid("mesh/player")),
-    loadMesh(world, assets, brotatoAssetGuid("mesh/weapon")),
-    loadMesh(world, assets, brotatoAssetGuid("mesh/enemy")),
-    loadMesh(world, assets, brotatoAssetGuid("mesh/elite")),
-    loadMesh(world, assets, brotatoAssetGuid("mesh/projectile")),
-    loadMesh(world, assets, brotatoAssetGuid("mesh/pickup")),
+    loadMesh(assets, brotatoAssetGuid("mesh/player")),
+    loadMesh(assets, brotatoAssetGuid("mesh/weapon")),
+    loadMesh(assets, brotatoAssetGuid("mesh/enemy")),
+    loadMesh(assets, brotatoAssetGuid("mesh/elite")),
+    loadMesh(assets, brotatoAssetGuid("mesh/projectile")),
+    loadMesh(assets, brotatoAssetGuid("mesh/pickup")),
   ]);
   return { player, weapon, enemy, elite, projectile, pickup };
 }
 
 async function loadScenes(assets: AssetRegistry): Promise<BrotatoScenes> {
   const [arena, player, enemy, weapon] = await Promise.all([
-    loadAsset<SceneAsset>(assets, brotatoAssetGuid("scene/arena"), 'scene'),
-    loadAsset<SceneAsset>(assets, brotatoAssetGuid("scene/player"), 'scene'),
-    loadAsset<SceneAsset>(assets, brotatoAssetGuid("scene/enemy"), 'scene'),
-    loadAsset<SceneAsset>(assets, brotatoAssetGuid("scene/weapon"), 'scene'),
+    assets.load(brotatoAssetGuid("scene/arena"), 'scene').then((result) => result.unwrap()),
+    assets.load(brotatoAssetGuid("scene/player"), 'scene').then((result) => result.unwrap()),
+    assets.load(brotatoAssetGuid("scene/enemy"), 'scene').then((result) => result.unwrap()),
+    assets.load(brotatoAssetGuid("scene/weapon"), 'scene').then((result) => result.unwrap()),
   ]);
   return { arena, player, enemy, weapon };
 }
@@ -240,17 +220,28 @@ async function loadScenes(assets: AssetRegistry): Promise<BrotatoScenes> {
 async function loadUiAsset(assets: AssetRegistry, guidText: string): Promise<UiAsset | undefined> {
   const parsed = AssetGuid.parse(guidText);
   if (!parsed.ok) return undefined;
-  const loaded = await assets.loadByGuid<UiAsset>(parsed.value);
-  return loaded.ok ? loaded.value : undefined;
+  const { kind } = uiAssetContribution;
+  const decoder = assets.installDecoder(kind, uiAssetContribution.decoder);
+  try {
+    const loaded = await assets.load(parsed.value, kind);
+    if (!loaded.ok) return undefined;
+    const payload = assets.read(loaded.value).unwrap();
+    assets.release(loaded.value).unwrap();
+    return payload;
+  } finally {
+    decoder.dispose();
+  }
 }
 
 async function instantiateSceneMember(
   world: World,
   assets: AssetRegistry,
-  scene: SceneAsset,
+  scene: AssetHandle<'scene'>,
 ): Promise<{ readonly root: EntityHandle; readonly member: EntityHandle }> {
-  const handle = world.allocSharedRef('SceneAsset', scene);
-  const instance = assets.instantiate<SceneAsset>(handle, world);
+const sceneAssets = world.assets;
+if (!(sceneAssets instanceof AssetRegistry)) throw new Error('Scene requires its runtime asset owner');
+
+  const instance = assets.instantiate(scene, world);
   if (!instance.ok) throw new Error(`Brotato SceneAsset instantiate failed: ${instance.error.code}`);
   const sceneState = world.get(instance.value, SceneInstance);
   if (!sceneState.ok) throw new Error('Brotato SceneAsset instance has no SceneInstance state');
@@ -305,6 +296,9 @@ async function createBrotatoVfx(
   assets: AssetRegistry,
   camera: EntityHandle,
 ): Promise<BrotatoVfx> {
+const sceneAssets = world.assets;
+if (!(sceneAssets instanceof AssetRegistry)) throw new Error('Scene requires its runtime asset owner');
+
   const noop: BrotatoVfx = { impact: () => undefined, dispose: async () => undefined };
   const host = createVfxRuntimeHost({ camera: particleCameraSource(camera) });
   const attached = await host.attachWorld({ world, assets });
@@ -314,7 +308,7 @@ async function createBrotatoVfx(
     await host.detachWorld({ world });
     return noop;
   }
-  const effect = world.allocSharedRef('ParticleEffectAsset', loaded.value);
+  const effect = loaded.value;
   let featureFiber: Awaited<ReturnType<Context['plugin']>>;
   try {
     featureFiber = await context.plugin(renderFeaturePlugin(host.feature));
@@ -870,8 +864,8 @@ export async function createBrotatoGame(
   options: BrotatoGameOptions = {},
 ): Promise<BrotatoRuntime> {
   const [materials, meshes, scenes] = await Promise.all([
-    loadMaterials(world, assets),
-    loadMeshes(world, assets),
+    loadMaterials(assets),
+    loadMeshes(assets),
     loadScenes(assets),
   ]);
   const ownedEntities: EntityHandle[] = [];

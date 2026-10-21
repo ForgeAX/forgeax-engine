@@ -17,13 +17,11 @@ export interface ProfilePhaseModel
   readonly p95DurationMicros: number | null;
 }
 
-export interface ProfileSummaryModel {
-  readonly schemaVersion: ProfileCapture['schemaVersion'];
-  readonly captureId: string;
-  readonly timeUnit: ProfileCapture['timeUnit'];
-  readonly frameLimit: number;
-  readonly eventLimit: number;
-  readonly completeness: ProfileCapture['completeness'];
+export interface ProfileSummaryModel
+  extends Pick<
+    ProfileCapture,
+    'schemaVersion' | 'captureId' | 'timeUnit' | 'frameLimit' | 'eventLimit' | 'completeness'
+  > {
   readonly frameRange: { readonly first: number; readonly last: number } | null;
   readonly frameCount: number;
   readonly recordCount: number;
@@ -34,7 +32,6 @@ export interface ProfileSummaryModel {
 
 export interface ProfileModel {
   readonly summary: ProfileSummaryModel;
-  readonly completeness: ProfileCapture['completeness'];
   readonly frames: readonly ProfileFrameModel[];
   readonly phases: readonly ProfilePhaseModel[];
 }
@@ -161,7 +158,6 @@ export function buildProfileModel(
         skipCount,
         p95DurationMicros: nearestRankP95(durations),
       },
-      completeness,
       frames,
       phases,
     },

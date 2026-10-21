@@ -1,7 +1,9 @@
+import { AssetRegistry } from '@forgeax/engine/assets-runtime';
+import { createPrimitiveMesh } from '@forgeax/engine/geometry';
 import { resolveVisibility, Visibility, VisibilityStateValue } from '@forgeax/engine/render';
 import { ChildOf } from '@forgeax/engine/scene';
 import { CheckList, defineFeature } from '../../lab/feature';
-import { MESH, spawnMesh, spawnStage, standard } from '../../lab/stage';
+import { spawnMesh, spawnStage, standard } from '../../lab/stage';
 import { serial } from './support/serial';
 
 export default defineFeature({
@@ -13,10 +15,16 @@ export default defineFeature({
   expect:
     'ON: the red parent and its green inherited child disappear; only the blue child (Visibility visible) stays. OFF: all three cubes are shown.',
   setup({ app, world, frames }) {
+    const primitiveAssets = world.assets;
+    if (!(primitiveAssets instanceof AssetRegistry))
+      throw new Error('Scene requires its runtime asset owner');
+
+    const stageCube = primitiveAssets.create(createPrimitiveMesh('cube').unwrap()).unwrap();
+
     spawnStage(world, { eye: [0, 2, 6], target: [0, 0.8, 0] });
     const parent = spawnMesh(
       world,
-      MESH.cube,
+      stageCube,
       standard(world, { baseColor: [0.9, 0.1, 0.1, 1] }),
       { pos: [0, 0.8, 0] },
       {
@@ -26,7 +34,7 @@ export default defineFeature({
     );
     const inherited = spawnMesh(
       world,
-      MESH.cube,
+      stageCube,
       standard(world, { baseColor: [0.1, 0.85, 0.2, 1] }),
       { pos: [-1.6, 0, 0] },
       {
@@ -36,7 +44,7 @@ export default defineFeature({
     );
     const override = spawnMesh(
       world,
-      MESH.cube,
+      stageCube,
       standard(world, { baseColor: [0.15, 0.3, 1, 1] }),
       { pos: [1.6, 0, 0] },
       { component: ChildOf, data: { parent } },

@@ -94,8 +94,8 @@ export default defineFeature({
     const stale = applyReplicationPacket(replica, packet({ tick: 1, sequence: 1 }));
     checks.ok(
       're-sent baseline is harmless',
-      stale.ok && replica.lastPacketOutcome === 'duplicate',
-      replica.lastPacketOutcome,
+      stale.ok && stale.value === 'duplicate',
+      stale.ok ? stale.value : stale.error.code,
     );
   },
 });

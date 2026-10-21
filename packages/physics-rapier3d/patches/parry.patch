@@ -1,9 +1,182 @@
+diff --git a/crates/parry3d/tests/affine_bvh.rs b/crates/parry3d/tests/affine_bvh.rs
+new file mode 100644
+index 0000000..954ed09
+--- /dev/null
++++ b/crates/parry3d/tests/affine_bvh.rs
+@@ -0,0 +1,167 @@
++use parry3d::{
++    bounding_volume::{Aabb, BoundingVolume},
++    math::Vector,
++    partitioning::{AffineBvh, AffineTransform},
++};
++
++fn transform(x: f32) -> AffineTransform {
++    AffineTransform {
++        rows: [Vector::X, Vector::Y, Vector::Z],
++        translation: Vector::new(x, 0.0, 0.0),
++    }
++}
++
++#[test]
++fn geometry_growth_changes_queries_without_updating_instances() {
++    let before = Aabb::new(Vector::splat(-0.5), Vector::splat(0.5));
++    let after = Aabb::new(Vector::splat(-2.0), Vector::splat(2.0));
++    let mut tree = AffineBvh::new();
++    for id in 0..32768 {
++        tree.insert(id, transform(id as f32 * 10.0), &before);
++    }
++    let query = Aabb::new(Vector::new(1.0, -0.1, -0.1), Vector::new(1.5, 0.1, 0.1));
++    assert_eq!(
++        tree.query(before, |bounds| bounds.intersects(&query))
++            .count(),
++        0
++    );
++    let mut hits = tree.query(after, |bounds| bounds.intersects(&query));
++    assert_eq!(hits.by_ref().collect::<Vec<_>>(), vec![0]);
++    assert!(
++        hits.visited_nodes() < 80,
++        "visited {} nodes",
++        hits.visited_nodes()
++    );
++    let far = Aabb::new(Vector::splat(-1000.0), Vector::splat(-900.0));
++    let mut miss = tree.query(after, |bounds| bounds.intersects(&far));
++    assert_eq!(miss.next(), None);
++    assert_eq!(miss.visited_nodes(), 1);
++    assert_eq!(tree.len(), 32768);
++    assert!(
++        tree.bounds(&after)
++            .unwrap()
++            .contains(&tree.bounds(&before).unwrap())
++    );
++}
++
++#[test]
++fn arbitrary_affine_bounds_keep_every_transformed_corner_after_edits() {
++    let mut seed = 0x91743821_u32;
++    let mut random = || {
++        seed ^= seed << 13;
++        seed ^= seed >> 17;
++        seed ^= seed << 5;
++        (seed as f64 / u32::MAX as f64 * 20.0 - 10.0) as f32
++    };
++    let mut tree = AffineBvh::new();
++    let initial = Aabb::new(Vector::splat(-1.0), Vector::splat(1.0));
++    let mut instances = Vec::new();
++    for id in 0..2048 {
++        let affine = AffineTransform {
++            rows: core::array::from_fn(|_| Vector::new(random(), random(), random())),
++            translation: Vector::new(random() * 100.0, random() * 100.0, random() * 100.0),
++        };
++        tree.insert(id, affine, &initial);
++        instances.push(affine);
++    }
++    for edit in 0..12 {
++        let low = Vector::new(random(), random(), random());
++        let high = Vector::new(random(), random(), random());
++        let local = Aabb::new(low.min(high), low.max(high));
++        let root = tree.bounds(&local).unwrap();
++        for (id, instance) in instances.iter().enumerate() {
++            if id % 7 == 0 && edit > 0 {
++                continue;
++            }
++            for corner in 0..8 {
++                let point = Vector::new(
++                    if corner & 1 == 0 {
++                        local.mins.x
++                    } else {
++                        local.maxs.x
++                    },
++                    if corner & 2 == 0 {
++                        local.mins.y
++                    } else {
++                        local.maxs.y
++                    },
++                    if corner & 4 == 0 {
++                        local.mins.z
++                    } else {
++                        local.maxs.z
++                    },
++                );
++                let transformed = Vector::new(
++                    instance.rows[0].dot(point),
++                    instance.rows[1].dot(point),
++                    instance.rows[2].dot(point),
++                ) + instance.translation;
++                let point_bounds = Aabb::new(transformed, transformed);
++                assert!(root.contains(&point_bounds));
++                assert!(
++                    tree.query(local, |aabb| aabb.intersects(&point_bounds))
++                        .any(|hit| hit as usize == id)
++                );
++            }
++        }
++        if edit == 0 {
++            for id in (0..2048).step_by(7) {
++                assert!(tree.remove(id));
++            }
++        }
++    }
++}
++
++#[test]
++fn nearest_leaf_prunes_far_instances_and_pair_queries_omit_self_pairs() {
++    use parry3d::query::PointQuery;
++    use std::cell::Cell;
++    let local = Aabb::new(Vector::splat(-0.5), Vector::splat(0.5));
++    let mut left = AffineBvh::new();
++    let mut right = AffineBvh::new();
++    for id in 0..4096 {
++        left.insert(id, transform(id as f32 * 10.0), &local);
++        right.insert(id + 4096, transform(id as f32 * 10.0 + 2.0), &local);
++    }
++    let visits = Cell::new(0);
++    let best = left.find_best(
++        &local,
++        f32::MAX,
++        |bounds, _| {
++            visits.set(visits.get() + 1);
++            bounds.distance_to_local_point(Vector::new(1.0, 0.0, 0.0), true)
++        },
++        |id, _| Some(((id as f32 * 10.0 - 1.0).abs() - 0.5, id)),
++    );
++    assert_eq!(best, Some((0, (0.5, 0))));
++    assert!(visits.get() < 80, "{} bound visits", visits.get());
++    assert_eq!(left.intersections(local, &left, local).count(), 0);
++    assert_eq!(left.intersections(local, &right, local).count(), 0);
++    let grown = Aabb::new(Vector::splat(-2.0), Vector::splat(2.0));
++    let mut pairs = left.intersections(grown, &right, local).collect::<Vec<_>>();
++    pairs.sort_unstable();
++    assert_eq!(
++        pairs,
++        (0..4096).map(|id| (id, id + 4096)).collect::<Vec<_>>()
++    );
++    assert!(left.remove(17));
++    assert!(!left.query(grown, |_| true).any(|id| id == 17));
++}
++
++#[test]
++fn native_role_selection_prunes_unselected_instance_subtrees() {
++    let local = Aabb::new(Vector::splat(-0.5), Vector::splat(0.5));
++    let mut tree = AffineBvh::new();
++    for id in 0..32768 {
++        let affine = transform(id as f32 * 10.0);
++        tree.insert_motion_with_mask(id, affine, affine, 0.0, &local, u32::from(id == 1234));
++    }
++    let mut selected = tree.matching_leaves(1);
++    assert_eq!(selected.by_ref().collect::<Vec<_>>(), vec![1234]);
++    assert!(selected.visited_nodes() < 80, "{} role nodes visited", selected.visited_nodes());
++    let affine = transform(12340.0);
++    tree.insert_motion_with_mask(1234, affine, affine, 0.0, &local, 0);
++    let mut none = tree.matching_leaves(1);
++    assert_eq!(none.next(), None);
++    assert_eq!(none.visited_nodes(), 1);
++}
 diff --git a/crates/parry3d/tests/capsule_cuboid_closest_points.rs b/crates/parry3d/tests/capsule_cuboid_closest_points.rs
 new file mode 100644
-index 0000000..e8c0668
+index 0000000..f20cad5
 --- /dev/null
 +++ b/crates/parry3d/tests/capsule_cuboid_closest_points.rs
-@@ -0,0 +1,99 @@
+@@ -0,0 +1,100 @@
 +use parry3d::{
 +    math::{Pose, Vector},
 +    query,
@@ -67,7 +240,8 @@ index 0000000..e8c0668
 +                        );
 +                        assert!(
 +                            (q - (a + d * s)).length() <= tolerance,
-+                            "axis error={} tolerance={tolerance} scale={scale} xyz={x},{y},{z} endpoint={endpoint:?} contact={c:?} a={a:?} b={b:?} q={q:?} s={s}", (q-(a+d*s)).length()
++                            "axis error={} tolerance={tolerance} scale={scale} xyz={x},{y},{z} endpoint={endpoint:?} contact={c:?} a={a:?} b={b:?} q={q:?} s={s}",
++                            (q - (a + d * s)).length()
 +                        );
 +                        let closest = q.clamp(-half, half);
 +                        assert!(
@@ -152,10 +326,10 @@ index 0000000..b0a37db
 +}
 diff --git a/crates/parry3d/tests/capsule_cuboid_initial_contact.rs b/crates/parry3d/tests/capsule_cuboid_initial_contact.rs
 new file mode 100644
-index 0000000..d24eb7a
+index 0000000..83b933d
 --- /dev/null
 +++ b/crates/parry3d/tests/capsule_cuboid_initial_contact.rs
-@@ -0,0 +1,128 @@
+@@ -0,0 +1,130 @@
 +use parry3d::{
 +    math::{Pose, Vector},
 +    query::{self, ShapeCastOptions, ShapeCastStatus},
@@ -224,17 +398,19 @@ index 0000000..d24eb7a
 +                            max_time_of_impact: -1.0,
 +                            ..options
 +                        };
-+                        assert!(query::cast_shapes(
-+                            &Pose::IDENTITY,
-+                            Vector::ZERO,
-+                            &cuboid,
-+                            &pose,
-+                            velocity,
-+                            &capsule,
-+                            negative
-+                        )
-+                        .unwrap()
-+                        .is_none());
++                        assert!(
++                            query::cast_shapes(
++                                &Pose::IDENTITY,
++                                Vector::ZERO,
++                                &cuboid,
++                                &pose,
++                                velocity,
++                                &capsule,
++                                negative
++                            )
++                            .unwrap()
++                            .is_none()
++                        );
 +                    }
 +                }
 +            }
@@ -369,6 +545,74 @@ index 0000000..fcaa617
 +        }
 +    }
 +}
+diff --git a/crates/parry3d/tests/coalesced_voxel_ccd.rs b/crates/parry3d/tests/coalesced_voxel_ccd.rs
+new file mode 100644
+--- /dev/null
++++ b/crates/parry3d/tests/coalesced_voxel_ccd.rs
+@@ -0,0 +1,63 @@
++use parry3d::math::{IVector, Pose, Rotation, Vector};
++use parry3d::query::{cast_shapes_nonlinear, NonlinearRigidMotion};
++use parry3d::shape::{ConvexPolyhedron, Cuboid, Shape, Voxels};
++
++#[test]
++fn continuous_queries_match_the_occupied_solid() {
++    let voxels = Voxels::from_regions(Vector::splat(0.1), &[[IVector::ZERO, IVector::splat(8)]]);
++    let solid = Cuboid::new(Vector::splat(0.4));
++    let fast = Cuboid::new(Vector::new(0.09, 0.15, 0.05));
++    let points: Vec<_> = (0..8)
++        .map(|i| {
++            Vector::new(
++                if i & 1 == 0 { -0.09 } else { 0.09 },
++                if i & 2 == 0 { -0.15 } else { 0.15 },
++                if i & 4 == 0 { -0.05 } else { 0.05 },
++            )
++        })
++        .collect();
++    let hull = ConvexPolyhedron::from_convex_hull(&points).unwrap();
++    let mut cases = 0;
++    for fast in [&fast as &dyn Shape, &hull as &dyn Shape] {
++        for shift in [Vector::ZERO, Vector::new(90.0, 14.0, 35.0)] {
++            let grid = NonlinearRigidMotion::constant_position(Pose::from_parts(
++                shift,
++                Rotation::IDENTITY,
++            ));
++            let whole = grid.prepend_translation(Vector::splat(0.4));
++            for origin_x in [-0.5, -0.06, 0.04, 0.4, 0.76, 0.86, 1.3] {
++                for velocity in [-20.0, -1.0, 1.0, 20.0] {
++                    for angular in [0.0, 0.2, -2.0, 8.0] {
++                        for stop in [false, true] {
++                            let motion = NonlinearRigidMotion::new(
++                                Pose::from_parts(
++                                    shift + Vector::new(origin_x, 0.4, 0.4),
++                                    Rotation::from_rotation_y(0.37),
++                                ),
++                                Vector::new(0.01, -0.02, 0.0),
++                                Vector::X * velocity,
++                                Vector::Y * angular,
++                            );
++                            let query =
++                                |shape: &dyn parry3d::shape::Shape, grid: &NonlinearRigidMotion| {
++                                    cast_shapes_nonlinear(
++                                        grid, shape, &motion, fast, 0.0, 0.1, stop,
++                                    )
++                                    .unwrap()
++                                    .map(|h| h.time_of_impact)
++                                };
++                            let expected = query(&solid, &whole);
++                            let actual = query(&voxels, &grid);
++                            assert_eq!(actual.is_some(), expected.is_some(), "shift={shift:?} x={origin_x} velocity={velocity} angular={angular} stop={stop} actual={actual:?} expected={expected:?}");
++                            if let (Some(a), Some(b)) = (actual, expected) {
++                                assert!((a-b).abs()<0.0001, "x={origin_x} velocity={velocity} angular={angular} stop={stop} actual={a} expected={b}");
++                            }
++                            cases += 1;
++                        }
++                    }
++                }
++            }
++        }
++    }
++    assert_eq!(cases, 896);
++}
 diff --git a/crates/parry3d/tests/grazing_capsule_cast.rs b/crates/parry3d/tests/grazing_capsule_cast.rs
 new file mode 100644
 index 0000000..3963354
@@ -468,6 +712,204 @@ index 0000000..3963354
 +                );
 +            }
 +        }
++    }
++}
+diff --git a/crates/parry3d/tests/manifold_transfer.rs b/crates/parry3d/tests/manifold_transfer.rs
+new file mode 100644
+index 0000000..f149723
+--- /dev/null
++++ b/crates/parry3d/tests/manifold_transfer.rs
+@@ -0,0 +1,145 @@
++use parry3d::math::{IVector, Pose, Vector};
++use parry3d::query::{ContactManifold, DefaultQueryDispatcher, PersistentQueryDispatcher};
++use parry3d::shape::{Capsule, Compound, HeightField, Shape, SharedShape, Voxels};
++use parry3d::utils::Array2;
++use std::sync::atomic::{AtomicUsize, Ordering};
++
++static CLONES: AtomicUsize = AtomicUsize::new(0);
++#[derive(Default)]
++struct Payload(Vec<u32>);
++impl Clone for Payload {
++    fn clone(&self) -> Self {
++        CLONES.fetch_add(1, Ordering::Relaxed);
++        Self(self.0.clone())
++    }
++}
++
++fn exercise(a: &dyn Shape, b: &dyn Shape, pose: Pose) {
++    let mut manifolds: Vec<ContactManifold<Payload, u32>> = Vec::new();
++    let mut workspace = None;
++    DefaultQueryDispatcher
++        .contact_manifolds(&pose, a, b, 0.1, &mut manifolds, &mut workspace)
++        .unwrap();
++    assert!(
++        manifolds.iter().any(|m| !m.points.is_empty()),
++        "must exercise real contacts"
++    );
++    for (i, manifold) in manifolds.iter_mut().enumerate() {
++        manifold.data.0 = vec![i as u32 + 1; 32];
++        for p in &mut manifold.points {
++            p.data = 77;
++        }
++    }
++    let original: Vec<_> = manifolds
++        .iter()
++        .map(|m| {
++            (
++                m.subshape1,
++                m.subshape2,
++                m.data.0.clone(),
++                m.subshape_poses.as_ref().map(|p| &**p as *const _),
++            )
++        })
++        .collect();
++    let before = CLONES.load(Ordering::Relaxed);
++    DefaultQueryDispatcher
++        .contact_manifolds(&pose, a, b, 0.1, &mut manifolds, &mut workspace)
++        .unwrap();
++    assert_eq!(
++        CLONES.load(Ordering::Relaxed),
++        before,
++        "reusing an owned manifold must not clone its payload"
++    );
++    assert_eq!(manifolds.len(), original.len());
++    for (manifold, (s1, s2, payload, allocation)) in manifolds.iter().zip(original) {
++        assert_eq!((manifold.subshape1, manifold.subshape2), (s1, s2));
++        assert_eq!(manifold.data.0, payload);
++        assert_eq!(
++            manifold.subshape_poses.as_ref().map(|p| &**p as *const _),
++            allocation
++        );
++        assert!(manifold.points.iter().all(|p| p.data == 77));
++    }
++    DefaultQueryDispatcher
++        .contact_manifolds(
++            &Pose::translation(100.0, 100.0, 100.0),
++            a,
++            b,
++            0.1,
++            &mut manifolds,
++            &mut workspace,
++        )
++        .unwrap();
++    assert!(manifolds.is_empty());
++    DefaultQueryDispatcher
++        .contact_manifolds(&pose, a, b, 0.1, &mut manifolds, &mut workspace)
++        .unwrap();
++    assert!(manifolds.iter().any(|m| !m.points.is_empty()));
++    assert!(
++        manifolds.iter().all(|m| m.data.0.is_empty()),
++        "retired contacts must not retain custom data"
++    );
++}
++
++#[test]
++fn transfers_contact_ownership_without_payload_or_pose_copies() {
++    let coords: Vec<_> = (0..8)
++        .flat_map(|x| (0..8).map(move |z| IVector::new(x, 0, z)))
++        .collect();
++    let floor = Voxels::new(Vector::ONE, &coords);
++    let capsule = Capsule::new_y(0.3, 0.2);
++    let compound = Compound::new(vec![
++        (
++            Pose::translation(-0.4, 0.0, 0.0),
++            SharedShape::cuboid(0.3, 0.4, 0.3),
++        ),
++        (
++            Pose::translation(0.4, 0.0, 0.0),
++            SharedShape::cuboid(0.3, 0.4, 0.3),
++        ),
++    ]);
++    let other_voxels = Voxels::new(
++        Vector::splat(0.5),
++        &[IVector::new(0, 0, 0), IVector::new(1, 0, 0)],
++    );
++    for flipped in [false, true] {
++        for (shape, y) in [
++            (&capsule as &dyn Shape, 1.45),
++            (&compound, 1.3),
++            (&other_voxels, 0.9),
++        ] {
++            let pose = Pose::translation(3.0, y, 3.0);
++            if flipped {
++                exercise(shape, &floor, pose.inverse());
++            } else {
++                exercise(&floor, shape, pose);
++            }
++        }
++    }
++    let terrain = Compound::new(vec![
++        (
++            Pose::translation(-2.0, 0.0, 0.0),
++            SharedShape::cuboid(2.0, 0.5, 4.0),
++        ),
++        (
++            Pose::translation(2.0, 0.0, 0.0),
++            SharedShape::cuboid(2.0, 0.5, 4.0),
++        ),
++    ]);
++    let heightfield = HeightField::new(
++        Array2::new(3, 3, vec![0.0; 9]),
++        Vector::new(10.0, 1.0, 10.0),
++    );
++    for flipped in [false, true] {
++        for (floor, top) in [(&terrain as &dyn Shape, 0.5), (&heightfield, 0.0)] {
++            for (shape, height) in [(&capsule as &dyn Shape, 0.5), (&compound, 0.4)] {
++                let pose = Pose::translation(0.0, top + height - 0.05, 0.0);
++                if flipped {
++                    exercise(shape, floor, pose.inverse());
++                } else {
++                    exercise(floor, shape, pose);
++                }
++            }
++        }
++    }
++}
+diff --git a/crates/parry3d/tests/temporal_voxel_rotation.rs b/crates/parry3d/tests/temporal_voxel_rotation.rs
+new file mode 100644
+index 0000000..d728c97
+--- /dev/null
++++ b/crates/parry3d/tests/temporal_voxel_rotation.rs
+@@ -0,0 +1,41 @@
++use parry3d::math::{IVector, Pose, Rotation, Vector};
++use parry3d::query::{cast_shapes_nonlinear, NonlinearRigidMotion};
++use parry3d::shape::{Cuboid, Shape, Voxels};
++
++fn compare_exhaustive(grid_motion: NonlinearRigidMotion, motion: NonlinearRigidMotion, shape: &dyn Shape, start: f32, end: f32) -> bool {
++    let voxels=Voxels::from_regions(Vector::splat(0.1), &[[IVector::new(-8,-2,0),IVector::new(9,3,1)]]);
++    let cube=Cuboid::new(Vector::splat(0.05));
++    let mut earliest=None::<f32>;
++    for voxel in voxels.voxels().filter(|voxel|!voxel.state.is_empty()) {
++        let center=voxels.voxel_center(voxel.grid_coords);
++        if let Some(hit)=cast_shapes_nonlinear(&grid_motion.prepend_translation(center),&cube,&motion,shape,start,end,true).unwrap() {
++            if hit.time_of_impact<earliest.unwrap_or(end) {earliest=Some(hit.time_of_impact);}
++        }
++    }
++    let actual=cast_shapes_nonlinear(&grid_motion,&voxels,&motion,shape,start,end,true).unwrap().map(|hit|hit.time_of_impact);
++    assert_eq!(actual.is_some(),earliest.is_some(),"actual={actual:?} reference={earliest:?} start={start} end={end} motion={motion:?}");
++    if let (Some(actual),Some(expected))=(actual,earliest) {assert!((actual-expected).abs()<=0.00003,"actual={actual} expected={expected}");}
++    actual.is_some()
++}
++
++#[test]
++fn temporal_voxel_bounds_match_all_occupied_cells_with_eccentric_motion() {
++    let shape=Cuboid::new(Vector::new(0.04,0.6,0.03));
++    let mut hits=0;let mut misses=0;
++    for grid_angle in [0.0,0.37] {for speed in [0.000001,-2.0,20.0,-20.0] {for start in [0.0,0.002,0.125] {for eccentric in [0.0,3.0] {
++        let rotation=Rotation::from_rotation_y(grid_angle);
++        let grid=NonlinearRigidMotion::constant_position(Pose::from_parts(Vector::new(-2.0,1.0,3.0),rotation));
++        let initial=Pose::from_parts(Vector::new(-2.0,1.0,3.0)+rotation*Vector::new(0.0,0.0,-0.3),rotation);
++        let motion=NonlinearRigidMotion::new(initial,Vector::new(eccentric,0.0,0.0),rotation*Vector::new(0.0,0.0,20.0),Vector::Y*speed);
++        if compare_exhaustive(grid,motion,&shape,start,start+1.0/60.0){hits+=1}else{misses+=1}
++    }}}}
++    assert!(hits>0&&misses>0,"test must include both actual hits and separated trajectories");
++}
++
++#[test]
++fn full_and_multiple_rotations_preserve_mid_arc_hits() {
++    let shape=Cuboid::new(Vector::new(0.04,0.8,0.04));
++    for turns in [1.0,-1.0,3.0,-3.0] {
++        assert!(compare_exhaustive(NonlinearRigidMotion::constant_position(Pose::IDENTITY),NonlinearRigidMotion::new(Pose::translation(0.0,0.0,-0.6),Vector::ZERO,Vector::ZERO,Vector::X*std::f32::consts::TAU*turns),&shape,0.0,1.0));
 +    }
 +}
 diff --git a/crates/parry3d/tests/thin_triangle_boundary.rs b/crates/parry3d/tests/thin_triangle_boundary.rs
@@ -665,6 +1107,302 @@ index 0000000..bf04d40
 +    compare(NonlinearRigidMotion::constant_position(Pose::IDENTITY),
 +        NonlinearRigidMotion::new(Pose::translation(0.0,0.0,-0.6),Vector::ZERO,Vector::ZERO,Vector::X*std::f32::consts::TAU),&bar,0.0,1.0);
 +}
+diff --git a/crates/parry3d/tests/voxel_penetration_contacts.rs b/crates/parry3d/tests/voxel_penetration_contacts.rs
+new file mode 100644
+index 0000000..ec0962b
+--- /dev/null
++++ b/crates/parry3d/tests/voxel_penetration_contacts.rs
+@@ -0,0 +1,96 @@
++use parry3d::math::{IVector, Pose, Vector};
++use parry3d::query::{ContactManifold, DefaultQueryDispatcher, PersistentQueryDispatcher};
++use parry3d::shape::{SharedShape, Voxels};
++
++#[test]
++fn penetrating_box_faces_remain_exact_across_voxel_seams_and_shape_order() {
++    let mut cells = Vec::new();
++    for x in 0..8 {
++        for y in 0..2 {
++            for z in 0..8 {
++                cells.push(IVector::new(x, y, z));
++            }
++        }
++    }
++    let voxels = Voxels::new(Vector::ONE, &cells);
++    let mut corners = Vec::new();
++    for x in [-0.4, 0.4] {
++        for y in [-0.4, 0.4] {
++            for z in [-0.4, 0.4] {
++                corners.push(Vector::new(x, y, z));
++            }
++        }
++    }
++    let hull = SharedShape::convex_hull(&corners).unwrap();
++    let shapes = [
++        (SharedShape::cuboid(0.4, 0.4, 0.4), 4),
++        (hull.clone(), 4),
++        (
++            SharedShape::compound(vec![
++                (Pose::IDENTITY, hull.clone()),
++                (Pose::translation(1.5, 0.0, 0.0), hull),
++            ]),
++            8,
++        ),
++    ];
++    for (shape, expected_points) in shapes {
++        for flipped in [false, true] {
++            let mut manifolds: Vec<ContactManifold<(), ()>> = Vec::new();
++            let mut workspace = None;
++            for x in [2.5, 2.9, 3.1, 2.5] {
++                for (angle, height) in [0.0, 0.37, 1.1]
++                    .into_iter()
++                    .flat_map(|angle| [2.05, 2.2, 4.0, 2.35].map(|height| (angle, height)))
++                {
++                    let pose = Pose::from_parts(
++                        Vector::new(x, height, 2.5),
++                        parry3d::glamx::Quat::from_rotation_y(angle),
++                    );
++                    let (pose, first, second): (
++                        _,
++                        &dyn parry3d::shape::Shape,
++                        &dyn parry3d::shape::Shape,
++                    ) = if flipped {
++                        (pose.inverse(), &*shape, &voxels)
++                    } else {
++                        (pose, &voxels, &*shape)
++                    };
++                    DefaultQueryDispatcher
++                        .contact_manifolds(
++                            &pose,
++                            first,
++                            second,
++                            0.05,
++                            &mut manifolds,
++                            &mut workspace,
++                        )
++                        .unwrap();
++                    if height == 4.0 {
++                        assert!(manifolds.iter().all(|manifold| manifold.points.is_empty()));
++                        continue;
++                    }
++                    let mut count = 0;
++                    for manifold in &manifolds {
++                        for point in &manifold.points {
++                            let (normal, local, transform) = if flipped {
++                                (manifold.local_n2, point.local_p2, manifold.subshape_pos2())
++                            } else {
++                                (manifold.local_n1, point.local_p1, manifold.subshape_pos1())
++                            };
++                            let witness =
++                                transform.unwrap_or(&Pose::IDENTITY).transform_point(local);
++                            assert!((normal - Vector::Y).length() < 1.0e-5);
++                            assert!((witness.y - 2.0).abs() < 1.0e-5);
++                            assert!((point.dist - (height - 2.4)).abs() < 1.0e-5);
++                            count += 1;
++                        }
++                    }
++                    assert!(
++                        count >= expected_points,
++                        "x={x} height={height} flipped={flipped}"
++                    );
++                }
++            }
++        }
++    }
++}
+diff --git a/crates/parry3d/tests/voxel_point_seams.rs b/crates/parry3d/tests/voxel_point_seams.rs
+new file mode 100644
+index 0000000..58a6a8a
+--- /dev/null
++++ b/crates/parry3d/tests/voxel_point_seams.rs
+@@ -0,0 +1,188 @@
++use parry3d::math::{IVector, Pose, Rotation, Vector};
++use parry3d::query::PointQuery;
++use parry3d::shape::Voxels;
++
++fn assert_reference(voxels: &Voxels, point: Vector) {
++    let expected_inside = voxels
++        .voxels()
++        .any(|v| voxels.voxel_aabb(v.grid_coords).contains_local_point(point));
++    let result = voxels.project_local_point(point, true);
++    assert_eq!(
++        result.is_inside, expected_inside,
++        "point={point:?}, result={result:?}"
++    );
++    assert_eq!(voxels.contains_local_point(point), expected_inside);
++    if expected_inside {
++        assert_eq!(result.point, point);
++    } else {
++        let distance = voxels
++            .voxels()
++            .map(|v| {
++                voxels
++                    .voxel_aabb(v.grid_coords)
++                    .distance_to_local_point(point, true)
++            })
++            .fold(f32::MAX, f32::min);
++        assert!(
++            (result.point.distance(point) - distance).abs()
++                <= 4.0 * f32::EPSILON * (1.0 + distance)
++        );
++    }
++}
++
++#[test]
++fn adjacent_tenth_cells_include_shared_faces_edges_and_corners() {
++    for base in [IVector::new(139, 139, 139), IVector::new(-141, -141, -141)] {
++        let cells: Vec<_> = (0..2)
++            .flat_map(|x| {
++                (0..2).flat_map(move |y| (0..2).map(move |z| base + IVector::new(x, y, z)))
++            })
++            .collect();
++        let voxels = Voxels::new(Vector::splat(0.1), &cells);
++        let center: f32 = if base.x > 0 { 14.0 } else { -14.0 };
++        for x in [center.next_down(), center, center.next_up()] {
++            for y in [center.next_down(), center, center.next_up()] {
++                for z in [center.next_down(), center, center.next_up()] {
++                    assert_reference(&voxels, Vector::new(x, y, z));
++                    assert!(voxels.contains_local_point(Vector::new(x, y, z)));
++                }
++            }
++        }
++    }
++}
++
++#[test]
++fn isolated_exterior_faces_and_empty_holes_use_existing_voxel_bounds() {
++    let cells = [
++        IVector::new(0, 139, 0),
++        IVector::new(0, 141, 0),
++        IVector::new(-33, -1, -33),
++    ];
++    let voxels = Voxels::new(Vector::new(0.1, 0.1, 0.2), &cells);
++    for v in voxels.voxels() {
++        let bounds = voxels.voxel_aabb(v.grid_coords);
++        for x in [
++            bounds.mins.x.next_down(),
++            bounds.mins.x,
++            bounds.maxs.x,
++            bounds.maxs.x.next_up(),
++        ] {
++            for y in [
++                bounds.mins.y.next_down(),
++                bounds.mins.y,
++                bounds.maxs.y,
++                bounds.maxs.y.next_up(),
++            ] {
++                for z in [
++                    bounds.mins.z.next_down(),
++                    bounds.mins.z,
++                    bounds.maxs.z,
++                    bounds.maxs.z.next_up(),
++                ] {
++                    assert_reference(&voxels, Vector::new(x, y, z));
++                }
++            }
++        }
++    }
++    assert!(!voxels.contains_local_point(Vector::new(0.05, 14.05, 0.1)));
++}
++
++#[test]
++fn transformed_queries_compare_after_the_actual_inverse_pose() {
++    let voxels = Voxels::from_regions(
++        Vector::splat(0.1),
++        &[[IVector::new(0, 139, 0), IVector::new(2, 141, 2)]],
++    );
++    for pose in [
++        Pose::translation(96.0, -6.063216e-8, 64.0),
++        Pose::from_parts(
++            Vector::new(-5.0, 3.0, -7.0),
++            Rotation::from_rotation_y(0.37),
++        ),
++    ] {
++        for local in [
++            Vector::new(0.05, 14.0, 0.05),
++            Vector::new(0.15, 14.05, 0.15),
++            Vector::new(0.4, 14.05, -0.1),
++        ] {
++            let world = pose.transform_point(local);
++            let actual_local = pose.inverse_transform_point(world);
++            let expected = voxels.voxels().any(|v| {
++                voxels
++                    .voxel_aabb(v.grid_coords)
++                    .contains_local_point(actual_local)
++            });
++            assert_eq!(voxels.contains_point(&pose, world), expected);
++            assert_eq!(voxels.project_point(&pose, world, true).is_inside, expected);
++        }
++    }
++}
++
++#[test]
++fn chunk_boundaries_and_nonsolid_projection_match_existing_voxel_aabbs() {
++    let cells = [
++        IVector::new(31, 139, 0),
++        IVector::new(32, 140, 0),
++        IVector::new(-33, -140, 0),
++        IVector::new(-32, -141, 0),
++    ];
++    let voxels = Voxels::new(Vector::splat(0.1), &cells);
++    for voxel in voxels.voxels() {
++        let bounds = voxels.voxel_aabb(voxel.grid_coords);
++        for point in [
++            bounds.mins,
++            bounds.maxs,
++            bounds.center(),
++            bounds.mins - Vector::splat(0.001),
++            bounds.maxs + Vector::splat(0.001),
++        ] {
++            assert_reference(&voxels, point);
++            let expected = voxels
++                .voxels()
++                .map(|v| {
++                    voxels
++                        .voxel_aabb(v.grid_coords)
++                        .project_local_point(point, false)
++                        .point
++                        .distance(point)
++                })
++                .fold(f32::MAX, f32::min);
++            let projected = voxels.project_local_point(point, false);
++            let featured = voxels.project_local_point_and_get_feature(point).0;
++            for result in [projected, featured] {
++                assert!(
++                    (result.point.distance(point) - expected).abs()
++                        <= 4.0 * f32::EPSILON * (1.0 + expected)
++                );
++            }
++        }
++    }
++}
++
++#[test]
++fn rounded_zero_distance_outside_does_not_hide_an_inside_chunk() {
++    let voxels = Voxels::new(
++        Vector::splat(0.1),
++        &[
++            IVector::new(-1, -1, -1),
++            IVector::new(0, -1, -1),
++            IVector::new(-1, 0, -1),
++            IVector::new(-1, -1, 0),
++        ],
++    );
++    for axis in 0..3 {
++        for near_zero in [-f32::from_bits(1), -1.0e-30, -1.0e-24] {
++            let mut point = Vector::splat(-0.05);
++            point[axis] = near_zero;
++            assert_reference(&voxels, point);
++            assert!(voxels.contains_local_point(point));
++            assert!(voxels.project_local_point(point, false).is_inside);
++            assert!(
++                voxels
++                    .project_local_point_and_get_feature(point)
++                    .0
++                    .is_inside
++            );
++        }
++    }
++}
 diff --git a/src/bounding_volume/aabb_voxels.rs b/src/bounding_volume/aabb_voxels.rs
 index 881ef8a..1ed6437 100644
 --- a/src/bounding_volume/aabb_voxels.rs
@@ -716,11 +1454,508 @@ index e08b907..30e0c87 100644
          com /= num_not_empty as Real;
  
          for vox in voxels.voxels() {
+diff --git a/src/partitioning/affine_bvh.rs b/src/partitioning/affine_bvh.rs
+new file mode 100644
+index 0000000..60c2aff
+--- /dev/null
++++ b/src/partitioning/affine_bvh.rs
+@@ -0,0 +1,470 @@
++//! Instance transforms indexed independently of their shared geometry bounds.
++//!
++//! A node encloses affine coefficients, not a previously transformed shape.
++//! Replacing a geometry's local bounds therefore changes no instance or node.
++//! Queries evaluate bounds only for the nodes they actually visit.
++
++use crate::bounding_volume::Aabb;
++use crate::math::{DIM, Real, Vector};
++use crate::partitioning::BvhLeafCost;
++use crate::utils::hashmap::HashMap;
++use alloc::vec::Vec;
++
++/// An affine map, including non-uniform scale. Each vector is one matrix row.
++#[derive(Clone, Copy, Debug)]
++#[cfg_attr(feature = "serde-serialize", derive(Serialize, Deserialize))]
++pub struct AffineTransform {
++    /// Rows of the complete linear map (rotation, scale and optional shear).
++    pub rows: [Vector; DIM],
++    /// Translation added after the linear map.
++    pub translation: Vector,
++}
++
++#[derive(Clone, Copy, Debug)]
++#[cfg_attr(feature = "serde-serialize", derive(Serialize, Deserialize))]
++struct Interval {
++    low: AffineTransform,
++    high: AffineTransform,
++}
++
++impl Interval {
++    fn leaf(transform: AffineTransform) -> Self {
++        Self {
++            low: transform,
++            high: transform,
++        }
++    }
++
++    fn merge(self, rhs: Self) -> Self {
++        let mut result = self;
++        for row in 0..DIM {
++            result.low.rows[row] = self.low.rows[row].min(rhs.low.rows[row]);
++            result.high.rows[row] = self.high.rows[row].max(rhs.high.rows[row]);
++        }
++        result.low.translation = self.low.translation.min(rhs.low.translation);
++        result.high.translation = self.high.translation.max(rhs.high.translation);
++        result
++    }
++
++    fn bounds(self, local: &Aabb) -> Aabb {
++        let mut mins = self.low.translation;
++        let mut maxs = self.high.translation;
++        for row in 0..DIM {
++            for column in 0..DIM {
++                let a = self.low.rows[row][column];
++                let b = self.high.rows[row][column];
++                let x = local.mins[column];
++                let y = local.maxs[column];
++                let products = [a * x, a * y, b * x, b * y];
++                let low = products.iter().copied().fold(Real::INFINITY, Real::min);
++                let high = products.iter().copied().fold(Real::NEG_INFINITY, Real::max);
++                // Products and sums round outwards, including cancellation.
++                mins[row] = (mins[row] + low.next_down()).next_down();
++                maxs[row] = (maxs[row] + high.next_up()).next_up();
++            }
++        }
++        Aabb::new(mins, maxs)
++    }
++}
++
++#[derive(Clone, Debug)]
++#[cfg_attr(feature = "serde-serialize", derive(Serialize, Deserialize))]
++struct Node {
++    parent: Option<usize>,
++    children: Option<[usize; 2]>,
++    leaf: u32,
++    height: u32,
++    interval: Interval,
++    mask: u32,
++}
++
++/// A height-balanced spatial tree for instances of one shared geometry.
++///
++/// Instance insertion, removal and pose changes update only their tree paths.
++/// Geometry adoption supplies new local bounds to `bounds`/`query`; it never
++/// enumerates leaves or modifies this tree. Internal coefficient intervals may
++/// overestimate bounds, while leaves retain the exact authored affine map.
++#[derive(Default, Clone, Debug)]
++#[cfg_attr(feature = "serde-serialize", derive(Serialize, Deserialize))]
++pub struct AffineBvh {
++    nodes: Vec<Option<Node>>,
++    free: Vec<usize>,
++    leaves: HashMap<u32, usize>,
++    root: Option<usize>,
++}
++
++impl AffineBvh {
++    /// Create an empty instance tree.
++    pub fn new() -> Self {
++        Self::default()
++    }
++    /// Number of retained instance leaves.
++    pub fn len(&self) -> usize {
++        self.leaves.len()
++    }
++    /// Whether the tree contains no instances.
++    pub fn is_empty(&self) -> bool {
++        self.root.is_none()
++    }
++
++    fn node(&self, index: usize) -> &Node {
++        self.nodes[index].as_ref().unwrap()
++    }
++    fn node_mut(&mut self, index: usize) -> &mut Node {
++        self.nodes[index].as_mut().unwrap()
++    }
++    fn allocate(&mut self, node: Node) -> usize {
++        if let Some(index) = self.free.pop() {
++            self.nodes[index] = Some(node);
++            index
++        } else {
++            self.nodes.push(Some(node));
++            self.nodes.len() - 1
++        }
++    }
++    fn release(&mut self, index: usize) {
++        self.nodes[index] = None;
++        self.free.push(index);
++    }
++    fn refit(&mut self, index: usize) {
++        let Some([left, right]) = self.node(index).children else {
++            return;
++        };
++        let interval = self.node(left).interval.merge(self.node(right).interval);
++        let height = 1 + self.node(left).height.max(self.node(right).height);
++        let mask = self.node(left).mask | self.node(right).mask;
++        let node = self.node_mut(index);
++        node.interval = interval;
++        node.height = height;
++        node.mask = mask;
++    }
++    fn replace_child(&mut self, parent: Option<usize>, old: usize, new: usize) {
++        if let Some(parent) = parent {
++            let children = self.node_mut(parent).children.as_mut().unwrap();
++            let side = usize::from(children[1] == old);
++            debug_assert_eq!(children[side], old);
++            children[side] = new;
++        } else {
++            self.root = Some(new);
++        }
++        self.node_mut(new).parent = parent;
++    }
++
++    // Rotate the taller branch up; both rotated nodes retain spatial children.
++    fn balance(&mut self, index: usize) -> usize {
++        let Some(children) = self.node(index).children else {
++            return index;
++        };
++        let heights = [self.node(children[0]).height, self.node(children[1]).height];
++        let tall = usize::from(heights[1] > heights[0]);
++        if heights[tall] <= heights[1 - tall] + 1 {
++            return index;
++        }
++        let upper = children[tall];
++        let grandchildren = self.node(upper).children.unwrap();
++        let keep =
++            usize::from(self.node(grandchildren[1]).height > self.node(grandchildren[0]).height);
++        let moved = grandchildren[1 - keep];
++        let parent = self.node(index).parent;
++        self.replace_child(parent, index, upper);
++        self.node_mut(upper).children = Some([index, grandchildren[keep]]);
++        self.node_mut(index).parent = Some(upper);
++        self.node_mut(index).children.as_mut().unwrap()[tall] = moved;
++        self.node_mut(moved).parent = Some(index);
++        self.refit(index);
++        self.refit(upper);
++        upper
++    }
++    fn refit_path(&mut self, mut current: Option<usize>) {
++        while let Some(index) = current {
++            self.refit(index);
++            let balanced = self.balance(index);
++            current = self.node(balanced).parent;
++        }
++    }
++
++    /// Insert or replace one instance transform. `local` guides spatial topology only.
++    pub fn insert(&mut self, leaf: u32, transform: AffineTransform, local: &Aabb) {
++        self.insert_motion(leaf, transform, transform, 0.0, local);
++    }
++
++    /// Insert the conservative affine interval of one actual instance motion.
++    /// `margin` expands world-space translation intervals, independently of geometry.
++    pub fn insert_motion(
++        &mut self,
++        leaf: u32,
++        from: AffineTransform,
++        to: AffineTransform,
++        margin: Real,
++        local: &Aabb,
++    ) {
++        self.insert_motion_with_mask(leaf, from, to, margin, local, 0);
++    }
++
++    /// Insert one native instance and its caller-owned role bits. Parent role
++    /// masks are derived along the same spatial paths as affine intervals.
++    pub fn insert_motion_with_mask(&mut self, leaf: u32, from: AffineTransform, to: AffineTransform, margin: Real, local: &Aabb, mask: u32) {
++        let _ = self.remove(leaf);
++        let mut interval = Interval::leaf(from).merge(Interval::leaf(to));
++        interval.low.translation -= Vector::splat(margin);
++        interval.high.translation += Vector::splat(margin);
++        let index = self.allocate(Node {
++            parent: None,
++            children: None,
++            leaf,
++            height: 0,
++            interval,
++            mask,
++        });
++        let _ = self.leaves.insert(leaf, index);
++        let Some(mut sibling) = self.root else {
++            self.root = Some(index);
++            return;
++        };
++        while let Some(children) = self.node(sibling).children {
++            let cost = |child| {
++                let old = self.node(child).interval.bounds(local).extents();
++                let new = self
++                    .node(child)
++                    .interval
++                    .merge(interval)
++                    .bounds(local)
++                    .extents();
++                new.element_sum() - old.element_sum()
++            };
++            sibling = children[usize::from(cost(children[1]) < cost(children[0]))];
++        }
++        let parent = self.node(sibling).parent;
++        let branch = self.allocate(Node {
++            parent,
++            children: Some([sibling, index]),
++            leaf: 0,
++            height: 1,
++            interval: interval.merge(self.node(sibling).interval),
++            mask: mask | self.node(sibling).mask,
++        });
++        self.replace_child(parent, sibling, branch);
++        self.node_mut(sibling).parent = Some(branch);
++        self.node_mut(index).parent = Some(branch);
++        self.refit_path(Some(branch));
++    }
++
++    /// Remove one instance, returning whether it existed.
++    pub fn remove(&mut self, leaf: u32) -> bool {
++        let Some(index) = self.leaves.remove(&leaf) else {
++            return false;
++        };
++        if let Some(parent) = self.node(index).parent {
++            let children = self.node(parent).children.unwrap();
++            let sibling = children[usize::from(children[0] == index)];
++            let grandparent = self.node(parent).parent;
++            self.replace_child(grandparent, parent, sibling);
++            self.release(parent);
++            self.refit_path(grandparent);
++        } else {
++            self.root = None;
++        }
++        self.release(index);
++        true
++    }
++
++    /// The group's new root bounds, computed without visiting any instance.
++    pub fn bounds(&self, local: &Aabb) -> Option<Aabb> {
++        self.root.map(|root| self.node(root).interval.bounds(local))
++    }
++
++    /// Bounds of one actual instance, without traversing unrelated leaves.
++    pub fn leaf_bounds(&self, leaf: u32, local: &Aabb) -> Option<Aabb> {
++        self.leaves
++            .get(&leaf)
++            .map(|index| self.node(*index).interval.bounds(local))
++    }
++
++    /// Select an actual native execution cohort through aggregate role masks.
++    /// This is a role traversal, not a spatial query or change propagation.
++    pub fn matching_leaves(&self, mask: u32) -> AffineBvhMatchingLeaves<'_> {
++        AffineBvhMatchingLeaves { tree: self, mask, stack: self.root.into_iter().collect(), visited: 0 }
++    }
++
++    /// Traverse two geometry-dependent trees for actual overlapping instance pairs.
++    /// Self traversal emits each distinct pair once and omits diagonal leaves.
++    pub fn intersections<'a>(
++        &'a self,
++        local: Aabb,
++        other: &'a Self,
++        other_local: Aabb,
++    ) -> AffineBvhIntersections<'a> {
++        AffineBvhIntersections {
++            left: self,
++            right: other,
++            local,
++            other_local,
++            same: core::ptr::eq(self, other),
++            stack: self.root.zip(other.root).into_iter().collect(),
++            visited: 0,
++        }
++    }
++
++    /// Find the least-cost actual leaf, pruning against bounds from this geometry version.
++    pub fn find_best<L: BvhLeafCost>(
++        &self,
++        local: &Aabb,
++        max_cost: Real,
++        aabb_cost: impl Fn(&Aabb, Real) -> Real,
++        leaf_cost: impl Fn(u32, Real) -> Option<L>,
++    ) -> Option<(u32, L)> {
++        let root = self.root?;
++        let mut best = None;
++        let mut best_cost = max_cost;
++        let root_cost = aabb_cost(&self.node(root).interval.bounds(local), best_cost);
++        let mut stack = alloc::vec![(root, root_cost)];
++        while let Some((index, cost)) = stack.pop() {
++            if cost >= best_cost {
++                continue;
++            }
++            let node = self.node(index);
++            if let Some(children) = node.children {
++                let left = aabb_cost(&self.node(children[0]).interval.bounds(local), best_cost);
++                let right = aabb_cost(&self.node(children[1]).interval.bounds(local), best_cost);
++                let near = usize::from(right < left);
++                let costs = [left, right];
++                if costs[1 - near] < best_cost {
++                    stack.push((children[1 - near], costs[1 - near]));
++                }
++                if costs[near] < best_cost {
++                    stack.push((children[near], costs[near]));
++                }
++            } else if let Some(value) = leaf_cost(node.leaf, best_cost) {
++                if value.cost() < best_cost {
++                    best_cost = value.cost();
++                    best = Some((node.leaf, value));
++                }
++            }
++        }
++        best
++    }
++
++    /// Traverse only nodes admitted by the query's conservative bounds predicate.
++    pub fn query<F: FnMut(&Aabb) -> bool>(
++        &self,
++        local: Aabb,
++        predicate: F,
++    ) -> AffineBvhQuery<'_, F> {
++        AffineBvhQuery {
++            tree: self,
++            local,
++            predicate,
++            stack: self.root.into_iter().collect(),
++            visited: 0,
++        }
++    }
++}
++
++/// Native role selection over the existing spatial hierarchy.
++pub struct AffineBvhMatchingLeaves<'a> {
++    tree: &'a AffineBvh,
++    mask: u32,
++    stack: Vec<usize>,
++    visited: usize,
++}
++impl AffineBvhMatchingLeaves<'_> {
++    /// Node visits made by the actual role selection.
++    pub fn visited_nodes(&self) -> usize { self.visited }
++}
++impl Iterator for AffineBvhMatchingLeaves<'_> {
++    type Item = u32;
++    fn next(&mut self) -> Option<Self::Item> {
++        while let Some(index) = self.stack.pop() {
++            self.visited += 1;
++            let node = self.tree.node(index);
++            if node.mask & self.mask == 0 { continue; }
++            if let Some(children) = node.children { self.stack.extend(children); }
++            else { return Some(node.leaf); }
++        }
++        None
++    }
++}
++
++/// A bounds-pruned BVTT query over immutable affine instance trees.
++pub struct AffineBvhIntersections<'a> {
++    left: &'a AffineBvh,
++    right: &'a AffineBvh,
++    local: Aabb,
++    other_local: Aabb,
++    same: bool,
++    stack: Vec<(usize, usize)>,
++    visited: usize,
++}
++impl AffineBvhIntersections<'_> {
++    /// Number of tested node pairs, including pruned pairs.
++    pub fn visited_nodes(&self) -> usize {
++        self.visited
++    }
++}
++impl Iterator for AffineBvhIntersections<'_> {
++    type Item = (u32, u32);
++    fn next(&mut self) -> Option<Self::Item> {
++        use crate::bounding_volume::BoundingVolume;
++        while let Some((left, right)) = self.stack.pop() {
++            self.visited += 1;
++            let a = self.left.node(left);
++            let b = self.right.node(right);
++            if !a
++                .interval
++                .bounds(&self.local)
++                .intersects(&b.interval.bounds(&self.other_local))
++            {
++                continue;
++            }
++            if self.same && left == right {
++                if let Some([x, y]) = a.children {
++                    self.stack.extend([(x, x), (x, y), (y, y)]);
++                }
++            } else if a.children.is_some() && (b.children.is_none() || a.height >= b.height) {
++                for child in a.children.unwrap() {
++                    self.stack.push((child, right));
++                }
++            } else if let Some(children) = b.children {
++                for child in children {
++                    self.stack.push((left, child));
++                }
++            } else {
++                return Some((a.leaf, b.leaf));
++            }
++        }
++        None
++    }
++}
++
++/// A bounds-pruned traversal of one immutable instance tree.
++pub struct AffineBvhQuery<'a, F> {
++    tree: &'a AffineBvh,
++    local: Aabb,
++    predicate: F,
++    stack: Vec<usize>,
++    visited: usize,
++}
++impl<F> AffineBvhQuery<'_, F> {
++    /// Nodes visited by this actual query; useful for bounded-query diagnostics.
++    pub fn visited_nodes(&self) -> usize {
++        self.visited
++    }
++}
++impl<F: FnMut(&Aabb) -> bool> Iterator for AffineBvhQuery<'_, F> {
++    type Item = u32;
++    fn next(&mut self) -> Option<u32> {
++        while let Some(index) = self.stack.pop() {
++            let node = self.tree.node(index);
++            self.visited += 1;
++            if !(self.predicate)(&node.interval.bounds(&self.local)) {
++                continue;
++            }
++            if let Some(children) = node.children {
++                self.stack.extend(children);
++            } else {
++                return Some(node.leaf);
++            }
++        }
++        None
++    }
++}
 diff --git a/src/partitioning/bvh/bvh_tree.rs b/src/partitioning/bvh/bvh_tree.rs
-index 9fd6907..ed8cb7f 100644
+index 9fd6907..c517cf3 100644
 --- a/src/partitioning/bvh/bvh_tree.rs
 +++ b/src/partitioning/bvh/bvh_tree.rs
-@@ -1939,7 +1939,7 @@ impl Bvh {
+@@ -1,5 +1,5 @@
+-use super::bvh_optimize::BvhIncrementalOptimizationState;
+ use super::BvhOptimizationHeapEntry;
++use super::bvh_optimize::BvhIncrementalOptimizationState;
+ use crate::bounding_volume::{Aabb, BoundingVolume};
+ use crate::math::{Real, Vector};
+ use crate::query::{Ray, RayCast};
+@@ -1781,6 +1781,13 @@ pub struct Bvh {
+ }
+ 
+ impl Bvh {
++    pub(crate) fn heap_bytes(&self) -> usize {
++        self.nodes.0.capacity() * size_of::<BvhNodeWide>()
++            + self.parents.capacity() * size_of::<BvhNodeIndex>()
++            + self.leaf_node_indices.heap_bytes()
++            + self.free_wide_nodes.capacity() * size_of::<u32>()
++    }
++
+     /// Creates an empty BVH with no leaves.
+     ///
+     /// This is equivalent to `Bvh::default()` but more explicit. Use this when you plan
+@@ -1939,7 +1946,7 @@ impl Bvh {
                      right: BvhNode::zeros(),
                  });
                  result.parents.push(BvhNodeIndex::default());
@@ -729,7 +1964,7 @@ index 9fd6907..ed8cb7f 100644
              }
              2 => {
                  result.nodes.push(BvhNodeWide {
-@@ -1947,8 +1947,8 @@ impl Bvh {
+@@ -1947,8 +1954,8 @@ impl Bvh {
                      right: workspace.rebuild_leaves[1],
                  });
                  result.parents.push(BvhNodeIndex::default());
@@ -740,16 +1975,29 @@ index 9fd6907..ed8cb7f 100644
              }
              _ => {
                  result.nodes.reserve(capacity);
+diff --git a/src/partitioning/mod.rs b/src/partitioning/mod.rs
+index 12b475e..9110b69 100644
+--- a/src/partitioning/mod.rs
++++ b/src/partitioning/mod.rs
+@@ -8,3 +8,8 @@ pub use self::bvh::{
+ 
+ #[cfg(feature = "alloc")]
+ mod bvh;
++
++#[cfg(feature = "alloc")]
++pub use self::affine_bvh::{AffineBvh, AffineBvhIntersections, AffineBvhMatchingLeaves, AffineBvhQuery, AffineTransform};
++#[cfg(feature = "alloc")]
++mod affine_bvh;
 diff --git a/src/query/contact/contact_cuboid_capsule.rs b/src/query/contact/contact_cuboid_capsule.rs
 new file mode 100644
-index 0000000..c60b455
+index 0000000..8e5b17e
 --- /dev/null
 +++ b/src/query/contact/contact_cuboid_capsule.rs
 @@ -0,0 +1,103 @@
 +#[cfg(not(feature = "std"))]
 +use crate::math::ComplexField;
-+use crate::math::{Pose, Real, Vector, DIM};
-+use crate::query::{details, Contact};
++use crate::math::{DIM, Pose, Real, Vector};
++use crate::query::{Contact, details};
 +use crate::shape::{Capsule, Cuboid};
 +
 +/// Contact between a cuboid and a capsule, using segment-to-box distance.
@@ -862,10 +2110,507 @@ index 2daacb8..3fe251f 100644
 +pub use self::contact_cuboid_capsule::{contact_capsule_cuboid, contact_cuboid_capsule};
 +#[cfg(feature = "alloc")]
 +mod contact_cuboid_capsule;
+diff --git a/src/query/contact_manifolds/contact_manifolds_composite_shape_composite_shape.rs b/src/query/contact_manifolds/contact_manifolds_composite_shape_composite_shape.rs
+index 7d9618c..b5eb9e5 100644
+--- a/src/query/contact_manifolds/contact_manifolds_composite_shape_composite_shape.rs
++++ b/src/query/contact_manifolds/contact_manifolds_composite_shape_composite_shape.rs
+@@ -116,7 +116,7 @@ pub fn contact_manifolds_composite_shape_composite_shape<'a, ManifoldData, Conta
+                         let sub_detector = match workspace.sub_detectors.entry(entry_key) {
+                             Entry::Occupied(entry) => {
+                                 let sub_detector = entry.into_mut();
+-                                let manifold = old_manifolds[sub_detector.manifold_id].take();
++                                let manifold = core::mem::take(&mut old_manifolds[sub_detector.manifold_id]);
+                                 sub_detector.manifold_id = manifolds.len();
+                                 sub_detector.timestamp = new_timestamp;
+                                 manifolds.push(manifold);
+diff --git a/src/query/contact_manifolds/contact_manifolds_composite_shape_shape.rs b/src/query/contact_manifolds/contact_manifolds_composite_shape_shape.rs
+index 1ca6995..5c339d0 100644
+--- a/src/query/contact_manifolds/contact_manifolds_composite_shape_shape.rs
++++ b/src/query/contact_manifolds/contact_manifolds_composite_shape_shape.rs
+@@ -88,7 +88,7 @@ pub fn contact_manifolds_composite_shape_shape<ManifoldData, ContactData>(
+             let sub_detector = match workspace.sub_detectors.entry(leaf1) {
+                 Entry::Occupied(entry) => {
+                     let sub_detector = entry.into_mut();
+-                    let manifold = old_manifolds[sub_detector.manifold_id].take();
++                    let manifold = core::mem::take(&mut old_manifolds[sub_detector.manifold_id]);
+                     sub_detector.manifold_id = manifolds.len();
+                     sub_detector.timestamp = new_timestamp;
+                     manifolds.push(manifold);
+diff --git a/src/query/contact_manifolds/contact_manifolds_heightfield_composite_shape.rs b/src/query/contact_manifolds/contact_manifolds_heightfield_composite_shape.rs
+index 01749f4..deded73 100644
+--- a/src/query/contact_manifolds/contact_manifolds_heightfield_composite_shape.rs
++++ b/src/query/contact_manifolds/contact_manifolds_heightfield_composite_shape.rs
+@@ -94,7 +94,7 @@ pub fn contact_manifolds_heightfield_composite_shape<ManifoldData, ContactData>(
+                 let sub_detector = match workspace.sub_detectors.entry((leaf1, leaf2)) {
+                     Entry::Occupied(entry) => {
+                         let sub_detector = entry.into_mut();
+-                        let manifold = old_manifolds[sub_detector.manifold_id].take();
++                        let manifold = core::mem::take(&mut old_manifolds[sub_detector.manifold_id]);
+                         sub_detector.manifold_id = manifolds.len();
+                         sub_detector.timestamp = new_timestamp;
+                         manifolds.push(manifold);
+diff --git a/src/query/contact_manifolds/contact_manifolds_heightfield_shape.rs b/src/query/contact_manifolds/contact_manifolds_heightfield_shape.rs
+index eebbe22..8e999cc 100644
+--- a/src/query/contact_manifolds/contact_manifolds_heightfield_shape.rs
++++ b/src/query/contact_manifolds/contact_manifolds_heightfield_shape.rs
+@@ -127,7 +127,7 @@ pub fn contact_manifolds_heightfield_shape<ManifoldData, ContactData>(
+         let sub_detector = match workspace.sub_detectors.entry(i) {
+             Entry::Occupied(entry) => {
+                 let sub_detector = entry.into_mut();
+-                let manifold = old_manifolds[sub_detector.manifold_id].take();
++                let manifold = core::mem::take(&mut old_manifolds[sub_detector.manifold_id]);
+                 sub_detector.manifold_id = manifolds.len();
+                 sub_detector.timestamp = new_timestamp;
+                 manifolds.push(manifold);
+diff --git a/src/query/contact_manifolds/contact_manifolds_pfm_pfm.rs b/src/query/contact_manifolds/contact_manifolds_pfm_pfm.rs
+index 0d61c74..76cbd35 100644
+--- a/src/query/contact_manifolds/contact_manifolds_pfm_pfm.rs
++++ b/src/query/contact_manifolds/contact_manifolds_pfm_pfm.rs
+@@ -74,92 +74,92 @@ pub fn contact_manifold_pfm_pfm<'a, ManifoldData, ContactData, S1, S2>(
+         init_dir,
+     );
+ 
++    let (p1, p2_1, dir) = match contact {
++        GJKResult::ClosestPoints(p1, p2_1, dir) => (p1, p2_1, dir),
++        GJKResult::NoIntersection(dir) => {
++            manifold.clear();
++            // Use the manifold normal as a cache.
++            manifold.local_n1 = dir;
++            return;
++        }
++        _ => {
++            manifold.clear();
++            // Reset the cached direction.
++            manifold.local_n1 = Vector::ZERO;
++            return;
++        }
++    };
++
+     let old_manifold_points = manifold.points.clone();
+     manifold.clear();
+ 
+-    match contact {
+-        GJKResult::ClosestPoints(p1, p2_1, dir) => {
+-            let mut local_n1 = dir;
+-            let mut local_n2 = pos12.rotation.inverse() * -dir;
+-            let dist = (p2_1 - p1).dot(local_n1);
++    let mut local_n1 = dir;
++    let mut local_n2 = pos12.rotation.inverse() * -dir;
++    let dist = (p2_1 - p1).dot(local_n1);
+ 
+-            if !(normal_constraints1, normal_constraints2).project_local_normals(
+-                pos12,
+-                &mut local_n1,
+-                &mut local_n2,
+-            ) {
+-                // The contact got completely discarded by the normal correction.
+-                return;
+-            }
+-
+-            let mut feature1 = PolygonalFeature::default();
+-            let mut feature2 = PolygonalFeature::default();
+-            pfm1.local_support_feature_toward(local_n1, p1, &mut feature1);
+-            pfm2.local_support_feature_toward(
+-                local_n2,
+-                pos12.inverse_transform_point(p2_1),
+-                &mut feature2,
+-            );
++    if !(normal_constraints1, normal_constraints2).project_local_normals(
++        pos12,
++        &mut local_n1,
++        &mut local_n2,
++    ) {
++        // The contact got completely discarded by the normal correction.
++        return;
++    }
+ 
+-            PolygonalFeature::contacts(
+-                pos12,
+-                &pos12.inverse(),
+-                local_n1,
+-                local_n2,
+-                &feature1,
+-                &feature2,
+-                manifold,
+-                false,
+-            );
++    let mut feature1 = PolygonalFeature::default();
++    let mut feature2 = PolygonalFeature::default();
++    pfm1.local_support_feature_toward(local_n1, p1, &mut feature1);
++    pfm2.local_support_feature_toward(local_n2, pos12.inverse_transform_point(p2_1), &mut feature2);
+ 
+-            if (cfg!(feature = "dim3") || cfg!(feature = "dim2") && manifold.points.is_empty())
+-                // If normal constraints changed the GJK direction, it is no longer valid so we cant use it for this additional contact.
+-                && local_n1 == dir
+-            {
+-                let contact = TrackedContact::new(
+-                    p1,
+-                    pos12.inverse_transform_point(p2_1),
+-                    PackedFeatureId::UNKNOWN, // TODO: We don't know what features are involved.
+-                    PackedFeatureId::UNKNOWN,
+-                    (p2_1 - p1).dot(local_n1),
+-                );
+-                manifold.points.push(contact);
+-            }
++    PolygonalFeature::contacts(
++        pos12,
++        &pos12.inverse(),
++        local_n1,
++        local_n2,
++        &feature1,
++        &feature2,
++        manifold,
++        false,
++    );
+ 
+-            if normal_constraints1.is_some() || normal_constraints2.is_some() {
+-                // HACK: some normal correction can lead to very incorrect penetration
+-                //       depth, e.g., if the other object extends very far toward that direction.
+-                //       This is caused by the locality of the convex/convex check.
+-                //       I haven’t found a good mathematically robust approach to account for
+-                //       that locally, so for now, we eliminate points that are large divergence
+-                //       relative to the unconstrained penetration distance.
+-                manifold
+-                    .points
+-                    .retain(|pt| dist >= 0.0 || pt.dist >= 0.0 || pt.dist >= dist * 5.0);
+-            }
++    if (cfg!(feature = "dim3") || cfg!(feature = "dim2") && manifold.points.is_empty())
++        // If normal constraints changed the GJK direction, it is no longer valid so we cant use it for this additional contact.
++        && local_n1 == dir
++    {
++        let contact = TrackedContact::new(
++            p1,
++            pos12.inverse_transform_point(p2_1),
++            PackedFeatureId::UNKNOWN, // TODO: We don't know what features are involved.
++            PackedFeatureId::UNKNOWN,
++            (p2_1 - p1).dot(local_n1),
++        );
++        manifold.points.push(contact);
++    }
+ 
+-            // Adjust points to take the radius into account.
+-            if border_radius1 != 0.0 || border_radius2 != 0.0 {
+-                for contact in &mut manifold.points {
+-                    contact.local_p1 += local_n1 * border_radius1;
+-                    contact.local_p2 += local_n2 * border_radius2;
+-                    contact.dist -= border_radius1 + border_radius2;
+-                }
+-            }
++    if normal_constraints1.is_some() || normal_constraints2.is_some() {
++        // HACK: some normal correction can lead to very incorrect penetration
++        //       depth, e.g., if the other object extends very far toward that direction.
++        //       This is caused by the locality of the convex/convex check.
++        //       I haven’t found a good mathematically robust approach to account for
++        //       that locally, so for now, we eliminate points that are large divergence
++        //       relative to the unconstrained penetration distance.
++        manifold
++            .points
++            .retain(|pt| dist >= 0.0 || pt.dist >= 0.0 || pt.dist >= dist * 5.0);
++    }
+ 
+-            manifold.local_n1 = local_n1;
+-            manifold.local_n2 = local_n2;
+-        }
+-        GJKResult::NoIntersection(dir) => {
+-            // Use the manifold normal as a cache.
+-            manifold.local_n1 = dir;
+-        }
+-        _ => {
+-            // Reset the cached direction.
+-            manifold.local_n1 = Vector::ZERO;
++    // Adjust points to take the radius into account.
++    if border_radius1 != 0.0 || border_radius2 != 0.0 {
++        for contact in &mut manifold.points {
++            contact.local_p1 += local_n1 * border_radius1;
++            contact.local_p2 += local_n2 * border_radius2;
++            contact.dist -= border_radius1 + border_radius2;
+         }
+     }
+ 
++    manifold.local_n1 = local_n1;
++    manifold.local_n2 = local_n2;
++
+     // Transfer impulses.
+     manifold.match_contacts(&old_manifold_points);
+ }
+diff --git a/src/query/contact_manifolds/contact_manifolds_voxels_composite_shape.rs b/src/query/contact_manifolds/contact_manifolds_voxels_composite_shape.rs
+index af948a0..8ce00b8 100644
+--- a/src/query/contact_manifolds/contact_manifolds_voxels_composite_shape.rs
++++ b/src/query/contact_manifolds/contact_manifolds_voxels_composite_shape.rs
+@@ -77,6 +77,10 @@ pub fn contact_manifolds_voxels_composite_shape<ManifoldData, ContactData>(
+     // TODO: avoid reallocating the new `manifolds` vec at each step.
+     let mut old_manifolds = core::mem::take(manifolds);
+     let bvh2 = shape2.bvh();
++    // Adjacent voxels often use the same canonical shape. Keep only the last
++    // traversal, within this call, so geometry changes need no invalidation state.
++    let mut previous_aabb = None;
++    let mut candidate_leaves = Vec::new();
+ 
+     let radius1 = voxels1.voxel_size() / 2.0;
+ 
+@@ -96,10 +100,6 @@ pub fn contact_manifolds_voxels_composite_shape<ManifoldData, ContactData>(
+                 continue;
+             }
+ 
+-            // PERF: could we avoid repeated BVH traversals involving the same canonical shape?
+-            //       The issue is that we need to figure out what contact manifolds are associated
+-            //       to that canonical shape so we can update the included contact bitmask (and
+-            //       one way of figuring this out is to re-traverse the bvh).
+             let canon1 = CanonicalVoxelShape::from_voxel(voxels1, &vox1);
+             let (canonical_center1, canonical_shape1) = canon1.cuboid(voxels1, &vox1, domain2_1);
+             let canonical_pose12 = Pose::from_translation(-canonical_center1) * pos12;
+@@ -115,7 +115,7 @@ pub fn contact_manifolds_voxels_composite_shape<ManifoldData, ContactData>(
+                             let sub_detector = entry.into_mut();
+ 
+                             if sub_detector.timestamp != new_timestamp {
+-                                let manifold = old_manifolds[sub_detector.manifold_id].take();
++                                let manifold = core::mem::take(&mut old_manifolds[sub_detector.manifold_id]);
+                                 *sub_detector = VoxelsShapeSubDetector {
+                                     manifold_id: manifolds.len(),
+                                     timestamp: new_timestamp,
+@@ -155,6 +155,33 @@ pub fn contact_manifolds_voxels_composite_shape<ManifoldData, ContactData>(
+                  * Update the contact manifold if needed.
+                  */
+                 let manifold = &mut manifolds[sub_detector.manifold_id];
++                // Selection only grows until the final retain; later voxels cannot
++                // reject a selected point.
++                if manifold_updated
++                    && sub_detector.selected_contacts.count_ones() as usize == manifold.points.len()
++                {
++                    return;
++                }
++
++                // An updated manifold has no uncomputed geometry. If this voxel
++                // cannot select any remaining point, mapping the composite part
++                // and composing its pose would repeat work without changing it.
++                let test_voxel = Cuboid::new(radius1 + Vector::splat(1.0e-2));
++                if manifold_updated
++                    && !manifold.points.iter().enumerate().any(|(i, pt)| {
++                        if sub_detector.selected_contacts & (1 << i) != 0 {
++                            return false;
++                        }
++                        let point = if flipped {
++                            pt.local_p2 + manifold.subshape_pos2().unwrap().translation - vox1.center
++                        } else {
++                            pt.local_p1 + manifold.subshape_pos1().unwrap().translation - vox1.center
++                        };
++                        test_voxel.contains_local_point(point)
++                    })
++                {
++                    return;
++                }
+ 
+                 shape2.map_part_at(leaf2, &mut |part_pos2, part_shape2, _| {
+                     let relative_pos12 = part_pos2.prepend_to(&canonical_pose12);
+@@ -224,26 +251,44 @@ pub fn contact_manifolds_voxels_composite_shape<ManifoldData, ContactData>(
+                     /*
+                      * Filter-out points that don’t belong to this block.
+                      */
+-                    let test_voxel = Cuboid::new(radius1 + Vector::splat(1.0e-2));
+                     let penetration_dir1 = if flipped {
+                         manifold.local_n2
+                     } else {
+                         manifold.local_n1
+                     };
+ 
++                    // The opposite-normal support distance is shared by this manifold's points.
++                    let mut penetration_test_dist = None;
+                     for (i, pt) in manifold.points.iter().enumerate() {
++                        if sub_detector.selected_contacts & (1 << i) != 0 {
++                            continue;
++                        }
++                        let pt_in_voxel_space = if flipped {
++                            pt.local_p2 + manifold.subshape_pos2().unwrap().translation
++                                - vox1.center
++                        } else {
++                            pt.local_p1 + manifold.subshape_pos1().unwrap().translation
++                                - vox1.center
++                        };
++                        if !test_voxel.contains_local_point(pt_in_voxel_space) {
++                            continue;
++                        }
++
+                         if pt.dist < 0.0 {
+                             // If this is a penetration, double-check that we are not hitting the
+                             // interior of the infinitely expanded canonical shape by checking if
+                             // the opposite normal had led to a better vector.
+-                            let cuboid1 = Cuboid::new(radius1);
+-                            let sp1 = cuboid1.local_support_point(-penetration_dir1) + vox1.center;
+-                            let sm2 = part_shape2
+-                                .as_support_map()
+-                                .expect("Unsupported collision pair.");
+-                            let sp2 = sm2.support_point(&relative_pos12, penetration_dir1)
+-                                + canonical_center1;
+-                            let test_dist = (sp2 - sp1).dot(-penetration_dir1);
++                            let test_dist = *penetration_test_dist.get_or_insert_with(|| {
++                                let cuboid1 = Cuboid::new(radius1);
++                                let sp1 =
++                                    cuboid1.local_support_point(-penetration_dir1) + vox1.center;
++                                let sm2 = part_shape2
++                                    .as_support_map()
++                                    .expect("Unsupported collision pair.");
++                                let sp2 = sm2.support_point(&relative_pos12, penetration_dir1)
++                                    + canonical_center1;
++                                (sp2 - sp1).dot(-penetration_dir1)
++                            });
+                             let keep = test_dist < pt.dist;
+ 
+                             if !keep {
+@@ -253,20 +298,19 @@ pub fn contact_manifolds_voxels_composite_shape<ManifoldData, ContactData>(
+                             }
+                         }
+ 
+-                        let pt_in_voxel_space = if flipped {
+-                            manifold.subshape_pos2().transform_point(pt.local_p2) - vox1.center
+-                        } else {
+-                            manifold.subshape_pos1().transform_point(pt.local_p1) - vox1.center
+-                        };
+-                        sub_detector.selected_contacts |=
+-                            (test_voxel.contains_local_point(pt_in_voxel_space) as u32) << i;
++                        sub_detector.selected_contacts |= 1 << i;
+                     }
+                 });
+             };
+ 
+             let canon_aabb1_2 = canonical_shape1.compute_aabb(&canonical_pose12.inverse());
+ 
+-            for leaf_id in bvh2.intersect_aabb(&canon_aabb1_2) {
++            if previous_aabb != Some(canon_aabb1_2) {
++                candidate_leaves.clear();
++                candidate_leaves.extend(bvh2.intersect_aabb(&canon_aabb1_2));
++                previous_aabb = Some(canon_aabb1_2);
++            }
++            for &leaf_id in &candidate_leaves {
+                 detect_hit(leaf_id);
+             }
+         }
+diff --git a/src/query/contact_manifolds/contact_manifolds_voxels_shape.rs b/src/query/contact_manifolds/contact_manifolds_voxels_shape.rs
+index f0b50e6..cb4be6e 100644
+--- a/src/query/contact_manifolds/contact_manifolds_voxels_shape.rs
++++ b/src/query/contact_manifolds/contact_manifolds_voxels_shape.rs
+@@ -6,7 +6,6 @@ use crate::query::{
+ };
+ use crate::shape::{AxisMask, Cuboid, Shape, SupportMap, VoxelData, VoxelType, Voxels};
+ use crate::utils::hashmap::{Entry, HashMap};
+-use crate::utils::PoseOpt;
+ use alloc::{boxed::Box, vec::Vec};
+ use num::AsPrimitive;
+ 
+@@ -165,7 +164,7 @@ pub fn contact_manifolds_voxels_shape<ManifoldData, ContactData>(
+                         let sub_detector = entry.into_mut();
+ 
+                         if sub_detector.timestamp != new_timestamp {
+-                            let manifold = old_manifolds[sub_detector.manifold_id].take();
++                            let manifold = core::mem::take(&mut old_manifolds[sub_detector.manifold_id]);
+                             *sub_detector = VoxelsShapeSubDetector {
+                                 manifold_id: manifolds.len(),
+                                 timestamp: new_timestamp,
+@@ -201,6 +200,13 @@ pub fn contact_manifolds_voxels_shape<ManifoldData, ContactData>(
+              * Update the contact manifold if needed.
+              */
+             let manifold = &mut manifolds[sub_detector.manifold_id];
++            // Selection only grows until the final retain; later voxels cannot
++            // reject a selected point.
++            if manifold_updated
++                && sub_detector.selected_contacts.count_ones() as usize == manifold.points.len()
++            {
++                continue;
++            }
+ 
+             if !manifold_updated {
+                 let (canonical_center1, canonical_pseudo_cube1) =
+@@ -276,18 +282,34 @@ pub fn contact_manifolds_voxels_shape<ManifoldData, ContactData>(
+                 manifold.local_n1
+             };
+ 
++            // The opposite-normal support distance is shared by this manifold's points.
++            let mut penetration_test_dist = None;
+             for (i, pt) in manifold.points.iter().enumerate() {
++                if sub_detector.selected_contacts & (1 << i) != 0 {
++                    continue;
++                }
++                let pt_in_voxel_space = if flipped {
++                    pt.local_p2 + manifold.subshape_pos2().unwrap().translation - vox1.center
++                } else {
++                    pt.local_p1 + manifold.subshape_pos1().unwrap().translation - vox1.center
++                };
++                if !test_voxel.contains_local_point(pt_in_voxel_space) {
++                    continue;
++                }
++
+                 if pt.dist < 0.0 {
+                     // If this is a penetration, double-check that we are not hitting the
+                     // interior of the infinitely expanded canonical shape by checking if
+                     // the opposite normal had led to a better vector.
+-                    let cuboid1 = Cuboid::new(radius1);
+-                    let sp1 = cuboid1.local_support_point(-penetration_dir1) + vox1.center;
+-                    let sm2 = shape2
+-                        .as_support_map()
+-                        .expect("Unsupported collision pair.");
+-                    let sp2 = sm2.support_point(pos12, penetration_dir1);
+-                    let test_dist = (sp2 - sp1).dot(-penetration_dir1);
++                    let test_dist = *penetration_test_dist.get_or_insert_with(|| {
++                        let cuboid1 = Cuboid::new(radius1);
++                        let sp1 = cuboid1.local_support_point(-penetration_dir1) + vox1.center;
++                        let sm2 = shape2
++                            .as_support_map()
++                            .expect("Unsupported collision pair.");
++                        let sp2 = sm2.support_point(pos12, penetration_dir1);
++                        (sp2 - sp1).dot(-penetration_dir1)
++                    });
+                     let keep = test_dist < pt.dist;
+ 
+                     if !keep {
+@@ -297,13 +319,7 @@ pub fn contact_manifolds_voxels_shape<ManifoldData, ContactData>(
+                     }
+                 }
+ 
+-                let pt_in_voxel_space = if flipped {
+-                    manifold.subshape_pos2().transform_point(pt.local_p2) - vox1.center
+-                } else {
+-                    manifold.subshape_pos1().transform_point(pt.local_p1) - vox1.center
+-                };
+-                sub_detector.selected_contacts |=
+-                    (test_voxel.contains_local_point(pt_in_voxel_space) as u32) << i;
++                sub_detector.selected_contacts |= 1 << i;
+             }
+         }
+     }
+diff --git a/src/query/contact_manifolds/contact_manifolds_voxels_voxels.rs b/src/query/contact_manifolds/contact_manifolds_voxels_voxels.rs
+index 630ab3a..7e283dd 100644
+--- a/src/query/contact_manifolds/contact_manifolds_voxels_voxels.rs
++++ b/src/query/contact_manifolds/contact_manifolds_voxels_voxels.rs
+@@ -108,7 +108,7 @@ pub fn contact_manifolds_voxels_voxels<'a, ManifoldData, ContactData>(
+                         let sub_detector = entry.into_mut();
+ 
+                         if sub_detector.timestamp != new_timestamp {
+-                            let manifold = old_manifolds[sub_detector.manifold_id].take();
++                            let manifold = core::mem::take(&mut old_manifolds[sub_detector.manifold_id]);
+                             *sub_detector = VoxelsShapeSubDetector {
+                                 manifold_id: manifolds.len(),
+                                 timestamp: new_timestamp,
 diff --git a/src/query/default_query_dispatcher.rs b/src/query/default_query_dispatcher.rs
-index 2c03f02..c7584fa 100644
+index 2c03f02..3ea98fa 100644
 --- a/src/query/default_query_dispatcher.rs
 +++ b/src/query/default_query_dispatcher.rs
+@@ -1,14 +1,14 @@
+ use crate::math::{Pose, Real, Vector};
+ use crate::query::details::ShapeCastOptions;
+ use crate::query::{
+-    self, details::NonlinearShapeCastMode, ClosestPoints, Contact, NonlinearRigidMotion,
+-    QueryDispatcher, ShapeCastHit, Unsupported,
++    self, ClosestPoints, Contact, NonlinearRigidMotion, QueryDispatcher, ShapeCastHit, Unsupported,
++    details::NonlinearShapeCastMode,
+ };
+ #[cfg(feature = "alloc")]
+ use crate::query::{
++    ContactManifold,
+     contact_manifolds::{ContactManifoldsWorkspace, NormalConstraints},
+     query_dispatcher::PersistentQueryDispatcher,
+-    ContactManifold,
+ };
+ use crate::shape::{HalfSpace, Segment, Shape};
+ #[cfg(feature = "alloc")]
 @@ -339,6 +339,18 @@ impl QueryDispatcher for DefaultQueryDispatcher {
                  pos12, shape1, b2, prediction,
              ))
@@ -909,10 +2654,31 @@ index 2c03f02..c7584fa 100644
              {
                  return Ok(query::details::cast_shapes_support_map_support_map(
 diff --git a/src/query/epa/epa3.rs b/src/query/epa/epa3.rs
-index a32b339..3f099ea 100644
+index a32b339..df84f74 100644
 --- a/src/query/epa/epa3.rs
 +++ b/src/query/epa/epa3.rs
-@@ -553,12 +553,27 @@ impl EPA {
+@@ -4,8 +4,8 @@
+ //! polyhedra (triangular faces) rather than polygons (edges) as in the 2D version.
+ 
+ use crate::math::{Pose, Real, Vector};
+-use crate::query::gjk::{self, ConstantOrigin, CsoPoint, VoronoiSimplex};
+ use crate::query::PointQueryWithLocation;
++use crate::query::gjk::{self, ConstantOrigin, CsoPoint, VoronoiSimplex};
+ use crate::shape::{SupportMap, Triangle, TrianglePointLocation};
+ use crate::utils;
+ use alloc::collections::BinaryHeap;
+@@ -544,7 +544,9 @@ impl EPA {
+                 // Related issues:
+                 // https://github.com/dimforge/parry/issues/253
+                 // https://github.com/dimforge/parry/issues/246
+-                log::debug!("Hit unexpected state in EPA: failed to project the origin on the initial simplex.");
++                log::debug!(
++                    "Hit unexpected state in EPA: failed to project the origin on the initial simplex."
++                );
+                 return None;
+             }
+         } else {
+@@ -553,12 +555,27 @@ impl EPA {
              if self.vertices.len() == 2 {
                  let dpt = self.vertices[1] - self.vertices[0];
  
@@ -944,7 +2710,7 @@ index a32b339..3f099ea 100644
              }
  
              let pts1 = [0, 1, 2];
-@@ -779,3 +794,99 @@ impl EPA {
+@@ -779,3 +796,99 @@ impl EPA {
          }
      }
  }
@@ -1044,8 +2810,280 @@ index a32b339..3f099ea 100644
 +        ));
 +    }
 +}
+diff --git a/src/query/nonlinear_shape_cast/nonlinear_shape_cast_support_map_support_map.rs b/src/query/nonlinear_shape_cast/nonlinear_shape_cast_support_map_support_map.rs
+index 83b1e19..de82046 100644
+--- a/src/query/nonlinear_shape_cast/nonlinear_shape_cast_support_map_support_map.rs
++++ b/src/query/nonlinear_shape_cast/nonlinear_shape_cast_support_map_support_map.rs
+@@ -254,6 +254,112 @@ fn handle_penetration_at_start_time<D, SM1, SM2>(
+     sum_linear_thickness: Real,
+     max_angular_thickness: Real,
+ ) -> Option<ShapeCastHit>
++where
++    D: ?Sized + QueryDispatcher,
++    SM1: ?Sized + SupportMap,
++    SM2: ?Sized + SupportMap,
++{
++    #[cfg(all(feature = "dim3", feature = "f32"))]
++    if penetration_motion_is_bounded(
++        motion1,
++        g1,
++        motion2,
++        g2,
++        start_time,
++        end_time,
++        sum_linear_thickness,
++    ) {
++        return None;
++    }
++    handle_penetration_at_start_time_unbounded(
++        dispatcher,
++        motion1,
++        sm1,
++        g1,
++        motion2,
++        sm2,
++        g2,
++        start_time,
++        end_time,
++        sum_linear_thickness,
++        max_angular_thickness,
++    )
++}
++
++#[cfg(all(feature = "dim3", feature = "f32"))]
++fn penetration_motion_is_bounded(
++    motion1: &NonlinearRigidMotion,
++    g1: &dyn Shape,
++    motion2: &NonlinearRigidMotion,
++    g2: &dyn Shape,
++    start_time: Real,
++    end_time: Real,
++    thickness: Real,
++) -> bool {
++    if start_time != 0.0
++        || !(end_time > 0.0 && end_time.is_finite())
++        || !(thickness > 0.0 && thickness.is_finite())
++    {
++        return false;
++    }
++    let mut speed = 0.0;
++    for (motion, shape) in [(motion1, g1), (motion2, g2)] {
++        if !motion.start.translation.is_finite()
++            || !motion.local_center.is_finite()
++            || !motion.linvel.is_finite()
++            || !motion.angvel.is_finite()
++        {
++            return false;
++        }
++        let norm2 = motion.start.rotation.length_squared();
++        if !norm2.is_finite() || (norm2 - 1.0).abs() > 1.0e-4 {
++            return false;
++        }
++        speed += penetration_motion_length(motion.linvel);
++        let angular = penetration_motion_length(motion.angvel);
++        if angular != 0.0 {
++            let sphere = shape.compute_local_bounding_sphere();
++            if !sphere.center.is_finite() || !sphere.radius.is_finite() || sphere.radius < 0.0 {
++                return false;
++            }
++            let radius =
++                penetration_motion_length(sphere.center - motion.local_center) + sphere.radius;
++            speed += angular * radius;
++        }
++    }
++    let motion = speed * end_time;
++    // Every contact-point normal speed is bounded by the sum of both linear
++    // speeds and angular speeds times their COM-relative enclosing radii.
++    // The penetration loop's threshold is at least `thickness`. Keep a fourfold
++    // margin for f32 transforms and unit-quaternion drift; uncertain inputs fall back.
++    motion.is_finite() && motion < thickness * 0.25
++}
++
++#[cfg(all(feature = "dim3", feature = "f32"))]
++fn penetration_motion_length(vector: Vector) -> Real {
++    let length = vector.length();
++    // A nonzero speed/radius can survive later scaling even when its squared
++    // length underflows. Refuse the shortcut instead of treating it as zero.
++    if length == 0.0 && vector != Vector::ZERO {
++        Real::INFINITY
++    } else {
++        length
++    }
++}
++
++fn handle_penetration_at_start_time_unbounded<D, SM1, SM2>(
++    dispatcher: &D,
++    motion1: &NonlinearRigidMotion,
++    sm1: &SM1,
++    g1: &dyn Shape,
++    motion2: &NonlinearRigidMotion,
++    sm2: &SM2,
++    g2: &dyn Shape,
++    start_time: Real,
++    end_time: Real,
++    sum_linear_thickness: Real,
++    max_angular_thickness: Real,
++) -> Option<ShapeCastHit>
+ where
+     D: ?Sized + QueryDispatcher,
+     SM1: ?Sized + SupportMap,
+@@ -501,3 +607,155 @@ where
+ 
+     (range, niter)
+ }
++
++#[cfg(all(test, feature = "dim3", feature = "f32"))]
++mod penetration_motion_bound_tests {
++    use super::*;
++    use crate::math::Pose;
++    use crate::query::DefaultQueryDispatcher;
++    use crate::shape::Cuboid;
++
++    fn motion(speed: Real) -> NonlinearRigidMotion {
++        NonlinearRigidMotion::new(
++            Pose::from_translation(Vector::new(-0.15, 0.0, 0.0)),
++            Vector::ZERO,
++            Vector::X * speed,
++            Vector::ZERO,
++        )
++    }
++
++    fn fixed() -> NonlinearRigidMotion {
++        NonlinearRigidMotion::new(Pose::IDENTITY, Vector::ZERO, Vector::ZERO, Vector::ZERO)
++    }
++
++    #[test]
++    fn overlapping_slow_motion_preserves_the_original_no_impact() {
++        let shape = Cuboid::new(Vector::splat(0.1));
++        let (a, b) = (motion(0.01), fixed());
++        let dt = 1.0 / 60.0;
++        assert!(penetration_motion_is_bounded(
++            &a, &shape, &b, &shape, 0.0, dt, 0.2
++        ));
++        assert!(
++            handle_penetration_at_start_time_unbounded(
++                &DefaultQueryDispatcher,
++                &a,
++                &shape,
++                &shape,
++                &b,
++                &shape,
++                &shape,
++                0.0,
++                dt,
++                0.2,
++                Real::frac_pi_2(),
++            )
++            .is_none()
++        );
++        assert!(
++            handle_penetration_at_start_time(
++                &DefaultQueryDispatcher,
++                &a,
++                &shape,
++                &shape,
++                &b,
++                &shape,
++                &shape,
++                0.0,
++                dt,
++                0.2,
++                Real::frac_pi_2(),
++            )
++            .is_none()
++        );
++    }
++
++    #[test]
++    fn fast_approaching_motion_keeps_its_initial_impact() {
++        let shape = Cuboid::new(Vector::splat(0.1));
++        let (a, b) = (motion(100.0), fixed());
++        let dt = 1.0 / 60.0;
++        assert!(!penetration_motion_is_bounded(
++            &a, &shape, &b, &shape, 0.0, dt, 0.2
++        ));
++        let result = handle_penetration_at_start_time(
++            &DefaultQueryDispatcher,
++            &a,
++            &shape,
++            &shape,
++            &b,
++            &shape,
++            &shape,
++            0.0,
++            dt,
++            0.2,
++            Real::frac_pi_2(),
++        )
++        .expect("approaching overlapping shapes need CCD");
++        assert_eq!(result.time_of_impact, 0.0);
++    }
++
++    #[test]
++    fn rotation_uses_distance_from_the_actual_center_of_mass() {
++        let shape = Cuboid::new(Vector::splat(0.1));
++        let (mut a, b) = (motion(0.0), fixed());
++        a.local_center = Vector::X * 100.0;
++        a.angvel = Vector::Z;
++        assert!(!penetration_motion_is_bounded(
++            &a,
++            &shape,
++            &b,
++            &shape,
++            0.0,
++            1.0 / 60.0,
++            0.2
++        ));
++    }
++
++    #[test]
++    fn tiny_velocities_do_not_disappear_before_scaling() {
++        let shape = Cuboid::new(Vector::splat(0.1));
++        let (mut a, b) = (motion(1.0e-30), fixed());
++        assert_eq!(a.linvel.length(), 0.0);
++        assert!(!penetration_motion_is_bounded(
++            &a, &shape, &b, &shape, 0.0, 1.0e30, 0.2
++        ));
++        a.linvel = Vector::ZERO;
++        a.angvel = Vector::Z * 1.0e-30;
++        a.local_center = Vector::X * 1.0e30;
++        assert_eq!(a.angvel.length(), 0.0);
++        assert!(!penetration_motion_is_bounded(
++            &a, &shape, &b, &shape, 0.0, 1.0, 0.2
++        ));
++    }
++
++    #[test]
++    fn uncertain_inputs_and_nonzero_start_times_keep_the_original_path() {
++        let shape = Cuboid::new(Vector::splat(0.1));
++        let (mut a, b) = (motion(0.0), fixed());
++        assert!(!penetration_motion_is_bounded(
++            &a, &shape, &b, &shape, 1.0, 1.01, 0.2
++        ));
++        assert!(!penetration_motion_is_bounded(
++            &a, &shape, &b, &shape, 0.0, 0.0, 0.2
++        ));
++        assert!(!penetration_motion_is_bounded(
++            &a,
++            &shape,
++            &b,
++            &shape,
++            0.0,
++            0.01,
++            Real::from_bits(1)
++        ));
++        a.linvel.x = Real::NAN;
++        assert!(!penetration_motion_is_bounded(
++            &a, &shape, &b, &shape, 0.0, 0.01, 0.2
++        ));
++        a.linvel = Vector::ZERO;
++        a.start.translation.x = Real::NAN;
++        assert!(!penetration_motion_is_bounded(
++            &a, &shape, &b, &shape, 0.0, 0.01, 0.2
++        ));
++    }
++}
 diff --git a/src/query/nonlinear_shape_cast/nonlinear_shape_cast_voxels_shape.rs b/src/query/nonlinear_shape_cast/nonlinear_shape_cast_voxels_shape.rs
-index 123a8e3..5b98351 100644
 --- a/src/query/nonlinear_shape_cast/nonlinear_shape_cast_voxels_shape.rs
 +++ b/src/query/nonlinear_shape_cast/nonlinear_shape_cast_voxels_shape.rs
 @@ -1,3 +1,5 @@
@@ -1054,7 +3092,7 @@ index 123a8e3..5b98351 100644
  use crate::bounding_volume::BoundingVolume;
  use crate::math::{IVector, IVectorExt, Real, Vector, VectorExt};
  use crate::query::{NonlinearRigidMotion, QueryDispatcher, ShapeCastHit};
-@@ -19,16 +21,42 @@ where
+@@ -19,16 +21,57 @@
  {
      use num_traits::Bounded;
  
@@ -1074,10 +3112,25 @@ index 123a8e3..5b98351 100644
 +        let cuboid = Cuboid::new(g1.voxel_size() / 2.0);
 +        let mut hit = None;
 +        let mut earliest = end_time;
++        #[cfg(feature = "dim3")]
++        let other_bound = swept_aabb(g2, motion2, start_time, end_time);
++        #[cfg(feature = "dim3")]
++        if let (Some(grid), Some(other)) = (
++            swept_aabb(g1, motion1, start_time, end_time), other_bound,
++        ) {
++            if !grid.intersects(&other) { return None; }
++        }
 +        for vox in g1.voxels().filter(|vox| !vox.state.is_empty()) {
 +            let center = g1.voxel_center(vox.grid_coords);
++            let cell_motion = motion1.prepend_translation(center);
++            #[cfg(feature = "dim3")]
++            if let (Some(cell), Some(other)) = (
++                swept_aabb(&cuboid, &cell_motion, start_time, end_time), other_bound,
++            ) {
++                if !cell.intersects(&other) { continue; }
++            }
 +            if let Some(mut next) = dispatcher.cast_shapes_nonlinear(
-+                &motion1.prepend_translation(center), &cuboid, motion2, g2,
++                &cell_motion, &cuboid, motion2, g2,
 +                start_time, earliest, stop_at_penetration,
 +            ).ok().flatten() {
 +                next.witness1 += center;
@@ -1102,7 +3155,7 @@ index 123a8e3..5b98351 100644
  
      // Search for the smallest time of impact.
      //
-@@ -47,41 +75,50 @@ where
+@@ -47,41 +90,53 @@
      let mut hit = None;
      let mut smallest_t = end_time;
  
@@ -1114,6 +3167,7 @@ index 123a8e3..5b98351 100644
 -    let start_aabb2_1 = g2
 -        .compute_aabb(&start_pos2_1)
 -        .merged(&g2.compute_aabb(&end_pos2_1));
+-
 +    #[cfg(feature = "dim2")]
 +    let rotating2 = motion2.angvel != 0.0;
 +    #[cfg(feature = "dim3")]
@@ -1131,7 +3185,10 @@ index 123a8e3..5b98351 100644
 +    } else {
 +        g2.compute_aabb(&start_pos2_1)
 +    };
- 
++
++    // Retain exact convex endpoints while sharing the solid-volume traversal.
++    #[cfg(feature = "dim3")]
++    let coalesce_boxes = g2.as_cuboid().is_some() || is_cartesian_box(g2);
      let mut check_voxels_in_range = |search_domain: [IVector; 2]| {
 -        for vox in g1.voxels_in_range(search_domain[0], search_domain[1]) {
 -            if !vox.state.is_empty() {
@@ -1174,7 +3231,7 @@ index 123a8e3..5b98351 100644
              }
 +        };
 +        #[cfg(feature = "dim3")]
-+        if g2.as_cuboid().is_some() {
++        if coalesce_boxes {
 +            g1.map_cuboids_intersecting_range(search_domain[0], search_domain[1], |min, max| check_run(min, max - IVector::ONE));
 +            return;
 +        }
@@ -1183,7 +3240,7 @@ index 123a8e3..5b98351 100644
          }
      };
  
-@@ -101,17 +138,17 @@ where
+@@ -101,17 +156,17 @@
          let ii = [0, 1, 2];
  
          let toi = ii.map(|i| {
@@ -1205,10 +3262,12 @@ index 123a8e3..5b98351 100644
                  if t < 0.0 {
                      (Real::max_value(), false)
                  } else {
-@@ -170,6 +207,47 @@ where
-     hit
- }
+@@ -168,6 +223,47 @@
+     }
  
+     hit
++}
++
 +
 +// The arclength of any point about the COM bounds its displacement from the
 +// start orientation. Linear translation remains covered by the existing DDA.
@@ -1248,12 +3307,10 @@ index 123a8e3..5b98351 100644
 +    if mins.is_finite() && maxs.is_finite() && (mins.cmple(maxs)).all() {
 +        Aabb::new(mins, maxs)
 +    } else { sphere_bound }
-+}
-+
+ }
+ 
  /// Time Of Impact of any shape with a composite shape, under a rigid motion (translation + rotation).
- pub fn cast_shapes_nonlinear_shape_voxels<D>(
-     dispatcher: &D,
-@@ -196,3 +274,70 @@ where
+@@ -196,3 +292,128 @@
      )
      .map(|hit| hit.swapped())
  }
@@ -1324,16 +3381,76 @@ index 123a8e3..5b98351 100644
 +        assert_eq!(actual.mins,old.mins);assert_eq!(actual.maxs,old.maxs);
 +    }
 +}
++
++#[cfg(feature = "dim3")]
++fn is_cartesian_box(shape: &dyn Shape) -> bool {
++    let Some(hull) = shape.as_convex_polyhedron() else {
++        return false;
++    };
++    let points = hull.points();
++    if points.len() != 8 || points.iter().any(|p| !p.is_finite()) {
++        return false;
++    }
++    let mut min = points[0];
++    let mut max = points[0];
++    for p in points {
++        min = min.min(*p);
++        max = max.max(*p);
++    }
++    if min.cmplt(max).bitmask() != 7 {
++        return false;
++    }
++    let mut mask = 0u32;
++    for p in points {
++        let mut corner = 0;
++        for axis in 0..3 {
++            if p[axis] == max[axis] {
++                corner |= 1 << axis;
++            } else if p[axis] != min[axis] {
++                return false;
++            }
++        }
++        mask |= 1 << corner;
++    }
++    mask == 255
++}
++
++// A point moves at most min(angle, 2) times its COM radius under rotation.
++// Include translation over the entire interval, the narrow-phase tolerance,
++// and roundoff at the actual coordinate scale. Invalid bounds never cull.
++#[cfg(feature = "dim3")]
++fn swept_aabb(shape: &dyn Shape, motion: &NonlinearRigidMotion, start: Real, end: Real) -> Option<Aabb> {
++    let at = shape.compute_aabb(&motion.position_at_time(start));
++    let sphere = shape.compute_local_bounding_sphere();
++    let radius = sphere.radius() + (sphere.center - motion.local_center).length();
++    let dt = end - start;
++    let displacement = motion.linvel * dt;
++    let arc = (motion.angvel.length() * dt).min(2.0) * radius;
++    if dt < 0.0 || !dt.is_finite() || !radius.is_finite() || !arc.is_finite()
++        || !at.mins.is_finite() || !at.maxs.is_finite() || !displacement.is_finite() {
++        return None;
++    }
++    let scale = at.mins.abs().max(at.maxs.abs()).max(displacement.abs())
++        .max(Vector::splat(radius)).max_element().max(1.0);
++    let padding = Vector::splat(arc + crate::query::gjk::eps_tol() + scale * Real::EPSILON * 32.0);
++    let mins = at.mins + displacement.min(Vector::ZERO) - padding;
++    let maxs = at.maxs + displacement.max(Vector::ZERO) + padding;
++    if mins.is_finite() && maxs.is_finite() && mins.cmple(maxs).all() {
++        Some(Aabb::new(mins, maxs))
++    } else { None }
++}
 diff --git a/src/query/point/point_triangle.rs b/src/query/point/point_triangle.rs
-index 810e3e3..0d54399 100644
+index 810e3e3..2dec8f1 100644
 --- a/src/query/point/point_triangle.rs
 +++ b/src/query/point/point_triangle.rs
-@@ -1,3 +1,5 @@
+@@ -1,4 +1,6 @@
+-use crate::math::{Real, Vector, DIM};
 +#[cfg(all(not(feature = "std"), feature = "dim3", feature = "f32"))]
 +use crate::math::ComplexField;
- use crate::math::{Real, Vector, DIM};
++use crate::math::{DIM, Real, Vector};
  use crate::query::{PointProjection, PointQuery, PointQueryWithLocation};
  use crate::shape::{FeatureId, Segment, SegmentPointLocation, Triangle, TrianglePointLocation};
+ #[cfg(feature = "dim3")]
 @@ -20,6 +22,78 @@ fn compute_result(pt: Vector, proj: Vector) -> PointProjection {
      }
  }
@@ -1427,10 +3544,120 @@ index 810e3e3..0d54399 100644
          let ab_ap = ab.dot(ap);
          let ac_ap = ac.dot(ap);
  
+diff --git a/src/query/point/point_voxels.rs b/src/query/point/point_voxels.rs
+index 87a5b14..f837430 100644
+--- a/src/query/point/point_voxels.rs
++++ b/src/query/point/point_voxels.rs
+@@ -1,17 +1,21 @@
+ use crate::math::{Real, Vector};
+ use crate::query::{PointProjection, PointQuery};
+-use crate::shape::{Cuboid, FeatureId, Voxels, VoxelsChunkRef};
++use crate::shape::{FeatureId, Voxels, VoxelsChunkRef};
+ 
+ impl PointQuery for Voxels {
+     #[inline]
+     fn project_local_point(&self, pt: Vector, solid: bool) -> PointProjection {
+         self.chunk_bvh()
+-            .project_point(pt, Real::MAX, |chunk_id, _| {
+-                let chunk = self.chunk_ref(chunk_id);
+-                chunk
+-                    .project_local_point_and_get_vox_id(pt, solid)
+-                    .map(|(proj, _)| proj)
+-            })
++            .find_best(
++                Real::MAX,
++                |node, _| node.aabb().distance_to_local_point(pt, true),
++                |chunk_id, _| {
++                    let chunk = self.chunk_ref(chunk_id);
++                    chunk
++                        .project_local_point_and_get_vox_id(pt, solid)
++                        .map(|(proj, _)| (voxel_point_projection_cost(pt, &proj), proj))
++                },
++            )
+             .map(|res| res.1 .1)
+             .unwrap_or(PointProjection::new(false, Vector::splat(Real::MAX)))
+     }
+@@ -19,13 +23,22 @@ impl PointQuery for Voxels {
+     #[inline]
+     fn project_local_point_and_get_feature(&self, pt: Vector) -> (PointProjection, FeatureId) {
+         self.chunk_bvh()
+-            .project_point_and_get_feature(pt, Real::MAX, |chunk_id, _| {
+-                let chunk = self.chunk_ref(chunk_id);
+-                // TODO: we need a way to return both the voxel id, and the feature on the voxel.
+-                chunk
+-                    .project_local_point_and_get_vox_id(pt, false)
+-                    .map(|(proj, vox)| (proj, FeatureId::Face(vox)))
+-            })
++            .find_best(
++                Real::MAX,
++                |node, _| node.aabb().distance_to_local_point(pt, true),
++                |chunk_id, _| {
++                    let chunk = self.chunk_ref(chunk_id);
++                    // TODO: we need a way to return both the voxel id, and the feature on the voxel.
++                    chunk
++                        .project_local_point_and_get_vox_id(pt, false)
++                        .map(|(proj, vox)| {
++                            (
++                                voxel_point_projection_cost(pt, &proj),
++                                (proj, FeatureId::Face(vox)),
++                            )
++                        })
++                },
++            )
+             .map(|res| res.1 .1)
+             .unwrap_or((
+                 PointProjection::new(false, Vector::splat(Real::MAX)),
+@@ -43,14 +56,20 @@ impl<'a> VoxelsChunkRef<'a> {
+     ) -> Option<(PointProjection, u32)> {
+         // TODO: optimize this naive implementation that just iterates on all the voxels
+         //       from this chunk.
+-        let base_cuboid = Cuboid::new(self.parent.voxel_size() / 2.0);
+         let mut smallest_dist = Real::MAX;
+         let mut result = PointProjection::new(false, pt);
+         let mut result_vox_id = 0;
+ 
+         for vox in self.voxels() {
+-            let mut candidate = base_cuboid.project_local_point(pt - vox.center, solid);
+-            candidate.point += vox.center;
++            // Use the same rounded bounds as voxel ray queries. Subtracting the
++            // center before comparing half-extents can open an f32 seam.
++            let candidate = self
++                .parent
++                .voxel_aabb(vox.grid_coords)
++                .project_local_point(pt, solid);
++            if solid && candidate.is_inside {
++                return Some((candidate, vox.linear_id.flat_id() as u32));
++            }
+ 
+             let candidate_dist = (candidate.point - pt).length();
+             if candidate_dist < smallest_dist {
+@@ -63,3 +82,14 @@ impl<'a> VoxelsChunkRef<'a> {
+         (smallest_dist < Real::MAX).then_some((result, result_vox_id as u32))
+     }
+ }
++
++// A zero rounded norm outside the shape must not prune a genuinely inside
++// projection from another chunk. This changes search cost, not geometry.
++fn voxel_point_projection_cost(pt: Vector, projection: &PointProjection) -> Real {
++    let distance = projection.point.distance(pt);
++    if distance == 0.0 && !projection.is_inside {
++        Real::MIN_POSITIVE
++    } else {
++        distance
++    }
++}
 diff --git a/src/query/shape_cast/mod.rs b/src/query/shape_cast/mod.rs
-index 4dad80a..50ffd7f 100644
+index 4dad80a..bdc5c81 100644
 --- a/src/query/shape_cast/mod.rs
 +++ b/src/query/shape_cast/mod.rs
+@@ -1,6 +1,6 @@
+ //! Implementation details of the `cast_shapes` function.
+ 
+-pub use self::shape_cast::{cast_shapes, ShapeCastHit, ShapeCastOptions, ShapeCastStatus};
++pub use self::shape_cast::{ShapeCastHit, ShapeCastOptions, ShapeCastStatus, cast_shapes};
+ pub use self::shape_cast_ball_ball::cast_shapes_ball_ball;
+ pub use self::shape_cast_halfspace_support_map::{
+     cast_shapes_halfspace_support_map, cast_shapes_support_map_halfspace,
 @@ -26,3 +26,8 @@ mod shape_cast_heightfield_shape;
  mod shape_cast_support_map_support_map;
  #[cfg(feature = "alloc")]
@@ -1552,6 +3779,559 @@ index b965e7e..99e4714 100644
 +        Some(contact)
 +    })
 +}
+diff --git a/src/shape/convex_polygon.rs b/src/shape/convex_polygon.rs
+index 0c36fdc..75ce23c 100644
+--- a/src/shape/convex_polygon.rs
++++ b/src/shape/convex_polygon.rs
+@@ -71,6 +71,10 @@ pub struct ConvexPolygon {
+ }
+ 
+ impl ConvexPolygon {
++    pub(crate) fn heap_bytes(&self) -> usize {
++        (self.points.capacity() + self.normals.capacity()) * size_of::<Vector>()
++    }
++
+     /// Creates a new 2D convex polygon from an arbitrary set of points by computing their convex hull.
+     ///
+     /// This is the most flexible constructor - it automatically computes the **convex hull** of the
+@@ -663,10 +667,12 @@ mod tests {
+         ];
+ 
+         assert_eq!(offsetted.points().len(), 3);
+-        assert!(offsetted
+-            .points()
+-            .iter()
+-            .zip(expected.iter())
+-            .all(|(a, b)| (a - b).length() < 0.001));
++        assert!(
++            offsetted
++                .points()
++                .iter()
++                .zip(expected.iter())
++                .all(|(a, b)| (a - b).length() < 0.001)
++        );
+     }
+ }
+diff --git a/src/shape/convex_polyhedron.rs b/src/shape/convex_polyhedron.rs
+index 45fc1a1..f20fcf0 100644
+--- a/src/shape/convex_polyhedron.rs
++++ b/src/shape/convex_polyhedron.rs
+@@ -1,4 +1,4 @@
+-use crate::math::{Real, Vector, DIM};
++use crate::math::{DIM, Real, Vector};
+ use crate::shape::{FeatureId, PackedFeatureId, PolygonalFeature, PolygonalFeatureMap, SupportMap};
+ // use crate::transformation;
+ #[cfg(not(feature = "std"))]
+@@ -176,6 +176,18 @@ pub struct ConvexPolyhedron {
+ }
+ 
+ impl ConvexPolyhedron {
++    pub(crate) fn heap_bytes(&self) -> usize {
++        self.points.capacity() * size_of::<Vector>()
++            + self.vertices.capacity() * size_of::<Vertex>()
++            + self.faces.capacity() * size_of::<Face>()
++            + self.edges.capacity() * size_of::<Edge>()
++            + (self.faces_adj_to_vertex.capacity()
++                + self.edges_adj_to_vertex.capacity()
++                + self.edges_adj_to_face.capacity()
++                + self.vertices_adj_to_face.capacity())
++                * size_of::<u32>()
++    }
++
+     /// Creates a new convex polyhedron from an arbitrary set of points by computing their convex hull.
+     ///
+     /// This is the most flexible constructor - it automatically computes the **convex hull** of the
+diff --git a/src/shape/heightfield2.rs b/src/shape/heightfield2.rs
+index 7e13627..2a49e68 100644
+--- a/src/shape/heightfield2.rs
++++ b/src/shape/heightfield2.rs
+@@ -35,6 +35,11 @@ pub struct HeightField {
+ 
+ #[cfg(feature = "alloc")]
+ impl HeightField {
++    pub(crate) fn heap_bytes(&self) -> usize {
++        self.heights.capacity() * size_of::<Real>()
++            + self.status.capacity() * size_of::<HeightFieldCellStatus>()
++    }
++
+     /// Creates a new 2D heightfield with the given heights and scale factor.
+     pub fn new(heights: Vec<Real>, scale: Vector) -> Self {
+         assert!(
+diff --git a/src/shape/heightfield3.rs b/src/shape/heightfield3.rs
+index 4adfc7c..8e855e0 100644
+--- a/src/shape/heightfield3.rs
++++ b/src/shape/heightfield3.rs
+@@ -1,3 +1,5 @@
++use super::HeightFieldSamples;
++use alloc::sync::Arc;
+ use core::ops::Range;
+ // TODO: Replace nalgebra Array2 with a custom Vec-based storage for heightfield data
+ #[cfg(feature = "alloc")]
+@@ -65,8 +67,8 @@ bitflags::bitflags! {
+ #[repr(C)]
+ /// A 3D heightfield.
+ pub struct HeightField {
+-    heights: Array2<Real>,
+-    status: Array2<HeightFieldCellStatus>,
++    heights: HeightFieldSamples,
++    status: Arc<Array2<HeightFieldCellStatus>>,
+ 
+     scale: Vector,
+     aabb: Aabb,
+@@ -76,6 +78,10 @@ pub struct HeightField {
+ 
+ #[cfg(feature = "alloc")]
+ impl HeightField {
++    pub(crate) fn heap_bytes(&self) -> usize {
++        self.heights.heap_bytes() + self.status.heap_bytes()
++    }
++
+     /// Initializes a new heightfield with the given heights, scaling factor, and flags.
+     ///
+     /// The heights are specified in such a way that the row index `i` of the array advances
+@@ -106,11 +112,11 @@ impl HeightField {
+         );
+ 
+         HeightField {
+-            heights: heights_zx,
++            heights: HeightFieldSamples::new(heights_zx),
+             scale,
+             aabb,
+             num_triangles,
+-            status,
++            status: Arc::new(status),
+             flags,
+         }
+     }
+@@ -358,10 +364,7 @@ impl HeightField {
+         let x0 = -0.5 + cell_width * (j as Real);
+         let x1 = -0.5 + cell_width * ((j + 1) as Real);
+ 
+-        let y00 = self.heights[(i, j)];
+-        let y10 = self.heights[(i + 1, j)];
+-        let y01 = self.heights[(i, j + 1)];
+-        let y11 = self.heights[(i + 1, j + 1)];
++        let [y00, y10, y01, y11] = self.heights.cell(i, j);
+ 
+         let mut p00 = Vector::new(x0, y00, z0);
+         let mut p10 = Vector::new(x0, y10, z1);
+@@ -514,7 +517,7 @@ impl HeightField {
+ 
+     /// Set the status of the `(i, j)`-th cell.
+     pub fn set_cell_status(&mut self, i: usize, j: usize, status: HeightFieldCellStatus) {
+-        self.status[(i, j)] = status;
++        Arc::make_mut(&mut self.status)[(i, j)] = status;
+     }
+ 
+     /// The statuses of all the cells of this heightfield.
+@@ -524,7 +527,7 @@ impl HeightField {
+ 
+     /// The mutable statuses of all the cells of this heightfield.
+     pub fn cells_statuses_mut(&mut self) -> &mut Array2<HeightFieldCellStatus> {
+-        &mut self.status
++        Arc::make_mut(&mut self.status)
+     }
+ 
+     /// The heightfield’s flags controlling internal-edges handling.
+@@ -538,10 +541,28 @@ impl HeightField {
+     }
+ 
+     /// The heights of this heightfield.
+-    pub fn heights(&self) -> &Array2<Real> {
++    pub fn heights(&self) -> &HeightFieldSamples {
+         &self.heights
+     }
+ 
++    /// Replace selected column-major samples without copying untouched blocks.
++    /// Bounds conservatively expand; a full constructor recomputes tight extrema.
++    pub fn write_heights(&mut self, indices: &[u32], values: &[Real]) -> bool {
++        if values
++            .iter()
++            .any(|height| !(height * self.scale.y).is_finite())
++            || !self.heights.write(indices, values)
++        {
++            return false;
++        }
++        for &height in values {
++            let y = height * self.scale.y;
++            self.aabb.mins.y = self.aabb.mins.y.min(y);
++            self.aabb.maxs.y = self.aabb.maxs.y.max(y);
++        }
++        true
++    }
++
+     /// The scale factor applied to this heightfield.
+     pub fn scale(&self) -> Vector {
+         self.scale
+@@ -721,10 +742,7 @@ impl HeightField {
+                 let x0 = -0.5 + cell_width * (j as Real);
+                 let x1 = x0 + cell_width;
+ 
+-                let y00 = self.heights[(i, j)];
+-                let y10 = self.heights[(i + 1, j)];
+-                let y01 = self.heights[(i, j + 1)];
+-                let y11 = self.heights[(i + 1, j + 1)];
++                let [y00, y10, y01, y11] = self.heights.cell(i, j);
+ 
+                 if (y00 > ref_maxs.y && y10 > ref_maxs.y && y01 > ref_maxs.y && y11 > ref_maxs.y)
+                     || (y00 < ref_mins.y
+diff --git a/src/shape/heightfield_samples.rs b/src/shape/heightfield_samples.rs
+new file mode 100644
+index 0000000..53c4013
+--- /dev/null
++++ b/src/shape/heightfield_samples.rs
+@@ -0,0 +1,192 @@
++use crate::math::Real;
++use crate::utils::Array2;
++use alloc::{boxed::Box, sync::Arc, vec::Vec};
++
++const EDGE: usize = 32;
++const BLOCK: usize = EDGE * EDGE;
++const FANOUT: usize = 32;
++
++#[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
++#[derive(Debug, Clone)]
++enum Node {
++    Leaf(Box<[Real]>),
++    Branch(Box<[Arc<Node>]>),
++}
++
++/// Immutable spatial sample tree with column-major public indices. Clones and scales retain its root;
++/// regional writes copy only touched sample blocks and their ancestor paths.
++#[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
++#[derive(Debug, Clone)]
++pub struct HeightFieldSamples {
++    nrows: usize,
++    ncols: usize,
++    capacity: usize,
++    root: Arc<Node>,
++}
++
++impl HeightFieldSamples {
++    pub(crate) fn new(array: Array2<Real>) -> Self {
++        fn build(array: &Array2<Real>, first: usize, capacity: usize, count: usize) -> Arc<Node> {
++            if capacity == BLOCK {
++                let tile_rows = array.nrows().div_ceil(EDGE);
++                let row = first % tile_rows * EDGE;
++                let column = first / tile_rows * EDGE;
++                let rows = EDGE.min(array.nrows() - row);
++                let columns = EDGE.min(array.ncols() - column);
++                let mut block = alloc::vec![0.0; rows * columns];
++                for j in 0..columns {
++                    for i in 0..rows {
++                        block[i + j * rows] = array[(row + i, column + j)];
++                    }
++                }
++                return Arc::new(Node::Leaf(block.into()));
++            }
++            let child_blocks = capacity / FANOUT / BLOCK;
++            Arc::new(Node::Branch(
++                (0..count.div_ceil(child_blocks))
++                    .map(|child| {
++                        build(
++                            array,
++                            first + child * child_blocks,
++                            capacity / FANOUT,
++                            child_blocks.min(count - child * child_blocks),
++                        )
++                    })
++                    .collect(),
++            ))
++        }
++        let count = array.nrows().div_ceil(EDGE) * array.ncols().div_ceil(EDGE);
++        let mut capacity = BLOCK;
++        while capacity < count * BLOCK {
++            capacity *= FANOUT;
++        }
++        Self {
++            nrows: array.nrows(),
++            ncols: array.ncols(),
++            capacity,
++            root: build(&array, 0, capacity, count),
++        }
++    }
++
++    /// Row count of the original column-major sample matrix.
++    pub fn nrows(&self) -> usize {
++        self.nrows
++    }
++    /// Column count of the original column-major sample matrix.
++    pub fn ncols(&self) -> usize {
++        self.ncols
++    }
++
++    pub(crate) fn heap_bytes(&self) -> usize {
++        let len = self.nrows.div_ceil(EDGE) * self.ncols.div_ceil(EDGE) * BLOCK;
++        let mut bytes = self.nrows * self.ncols * size_of::<Real>();
++        let mut capacity = BLOCK;
++        loop {
++            let count = len.div_ceil(capacity);
++            bytes += count * (size_of::<Node>() + 2 * size_of::<usize>());
++            if capacity == self.capacity {
++                break;
++            }
++            bytes += count * size_of::<Arc<Node>>();
++            capacity *= FANOUT;
++        }
++        bytes
++    }
++
++    #[inline]
++    fn block(&self, index: usize) -> &[Real] {
++        let mut node = self.root.as_ref();
++        let mut shift = self.capacity.trailing_zeros();
++        loop {
++            match node {
++                Node::Leaf(data) => return data,
++                Node::Branch(children) => {
++                    shift -= FANOUT.trailing_zeros();
++                    node = &children[(index >> shift) & (FANOUT - 1)];
++                }
++            }
++        }
++    }
++
++    #[inline]
++    fn address(&self, row: usize, column: usize) -> usize {
++        let block = row / EDGE + (column / EDGE) * self.nrows.div_ceil(EDGE);
++        block * BLOCK + row % EDGE + (column % EDGE) * EDGE.min(self.nrows - row / EDGE * EDGE)
++    }
++
++    /// Four cell samples share one spatial block in 94% of interior cells.
++    #[inline]
++    pub(crate) fn cell(&self, row: usize, column: usize) -> [Real; 4] {
++        if row % EDGE != EDGE - 1 && column % EDGE != EDGE - 1 {
++            let address = self.address(row, column);
++            let block = self.block(address);
++            let offset = address % BLOCK;
++            let stride = EDGE.min(self.nrows - row / EDGE * EDGE);
++            return [
++                block[offset],
++                block[offset + 1],
++                block[offset + stride],
++                block[offset + stride + 1],
++            ];
++        }
++        [
++            self[(row, column)],
++            self[(row + 1, column)],
++            self[(row, column + 1)],
++            self[(row + 1, column + 1)],
++        ]
++    }
++
++    /// Explicit column-major export, never used by contact or regional update paths.
++    pub fn to_vec(&self) -> Vec<Real> {
++        (0..self.ncols)
++            .flat_map(|column| (0..self.nrows).map(move |row| self[(row, column)]))
++            .collect()
++    }
++
++    pub(crate) fn write(&mut self, indices: &[u32], values: &[Real]) -> bool {
++        if indices.len() != values.len()
++            || indices
++                .iter()
++                .any(|i| *i as usize >= self.nrows * self.ncols)
++            || values.iter().any(|value| !value.is_finite())
++        {
++            return false;
++        }
++        fn set(node: &mut Arc<Node>, shift: u32, index: usize, value: Real) {
++            match Arc::make_mut(node) {
++                Node::Leaf(data) => data[index & (BLOCK - 1)] = value,
++                Node::Branch(children) => {
++                    let shift = shift - FANOUT.trailing_zeros();
++                    set(
++                        &mut children[(index >> shift) & (FANOUT - 1)],
++                        shift,
++                        index,
++                        value,
++                    );
++                }
++            }
++        }
++        for (&index, &value) in indices.iter().zip(values) {
++            let index = index as usize;
++            let address = self.address(index % self.nrows, index / self.nrows);
++            set(
++                &mut self.root,
++                self.capacity.trailing_zeros(),
++                address,
++                value,
++            );
++        }
++        true
++    }
++}
++
++impl core::ops::Index<(usize, usize)> for HeightFieldSamples {
++    type Output = Real;
++    #[inline]
++    fn index(&self, (row, column): (usize, usize)) -> &Real {
++        assert!(row < self.nrows && column < self.ncols);
++        let address = self.address(row, column);
++        &self.block(address)[address % BLOCK]
++    }
++}
+diff --git a/src/shape/mod.rs b/src/shape/mod.rs
+index dbb1ba2..7cc2fd5 100644
+--- a/src/shape/mod.rs
++++ b/src/shape/mod.rs
+@@ -114,6 +114,10 @@ mod cylinder;
+ #[cfg(feature = "dim3")]
+ #[cfg(feature = "alloc")]
+ mod heightfield3;
++#[cfg(all(feature = "dim3", feature = "alloc"))]
++mod heightfield_samples;
++#[cfg(all(feature = "dim3", feature = "alloc"))]
++pub use heightfield_samples::HeightFieldSamples;
+ #[cfg(feature = "dim3")]
+ mod polygonal_feature3d;
+ mod polygonal_feature_map;
+diff --git a/src/shape/polyline.rs b/src/shape/polyline.rs
+index 37760f8..b49f3ef 100644
+--- a/src/shape/polyline.rs
++++ b/src/shape/polyline.rs
+@@ -134,6 +134,19 @@ pub struct Polyline {
+ }
+ 
+ impl Polyline {
++    pub(crate) fn heap_bytes(&self) -> usize {
++        let bytes = self.bvh.heap_bytes()
++            + self.vertices.capacity() * size_of::<Vector>()
++            + self.indices.capacity() * size_of::<[u32; 2]>();
++        #[cfg(feature = "dim2")]
++        let bytes = bytes
++            + self
++                .pseudo_normals
++                .as_ref()
++                .map_or(0, |normals| normals.capacity() * size_of::<Vector>());
++        bytes
++    }
++
+     /// Creates a new polyline from a vertex buffer and an optional index buffer.
+     ///
+     /// This is the main constructor for creating a polyline. If no indices are provided,
+@@ -915,20 +928,20 @@ impl Polyline {
+         let normal1 = segment1.planar_normal(axis);
+ 
+         if let Some(normal1) = normal1 {
+-            proj.0.is_inside = match proj.1 .1 {
++            proj.0.is_inside = match proj.1.1 {
+                 SegmentPointLocation::OnVertex(i) => {
+                     let dir2 = if i == 0 {
+-                        let adj_seg = if proj.1 .0 == 0 {
++                        let adj_seg = if proj.1.0 == 0 {
+                             self.indices().len() as u32 - 1
+                         } else {
+-                            proj.1 .0 - 1
++                            proj.1.0 - 1
+                         };
+ 
+                         assert_eq!(segment1.a, self.segment(adj_seg).b);
+                         -self.segment(adj_seg).scaled_direction()
+                     } else {
+                         assert_eq!(i, 1);
+-                        let adj_seg = (proj.1 .0 + 1) % self.indices().len() as u32;
++                        let adj_seg = (proj.1.0 + 1) % self.indices().len() as u32;
+                         assert_eq!(segment1.b, self.segment(adj_seg).a);
+ 
+                         self.segment(adj_seg).scaled_direction()
+diff --git a/src/shape/shared_shape.rs b/src/shape/shared_shape.rs
+index b83c477..0b566d7 100644
+--- a/src/shape/shared_shape.rs
++++ b/src/shape/shared_shape.rs
+@@ -1,5 +1,5 @@
+ use super::TriMeshBuilderError;
+-use crate::math::{IVector, Pose, Real, Vector, DIM};
++use crate::math::{DIM, IVector, Pose, Real, Vector};
+ #[cfg(feature = "dim2")]
+ use crate::shape::ConvexPolygon;
+ #[cfg(feature = "serde-serialize")]
+@@ -12,7 +12,7 @@ use crate::shape::{
+ };
+ #[cfg(feature = "dim3")]
+ use crate::shape::{Cone, ConvexPolyhedron, Cylinder};
+-use crate::transformation::vhacd::{VHACDParameters, VHACD};
++use crate::transformation::vhacd::{VHACD, VHACDParameters};
+ use crate::transformation::voxelization::{FillMode, VoxelSet};
+ #[cfg(feature = "dim3")]
+ use crate::utils::Array2;
+@@ -92,6 +92,29 @@ impl fmt::Debug for SharedShape {
+ }
+ 
+ impl SharedShape {
++    /// Requested allocation bytes retained by this shape, including its Arc.
++    ///
++    /// Unknown custom/compound/voxel storage returns None, allowing bounded
++    /// derived caches to skip retention rather than assume a small allocation.
++    pub fn storage_bytes(&self) -> Option<usize> {
++        let heap = match self.as_typed_shape() {
++            TypedShape::TriMesh(shape) => shape.heap_bytes(),
++            TypedShape::Polyline(shape) => shape.heap_bytes(),
++            TypedShape::HeightField(shape) => shape.heap_bytes(),
++            #[cfg(feature = "dim3")]
++            TypedShape::ConvexPolyhedron(shape) => shape.heap_bytes(),
++            #[cfg(feature = "dim3")]
++            TypedShape::RoundConvexPolyhedron(shape) => shape.inner_shape.heap_bytes(),
++            #[cfg(feature = "dim2")]
++            TypedShape::ConvexPolygon(shape) => shape.heap_bytes(),
++            #[cfg(feature = "dim2")]
++            TypedShape::RoundConvexPolygon(shape) => shape.inner_shape.heap_bytes(),
++            TypedShape::Voxels(_) | TypedShape::Compound(_) | TypedShape::Custom(_) => return None,
++            _ => 0,
++        };
++        Some(size_of_val(self.as_ref()) + 2 * size_of::<usize>() + heap)
++    }
++
+     /// Wraps any shape type into a `SharedShape`.
+     ///
+     /// This constructor accepts any type that implements the [`Shape`] trait and wraps it
+diff --git a/src/shape/trimesh.rs b/src/shape/trimesh.rs
+index ed97962..07e40bb 100644
+--- a/src/shape/trimesh.rs
++++ b/src/shape/trimesh.rs
+@@ -169,7 +169,9 @@ pub enum TopologyError {
+     /// - Incorrectly constructed mesh from modeling software
+     /// - Manual mesh construction with inconsistent winding
+     /// - Merging separate meshes with different conventions
+-    #[error("the triangles {triangle1} and {triangle2} sharing the edge {edge:?} have opposite orientations.")]
++    #[error(
++        "the triangles {triangle1} and {triangle2} sharing the edge {edge:?} have opposite orientations."
++    )]
+     BadAdjacentTrianglesOrientation {
+         /// The first triangle, with an orientation opposite to the second triangle.
+         triangle1: u32,
+@@ -543,6 +545,29 @@ impl fmt::Debug for TriMesh {
+ }
+ 
+ impl TriMesh {
++    pub(crate) fn heap_bytes(&self) -> usize {
++        let bytes = self.bvh.heap_bytes()
++            + self.vertices.capacity() * size_of::<Vector>()
++            + self.indices.capacity() * size_of::<[u32; 3]>()
++            + self.topology.as_ref().map_or(0, |topology| {
++                topology.vertices.capacity() * size_of::<TopoVertex>()
++                    + topology.faces.capacity() * size_of::<TopoFace>()
++                    + topology.half_edges.capacity() * size_of::<TopoHalfEdge>()
++            })
++            + self.connected_components.as_ref().map_or(0, |components| {
++                (components.face_colors.capacity() + components.grouped_faces.capacity())
++                    * size_of::<u32>()
++                    + components.ranges.capacity() * size_of::<usize>()
++            });
++        #[cfg(feature = "dim3")]
++        let bytes = bytes
++            + self.pseudo_normals.as_ref().map_or(0, |normals| {
++                normals.vertices_pseudo_normal.capacity() * size_of::<Vector>()
++                    + normals.edges_pseudo_normal.capacity() * size_of::<[Vector; 3]>()
++            });
++        bytes
++    }
++
+     /// Creates a new triangle mesh from a vertex buffer and an index buffer.
+     ///
+     /// This is the most common way to construct a `TriMesh`. The mesh is created with
 diff --git a/src/shape/voxels/voxels.rs b/src/shape/voxels/voxels.rs
 index 892b9f5..b99daad 100644
 --- a/src/shape/voxels/voxels.rs
@@ -1834,398 +4614,239 @@ index 659f8b0..edcda43 100644
 +        }
 +    }
 +}
-diff --git a/crates/parry3d/tests/temporal_voxel_rotation.rs b/crates/parry3d/tests/temporal_voxel_rotation.rs
-new file mode 100644
-index 0000000..d728c97
---- /dev/null
-+++ b/crates/parry3d/tests/temporal_voxel_rotation.rs
-@@ -0,0 +1,41 @@
-+use parry3d::math::{IVector, Pose, Rotation, Vector};
-+use parry3d::query::{cast_shapes_nonlinear, NonlinearRigidMotion};
-+use parry3d::shape::{Cuboid, Shape, Voxels};
-+
-+fn compare_exhaustive(grid_motion: NonlinearRigidMotion, motion: NonlinearRigidMotion, shape: &dyn Shape, start: f32, end: f32) -> bool {
-+    let voxels=Voxels::from_regions(Vector::splat(0.1), &[[IVector::new(-8,-2,0),IVector::new(9,3,1)]]);
-+    let cube=Cuboid::new(Vector::splat(0.05));
-+    let mut earliest=None::<f32>;
-+    for voxel in voxels.voxels().filter(|voxel|!voxel.state.is_empty()) {
-+        let center=voxels.voxel_center(voxel.grid_coords);
-+        if let Some(hit)=cast_shapes_nonlinear(&grid_motion.prepend_translation(center),&cube,&motion,shape,start,end,true).unwrap() {
-+            if hit.time_of_impact<earliest.unwrap_or(end) {earliest=Some(hit.time_of_impact);}
-+        }
-+    }
-+    let actual=cast_shapes_nonlinear(&grid_motion,&voxels,&motion,shape,start,end,true).unwrap().map(|hit|hit.time_of_impact);
-+    assert_eq!(actual.is_some(),earliest.is_some(),"actual={actual:?} reference={earliest:?} start={start} end={end} motion={motion:?}");
-+    if let (Some(actual),Some(expected))=(actual,earliest) {assert!((actual-expected).abs()<=0.00003,"actual={actual} expected={expected}");}
-+    actual.is_some()
-+}
-+
-+#[test]
-+fn temporal_voxel_bounds_match_all_occupied_cells_with_eccentric_motion() {
-+    let shape=Cuboid::new(Vector::new(0.04,0.6,0.03));
-+    let mut hits=0;let mut misses=0;
-+    for grid_angle in [0.0,0.37] {for speed in [0.000001,-2.0,20.0,-20.0] {for start in [0.0,0.002,0.125] {for eccentric in [0.0,3.0] {
-+        let rotation=Rotation::from_rotation_y(grid_angle);
-+        let grid=NonlinearRigidMotion::constant_position(Pose::from_parts(Vector::new(-2.0,1.0,3.0),rotation));
-+        let initial=Pose::from_parts(Vector::new(-2.0,1.0,3.0)+rotation*Vector::new(0.0,0.0,-0.3),rotation);
-+        let motion=NonlinearRigidMotion::new(initial,Vector::new(eccentric,0.0,0.0),rotation*Vector::new(0.0,0.0,20.0),Vector::Y*speed);
-+        if compare_exhaustive(grid,motion,&shape,start,start+1.0/60.0){hits+=1}else{misses+=1}
-+    }}}}
-+    assert!(hits>0&&misses>0,"test must include both actual hits and separated trajectories");
-+}
-+
-+#[test]
-+fn full_and_multiple_rotations_preserve_mid_arc_hits() {
-+    let shape=Cuboid::new(Vector::new(0.04,0.8,0.04));
-+    for turns in [1.0,-1.0,3.0,-3.0] {
-+        assert!(compare_exhaustive(NonlinearRigidMotion::constant_position(Pose::IDENTITY),NonlinearRigidMotion::new(Pose::translation(0.0,0.0,-0.6),Vector::ZERO,Vector::ZERO,Vector::X*std::f32::consts::TAU*turns),&shape,0.0,1.0));
-+    }
-+}
-diff --git a/src/query/point/point_voxels.rs b/src/query/point/point_voxels.rs
-index 87a5b14..f837430 100644
---- a/src/query/point/point_voxels.rs
-+++ b/src/query/point/point_voxels.rs
-@@ -1,17 +1,21 @@
- use crate::math::{Real, Vector};
- use crate::query::{PointProjection, PointQuery};
--use crate::shape::{Cuboid, FeatureId, Voxels, VoxelsChunkRef};
-+use crate::shape::{FeatureId, Voxels, VoxelsChunkRef};
- 
- impl PointQuery for Voxels {
-     #[inline]
-     fn project_local_point(&self, pt: Vector, solid: bool) -> PointProjection {
-         self.chunk_bvh()
--            .project_point(pt, Real::MAX, |chunk_id, _| {
--                let chunk = self.chunk_ref(chunk_id);
--                chunk
--                    .project_local_point_and_get_vox_id(pt, solid)
--                    .map(|(proj, _)| proj)
--            })
-+            .find_best(
-+                Real::MAX,
-+                |node, _| node.aabb().distance_to_local_point(pt, true),
-+                |chunk_id, _| {
-+                    let chunk = self.chunk_ref(chunk_id);
-+                    chunk
-+                        .project_local_point_and_get_vox_id(pt, solid)
-+                        .map(|(proj, _)| (voxel_point_projection_cost(pt, &proj), proj))
-+                },
-+            )
-             .map(|res| res.1 .1)
-             .unwrap_or(PointProjection::new(false, Vector::splat(Real::MAX)))
-     }
-@@ -19,13 +23,22 @@ impl PointQuery for Voxels {
-     #[inline]
-     fn project_local_point_and_get_feature(&self, pt: Vector) -> (PointProjection, FeatureId) {
-         self.chunk_bvh()
--            .project_point_and_get_feature(pt, Real::MAX, |chunk_id, _| {
--                let chunk = self.chunk_ref(chunk_id);
--                // TODO: we need a way to return both the voxel id, and the feature on the voxel.
--                chunk
--                    .project_local_point_and_get_vox_id(pt, false)
--                    .map(|(proj, vox)| (proj, FeatureId::Face(vox)))
--            })
-+            .find_best(
-+                Real::MAX,
-+                |node, _| node.aabb().distance_to_local_point(pt, true),
-+                |chunk_id, _| {
-+                    let chunk = self.chunk_ref(chunk_id);
-+                    // TODO: we need a way to return both the voxel id, and the feature on the voxel.
-+                    chunk
-+                        .project_local_point_and_get_vox_id(pt, false)
-+                        .map(|(proj, vox)| {
-+                            (
-+                                voxel_point_projection_cost(pt, &proj),
-+                                (proj, FeatureId::Face(vox)),
-+                            )
-+                        })
-+                },
-+            )
-             .map(|res| res.1 .1)
-             .unwrap_or((
-                 PointProjection::new(false, Vector::splat(Real::MAX)),
-@@ -43,14 +56,20 @@ impl<'a> VoxelsChunkRef<'a> {
-     ) -> Option<(PointProjection, u32)> {
-         // TODO: optimize this naive implementation that just iterates on all the voxels
-         //       from this chunk.
--        let base_cuboid = Cuboid::new(self.parent.voxel_size() / 2.0);
-         let mut smallest_dist = Real::MAX;
-         let mut result = PointProjection::new(false, pt);
-         let mut result_vox_id = 0;
- 
-         for vox in self.voxels() {
--            let mut candidate = base_cuboid.project_local_point(pt - vox.center, solid);
--            candidate.point += vox.center;
-+            // Use the same rounded bounds as voxel ray queries. Subtracting the
-+            // center before comparing half-extents can open an f32 seam.
-+            let candidate = self
-+                .parent
-+                .voxel_aabb(vox.grid_coords)
-+                .project_local_point(pt, solid);
-+            if solid && candidate.is_inside {
-+                return Some((candidate, vox.linear_id.flat_id() as u32));
-+            }
- 
-             let candidate_dist = (candidate.point - pt).length();
-             if candidate_dist < smallest_dist {
-@@ -63,3 +82,14 @@ impl<'a> VoxelsChunkRef<'a> {
-         (smallest_dist < Real::MAX).then_some((result, result_vox_id as u32))
-     }
+diff --git a/src/utils/array2.rs b/src/utils/array2.rs
+index 70a220a..e46a11f 100644
+--- a/src/utils/array2.rs
++++ b/src/utils/array2.rs
+@@ -12,6 +12,11 @@ pub struct Array2<T> {
  }
-+
-+// A zero rounded norm outside the shape must not prune a genuinely inside
-+// projection from another chunk. This changes search cost, not geometry.
-+fn voxel_point_projection_cost(pt: Vector, projection: &PointProjection) -> Real {
-+    let distance = projection.point.distance(pt);
-+    if distance == 0.0 && !projection.is_inside {
-+        Real::MIN_POSITIVE
-+    } else {
-+        distance
+ 
+ impl<T> Array2<T> {
++    #[cfg(feature = "dim3")]
++    pub(crate) fn heap_bytes(&self) -> usize {
++        self.data.capacity() * size_of::<T>()
 +    }
-+}
-diff --git a/crates/parry3d/tests/voxel_point_seams.rs b/crates/parry3d/tests/voxel_point_seams.rs
++
+     /// Creates a new 2D array from the given dimensions and data.
+     #[inline]
+     pub fn new(nrows: usize, ncols: usize, data: Vec<T>) -> Self {
+diff --git a/src/utils/vec_map.rs b/src/utils/vec_map.rs
+index daa3246..e784e4b 100644
+--- a/src/utils/vec_map.rs
++++ b/src/utils/vec_map.rs
+@@ -29,7 +29,7 @@
+ use self::Entry::*;
+ 
+ use alloc::vec::{self, Vec};
+-use core::cmp::{max, Ordering};
++use core::cmp::{Ordering, max};
+ use core::fmt;
+ use core::hash::{Hash, Hasher};
+ use core::iter::{Enumerate, FilterMap, FromIterator};
+@@ -128,6 +128,10 @@ impl<V: Hash> Hash for VecMap<V> {
+ }
+ 
+ impl<V> VecMap<V> {
++    pub(crate) fn heap_bytes(&self) -> usize {
++        self.v.capacity() * size_of::<Option<V>>()
++    }
++
+     /// Creates an empty `VecMap`.
+     ///
+     /// # Examples
+diff --git a/crates/parry3d/tests/rotating_voxel_sweep.rs b/crates/parry3d/tests/rotating_voxel_sweep.rs
 new file mode 100644
 --- /dev/null
-+++ b/crates/parry3d/tests/voxel_point_seams.rs
-@@ -0,0 +1,188 @@
-+use parry3d::math::{IVector, Pose, Rotation, Vector};
-+use parry3d::query::PointQuery;
-+use parry3d::shape::Voxels;
++++ b/crates/parry3d/tests/rotating_voxel_sweep.rs
+@@ -0,0 +1,191 @@
++use parry3d::math::{IVector, Pose, Real, Rotation, Vector};
++use parry3d::query::{
++    details::cast_shapes_nonlinear_voxels_shape, ClosestPoints, Contact, DefaultQueryDispatcher,
++    NonlinearRigidMotion, QueryDispatcher, ShapeCastHit, ShapeCastOptions, Unsupported,
++};
++use parry3d::shape::{Ball, Cuboid, Shape, Voxels};
++use std::sync::atomic::{AtomicUsize, Ordering};
 +
-+fn assert_reference(voxels: &Voxels, point: Vector) {
-+    let expected_inside = voxels
-+        .voxels()
-+        .any(|v| voxels.voxel_aabb(v.grid_coords).contains_local_point(point));
-+    let result = voxels.project_local_point(point, true);
-+    assert_eq!(
-+        result.is_inside, expected_inside,
-+        "point={point:?}, result={result:?}"
-+    );
-+    assert_eq!(voxels.contains_local_point(point), expected_inside);
-+    if expected_inside {
-+        assert_eq!(result.point, point);
-+    } else {
-+        let distance = voxels
-+            .voxels()
-+            .map(|v| {
-+                voxels
-+                    .voxel_aabb(v.grid_coords)
-+                    .distance_to_local_point(point, true)
-+            })
-+            .fold(f32::MAX, f32::min);
-+        assert!(
-+            (result.point.distance(point) - distance).abs()
-+                <= 4.0 * f32::EPSILON * (1.0 + distance)
-+        );
++#[derive(Default)]
++struct Counting(AtomicUsize);
++impl QueryDispatcher for Counting {
++    fn intersection_test(
++        &self,
++        p: &Pose,
++        a: &dyn Shape,
++        b: &dyn Shape,
++    ) -> Result<bool, Unsupported> {
++        DefaultQueryDispatcher.intersection_test(p, a, b)
++    }
++    fn distance(&self, p: &Pose, a: &dyn Shape, b: &dyn Shape) -> Result<Real, Unsupported> {
++        DefaultQueryDispatcher.distance(p, a, b)
++    }
++    fn contact(
++        &self,
++        p: &Pose,
++        a: &dyn Shape,
++        b: &dyn Shape,
++        d: Real,
++    ) -> Result<Option<Contact>, Unsupported> {
++        DefaultQueryDispatcher.contact(p, a, b, d)
++    }
++    fn closest_points(
++        &self,
++        p: &Pose,
++        a: &dyn Shape,
++        b: &dyn Shape,
++        d: Real,
++    ) -> Result<ClosestPoints, Unsupported> {
++        DefaultQueryDispatcher.closest_points(p, a, b, d)
++    }
++    fn cast_shapes(
++        &self,
++        p: &Pose,
++        v: Vector,
++        a: &dyn Shape,
++        b: &dyn Shape,
++        o: ShapeCastOptions,
++    ) -> Result<Option<ShapeCastHit>, Unsupported> {
++        DefaultQueryDispatcher.cast_shapes(p, v, a, b, o)
++    }
++    fn cast_shapes_nonlinear(
++        &self,
++        m: &NonlinearRigidMotion,
++        a: &dyn Shape,
++        n: &NonlinearRigidMotion,
++        b: &dyn Shape,
++        s: Real,
++        e: Real,
++        stop: bool,
++    ) -> Result<Option<ShapeCastHit>, Unsupported> {
++        self.0.fetch_add(1, Ordering::Relaxed);
++        DefaultQueryDispatcher.cast_shapes_nonlinear(m, a, n, b, s, e, stop)
 +    }
 +}
 +
 +#[test]
-+fn adjacent_tenth_cells_include_shared_faces_edges_and_corners() {
-+    for base in [IVector::new(139, 139, 139), IVector::new(-141, -141, -141)] {
-+        let cells: Vec<_> = (0..2)
-+            .flat_map(|x| {
-+                (0..2).flat_map(move |y| (0..2).map(move |z| base + IVector::new(x, y, z)))
-+            })
-+            .collect();
-+        let voxels = Voxels::new(Vector::splat(0.1), &cells);
-+        let center: f32 = if base.x > 0 { 14.0 } else { -14.0 };
-+        for x in [center.next_down(), center, center.next_up()] {
-+            for y in [center.next_down(), center, center.next_up()] {
-+                for z in [center.next_down(), center, center.next_up()] {
-+                    assert_reference(&voxels, Vector::new(x, y, z));
-+                    assert!(voxels.contains_local_point(Vector::new(x, y, z)));
-+                }
-+            }
-+        }
-+    }
-+}
-+
-+#[test]
-+fn isolated_exterior_faces_and_empty_holes_use_existing_voxel_bounds() {
-+    let cells = [
-+        IVector::new(0, 139, 0),
-+        IVector::new(0, 141, 0),
-+        IVector::new(-33, -1, -33),
-+    ];
-+    let voxels = Voxels::new(Vector::new(0.1, 0.1, 0.2), &cells);
-+    for v in voxels.voxels() {
-+        let bounds = voxels.voxel_aabb(v.grid_coords);
-+        for x in [
-+            bounds.mins.x.next_down(),
-+            bounds.mins.x,
-+            bounds.maxs.x,
-+            bounds.maxs.x.next_up(),
-+        ] {
-+            for y in [
-+                bounds.mins.y.next_down(),
-+                bounds.mins.y,
-+                bounds.maxs.y,
-+                bounds.maxs.y.next_up(),
-+            ] {
-+                for z in [
-+                    bounds.mins.z.next_down(),
-+                    bounds.mins.z,
-+                    bounds.maxs.z,
-+                    bounds.maxs.z.next_up(),
-+                ] {
-+                    assert_reference(&voxels, Vector::new(x, y, z));
-+                }
-+            }
-+        }
-+    }
-+    assert!(!voxels.contains_local_point(Vector::new(0.05, 14.05, 0.1)));
-+}
-+
-+#[test]
-+fn transformed_queries_compare_after_the_actual_inverse_pose() {
-+    let voxels = Voxels::from_regions(
-+        Vector::splat(0.1),
-+        &[[IVector::new(0, 139, 0), IVector::new(2, 141, 2)]],
-+    );
-+    for pose in [
-+        Pose::translation(96.0, -6.063216e-8, 64.0),
-+        Pose::from_parts(
-+            Vector::new(-5.0, 3.0, -7.0),
-+            Rotation::from_rotation_y(0.37),
-+        ),
-+    ] {
-+        for local in [
-+            Vector::new(0.05, 14.0, 0.05),
-+            Vector::new(0.15, 14.05, 0.15),
-+            Vector::new(0.4, 14.05, -0.1),
-+        ] {
-+            let world = pose.transform_point(local);
-+            let actual_local = pose.inverse_transform_point(world);
-+            let expected = voxels.voxels().any(|v| {
-+                voxels
-+                    .voxel_aabb(v.grid_coords)
-+                    .contains_local_point(actual_local)
-+            });
-+            assert_eq!(voxels.contains_point(&pose, world), expected);
-+            assert_eq!(voxels.project_point(&pose, world, true).is_inside, expected);
-+        }
-+    }
-+}
-+
-+#[test]
-+fn chunk_boundaries_and_nonsolid_projection_match_existing_voxel_aabbs() {
-+    let cells = [
-+        IVector::new(31, 139, 0),
-+        IVector::new(32, 140, 0),
-+        IVector::new(-33, -140, 0),
-+        IVector::new(-32, -141, 0),
-+    ];
-+    let voxels = Voxels::new(Vector::splat(0.1), &cells);
-+    for voxel in voxels.voxels() {
-+        let bounds = voxels.voxel_aabb(voxel.grid_coords);
-+        for point in [
-+            bounds.mins,
-+            bounds.maxs,
-+            bounds.center(),
-+            bounds.mins - Vector::splat(0.001),
-+            bounds.maxs + Vector::splat(0.001),
-+        ] {
-+            assert_reference(&voxels, point);
-+            let expected = voxels
-+                .voxels()
-+                .map(|v| {
-+                    voxels
-+                        .voxel_aabb(v.grid_coords)
-+                        .project_local_point(point, false)
-+                        .point
-+                        .distance(point)
-+                })
-+                .fold(f32::MAX, f32::min);
-+            let projected = voxels.project_local_point(point, false);
-+            let featured = voxels.project_local_point_and_get_feature(point).0;
-+            for result in [projected, featured] {
-+                assert!(
-+                    (result.point.distance(point) - expected).abs()
-+                        <= 4.0 * f32::EPSILON * (1.0 + expected)
-+                );
-+            }
-+        }
-+    }
-+}
-+
-+#[test]
-+fn rounded_zero_distance_outside_does_not_hide_an_inside_chunk() {
-+    let voxels = Voxels::new(
-+        Vector::splat(0.1),
-+        &[
-+            IVector::new(-1, -1, -1),
-+            IVector::new(0, -1, -1),
-+            IVector::new(-1, 0, -1),
-+            IVector::new(-1, -1, 0),
-+        ],
-+    );
-+    for axis in 0..3 {
-+        for near_zero in [-f32::from_bits(1), -1.0e-30, -1.0e-24] {
-+            let mut point = Vector::splat(-0.05);
-+            point[axis] = near_zero;
-+            assert_reference(&voxels, point);
-+            assert!(voxels.contains_local_point(point));
-+            assert!(voxels.project_local_point(point, false).is_inside);
-+            assert!(
-+                voxels
-+                    .project_local_point_and_get_feature(point)
-+                    .0
-+                    .is_inside
-+            );
-+        }
-+    }
-+}
-diff --git a/crates/parry3d/tests/coalesced_voxel_ccd.rs b/crates/parry3d/tests/coalesced_voxel_ccd.rs
-new file mode 100644
-index 0000000..76580c7
---- /dev/null
-+++ b/crates/parry3d/tests/coalesced_voxel_ccd.rs
-@@ -0,0 +1,47 @@
-+use parry3d::math::{IVector, Pose, Rotation, Vector};
-+use parry3d::query::{cast_shapes_nonlinear, NonlinearRigidMotion};
-+use parry3d::shape::{Cuboid, Voxels};
-+
-+#[test]
-+fn continuous_queries_match_the_occupied_solid() {
++fn a_separated_rotating_grid_does_not_dispatch_each_occupied_cell() {
 +    let voxels = Voxels::from_regions(Vector::splat(0.1), &[[IVector::ZERO, IVector::splat(8)]]);
-+    let solid = Cuboid::new(Vector::splat(0.4));
-+    let fast = Cuboid::new(Vector::new(0.09, 0.15, 0.05));
++    let grid =
++        NonlinearRigidMotion::new(Pose::IDENTITY, Vector::splat(0.4), Vector::ZERO, Vector::Y);
++    let other = NonlinearRigidMotion::constant_position(Pose::translation(4.0, 0.0, 0.0));
++    let count = Counting::default();
++    assert!(cast_shapes_nonlinear_voxels_shape(
++        &count,
++        &grid,
++        &voxels,
++        &other,
++        &Cuboid::new(Vector::splat(0.1)),
++        0.0,
++        0.05,
++        false
++    )
++    .is_none());
++    assert_eq!(count.0.load(Ordering::Relaxed), 0);
++}
++
++// Independent exhaustive occupied-cell reference retains the original motion,
++// iteration order, narrowing horizon and witness transform.
++fn unpruned(
++    v: &Voxels,
++    m: &NonlinearRigidMotion,
++    s: &dyn Shape,
++    n: &NonlinearRigidMotion,
++    start: Real,
++    end: Real,
++    stop: bool,
++) -> Option<ShapeCastHit> {
++    let cube = Cuboid::new(v.voxel_size() / 2.0);
++    let mut result = None;
++    let mut earliest = end;
++    for cell in v.voxels().filter(|x| !x.state.is_empty()) {
++        let center = v.voxel_center(cell.grid_coords);
++        if let Some(mut h) = DefaultQueryDispatcher
++            .cast_shapes_nonlinear(
++                &m.prepend_translation(center),
++                &cube,
++                n,
++                s,
++                start,
++                earliest,
++                stop,
++            )
++            .unwrap()
++        {
++            h.witness1 += center;
++            earliest = h.time_of_impact;
++            result = Some(h);
++        }
++    }
++    result
++}
++
++#[test]
++fn pruning_preserves_rotating_grid_hits_holes_and_nonzero_substeps() {
++    let cells: Vec<_> = (0..4)
++        .flat_map(|x| {
++            (0..3).flat_map(move |y| {
++                (0..4)
++                    .filter(move |&z| (x + y + z) % 3 != 0)
++                    .map(move |z| IVector::new(x, y, z))
++            })
++        })
++        .collect();
++    let grid = Voxels::new(Vector::new(0.1, 0.2, 0.15), &cells);
++    let cube = Cuboid::new(Vector::new(0.08, 0.15, 0.12));
++    let ball = Ball::new(0.13);
 +    let mut cases = 0;
++    let mut hits = 0;
 +    for shift in [Vector::ZERO, Vector::new(90.0, 14.0, 35.0)] {
-+        let grid =
-+            NonlinearRigidMotion::constant_position(Pose::from_parts(shift, Rotation::IDENTITY));
-+        let whole = grid.prepend_translation(Vector::splat(0.4));
-+        for origin_x in [-0.5, -0.06, 0.04, 0.4, 0.76, 0.86, 1.3] {
-+            for velocity in [-20.0, -1.0, 1.0, 20.0] {
-+                for angular in [0.0, 0.2, -2.0, 8.0] {
-+                    for stop in [false, true] {
-+                        let motion = NonlinearRigidMotion::new(
++        for angular in [
++            Vector::Y * 0.2,
++            Vector::new(1.0, -3.0, 2.0),
++            Vector::Y * 80.0,
++        ] {
++            let m = NonlinearRigidMotion::new(
++                Pose::from_parts(shift, Rotation::from_rotation_x(0.31)),
++                Vector::new(0.19, 0.4, -0.1),
++                Vector::new(0.5, -0.1, 0.2),
++                angular,
++            );
++            for x in [-0.3, 0.0, 0.2, 0.55, 1.1] {
++                for velocity in [Vector::ZERO, Vector::new(-8.0, 0.4, 0.2)] {
++                    for target_angular in [Vector::ZERO, Vector::new(3.0, 1.0, -2.0)] {
++                        let n = NonlinearRigidMotion::new(
 +                            Pose::from_parts(
-+                                shift + Vector::new(origin_x, 0.4, 0.4),
-+                                Rotation::from_rotation_y(0.37),
++                                shift + Vector::new(x, 0.3, 0.3),
++                                Rotation::from_rotation_y(0.4),
 +                            ),
-+                            Vector::new(0.01, -0.02, 0.0),
-+                            Vector::X * velocity,
-+                            Vector::Y * angular,
++                            Vector::new(0.07, -0.02, 0.01),
++                            velocity,
++                            target_angular,
 +                        );
-+                        let query =
-+                            |shape: &dyn parry3d::shape::Shape, grid: &NonlinearRigidMotion| {
-+                                cast_shapes_nonlinear(grid, shape, &motion, &fast, 0.0, 0.1, stop)
-+                                    .unwrap()
-+                                    .map(|h| h.time_of_impact)
-+                            };
-+                        let expected = query(&solid, &whole);
-+                        let actual = query(&voxels, &grid);
-+                        assert_eq!(actual.is_some(), expected.is_some(), "shift={shift:?} x={origin_x} velocity={velocity} angular={angular} stop={stop} actual={actual:?} expected={expected:?}");
-+                        if let (Some(a), Some(b)) = (actual, expected) {
-+                            assert!((a-b).abs()<0.0001, "x={origin_x} velocity={velocity} angular={angular} stop={stop} actual={a} expected={b}");
++                        for s in [&cube as &dyn Shape, &ball as &dyn Shape] {
++                            for start in [0.0, 0.03] {
++                                for stop in [false, true] {
++                                    let expected =
++                                        unpruned(&grid, &m, s, &n, start, start + 0.05, stop);
++                                    let actual = cast_shapes_nonlinear_voxels_shape(
++                                        &DefaultQueryDispatcher,
++                                        &m,
++                                        &grid,
++                                        &n,
++                                        s,
++                                        start,
++                                        start + 0.05,
++                                        stop,
++                                    );
++                                    assert_eq!(format!("{actual:?}"),format!("{expected:?}"),"case {cases} shift={shift:?} angular={angular:?} x={x} velocity={velocity:?} targetAngular={target_angular:?} start={start} stop={stop}");
++                                    hits += actual.is_some() as usize;
++                                    cases += 1;
++                                }
++                            }
 +                        }
-+                        cases += 1;
 +                    }
 +                }
 +            }
 +        }
 +    }
-+    assert_eq!(cases, 448);
++    assert_eq!(cases, 960);
++    assert!(hits > 100 && hits < cases);
 +}

@@ -1,3 +1,4 @@
+import type { AssetHandle } from '@forgeax/engine-types';
 // Reproduce Bevy's `spatial_audio_3d` example.
 //
 // The emitter uses the declarative AudioSource path. The browser gesture starts
@@ -10,7 +11,7 @@ import { WebAudioEngine, webAudioPlugin } from '@forgeax/engine-audio-webaudio';
 import { Update, Time } from '@forgeax/engine-ecs';
 import { INPUT_SNAPSHOT_RESOURCE_KEY, type InputSnapshot } from '@forgeax/engine-input';
 import { AssetGuid } from '@forgeax/engine-pack/guid';
-import { type AudioClipAsset, type Handle } from '@forgeax/engine-types';
+
 import { Transform } from '@forgeax/engine-scene';
 import { EngineEnvironmentError } from '@forgeax/engine-runtime';
 import { forgeaxBundlerAdapter } from 'virtual:forgeax/bundler';
@@ -48,15 +49,15 @@ if (assets === undefined) throw new Error('bevy-spatial-audio-3d: assets unavail
 configureRuntimeAssetCatalog(assets, runtimeBinding);
 const audioEngine = world.getResource<WebAudioEngine>('AudioEngine');
 
-let clipHandle: Handle<'AudioClipAsset', 'shared'> = HANDLE_NONE;
+let clipHandle: AssetHandle<'audio'> = HANDLE_NONE;
 let loaded = false;
 const guid = AssetGuid.parse(SFX_GUID);
 if (!guid.ok) {
   console.error('[bevy-spatial-audio-3d] invalid SFX GUID:', SFX_GUID);
 } else {
-  const clipResult = await assets.loadByGuid<AudioClipAsset>(guid.value);
+  const clipResult = await assets.load(guid.value, 'audio');
   if (clipResult.ok) {
-    clipHandle = world.allocSharedRef('AudioClipAsset', clipResult.value);
+    clipHandle = clipResult.value;
     loaded = true;
     world.set(scene.emitter, AudioSource, {
       clip: clipHandle,

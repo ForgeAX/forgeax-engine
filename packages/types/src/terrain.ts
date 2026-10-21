@@ -1,10 +1,15 @@
+import type { AssetHandle } from './asset-handle.js';
+
+/** Source GUIDs are linked to owned handles when admitted to the runtime. */
+type TerrainReference<K extends string> = string | AssetHandle<K>;
+
 /** Ordered Landscape layer semantics; alpha layers composite after the weight group. */
 export type TerrainLayer =
-  | { readonly material: string; readonly blend: 'weight' | 'alpha' }
+  | { readonly material: TerrainReference<'material'>; readonly blend: 'weight' | 'alpha' }
   | {
-      readonly material: string;
+      readonly material: TerrainReference<'material'>;
       readonly blend: 'height';
-      readonly height: string;
+      readonly height: TerrainReference<'texture'>;
       readonly heightRange: readonly [number, number];
     };
 
@@ -27,9 +32,9 @@ export interface TerrainSection {
   readonly minHeight: number;
   readonly maxHeight: number;
   readonly activeLayers: readonly number[];
-  readonly heightTexture: string;
-  readonly weightTexture: string;
-  readonly material: string;
+  readonly heightTexture: TerrainReference<'texture'>;
+  readonly weightTexture: TerrainReference<'texture'>;
+  readonly material: TerrainReference<'material'>;
 }
 
 /** Cook policy; compact controls are derived data, never the author painting format. */
@@ -44,7 +49,7 @@ export interface TerrainAsset extends TerrainSource {
   readonly heightRange: readonly [number, number];
   readonly sections: readonly TerrainSection[];
   /** Shared integer-LOD grid meshes, finest first. */
-  readonly grids: readonly string[];
+  readonly grids: readonly TerrainReference<'mesh'>[];
 }
 
 export type TerrainErrorCode =

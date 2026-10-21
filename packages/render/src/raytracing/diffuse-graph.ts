@@ -7,7 +7,11 @@ import type { Result } from '@forgeax/engine-types';
 import { VIEW_UNIFORM_BYTES } from '../record/view-ubo';
 import type { RenderPipelineFrame, RenderPipelineTarget } from '../render-pipeline';
 import { RAY_PATH_STRIDE } from './path-tracer';
-import { addRayReconstructionPasses, importRayMaterialTextures } from './ray-graph-shared';
+import {
+  addRayDiffuseCompositePass,
+  addRayReconstructionPasses,
+  importRayMaterialTextures,
+} from './ray-graph-shared';
 import { addRayReflectionPasses } from './reflections-graph';
 import type { PreparedRayDiffuse } from './renderer-diffuse';
 
@@ -123,40 +127,16 @@ export function addRayDiffusePasses(
   }
   const reflectionResponse =
     prepared.reflections === undefined ? undefined : target.reflection?.response.view;
-  const composited = graph.addRasterPass('ray-diffuse.composite', {
-    accesses: [
-      { resource: target.scene.view, usage: 'color-attachment' },
-      { resource: irradiance, usage: 'storage-read' },
-      { resource: target.depth, usage: 'sampled-read' },
-      { resource: target.normal.view, usage: 'sampled-read' },
-      { resource: target.albedo.view, usage: 'sampled-read' },
-      { resource: target.f0.view, usage: 'sampled-read' },
-      { resource: view, usage: 'uniform-read' },
-      ...(reflectionResponse === undefined
-        ? []
-        : [{ resource: reflectionResponse, usage: 'sampled-read' as const }]),
-    ],
-    colorAttachments: [{ view: target.scene.view, loadOp: 'load', storeOp: 'store' }],
-    encode: ({ pass, resources }) => {
-      prepared.composite
-        .record(
-          pass,
-          {
-            irradiance: resources.buffer(irradiance).unwrap(),
-            ...(reflectionResponse === undefined
-              ? {}
-              : { reflectionResponse: resources.textureView(reflectionResponse).unwrap() }),
-            depth: resources.textureView(target.depth).unwrap(),
-            normal: resources.textureView(target.normal.view).unwrap(),
-            albedoMetallic: resources.textureView(target.albedo.view).unwrap(),
-            f0Occlusion: resources.textureView(target.f0.view).unwrap(),
-            view: { buffer: resources.buffer(view).unwrap(), size: VIEW_UNIFORM_BYTES },
-          },
-          prepared.pixelCount,
-        )
-        .unwrap();
-    },
-  });
+  const composited = addRayDiffuseCompositePass(
+    graph,
+    'ray-diffuse.composite',
+    () => prepared.composite,
+    target,
+    irradiance,
+    view,
+    prepared.pixelCount,
+    reflectionResponse,
+  );
   if (!composited.ok || prepared.reflections === undefined || target.reflection === undefined)
     return composited;
   return addRayReflectionPasses(

@@ -17,34 +17,39 @@ import {
   pixelOffset,
   readBarrelPixels,
 } from './barrel-distortion-gpu-fixture';
+import { testAssets } from './helpers/runtime-assets';
+import { renderValue } from './standard-gbuffer-replay.fixture';
 
 it('renders two-axis normalScale zero as a flat normal and one as the authored perturbation', async () => {
   const fixture = await createBarrelRendererFixture({ width: 64, height: 64 });
   const world = new World();
   try {
-    const lease = fixture.renderer.attach(world).unwrap();
-    const mesh = world.allocSharedRef('MeshAsset', createPlaneGeometry(2.8, 2.8).unwrap());
-    const normal = world.allocSharedRef('TextureAsset', {
-      kind: 'texture',
-      shape: { viewDimension: '2d', extent: { width: 1, height: 1 } },
-      format: 'rgba8unorm',
-      colorSpace: 'linear',
-      mips: { kind: 'none' },
-      data: new Uint8Array([240, 128, 255, 255]),
-    } satisfies TextureAsset);
+    const lease = renderValue(fixture.renderer.attach(world));
+    const mesh = testAssets(world).create(createPlaneGeometry(2.8, 2.8).unwrap()).unwrap();
+    const normal = testAssets(world)
+      .create({
+        kind: 'texture',
+        shape: { viewDimension: '2d', extent: { width: 1, height: 1 } },
+        format: 'rgba8unorm',
+        colorSpace: 'linear',
+        mips: { kind: 'none' },
+        data: new Uint8Array([240, 128, 255, 255]),
+      } satisfies TextureAsset)
+      .unwrap();
     const material = (scale?: number) =>
-      world.allocSharedRef(
-        'MaterialAsset',
-        Materials.standard({
-          baseColor: [0.5, 0.5, 0.5, 1],
-          metallic: 0,
-          roughness: 1,
-          renderState: { cullMode: 'none' },
-          ...(scale === undefined
-            ? {}
-            : { normalTexture: { texture: normal }, normalScale: [scale, scale] }),
-        }),
-      );
+      testAssets(world)
+        .create(
+          Materials.standard({
+            baseColor: [0.5, 0.5, 0.5, 1],
+            metallic: 0,
+            roughness: 1,
+            renderState: { cullMode: 'none' },
+            ...(scale === undefined
+              ? {}
+              : { normalTexture: { texture: normal }, normalScale: [scale, scale] }),
+          }),
+        )
+        .unwrap();
     const receiver = world
       .spawn(
         { component: Transform, data: {} },

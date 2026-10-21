@@ -1,4 +1,4 @@
-import { type BrowserFrameSubmitted, subscribeBrowserFrameSubmitted } from '@forgeax/engine-app';
+import { type BrowserFrameCompleted, type BrowserFrameSubmitted, FORGEAX_FRAME_COMPLETED_EVENT, subscribeBrowserFrameSubmitted } from '@forgeax/engine-app';
 import { createApp } from '@forgeax/engine-app/browser';
 import { World } from '@forgeax/engine-ecs';
 import { expect, it } from 'vitest';
@@ -32,6 +32,11 @@ async function fixture(
       { shaderManifestUrl: new URL('/shaders/manifest.json', location.href).href },
     )
   ).unwrap();
+  const completed: BrowserFrameCompleted[] = [];
+  const onCompleted = (event: Event) => {
+    completed.push((event as CustomEvent<BrowserFrameCompleted>).detail);
+  };
+  canvas.addEventListener(FORGEAX_FRAME_COMPLETED_EVENT, onCompleted);
   const submitted: BrowserFrameSubmitted[] = [];
   const unsubscribe = subscribeBrowserFrameSubmitted(canvas, (frame) => submitted.push(frame));
   return {
@@ -40,12 +45,17 @@ async function fixture(
     channel,
     messages,
     submitted,
+    readyFrame() {
+      const ready = completed.find(frame => frame.presentation === 'ready');
+      return ready && submitted.find(frame => frame.frameId === ready.frameId && frame.deviceGeneration === ready.deviceGeneration);
+    },
     releaseFirstFrame() {
       witness.postMessage({ kind: 'release-first-frame' });
     },
     async dispose() {
       const result = await app.dispose();
       unsubscribe();
+      canvas.removeEventListener(FORGEAX_FRAME_COMPLETED_EVENT, onCompleted);
       witness.close();
       channel.port1.close();
       app.canvas?.remove();
@@ -148,8 +158,8 @@ it.each([
   const f = await fixture({}, tier);
   try {
     f.app.start().unwrap();
-    await expect.poll(() => f.submitted.length, { timeout: 30_000 }).toBeGreaterThan(0);
-    const frame = f.submitted[0];
+    await expect.poll(() => f.readyFrame(), { timeout: 30_000 }).toBeDefined();
+    const frame = f.readyFrame();
     expect(frame?.graphGeneration).toBeGreaterThan(0);
     expect(frame?.barrelDistortion).toMatchObject({ width: 64, height: 64 });
     // Picking must use the transported picture even with a different live World.

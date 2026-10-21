@@ -227,18 +227,17 @@ const woodTexAsset = {
   mips: woodDecoded.mipmap ? { kind: 'generate' } : { kind: 'none' },
 };
 
-const world = new World();
+const world = new World({ assets: assets });
 const worldAttachment1 = renderer.attach(world);
 if (!worldAttachment1.ok) throw worldAttachment1.error;
 const lease = worldAttachment1.value;
 
 // Catalogue the texture under its GUID, then mint a shared-ref column handle.
-assets.catalog(woodGuidRes.value, woodTexAsset);
-const woodHandle = world.allocSharedRef('TextureAsset', woodTexAsset);
+const woodHandle = world.assets.create(woodTexAsset).unwrap();
 console.log(`[learn-render-5-1-blinn-phong] registered wood handle id=${woodHandle}`);
 
 // Register material with the custom shader.
-const matHandle = world.allocSharedRef('MaterialAsset', {
+const matHandle = world.assets.create({
   kind: 'material',
   passes: [
     {
@@ -250,7 +249,7 @@ const matHandle = world.allocSharedRef('MaterialAsset', {
   values: {
     baseColorTexture: unwrapHandle(woodHandle),
   },
-});
+}).unwrap();
 
 // Floor plane: 20x20 on XZ at y=-0.5, normal +Y facing the overhead light
 // at the origin (LIGHT_POS in blinn-phong.wgsl). The procedural plane faces
@@ -260,7 +259,7 @@ if (!floorRes.ok) {
   console.error('[smoke] FAIL - createPlaneGeometry failed:', floorRes.error.code);
   process.exit(1);
 }
-const floorHandle = world.allocSharedRef('MeshAsset', floorRes.value);
+const floorHandle = world.assets.create(floorRes.value).unwrap();
 world
   .spawn(
     {

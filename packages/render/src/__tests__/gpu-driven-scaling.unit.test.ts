@@ -1,24 +1,22 @@
 import { mat4, vec3 } from '@forgeax/engine-math';
 import { beforeAll, describe, expect, it } from 'vitest';
-import {
-  BatchTopology,
-  batchLodLevelCount,
-  batchVisibleSpan,
-  projectedHeightForCandidate,
-} from '../gpu-driven/batch-topology';
+import { batchLodLevelCount, batchVisibleSpan } from '../gpu-driven/batch-layout';
+import { BatchTopology, projectedHeightForCandidate } from '../gpu-driven/batch-topology';
 import { deriveGpuDrivenViewBufferCapacities } from '../gpu-driven/view-gpu';
+import { MaterialResource } from '../material-resource';
 import { makeZeroCameraFallbackSnapshot } from '../record/frame-snapshot';
 import type { MaterialSnapshot, RenderableSnapshot } from '../render-system-extract';
+import type { FrameList } from '../scene/frame-list';
 import { RenderScene } from '../scene/render-scene';
 import { projectedHeight as measureProjectedHeight } from '../scene/visibility/lod-selector';
 
 const ENTITY_COUNT = 100_000;
-const material = {
+const material = new MaterialResource({
   baseColor: new Float32Array([0.25, 0.5, 0.75]),
   metallic: 0,
   roughness: 1,
   materialShaderId: 'forgeax::default-unlit',
-} as MaterialSnapshot;
+} as MaterialSnapshot);
 
 function snapshot(entityKey: number): RenderableSnapshot {
   return {
@@ -40,6 +38,11 @@ function snapshot(entityKey: number): RenderableSnapshot {
         topology: 'triangle-list',
         pipelineClass: 'forgeax::default-unlit|triangle-list|null',
         materialResourceClass: '{"textures":[],"samplers":[],"video":[]}',
+        geometry: {
+          receipt: { identity: 'cube', vertexInputs: [], topology: 'triangle-list', indexed: true },
+          draw: { kind: 'indexed', first: 0, count: 36, baseVertex: 0, topology: 'triangle-list' },
+          deformation: 'rigid',
+        },
       },
     ],
   };
@@ -48,8 +51,8 @@ function snapshot(entityKey: number): RenderableSnapshot {
 describe('GPU-driven scaling contract', () => {
   let projection: RenderScene;
   let topology: BatchTopology;
-  let materialized: readonly RenderableSnapshot[];
-  let stablePlan: ReturnType<BatchTopology['plan']>;
+  let materialized: FrameList<RenderableSnapshot>;
+  let stablePlan: ReturnType<BatchTopology['query']>;
   let stableMaterializationReused = false;
   let stablePlanReused = false;
   let delta: ReturnType<RenderScene['apply']>;
@@ -61,9 +64,9 @@ describe('GPU-driven scaling contract', () => {
     materialized = projection.materialize();
     topology = new BatchTopology();
     topology.rebuild(projection.slotsSnapshot());
-    stablePlan = topology.plan();
+    stablePlan = topology.query(topology.sourcePlan(), undefined);
     stableMaterializationReused = projection.materialize() === materialized;
-    stablePlanReused = topology.plan() === stablePlan;
+    stablePlanReused = topology.query(topology.sourcePlan(), undefined) === stablePlan;
 
     const moved = mat4.identity(mat4.create());
     moved[12] = 3;
@@ -75,8 +78,9 @@ describe('GPU-driven scaling contract', () => {
     expect(stablePlan).toMatchObject({
       candidateCount: ENTITY_COUNT,
       visibleCapacity: 100_032,
-      batches: [{ visibleCapacity: ENTITY_COUNT }],
     });
+    expect(stablePlan.batches.length).toBe(1);
+    expect(stablePlan.batches.at(0)?.visibleCapacity).toBe(ENTITY_COUNT);
     expect(deriveGpuDrivenViewBufferCapacities(stablePlan).visible).toBe(131_072);
   });
 
@@ -90,10 +94,10 @@ describe('GPU-driven scaling contract', () => {
     );
     const lodTopology = new BatchTopology();
     lodTopology.rebuild(lodProjection.slotsSnapshot());
-    const plan = lodTopology.plan();
+    const plan = lodTopology.query(lodTopology.sourcePlan(), undefined);
     expect(plan.candidateCount).toBe(ENTITY_COUNT);
     expect(plan.batches).toHaveLength(1);
-    const batch = plan.batches[0];
+    const batch = plan.batches.at(0);
     if (batch === undefined) throw new Error('missing LOD batch');
     expect(batchLodLevelCount(batch)).toBe(2);
     expect(plan.visibleCapacity).toBe(batchVisibleSpan(batch));
@@ -115,7 +119,7 @@ describe('GPU-driven scaling contract', () => {
   it('patches one transform without rebuilding topology', () => {
     expect(delta).toMatchObject({ updated: 1, created: 0, removed: 0 });
     expect(topologyChanged).toBe(false);
-    expect(topology.plan()).toBe(stablePlan);
+    expect(topology.query(topology.sourcePlan(), undefined)).toBe(stablePlan);
     expect(topology.inspect()).toMatchObject({ patches: 0, candidateCount: ENTITY_COUNT });
   });
 
@@ -127,7 +131,7 @@ describe('GPU-driven scaling contract', () => {
     const projectedHeight = (world: Float32Array): number => {
       const scene = new RenderScene();
       scene.reset([{ ...snapshot(0), transform: { world } }]);
-      const slot = scene.slotsSnapshot()[0];
+      const slot = scene.slotsSnapshot().at(0);
       if (slot === undefined) throw new Error('projection fixture did not create a slot');
       return projectedHeightForCandidate(slot, camera);
     };

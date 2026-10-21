@@ -1,11 +1,8 @@
-import {
-  AssetRegistry,
-  HANDLE_CUBE,
-  HANDLE_SPHERE,
-  RuntimeMaterialValue,
-} from '@forgeax/engine-assets-runtime';
-import { defineComponent, World } from '@forgeax/engine-ecs';
+import { AssetRegistry } from '@forgeax/engine-assets-runtime';
+import { Update, World } from '@forgeax/engine-ecs';
 import { createRenderReadLease } from '@forgeax/engine-ecs/projection';
+import { createPrimitiveMesh } from '@forgeax/engine-geometry';
+import { vec3 } from '@forgeax/engine-math';
 import { type Buffer, type Result, RhiError } from '@forgeax/engine-rhi';
 import { RhiNullCommandEncoder, RhiNullDevice, RhiNullQueue } from '@forgeax/engine-rhi-null';
 import {
@@ -21,7 +18,7 @@ import {
 } from '@forgeax/engine-shader';
 import * as materialTypes from '@forgeax/engine-types';
 import { derive, err } from '@forgeax/engine-types';
-import { describe, expect, it, vi } from 'vitest';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { Camera, MeshFilter, MeshRenderer, MotionBlur } from '../components';
 import { BatchTopology } from '../gpu-driven/batch-topology';
 import { ShadowCasterClassifier } from '../gpu-driven/shadow-caster-classes';
@@ -30,8 +27,10 @@ import {
   GPU_SCENE_PRIMITIVE_NO_SHADOW_RECEIVE,
   GPU_SCENE_PRIMITIVE_REACTIVE,
   GpuScene,
+  type GpuSceneResourceFrame,
 } from '../gpu-scene';
 import { GPU_SCENE_LAYOUTS, gpuSceneFieldOffset } from '../gpu-scene-schema';
+import { MaterialResource } from '../material-resource';
 import { packMaterialProgramRow, packStandardPbrMaterialRow } from '../material-row';
 import { Materials } from '../materials';
 import { makeZeroCameraFallbackSnapshot } from '../record/frame-snapshot';
@@ -41,9 +40,13 @@ import type {
   RenderableSnapshot,
 } from '../render-system-extract';
 import { extractFrames } from '../render-system-extract-tail';
+import { MeshFrame } from '../scene/mesh-frame';
 import { PersistentRenderScene, RenderScene } from '../scene/render-scene';
 import type { RenderSceneSlot } from '../scene/render-scene-types';
 import { classifySceneDataCoverage } from '../temporal/coverage';
+
+const BUILTIN_CUBE = createPrimitiveMesh('cube').unwrap();
+const BUILTIN_SPHERE = createPrimitiveMesh('sphere').unwrap();
 
 interface WriteRecord {
   readonly buffer: Buffer;
@@ -109,11 +112,53 @@ class FailingQueue extends RecordingQueue {
 }
 
 const material = {
-  baseColor: new Float32Array([0.25, 0.5, 0.75]),
+  baseColor: vec3.create(0.25, 0.5, 0.75),
   metallic: 0.2,
   roughness: 0.8,
   materialHandle: 17,
+  passes: [],
 } as MaterialSnapshot;
+
+let fixtureMaterial: MaterialResource;
+beforeEach(() => {
+  fixtureMaterial = new MaterialResource(material);
+});
+
+function materialAddress(
+  queue: RecordingQueue,
+  scene: GpuScene,
+  slot: number,
+  ordinal = 0,
+): number {
+  const descriptor = scene.materialIndexForSlot(slot, ordinal);
+  if (descriptor === undefined) throw new Error('missing material descriptor');
+  return materialPayloadAddress(queue, scene, descriptor);
+}
+
+function materialPayloadAddress(
+  queue: RecordingQueue,
+  scene: GpuScene,
+  descriptor: number,
+): number {
+  const reads = scene.inputs.capture();
+  try {
+    return residentView(queue, reads.buffer().unwrap().buffer).getUint32(descriptor * 4, true);
+  } finally {
+    reads.release();
+  }
+}
+
+function residentView(queue: RecordingQueue, buffer: Buffer, offset = 0): DataView {
+  const bytes = queue.resident.get(buffer);
+  if (bytes === undefined) throw new Error('missing resident table');
+  return new DataView(bytes.buffer, offset);
+}
+
+function primitiveView(queue: RecordingQueue, scene: GpuScene, slot: number): DataView {
+  const index = scene.primitiveIndexForSlot(slot);
+  if (index === undefined) throw new Error('missing primitive record');
+  return residentView(queue, scene.primitiveBuffer, index * GPU_SCENE_LAYOUTS.primitive.stride);
+}
 
 function snapshot(entityKey: number, translationX = 0): RenderableSnapshot {
   const world = new Float32Array(16);
@@ -126,8 +171,8 @@ function snapshot(entityKey: number, translationX = 0): RenderableSnapshot {
     assetHandle: 9,
     transform: { world },
     localAabb: new Float32Array([-1, -1, -1, 1, 1, 1]),
-    material,
-    materials: [material],
+    material: fixtureMaterial,
+    materials: [fixtureMaterial],
     materialBindingSources: ['engine-default'],
     worldId: 0,
     entityKey,
@@ -204,7 +249,14 @@ function persistentFrame(
     cameras,
     auxiliaryCameras: [],
     cubeCameras: [],
-    lights: { directional: undefined, directionalCount: 0, point: [], spot: [] },
+    lights: {
+      directional: undefined,
+      directionalCount: 0,
+      point: [],
+      spot: [],
+      rect: [],
+      hemisphere: [],
+    },
     environment: undefined,
     environmentReady: true,
     renderables,
@@ -233,6 +285,107 @@ function createDevice(queue: RecordingQueue): RhiNullDevice {
 }
 
 describe('GpuScene', () => {
+  it('keeps a live primitive address across range resizes even with earlier free records', () => {
+    const queue = new RecordingQueue();
+    const created = GpuScene.create(createDevice(queue), 4).unwrap();
+    if (created.status !== 'available') throw new Error('expected GPU scene');
+    const gpu = created.scene;
+    const projection = new RenderScene();
+    try {
+      gpu
+        .sync(projection.apply([updateSnapshot(snapshot(1)), updateSnapshot(snapshot(2))]))
+        .unwrap();
+      const slot = projection.slotsSnapshot().lookup(0, 2)?.slot;
+      if (slot === undefined) throw new Error('missing survivor');
+      const address = gpu.primitiveIndexForSlot(slot);
+      gpu.sync(projection.apply([{ kind: 'remove', worldId: 0, entityKey: 1 }])).unwrap();
+      // Count remains one, but explicit instance transforms need a new range.
+      gpu.sync(projection.apply([updateSnapshot(instanceSnapshot(2, 3))])).unwrap();
+      expect(gpu.primitiveIndexForSlot(slot)).toBe(address);
+      for (const count of [65, 0, 129, 1]) {
+        const source = multiInstanceSnapshot(
+          2,
+          Array.from({ length: count }, (_, i) => i),
+          Array.from({ length: count }, () => 0),
+        );
+        gpu.sync(projection.apply([updateSnapshot(source)])).unwrap();
+        expect(gpu.primitiveIndexForSlot(slot)).toBe(address);
+        expect(
+          primitiveView(queue, gpu, slot).getUint32(
+            gpuSceneFieldOffset(GPU_SCENE_LAYOUTS.primitive, 'instanceCount'),
+            true,
+          ),
+        ).toBe(count);
+      }
+      gpu.sync(projection.apply([{ kind: 'remove', worldId: 0, entityKey: 2 }])).unwrap();
+      expect(gpu.primitiveIndexForSlot(slot)).toBeUndefined();
+      gpu.sync(projection.apply([updateSnapshot(snapshot(3))])).unwrap();
+      expect(
+        gpu.primitiveIndexForSlot(projection.slotsSnapshot().lookup(0, 3)?.slot ?? -1),
+      ).toBeDefined();
+    } finally {
+      gpu.dispose();
+    }
+  });
+
+  it('keeps object allocations independent of submesh count and stores no duplicate draw table', () => {
+    const queue = new RecordingQueue();
+    const created = GpuScene.create(createDevice(queue), 4).unwrap();
+    if (created.status !== 'available') throw new Error('expected GPU scene');
+    const projection = new RenderScene();
+    const source: RenderableSnapshot = {
+      ...snapshot(0),
+      gpuDrivenDraws: [
+        {
+          kind: 'indexed',
+          first: 0,
+          count: 36,
+          baseVertex: 0,
+          materialSlot: 0,
+          topology: 'triangle-list',
+          pipelineClass: 'pbr',
+          materialResourceClass: '',
+          geometry: {
+            receipt: {
+              identity: 'cube-fixture',
+              vertexInputs: [],
+              topology: 'triangle-list' as const,
+              indexed: true,
+            },
+            draw: {
+              kind: 'indexed' as const,
+              first: 0,
+              count: 36,
+              baseVertex: 0,
+              topology: 'triangle-list' as const,
+            },
+            deformation: 'rigid' as const,
+          },
+        },
+      ],
+    };
+    created.scene.sync(projection.apply([updateSnapshot(source)])).unwrap();
+    const slot = projection.slotsSnapshot().at(0)?.slot;
+    if (slot === undefined) throw new Error('missing source slot');
+    const address = created.scene.primitiveIndexForSlot(slot);
+    const revision = created.scene.allocationRevision;
+    const capacity = created.scene.inspect().capacity;
+    const draw = source.gpuDrivenDraws?.at(0);
+    if (draw === undefined) throw new Error('missing source draw');
+    const many = { ...source, gpuDrivenDraws: Array.from({ length: 129 }, () => draw) };
+    created.scene.sync(projection.apply([updateSnapshot(many)])).unwrap();
+    expect(created.scene.inspect().capacity).toBe(capacity);
+    expect(created.scene.allocationRevision).toBe(revision);
+    expect(created.scene.primitiveIndexForSlot(slot)).toBe(address);
+    expect(Object.keys(created.scene.inspect().tables).sort()).toEqual([
+      'instance',
+      'material',
+      'primitive',
+      'transform',
+    ]);
+    created.scene.dispose();
+  });
+
   it('uploads changed material row bytes while retaining draw preparation', () => {
     const queue = new RecordingQueue();
     const device = createDevice(queue);
@@ -251,13 +404,29 @@ describe('GpuScene', () => {
           topology: 'triangle-list',
           pipelineClass: 'pbr',
           materialResourceClass: '',
+          geometry: {
+            receipt: {
+              identity: 'cube-fixture',
+              vertexInputs: [],
+              topology: 'triangle-list' as const,
+              indexed: true,
+            },
+            draw: {
+              kind: 'indexed' as const,
+              first: 0,
+              count: 36,
+              baseVertex: 0,
+              topology: 'triangle-list' as const,
+            },
+            deformation: 'rigid' as const,
+          },
         },
       ],
     };
     created.scene.sync(projection.apply([updateSnapshot(source)])).unwrap();
     const topology = new BatchTopology();
     topology.rebuild(projection.slotsSnapshot());
-    const plan = topology.plan();
+    const plan = topology.query(topology.sourcePlan(), undefined);
     expect(plan.candidateCount).toBe(1);
     queue.writes.length = 0;
     const changedMaterial = {
@@ -265,11 +434,10 @@ describe('GpuScene', () => {
       baseColor: new Float32Array([0.75, 0.25, 0.5]),
       roughness: 0.3,
     } as MaterialSnapshot;
-    const delta = projection.apply([
-      updateSnapshot({ ...source, material: changedMaterial, materials: [changedMaterial] }),
-    ]);
+    source.material.adopt(changedMaterial);
+    const delta = { ...projection.apply([]), materialUpdates: [source.material] };
     expect(topology.apply(delta)).toBe(false);
-    expect(topology.plan()).toBe(plan);
+    expect(topology.query(topology.sourcePlan(), undefined)).toBe(plan);
     created.scene.sync(delta).unwrap();
     const writes = queue.writes.filter((write) => write.buffer === created.scene.materialBuffer);
     expect(writes).toHaveLength(1);
@@ -282,12 +450,15 @@ describe('GpuScene', () => {
     created.scene.dispose();
   });
 
-  it('uploads immutable material runtime values without a Catalog epoch change', () => {
+  it('uploads shared material edits without changing program identity', () => {
     const queue = new RecordingQueue();
     const device = createDevice(queue);
-    const world = new World();
+    const assets = new AssetRegistry({
+      shaderRegistry: new ShaderRegistry({ manifestUrl: undefined }),
+    });
+    const world = new World({ assets });
     registerPropagateTransforms(world);
-    const assets = new AssetRegistry(new ShaderRegistry({ manifestUrl: undefined }));
+    const cube = assets.create(BUILTIN_CUBE).unwrap();
     const freeze = (value: unknown): void => {
       if (typeof value !== 'object' || value === null) return;
       for (const child of Object.values(value)) freeze(child);
@@ -299,12 +470,12 @@ describe('GpuScene', () => {
       subsurfaceWeight: 1,
     });
     freeze(source);
-    const handle = world.allocSharedRef('MaterialAsset', source);
+    const handle = assets.create(source).unwrap();
     const entities = [0, 2].map((x) =>
       world
         .spawn(
           { component: Transform, data: { pos: [x, 0, 0] } },
-          { component: MeshFilter, data: { assetHandle: HANDLE_CUBE } },
+          { component: MeshFilter, data: { assetHandle: cube } },
           { component: MeshRenderer, data: { materials: [handle] } },
         )
         .unwrap(),
@@ -319,7 +490,7 @@ describe('GpuScene', () => {
       persistent.extractComposition(
         [world],
         { cameraOwner: 0, resourceOwner: 0 },
-        assets.catalogEpoch,
+        assets,
         (request) =>
           extractFrames([world], 0, assets, undefined, persistent.materialSnapshotCacheStore(), {
             cull: 'none',
@@ -330,35 +501,18 @@ describe('GpuScene', () => {
       );
     try {
       const first = draw();
-      const firstMaterial = first.renderables.find(
-        (row) => row.entityKey === entities[0],
-      )?.material;
+      const firstMaterial = first.renderables.find((row) => row.entityKey === entities[0])?.material
+        .snapshot;
       if (firstMaterial?.materialParamSchema === undefined)
         throw new Error('expected numeric material schema');
-      expect(persistent.materialSnapshotCacheStore().get(world)?.get(handle)?.crossFrameSafe).toBe(
-        true,
-      );
+      expect(first.renderables.at(0)?.material).toBe(first.renderables.at(1)?.material);
       const radiusField = derive(firstMaterial.materialParamSchema).numericMembers.find(
         (field) => field.name === 'subsurfaceRadius',
       );
       if (radiusField === undefined) throw new Error('expected radius layout');
-      const epoch = assets.catalogEpoch;
-      // Establish the ordinary frozen source cache before adding runtime content.
-      const radius = world
-        .spawn({
-          component: RuntimeMaterialValue,
-          data: { asset: handle, parameter: 'subsurfaceRadius', kind: 2, value: [0, 0, 0] },
-        })
-        .unwrap();
-      const weight = world
-        .spawn({
-          component: RuntimeMaterialValue,
-          data: { asset: handle, parameter: 'subsurfaceWeight', kind: 0, value: [1] },
-        })
-        .unwrap();
       for (const r of [0, 3, 6, 12]) {
         queue.writes.length = 0;
-        world.set(radius, RuntimeMaterialValue, { value: [r, (r * 2) / 3, r / 3] }).unwrap();
+        assets.update(handle, { values: { subsurfaceRadius: [r, (r * 2) / 3, r / 3] } }).unwrap();
         world.update(0).unwrap();
         const frame = draw();
         const rows = frame.renderables.filter((row) =>
@@ -366,8 +520,14 @@ describe('GpuScene', () => {
         );
         expect(rows).toHaveLength(2);
         for (const row of rows) {
-          expect(row.material.paramSnapshot?.subsurfaceRadius).toEqual([r, (r * 2) / 3, r / 3]);
-          expect(row.material.materialProgramKeys).toEqual(firstMaterial.materialProgramKeys);
+          expect(row.material.snapshot.paramSnapshot?.subsurfaceRadius).toEqual([
+            r,
+            (r * 2) / 3,
+            r / 3,
+          ]);
+          expect(row.material.snapshot.materialProgramKeys).toEqual(
+            firstMaterial.materialProgramKeys,
+          );
         }
         const state = persistent.compositionGpuDrivenState();
         if (state === undefined) throw new Error('expected GPU material consumer');
@@ -375,63 +535,66 @@ describe('GpuScene', () => {
         expect(writes.length).toBeGreaterThan(0);
         const resident = queue.resident.get(state.scene.materialBuffer);
         if (resident === undefined) throw new Error('expected resident material bytes');
-        for (const slot of [0, 1]) {
-          const address = state.scene.materialIndexForSlot(slot, 0);
-          if (address === undefined) throw new Error('expected material address');
+        const descriptors = rows.map((row) => state.scene.materialIndexForResource(row.material));
+        expect(new Set(descriptors).size).toBe(1);
+        for (const descriptor of descriptors) {
+          if (descriptor === undefined) throw new Error('expected shared material descriptor');
+          const address = materialPayloadAddress(queue, state.scene, descriptor);
           const view = new DataView(resident.buffer, address * 16);
           expect(
             [0, 1, 2].map((lane) => view.getFloat32(radiusField.offset + lane * 4, true)),
           ).toEqual([r, (r * 2) / 3, r / 3]);
         }
-        expect(assets.catalogEpoch).toBe(epoch);
       }
-      world.set(weight, RuntimeMaterialValue, { value: [0] }).unwrap();
+      assets.update(handle, { values: { subsurfaceWeight: 0 } }).unwrap();
       world.update(0).unwrap();
       expect(
-        draw().renderables.every((row) => row.material.paramSnapshot?.subsurfaceWeight === 0),
+        draw().renderables.every(
+          (row) => row.material.snapshot.paramSnapshot?.subsurfaceWeight === 0,
+        ),
       ).toBe(true);
-      world.despawn(radius).unwrap();
-      world.despawn(weight).unwrap();
+      assets
+        .update(handle, { values: { subsurfaceRadius: [9, 6, 3], subsurfaceWeight: 1 } })
+        .unwrap();
       world.update(0).unwrap();
       const restored = draw();
       expect(
         restored.renderables.every(
-          (row) => JSON.stringify(row.material.paramSnapshot?.subsurfaceRadius) === '[9,6,3]',
+          (row) =>
+            JSON.stringify(row.material.snapshot.paramSnapshot?.subsurfaceRadius) === '[9,6,3]',
         ),
       ).toBe(true);
       expect(
-        restored.renderables.every((row) => row.material.paramSnapshot?.subsurfaceWeight === 1),
+        restored.renderables.every(
+          (row) => row.material.snapshot.paramSnapshot?.subsurfaceWeight === 1,
+        ),
       ).toBe(true);
-      expect(assets.catalogEpoch).toBe(epoch);
     } finally {
       lease.dispose();
       persistent.dispose();
+      assets.dispose();
     }
   });
 
-  it('observes World-owned material values written by a separately bundled Worker plugin', () => {
+  it('adopts direct asset writes from game Update systems without parameter components', () => {
     const queue = new RecordingQueue();
     const device = createDevice(queue);
-    const world = new World();
+    const assets = new AssetRegistry({
+      shaderRegistry: new ShaderRegistry({ manifestUrl: undefined }),
+    });
+    const world = new World({ assets });
     registerPropagateTransforms(world);
-    const workerMaterialValue = defineComponent('RuntimeMaterialValue', {
-      asset: 'shared<MaterialAsset>',
-      parameter: 'string',
-      kind: { type: 'enum', labels: { number: 0, boolean: 1, vector: 2 }, default: 0 },
-      value: 'array<f32>',
-    }) as typeof RuntimeMaterialValue;
-    world.components.register(workerMaterialValue).unwrap();
-    const assets = new AssetRegistry(new ShaderRegistry({ manifestUrl: undefined }));
+    const sphere = assets.create(BUILTIN_SPHERE).unwrap();
     const material = Materials.standard({
       baseColor: [1, 1, 1, 1],
       subsurfaceRadius: [9, 6, 3],
       subsurfaceWeight: 1,
     });
-    const handle = world.allocSharedRef('MaterialAsset', material);
+    const handle = assets.create(material).unwrap();
     const entity = world
       .spawn(
         { component: Transform, data: { pos: [0, 0, 0] } },
-        { component: MeshFilter, data: { assetHandle: HANDLE_SPHERE } },
+        { component: MeshFilter, data: { assetHandle: sphere } },
         { component: MeshRenderer, data: { materials: [handle] } },
       )
       .unwrap();
@@ -445,7 +608,7 @@ describe('GpuScene', () => {
       persistent.extractComposition(
         [world],
         { cameraOwner: 0, resourceOwner: 0 },
-        assets.catalogEpoch,
+        assets,
         (request) =>
           extractFrames([world], 0, assets, undefined, persistent.materialSnapshotCacheStore(), {
             cull: 'none',
@@ -456,34 +619,32 @@ describe('GpuScene', () => {
       );
     try {
       expect(
-        draw().renderables.find((row) => row.entityKey === entity)?.material.paramSnapshot
+        draw().renderables.find((row) => row.entityKey === entity)?.material.snapshot.paramSnapshot
           ?.subsurfaceRadius,
       ).toEqual([9, 6, 3]);
-      const radius = world
-        .spawn({
-          component: workerMaterialValue,
-          data: {
-            asset: handle,
-            parameter: 'subsurfaceRadius',
-            kind: 2,
-            value: [0, 0, 0],
-          },
-        })
-        .unwrap();
+      let radius = [0, 0, 0];
+      world.addSystem(Update, {
+        name: 'update-material',
+        queries: [],
+        fn: () => {
+          assets.update(handle, { values: { subsurfaceRadius: radius } }).unwrap();
+        },
+      });
       world.update(0).unwrap();
       expect(
-        draw().renderables.find((row) => row.entityKey === entity)?.material.paramSnapshot
+        draw().renderables.find((row) => row.entityKey === entity)?.material.snapshot.paramSnapshot
           ?.subsurfaceRadius,
       ).toEqual([0, 0, 0]);
-      world.set(radius, workerMaterialValue, { value: [3, 2, 1] }).unwrap();
+      radius = [3, 2, 1];
       world.update(0).unwrap();
       expect(
-        draw().renderables.find((row) => row.entityKey === entity)?.material.paramSnapshot
+        draw().renderables.find((row) => row.entityKey === entity)?.material.snapshot.paramSnapshot
           ?.subsurfaceRadius,
       ).toEqual([3, 2, 1]);
     } finally {
       lease.dispose();
       persistent.dispose();
+      assets.dispose();
     }
   });
 
@@ -491,14 +652,19 @@ describe('GpuScene', () => {
     const queue = new RecordingQueue();
     const device = createDevice(queue);
     const persistent = new PersistentRenderScene({ getDevice: () => device });
-    const firstWorld = new World();
+    const assets = new AssetRegistry();
+    const meshHandle = assets.create(BUILTIN_CUBE).unwrap();
+    const materialHandle = assets.create(Materials.unlit([1, 1, 1, 1])).unwrap();
+    fixtureMaterial = new MaterialResource({ ...material, materialHandle });
+    const ownedSnapshot = (entity: number) => ({ ...snapshot(entity), assetHandle: meshHandle });
+    const firstWorld = new World({ assets });
     const firstLease = createRenderReadLease(firstWorld);
 
     persistent.extractComposition(
       [firstWorld],
       { cameraOwner: 0, resourceOwner: 0 },
-      0,
-      () => persistentFrame([snapshot(1), snapshot(3)]),
+      assets,
+      () => persistentFrame([ownedSnapshot(1), ownedSnapshot(3)]),
       [firstLease],
     );
     const first = persistent.compositionGpuDrivenState();
@@ -510,13 +676,13 @@ describe('GpuScene', () => {
 
     persistent.detach(firstWorld);
     firstLease.dispose();
-    const secondWorld = new World();
+    const secondWorld = firstWorld;
     const secondLease = createRenderReadLease(secondWorld);
     persistent.extractComposition(
       [secondWorld],
       { cameraOwner: 0, resourceOwner: 0 },
-      1,
-      () => persistentFrame([snapshot(2)]),
+      assets,
+      () => persistentFrame([ownedSnapshot(2)]),
       [secondLease],
     );
     const second = persistent.compositionGpuDrivenState();
@@ -567,13 +733,17 @@ describe('GpuScene', () => {
           materialParamSchema: parameters,
           paramSnapshot: { roughness },
         });
-        const source = { ...snapshot(1), material: transported, materials: [transported] };
+        const source = {
+          ...snapshot(1),
+          material: MaterialResource.from(transported),
+          materials: [MaterialResource.from(transported)],
+        };
         queue.writes.length = 0;
         scene.sync(projection.apply([updateSnapshot(source)])).unwrap();
         const upload = queue.writes.find((write) => write.buffer === scene.materialBuffer);
         if (upload === undefined) throw new Error('Expected changed material upload');
         const address = scene.materialIndexForSlot(
-          projection.slotsSnapshot()[0]?.slot ??
+          projection.slotsSnapshot().at(0)?.slot ??
             (() => {
               throw new Error('expected retained slot');
             })(),
@@ -582,9 +752,12 @@ describe('GpuScene', () => {
         const resident = queue.resident.get(scene.materialBuffer);
         if (address === undefined || resident === undefined)
           throw new Error('Expected resident material');
-        expect(new DataView(resident.buffer).getFloat32(address * 16 + offset, true)).toBe(
-          roughness,
-        );
+        expect(
+          new DataView(resident.buffer).getFloat32(
+            materialAddress(queue, scene, 0) * 16 + offset,
+            true,
+          ),
+        ).toBe(roughness);
       }
       expect(events).toContain('admitted-identity-hit');
       expect(events).not.toContain('fallback-layout-sha');
@@ -615,13 +788,17 @@ describe('GpuScene', () => {
             slicesAndMode: [0, 0, 0, 0],
           },
         });
-        const source = { ...snapshot(1), material: transported, materials: [transported] };
+        const source = {
+          ...snapshot(1),
+          material: MaterialResource.from(transported),
+          materials: [MaterialResource.from(transported)],
+        };
         queue.writes.length = 0;
         scene.sync(projection.apply([updateSnapshot(source)])).unwrap();
         const upload = queue.writes.find((write) => write.buffer === scene.materialBuffer);
         if (upload === undefined) throw new Error('Expected Sprite material upload');
         const address = scene.materialIndexForSlot(
-          projection.slotsSnapshot()[0]?.slot ??
+          projection.slotsSnapshot().at(0)?.slot ??
             (() => {
               throw new Error('expected retained slot');
             })(),
@@ -630,25 +807,67 @@ describe('GpuScene', () => {
         const resident = queue.resident.get(scene.materialBuffer);
         if (address === undefined || resident === undefined)
           throw new Error('Expected resident Sprite');
-        expect(Array.from(new Float32Array(resident.buffer, address * 16, 16))).toEqual([
-          red,
-          1,
-          1,
-          1,
-          0,
-          0,
-          1,
-          1,
-          0.5,
-          0.5,
-          1,
-          1,
-          0,
-          0,
-          0,
-          0,
-        ]);
+        expect(
+          Array.from(new Float32Array(resident.buffer, materialAddress(queue, scene, 0) * 16, 16)),
+        ).toEqual([red, 1, 1, 1, 0, 0, 1, 1, 0.5, 0.5, 1, 1, 0, 0, 0, 0]);
       }
+    } finally {
+      scene.dispose();
+    }
+  });
+
+  it('adopts one shared material row without an entity update and retains it until its last binding', () => {
+    const queue = new FailingQueue();
+    const created = GpuScene.create(createDevice(queue), 8).unwrap();
+    if (created.status !== 'available') throw new Error('expected GPU Scene');
+    const scene = created.scene;
+    const projection = new RenderScene();
+    const resource = new MaterialResource({ ...material });
+    const sources = Array.from({ length: 256 }, (_, index) => ({
+      ...snapshot(index),
+      material: resource,
+      materials: [resource],
+    }));
+    try {
+      scene.sync(projection.apply(sources.map(updateSnapshot))).unwrap();
+      const addresses = new Set(sources.map((_, slot) => scene.materialIndexForSlot(slot, 0)));
+      expect(addresses.size).toBe(1);
+      const address = scene.materialIndexForSlot(0, 0);
+      if (address === undefined) throw new Error('expected shared material address');
+      resource.adopt({ ...resource.snapshot, roughness: 0.3 });
+      const empty = projection.apply([]);
+      expect(empty.updatedSlots).toHaveLength(0);
+      queue.failWrites = true;
+      expect(scene.sync({ ...empty, materialUpdates: [resource] }).ok).toBe(false);
+      queue.failWrites = false;
+      queue.writes.length = 0;
+      expect(scene.sync(projection.apply([])).unwrap().bytes).toBe(16);
+      expect(queue.writes).toHaveLength(1);
+      const roughness = gpuSceneFieldOffset(GPU_SCENE_LAYOUTS.material, 'roughness');
+      expect(queue.writes[0]?.offset).toBe(
+        materialAddress(queue, scene, 0) * 16 + Math.floor(roughness / 16) * 16,
+      );
+      const bytes = queue.resident.get(scene.materialBuffer);
+      if (bytes === undefined) throw new Error('missing material upload');
+      expect(
+        new DataView(bytes.buffer).getFloat32(
+          materialAddress(queue, scene, 0) * 16 + roughness,
+          true,
+        ),
+      ).toBeCloseTo(0.3);
+      queue.writes.length = 0;
+      const first = sources[0];
+      if (first === undefined) throw new Error('missing binding');
+      scene
+        .sync(
+          projection.apply([
+            { kind: 'remove', worldId: first.worldId, entityKey: first.entityKey },
+          ]),
+        )
+        .unwrap();
+      expect(queue.writes.filter((write) => write.buffer === scene.materialBuffer)).toHaveLength(0);
+      expect(scene.materialIndexForSlot(1, 0)).toBe(address);
+      expect(scene.sync(projection.apply([])).unwrap().bytes).toBe(0);
     } finally {
       scene.dispose();
     }
@@ -673,38 +892,56 @@ describe('GpuScene', () => {
           topology: 'triangle-list' as const,
           pipelineClass: 'pbr',
           materialResourceClass: '{}',
+          geometry: {
+            receipt: {
+              identity: 'cube-fixture',
+              vertexInputs: [],
+              topology: 'triangle-list' as const,
+              indexed: true,
+            },
+            draw: {
+              kind: 'indexed' as const,
+              first: 0,
+              count: 36,
+              baseVertex: 0,
+              topology: 'triangle-list' as const,
+            },
+            deformation: 'rigid' as const,
+          },
         },
       ],
     }));
     scene.sync(projection.apply(sources.map(updateSnapshot))).unwrap();
     const changed = { ...material, roughness: 0.3 };
-    const updated = sources.map((source) => ({
-      ...source,
-      material: changed,
-      materials: [changed],
-    }));
-    const delta = projection.apply(updated.map(updateSnapshot));
+    const shared = sources[0]?.material;
+    if (shared === undefined) throw new Error('missing shared material');
+    shared.adopt(changed);
+    const updated = sources;
+    const delta = { ...projection.apply([]), materialUpdates: [shared] };
     queue.failWrites = true;
     expect(scene.sync(delta).ok).toBe(false);
     queue.failWrites = false;
     queue.writes.length = 0;
     const retried = scene.sync(projection.apply([])).unwrap();
-    expect(retried.bytes).toBe(4 * 16);
-    expect(queue.writes).toHaveLength(4);
+    expect(retried.bytes).toBe(16);
+    expect(queue.writes).toHaveLength(1);
     const roughness = gpuSceneFieldOffset(GPU_SCENE_LAYOUTS.material, 'roughness');
     for (let index = 0; index < 4; index++) {
-      const upload = queue.writes[index];
+      const upload = queue.writes[0];
       if (upload === undefined) throw new Error('expected changed material unit');
-      const address = scene.materialIndexForSlot(index, 0);
+      const address = materialAddress(queue, scene, index);
       if (address === undefined) throw new Error('expected material address');
       expect(upload.offset).toBe(address * 16 + Math.floor(roughness / 16) * 16);
       expect(new DataView(upload.bytes.buffer).getFloat32(roughness % 16, true)).toBeCloseTo(0.3);
     }
-    // Fresh snapshots with identical bytes must not upload. Later in-place
-    // caller edits remain visible: packed rows are shared only within sync.
-    expect(scene.sync(projection.apply(updated.map(updateSnapshot))).unwrap().bytes).toBe(0);
-    changed.roughness = 0.6;
-    expect(scene.sync(projection.apply(updated.map(updateSnapshot))).unwrap().bytes).toBe(4 * 16);
+    // A repeated adoption has no upload; a later edit updates the shared row once.
+    expect(scene.sync({ ...projection.apply([]), materialUpdates: [shared] }).unwrap().bytes).toBe(
+      0,
+    );
+    shared.adopt({ ...changed, roughness: 0.6 });
+    expect(scene.sync({ ...projection.apply([]), materialUpdates: [shared] }).unwrap().bytes).toBe(
+      16,
+    );
     const first = updated[0];
     const draw = first?.gpuDrivenDraws[0];
     if (first === undefined || draw === undefined) throw new Error('expected draw fixture');
@@ -715,18 +952,14 @@ describe('GpuScene', () => {
       gpuDrivenDraws: [{ ...draw, first: 6, count: 12, baseVertex: -3 }],
     };
     expect(scene.sync(projection.apply([updateSnapshot(geometryChanged)])).unwrap().bytes).toBe(
-      GPU_SCENE_LAYOUTS.primitive.stride + GPU_SCENE_LAYOUTS.drawTemplate.stride,
+      GPU_SCENE_LAYOUTS.primitive.stride,
     );
-    const drawUpload = queue.writes.find(
-      ({ bytes }) => bytes.length === GPU_SCENE_LAYOUTS.drawTemplate.stride,
-    );
-    if (drawUpload === undefined) throw new Error('expected changed draw upload');
-    expect(
-      new DataView(drawUpload.bytes.buffer).getInt32(
-        gpuSceneFieldOffset(GPU_SCENE_LAYOUTS.drawTemplate, 'baseVertex'),
-        true,
-      ),
-    ).toBe(-3);
+    expect(Object.keys(scene.inspect().tables).sort()).toEqual([
+      'instance',
+      'material',
+      'primitive',
+      'transform',
+    ]);
     scene.dispose();
   });
 
@@ -778,14 +1011,15 @@ describe('GpuScene', () => {
     };
     const source = {
       ...snapshot(0),
-      material: small,
-      materials: [small, large],
+      material: MaterialResource.from(small),
+      materials: [MaterialResource.from(small), MaterialResource.from(large)],
     } as RenderableSnapshot;
     created.scene.sync(projection.apply([updateSnapshot(source)])).unwrap();
     const first = created.scene.materialIndexForSlot(0, 0);
     const second = created.scene.materialIndexForSlot(0, 1);
-    expect(first).toBe(0);
-    expect(second).toBe(2);
+    expect(first).not.toBe(second);
+    expect(materialAddress(queue, created.scene, 0, 0)).toBe(0);
+    expect(materialAddress(queue, created.scene, 0, 1)).toBe(2);
     expect(created.scene.inspect().tables.material.bytes).toBe(64);
     const materialWrites = queue.writes.filter(
       (write) => write.buffer === created.scene.materialBuffer,
@@ -794,9 +1028,10 @@ describe('GpuScene', () => {
     expect(materialWrites.at(-1)?.bytes).toEqual(packMaterialProgramRow(largeSchema, large, 32));
     const changed = { ...large, paramSnapshot: { tint: [0, 1, 0, 1], roughness: 0.3 } };
     queue.writes.length = 0;
-    created.scene
-      .sync(projection.apply([updateSnapshot({ ...source, materials: [small, changed] })]))
-      .unwrap();
+    const resource = source.materials[1];
+    if (resource === undefined) throw new Error('missing second material');
+    resource.adopt(changed);
+    created.scene.sync({ ...projection.apply([]), materialUpdates: [resource] }).unwrap();
     expect(created.scene.materialIndexForSlot(0, 0)).toBe(first);
     expect(created.scene.materialIndexForSlot(0, 1)).toBe(second);
     const changes = queue.writes.filter((write) => write.buffer === created.scene.materialBuffer);
@@ -873,15 +1108,24 @@ describe('GpuScene', () => {
       3 * GPU_SCENE_LAYOUTS.primitive.stride +
       3 * GPU_SCENE_LAYOUTS.instance.stride +
       4 * GPU_SCENE_LAYOUTS.transform.stride +
-      3 * GPU_SCENE_LAYOUTS.drawTemplate.stride +
-      3 * GPU_SCENE_LAYOUTS.material.stride;
+      GPU_SCENE_LAYOUTS.material.stride;
     expect(created.scene.sync(initial).unwrap()).toMatchObject({
-      ranges: 5,
+      ranges: 4,
       bytes: expectedInitialBytes,
     });
+    const reads = created.scene.inputs.capture();
+    const inputBuffer = reads.buffer().unwrap().buffer;
+    reads.release();
+    expect(created.scene.inputs.uploadBytes).toBeGreaterThan(0);
+    expect(created.scene.inputs.uploadBytes).toBe(
+      queue.writes
+        .filter((write) => write.buffer === inputBuffer)
+        .reduce((bytes, write) => bytes + write.bytes.byteLength, 0),
+    );
     const writesAfterInitial = queue.writes.length;
 
     created.scene.sync(projection.apply([])).unwrap();
+    materialAddress(queue, created.scene, 0);
     expect(queue.writes).toHaveLength(writesAfterInitial);
 
     const dirty = projection.apply([
@@ -935,7 +1179,7 @@ describe('GpuScene', () => {
     expect(primitiveWrites()).toHaveLength(beforeMove);
 
     // A material revision cuts color history and motion for one frame.
-    const revised = { ...snapshot(0, 3), materials: [{ ...material }] };
+    const revised = { ...snapshot(0, 3), materials: [new MaterialResource({ ...material })] };
     scene.sync(projection.apply([updateSnapshot(revised)]), resolve).unwrap();
     expect(lastFlags() & temporalFlags).toBe(temporalFlags);
   });
@@ -1002,13 +1246,16 @@ describe('GpuScene', () => {
   it('keeps static shadow changes empty while flushing committed temporal flags', () => {
     const queue = new RecordingQueue();
     const device = createDevice(queue);
-    const world = new World();
+    const assets = new AssetRegistry();
+    const world = new World({ assets });
+    const cube = assets.create(BUILTIN_CUBE).unwrap();
+    const sphere = assets.create(BUILTIN_SPHERE).unwrap();
     registerPropagateTransforms(world);
     const spawn = (x: number) =>
       world
         .spawn(
           { component: Transform, data: { pos: [x, 0, 0] } },
-          { component: MeshFilter, data: { assetHandle: HANDLE_CUBE } },
+          { component: MeshFilter, data: { assetHandle: cube } },
           { component: MeshRenderer, data: {} },
           { component: Mobility, data: { kind: MobilityKindValue.static } },
         )
@@ -1029,9 +1276,9 @@ describe('GpuScene', () => {
       persistent.extractComposition(
         [world],
         { cameraOwner: 0, resourceOwner: 0 },
-        0,
+        assets,
         (request) =>
-          extractFrames([world], 0, undefined, undefined, persistent.materialSnapshotCacheStore(), {
+          extractFrames([world], 0, assets, undefined, persistent.materialSnapshotCacheStore(), {
             cull: 'none',
             retainHidden: true,
             renderables: request,
@@ -1047,14 +1294,20 @@ describe('GpuScene', () => {
       draw();
       queue.writes.length = 0;
       // A real geometry update cuts temporal history on the retained owner.
-      world.set(moved, MeshFilter, { assetHandle: HANDLE_SPHERE }).unwrap();
+      world.set(moved, MeshFilter, { assetHandle: sphere }).unwrap();
       world.update(0).unwrap();
       draw();
       const state = persistent.compositionGpuDrivenState();
       if (state === undefined) throw new Error('expected persistent GPU scene');
       const classifier = new ShadowCasterClassifier();
-      const initial = classifier.update(persistent.compositionSlots(), state.scene);
-      expect(initial.staticSlots).toHaveLength(2);
+      const initial = classifier.update(
+        {
+          slots: persistent.compositionSlots(),
+          slotAt: (slot) => persistent.compositionGpuDrivenState()?.slotAt(slot),
+        },
+        state.scene,
+      );
+      expect(initial.staticSlots.size).toBe(2);
       const flagsOffset = gpuSceneFieldOffset(GPU_SCENE_LAYOUTS.primitive, 'flags');
       const temporalFlags = GPU_SCENE_PRIMITIVE_REACTIVE | GPU_SCENE_PRIMITIVE_MOTION_INVALID;
       const primitiveWrites = () =>
@@ -1074,7 +1327,15 @@ describe('GpuScene', () => {
       queue.writes.length = 0;
       draw();
       expect(queue.writes).toHaveLength(0);
-      expect(classifier.update(persistent.compositionSlots(), state.scene)).toBe(initial);
+      expect(
+        classifier.update(
+          {
+            slots: persistent.compositionSlots(),
+            slotAt: (slot) => persistent.compositionGpuDrivenState()?.slotAt(slot),
+          },
+          state.scene,
+        ),
+      ).toBe(initial);
 
       persistent.prepareTemporalFrame(
         persistent.compositionSlots().map(({ snapshot }) => snapshot),
@@ -1093,7 +1354,15 @@ describe('GpuScene', () => {
       expect(state.scene.contentRevision).toBeGreaterThan(revision);
       expect(state.scene.changedSlotsSince(revision)).toEqual([]);
       expect(state.scene.changedBoundsSince(revision)).toEqual(new Float32Array());
-      expect(classifier.update(persistent.compositionSlots(), state.scene)).toBe(initial);
+      expect(
+        classifier.update(
+          {
+            slots: persistent.compositionSlots(),
+            slotAt: (slot) => persistent.compositionGpuDrivenState()?.slotAt(slot),
+          },
+          state.scene,
+        ),
+      ).toBe(initial);
 
       // The same owner must still demote an actually moved declared-static caster.
       const movedSlot = persistent.compositionSlots().find(({ entityKey }) => entityKey === moved);
@@ -1103,14 +1372,28 @@ describe('GpuScene', () => {
       world.update(0).unwrap();
       draw();
       expect(state.scene.changedSlotsSince(beforeMove)).toEqual([movedSlot.slot]);
-      const changed = classifier.update(persistent.compositionSlots(), state.scene);
-      expect(changed.dynamicSlots).toEqual([movedSlot.slot]);
-      expect(changed.staticSlots).toHaveLength(1);
+      const changed = classifier.update(
+        {
+          slots: persistent.compositionSlots(),
+          slotAt: (slot) => persistent.compositionGpuDrivenState()?.slotAt(slot),
+        },
+        state.scene,
+      );
+      expect([...changed.dynamicSlots]).toEqual([movedSlot.slot]);
+      expect(changed.staticSlots.size).toBe(1);
       const beforeResync = state.scene.contentRevision;
       persistent.invalidate();
       draw();
       expect(state.scene.changedSlotsSince(beforeResync)).toBeUndefined();
-      expect(classifier.update(persistent.compositionSlots(), state.scene).staticSlots).toEqual([]);
+      expect(
+        classifier.update(
+          {
+            slots: persistent.compositionSlots(),
+            slotAt: (slot) => persistent.compositionGpuDrivenState()?.slotAt(slot),
+          },
+          state.scene,
+        ).staticSlots.size,
+      ).toBe(0);
     } finally {
       lease.dispose();
       persistent.dispose();
@@ -1120,22 +1403,26 @@ describe('GpuScene', () => {
   it('keeps persistent GPU previous transforms unchanged until temporal commit', () => {
     const queue = new RecordingQueue();
     const device = createDevice(queue);
-    const world = new World();
+    const assets = new AssetRegistry();
+    const world = new World({ assets });
     const lease = createRenderReadLease(world);
     const persistent = new PersistentRenderScene({ getDevice: () => device });
-    const source = snapshot(1, 3);
+    const meshHandle = assets.create(BUILTIN_CUBE).unwrap();
+    const materialHandle = assets.create(Materials.unlit([1, 1, 1, 1])).unwrap();
+    fixtureMaterial = new MaterialResource({ ...material, materialHandle });
+    const source = { ...snapshot(1, 3), assetHandle: meshHandle };
 
     persistent.extractComposition(
       [world],
       { cameraOwner: 0, resourceOwner: 0 },
-      0,
+      assets,
       () => persistentFrame([source]),
       [lease],
     );
     const state = persistent.compositionGpuDrivenState();
     expect(state).toBeDefined();
     if (state === undefined) return;
-    const slot = persistent.compositionSlots()[0];
+    const slot = persistent.compositionSlots().at(0);
     expect(slot).toBeDefined();
     if (slot === undefined) return;
 
@@ -1222,7 +1509,7 @@ describe('GpuScene', () => {
 
     const reordered = multiInstanceSnapshot(0, [9, 3], [202, 101]);
     const delta = projection.apply([updateInstances(reordered)]);
-    const slot = projection.slotsSnapshot()[0];
+    const slot = projection.slotsSnapshot().at(0);
     expect(slot).toBeDefined();
     if (slot === undefined) return;
     expect(projection.temporalSnapshotBySlot(slot.slot)?.motionValid).toBe(true);
@@ -1309,10 +1596,23 @@ describe('GpuScene', () => {
   ] as const)('publishes GPU previous transforms for a prepared %s capture', (mode) => {
     const queue = new RecordingQueue();
     const device = createDevice(queue);
-    const world = new World();
+    const assets = new AssetRegistry();
+    const world = new World({ assets });
+    registerPropagateTransforms(world);
+    const mesh = assets.create(BUILTIN_CUBE).unwrap();
+    const materialHandle = assets.create(Materials.standard({ baseColor: [1, 1, 1, 1] })).unwrap();
+    fixtureMaterial = new MaterialResource({ ...material, materialHandle });
+    const entity = world
+      .spawn(
+        { component: Transform, data: { pos: [3, 0, 0] } },
+        { component: MeshFilter, data: { assetHandle: mesh } },
+        { component: MeshRenderer, data: { materials: [materialHandle] } },
+      )
+      .unwrap();
+    world.update(0).unwrap();
     const lease = createRenderReadLease(world);
     const persistent = new PersistentRenderScene({ getDevice: () => device });
-    const source = snapshot(1, 3);
+    const source = { ...snapshot(entity, 3), assetHandle: mesh };
     const camera =
       mode === 'taa'
         ? { ...makeZeroCameraFallbackSnapshot(), antialias: 'taa' as const }
@@ -1324,7 +1624,7 @@ describe('GpuScene', () => {
     persistent.extractComposition(
       [world],
       { cameraOwner: 0, resourceOwner: 0 },
-      0,
+      assets,
       () => persistentFrame([source], [camera]),
       [lease],
     );
@@ -1332,22 +1632,25 @@ describe('GpuScene', () => {
     expect(state).toBeDefined();
     if (state === undefined) return;
     queue.writes.length = 0;
+    world.set(entity, Transform, { pos: [6, 0, 0] }).unwrap();
+    world.update(0).unwrap();
     persistent.extractComposition(
       [world],
       { cameraOwner: 0, resourceOwner: 0 },
-      1,
-      () => persistentFrame([snapshot(1, 6)], [camera]),
+      assets,
+      () => persistentFrame([{ ...snapshot(entity, 6), assetHandle: mesh }], [camera]),
       [lease],
     );
     queue.writes.length = 0;
     const beforeCommit = state.scene.inspect();
 
-    persistent.prepareTemporalFrame([{ worldId: 0, entityKey: 1 }]);
+    persistent.prepareTemporalFrame([{ worldId: 0, entityKey: entity }]);
     expect(persistent.commitTemporalFrame().ok).toBe(true);
     expect(queue.writes).toHaveLength(1);
     expect(state.scene.inspect().uploadRanges).toBe(beforeCommit.uploadRanges + 1);
     lease.dispose();
     persistent.dispose();
+    assets.dispose();
   });
 
   it('keeps GPU temporal history unchanged when the temporal upload fails', () => {
@@ -1389,7 +1692,7 @@ describe('GpuScene', () => {
     projection.setTemporalTracking(true);
     projection.apply([updateSnapshot(snapshot(0, 2))]);
     projection.commitSubmission(projection.captureSubmission([{ worldId: 0, entityKey: 0 }]));
-    const slot = projection.slotsSnapshot()[0];
+    const slot = projection.slotsSnapshot().at(0);
     expect(slot).toBeDefined();
     if (slot === undefined) return;
     expect(projection.temporalSnapshotBySlot(slot.slot)?.previousTransform.world[12]).toBe(2);
@@ -1428,8 +1731,21 @@ describe('GpuScene', () => {
 
     const beforeRemove = queue.writes.length;
     created.scene.sync(projection.apply([{ kind: 'remove', worldId: 0, entityKey: 1 }])).unwrap();
-    expect(queue.writes.slice(beforeRemove)).toHaveLength(5);
-    expect(queue.writes.at(-1)?.bytes.every((value) => value === 0)).toBe(true);
+    const cleared = queue.writes.slice(beforeRemove);
+    expect(cleared).toHaveLength(3);
+    expect(new Set(cleared.map((write) => write.buffer))).toEqual(
+      new Set([
+        created.scene.primitiveBuffer,
+        created.scene.instanceBuffer,
+        created.scene.transformBuffer,
+      ]),
+    );
+    expect(
+      queue.writes
+        .slice(beforeRemove)
+        .some((write) => write.buffer === created.scene.materialBuffer),
+    ).toBe(false);
+    expect(cleared.every((write) => write.bytes.every((value) => value === 0))).toBe(true);
     expect(created.scene.inspect().clearedSlots).toBe(1);
 
     const rebuilt = GpuScene.create(createDevice(new RecordingQueue()), 1).unwrap();
@@ -1442,7 +1758,7 @@ describe('GpuScene', () => {
         removed: 0,
         recreated: 0,
         ignoredLateUpdates: 0,
-        createdSlots: slots,
+        createdSlots: [...slots],
         updatedSlots: [],
         contentUpdatedSlots: [],
         instanceUpdatedSlots: [],
@@ -1471,12 +1787,23 @@ describe('GpuScene', () => {
       )
       .unwrap();
 
-    const transformWrite = queue.writes.at(-3);
+    const transformWrite = [...queue.writes]
+      .reverse()
+      .find((write) => write.buffer === created.scene.transformBuffer);
     expect(transformWrite).toBeDefined();
     if (transformWrite === undefined) return;
     const previousTranslation =
       gpuSceneFieldOffset(GPU_SCENE_LAYOUTS.transform, 'previousWorld') + 12 * 4;
-    expect(new DataView(transformWrite.bytes.buffer).getFloat32(previousTranslation, true)).toBe(9);
+    const root = primitiveView(queue, created.scene, 0).getUint32(
+      gpuSceneFieldOffset(GPU_SCENE_LAYOUTS.primitive, 'transformIndex'),
+      true,
+    );
+    expect(
+      residentView(queue, created.scene.transformBuffer).getFloat32(
+        root * GPU_SCENE_LAYOUTS.transform.stride + previousTranslation,
+        true,
+      ),
+    ).toBe(9);
   });
 
   it('reserves transform row zero for identity and does not synthesize instance transforms', () => {
@@ -1505,11 +1832,11 @@ describe('GpuScene', () => {
     created.scene.sync(recycled).unwrap();
 
     const primitiveWrite = queue.writes.find(
-      ({ bytes }) => bytes.byteLength === GPU_SCENE_LAYOUTS.primitive.stride,
+      ({ buffer }) => buffer === created.scene.primitiveBuffer,
     );
     expect(primitiveWrite).toBeDefined();
     if (primitiveWrite === undefined) return;
-    const primitive = new DataView(primitiveWrite.bytes.buffer);
+    const primitive = primitiveView(queue, created.scene, 0);
     expect(
       primitive.getUint32(gpuSceneFieldOffset(GPU_SCENE_LAYOUTS.primitive, 'transformIndex'), true),
     ).toBe(1);
@@ -1557,7 +1884,7 @@ describe('GpuScene', () => {
       .unwrap();
 
     const primitiveWrite = queue.writes.find(
-      ({ bytes }) => bytes.byteLength === GPU_SCENE_LAYOUTS.primitive.stride,
+      ({ buffer }) => buffer === created.scene.primitiveBuffer,
     );
     const instanceWrite = queue.writes.find(
       ({ bytes }) => bytes.byteLength === 2 * GPU_SCENE_LAYOUTS.instance.stride,
@@ -1571,7 +1898,7 @@ describe('GpuScene', () => {
     if (primitiveWrite === undefined || instanceWrite === undefined || transformWrite === undefined)
       return;
 
-    const primitive = new DataView(primitiveWrite.bytes.buffer);
+    const primitive = primitiveView(queue, created.scene, 0);
     expect(
       primitive.getUint32(gpuSceneFieldOffset(GPU_SCENE_LAYOUTS.primitive, 'transformIndex'), true),
     ).toBe(1);
@@ -1628,7 +1955,7 @@ describe('GpuScene', () => {
     created.scene.sync(projection.apply([updateSnapshot(empty)])).unwrap();
 
     const primitiveWrite = queue.writes.find(
-      ({ bytes }) => bytes.byteLength === GPU_SCENE_LAYOUTS.primitive.stride,
+      ({ buffer }) => buffer === created.scene.primitiveBuffer,
     );
     const transformWrite = queue.writes.find(
       ({ bytes }) => bytes.byteLength === 2 * GPU_SCENE_LAYOUTS.transform.stride,
@@ -1636,7 +1963,7 @@ describe('GpuScene', () => {
     expect(primitiveWrite).toBeDefined();
     expect(transformWrite).toBeDefined();
     if (primitiveWrite === undefined || transformWrite === undefined) return;
-    const primitive = new DataView(primitiveWrite.bytes.buffer);
+    const primitive = primitiveView(queue, created.scene, 0);
     expect(
       primitive.getUint32(gpuSceneFieldOffset(GPU_SCENE_LAYOUTS.primitive, 'instanceCount'), true),
     ).toBe(0);
@@ -1653,11 +1980,11 @@ describe('GpuScene', () => {
     created.scene.sync(recreated).unwrap();
     const replacementPrimitive = queue.writes
       .slice(writesBeforeRecreate)
-      .find(({ bytes }) => bytes.byteLength === GPU_SCENE_LAYOUTS.primitive.stride);
+      .find(({ buffer }) => buffer === created.scene.primitiveBuffer);
     expect(replacementPrimitive).toBeDefined();
     if (replacementPrimitive === undefined) return;
     expect(
-      new DataView(replacementPrimitive.bytes.buffer).getUint32(
+      primitiveView(queue, created.scene, 0).getUint32(
         gpuSceneFieldOffset(GPU_SCENE_LAYOUTS.primitive, 'transformIndex'),
         true,
       ),
@@ -1720,18 +2047,23 @@ describe('GpuScene', () => {
     const mixed = {
       ...initial,
       transform: snapshot(8, 3).transform,
-      material: nextMaterial,
-      materials: [nextMaterial],
+      material: initial.material,
+      materials: initial.materials,
       instances: { ...initial.instances, transforms: nextTransforms, revision: 2 },
     };
-    const delta = projection.apply([updateSnapshot(mixed)]);
+    initial.material.adopt(nextMaterial);
+    const delta = {
+      ...projection.apply([updateSnapshot(mixed)]),
+      materialUpdates: [initial.material],
+    };
     expect(delta.updated).toBe(1);
     const result = created.scene.sync(delta).unwrap();
     expect(result.bytes).toBe(16 + 2 * GPU_SCENE_LAYOUTS.transform.stride);
     expect(result.grew).toBe(false);
-    const next = { ...mixed, material: { ...nextMaterial, roughness: 0.7 } };
-    next.materials = [next.material];
-    const materialOnly = created.scene.sync(projection.apply([updateSnapshot(next)])).unwrap();
+    initial.material.adopt({ ...nextMaterial, roughness: 0.7 });
+    const materialOnly = created.scene
+      .sync({ ...projection.apply([]), materialUpdates: [initial.material] })
+      .unwrap();
     expect(materialOnly.bytes).toBe(16);
   });
 });
@@ -1739,3 +2071,160 @@ describe('GpuScene', () => {
 function currentWorldOffset(): number {
   return gpuSceneFieldOffset(GPU_SCENE_LAYOUTS.transform, 'currentWorld');
 }
+
+it('uploads one shared geometry descriptor for 2048 mesh users without rewriting primitives', () => {
+  const queue = new RecordingQueue();
+  const device = new RhiNullDevice(
+    queue,
+    (bookkeeper, owner) => new RhiNullCommandEncoder(bookkeeper, owner),
+  );
+  const available = GpuScene.create(device, 4096).unwrap();
+  if (available.status !== 'available') throw new Error('GPU Scene unavailable');
+  const scene = available.scene;
+  const projection = new RenderScene();
+  const first = new MeshFrame().with(0, 9, BUILTIN_CUBE);
+  try {
+    scene
+      .sync({
+        ...projection.apply(
+          Array.from({ length: 2048 }, (_, i) => updateSnapshot(snapshot(i + 1))),
+        ),
+        meshes: first,
+      })
+      .unwrap();
+    const initialReads = scene.inputs.capture();
+    initialReads.buffer().unwrap();
+    initialReads.release();
+    const allocations = scene.allocationRevision;
+    queue.writes.length = 0;
+    const next = first.with(0, 9, {
+      ...BUILTIN_CUBE,
+      aabb: new Float32Array([-10, -1, -1, 10, 1, 1]),
+    });
+    const changed = scene.sync({ ...projection.apply([]), meshes: next }).unwrap();
+    expect(changed.bytes).toBe(0);
+    expect(scene.allocationRevision).toBe(allocations);
+    expect(queue.writes).toHaveLength(0);
+    const beforeUpload = scene.inputs.uploadBytes;
+    const reads = scene.inputs.capture();
+    const inputBuffer = reads.buffer().unwrap().buffer;
+    reads.release();
+    expect(scene.inputs.uploadBytes - beforeUpload).toBe(28);
+    expect(queue.writes).toHaveLength(1);
+    const descriptor = scene.geometryIndexForResource(0, 9);
+    if (descriptor === undefined) throw new Error('missing shared geometry');
+    for (let i = 0; i < 2048; i++)
+      expect(
+        primitiveView(queue, scene, i).getUint32(
+          gpuSceneFieldOffset(GPU_SCENE_LAYOUTS.primitive, 'sourceIndex'),
+          true,
+        ),
+      ).toBe(i);
+    expect(residentView(queue, inputBuffer, descriptor * 4).getFloat32(4, true)).toBe(-10);
+    expect(scene.sync({ ...projection.apply([]), meshes: next }).unwrap().bytes).toBe(0);
+  } finally {
+    scene.dispose();
+  }
+});
+
+it('retains a pinned geometry descriptor through replacement, deletion and submission completion', async () => {
+  const queue = new RecordingQueue();
+  const available = GpuScene.create(createDevice(queue), 32).unwrap();
+  if (available.status !== 'available') throw new Error('GPU Scene unavailable');
+  const scene = available.scene;
+  const projection = new RenderScene();
+  const before = new MeshFrame().with(0, 9, BUILTIN_CUBE);
+  const source = snapshot(1);
+  try {
+    scene.sync({ ...projection.apply([updateSnapshot(source)]), meshes: before }).unwrap();
+    const held = scene.captureResources().unwrap();
+    const address = held.indexForGeometry(0, 9, before.get(0, 9));
+    if (address === undefined) throw new Error('missing pinned geometry');
+    const oldInput = held.inputReads().buffer().unwrap().buffer;
+    const boundsAt = (index: number, input: Buffer) =>
+      residentView(queue, input, index * 4).getFloat32(4, true);
+    const oldBounds = boundsAt(address, oldInput);
+    held.seal().unwrap();
+    const after = before.with(0, 9, {
+      ...BUILTIN_CUBE,
+      aabb: new Float32Array([-9, -1, -1, 1, 1, 1]),
+    });
+    scene.sync({ ...projection.apply([]), meshes: after }).unwrap();
+    const current = scene.geometryIndexForResource(0, 9);
+    expect(current).not.toBe(address);
+    const currentReads = scene.inputs.capture();
+    const currentInput = currentReads.buffer().unwrap().buffer;
+    currentReads.release();
+    expect(boundsAt(address, oldInput)).toBe(oldBounds);
+    expect(current !== undefined && boundsAt(current, currentInput)).toBe(-9);
+    expect(held.indexForGeometry(0, 9, before.get(0, 9))).toBeUndefined();
+    expect(held.indexForGeometry(0, 9, after.get(0, 9))).toBeUndefined();
+    let complete!: () => void;
+    held.submit(
+      new Promise<void>((resolve) => {
+        complete = resolve;
+      }),
+    );
+    scene.sync(projection.apply([{ kind: 'remove', worldId: 0, entityKey: 1 }])).unwrap();
+    expect(scene.geometryIndexForResource(0, 9)).toBeUndefined();
+    expect(boundsAt(address, oldInput)).toBe(oldBounds);
+    complete();
+    await Promise.resolve();
+    scene.sync(projection.apply([])).unwrap();
+    scene.sync({ ...projection.apply([updateSnapshot(source)]), meshes: after }).unwrap();
+    const reclaimed = scene.geometryIndexForResource(0, 9);
+    expect(reclaimed).toBe(address);
+    const reclaimedReads = scene.inputs.capture();
+    const reclaimedInput = reclaimedReads.buffer().unwrap().buffer;
+    reclaimedReads.release();
+    expect(boundsAt(address, reclaimedInput)).toBe(-9);
+  } finally {
+    scene.dispose();
+  }
+});
+
+it('starts material residency independently of a large primitive reservation', () => {
+  const created = GpuScene.create(createDevice(new RecordingQueue()), 65536).unwrap();
+  if (created.status !== 'available') throw new Error('expected GPU scene');
+  try {
+    expect(created.scene.inspect().tables.primitive.capacity).toBe(65536);
+    expect(created.scene.inspect().tables.material.bytes).toBeLessThanOrEqual(256);
+  } finally {
+    created.scene.dispose();
+  }
+});
+
+it('keeps entity tables stable while old frames hold distinct shared mesh versions', () => {
+  const available = GpuScene.create(createDevice(new RecordingQueue()), 4).unwrap();
+  if (available.status !== 'available') throw Error('GPU scene unavailable');
+  const scene = available.scene;
+  const projection = new RenderScene();
+  let meshes = new MeshFrame().with(0, 9, BUILTIN_CUBE);
+  scene.sync({ ...projection.apply([updateSnapshot(snapshot(1))]), meshes }).unwrap();
+  const capacity = scene.rowCapacity;
+  const buffers = [scene.primitiveBuffer, scene.instanceBuffer, scene.transformBuffer];
+  const held: GpuSceneResourceFrame[] = [];
+  try {
+    for (let i = 0; i < 8; i++) {
+      const frame = scene.captureResources().unwrap();
+      held.push(frame);
+      const geometry = meshes.get(0, 9);
+      const address = frame.indexForGeometry(0, 9, geometry);
+      expect(address).toBeDefined();
+      frame.seal().unwrap();
+      meshes = meshes.with(0, 9, {
+        ...BUILTIN_CUBE,
+        aabb: new Float32Array([-i - 2, -1, -1, i + 2, 1, 1]),
+      });
+      scene.sync({ ...projection.apply([]), meshes }).unwrap();
+      expect(scene.geometryIndexForResource(0, 9)).not.toBe(address);
+      expect(scene.rowCapacity).toBe(capacity);
+      expect(scene.primitiveBuffer).toBe(buffers[0]);
+      expect(scene.instanceBuffer).toBe(buffers[1]);
+      expect(scene.transformBuffer).toBe(buffers[2]);
+    }
+  } finally {
+    for (const frame of held) frame.release();
+    scene.dispose();
+  }
+});

@@ -1,10 +1,6 @@
-import {
-  AssetRegistry,
-  createMaterialLoader,
-  HANDLE_CUBE,
-  RuntimeMaterialValue,
-} from '@forgeax/engine-assets-runtime';
+import { AssetRegistry, createMaterialLoader } from '@forgeax/engine-assets-runtime';
 import { Time, World } from '@forgeax/engine-ecs';
+import { createPrimitiveMesh } from '@forgeax/engine-geometry';
 import { validateCookedMaterialRecord } from '@forgeax/engine-pack';
 import { attachRecorder, buildFrameModel, decodeTape, openReplay } from '@forgeax/engine-rhi-debug';
 import * as gpu from '@forgeax/engine-rhi-webgpu';
@@ -12,7 +8,9 @@ import { Transform } from '@forgeax/engine-scene';
 import { ShaderRegistry } from '@forgeax/engine-shader';
 import { derive } from '@forgeax/engine-types';
 import { assert, expect } from 'vitest';
+import { loadMaterialFixture } from '../../../../assets-runtime/src/__tests__/fixtures/runtime-material';
 import { MeshFilter, MeshRenderer } from '../../components';
+import { renderMaterialContext } from '../../extract/material-context';
 import { packMaterialProgramRow } from '../../material-row';
 import { renderPublicationTransfers } from '../../publication/contract';
 import { installPublicationPrograms } from '../../publication/programs';
@@ -20,8 +18,11 @@ import { createRenderPublisher } from '../../publication/publisher';
 import { RenderPublicationReceiver } from '../../publication/receiver';
 import { buildRaySurfaceScene } from '../../raytracing/attributes';
 import { createSubmittedRayPathTracer } from '../../raytracing/path-tracer';
+import { PersistentRenderScene } from '../../scene/render-scene';
 import type { RayPublicationFixture } from './path-tracer.commands';
 import { plane, readBuffer } from './path-tracer.fixture';
+
+const BUILTIN_CUBE = createPrimitiveMesh('cube').unwrap();
 
 /** Real cooked publication and World values feed the shared Surface compute entry. */
 export async function verifyPublishedRayMaterial(
@@ -29,15 +30,20 @@ export async function verifyPublishedRayMaterial(
   saveCapture?: (bytes: Uint8Array) => Promise<void>,
 ) {
   const material = fixture.material;
+  const materialGuid = material.guid;
   assert(material.name === 'emission');
-  const assets = new AssetRegistry(new ShaderRegistry({ manifestUrl: undefined }));
-  const received = new AssetRegistry(new ShaderRegistry({ manifestUrl: undefined }));
+  const assets = new AssetRegistry({
+    shaderRegistry: new ShaderRegistry({ manifestUrl: undefined }),
+  });
+  const received = new AssetRegistry({
+    shaderRegistry: new ShaderRegistry({ manifestUrl: undefined }),
+  });
   const record = validateCookedMaterialRecord(
     JSON.parse(material.cookedPublication.record),
   ).unwrap();
   const ready = await createMaterialLoader({
     loadPublication: async () => ({
-      guid: material.name,
+      guid: materialGuid,
       record,
       artifacts: Object.fromEntries(
         Object.entries(material.cookedPublication.artifacts).map(([path, bytes]) => [
@@ -46,30 +52,18 @@ export async function verifyPublishedRayMaterial(
         ]),
       ),
     }),
-  }).load({ guid: material.name, specializationKey: record.specializationKey ?? '' });
+  }).load({ guid: materialGuid, specializationKey: record.specializationKey ?? '' });
   assert(ready.status === 'Ready', JSON.stringify(ready));
-  assets.catalog(material.name, material.asset).unwrap();
-  assets.recordMaterialReadiness(material.name, ready);
-  const world = new World();
-  const handle = world.internSharedRef('MaterialAsset', material.asset);
+  const handle = (await loadMaterialFixture(assets, ready.record)).unwrap().handle;
+  const world = new World({ assets });
   world
     .spawn(
       { component: Transform, data: {} },
-      { component: MeshFilter, data: { assetHandle: HANDLE_CUBE } },
+      { component: MeshFilter, data: { assetHandle: assets.create(BUILTIN_CUBE).unwrap() } },
       { component: MeshRenderer, data: { materials: [handle] } },
     )
     .unwrap();
-  const valueEntity = world
-    .spawn({
-      component: RuntimeMaterialValue,
-      data: {
-        asset: handle,
-        parameter: 'emissiveIntensity',
-        kind: 0,
-        value: [2],
-      },
-    })
-    .unwrap();
+  assets.update(handle, { values: { emissiveIntensity: 2 } }).unwrap();
   const recorder = attachRecorder(gpu).unwrap();
   const device = (
     await (await recorder.backend.rhi.requestAdapter()).unwrap().requestDevice()
@@ -81,6 +75,8 @@ export async function verifyPublishedRayMaterial(
   const identity = { source: 'published-ray-material', epoch: 1 };
   const publisher = createRenderPublisher(world, assets, identity, device.caps);
   const receiver = new RenderPublicationReceiver(identity);
+  const scene = new PersistentRenderScene({ assets: received });
+  scene.materialSnapshotCacheStore(renderMaterialContext(device.caps).materialContext);
   const outputs: Uint8Array[] = [];
   const rows: Uint8Array[] = [];
   const transportOutputs: Uint8Array[] = [];
@@ -99,7 +95,7 @@ export async function verifyPublishedRayMaterial(
     const capture = recorder.captureFrame();
     (await recorder.frameBoundary()).unwrap();
     for (const intensity of [2, 0, 4, 8]) {
-      world.set(valueEntity, RuntimeMaterialValue, { value: [intensity] }).unwrap();
+      assets.update(handle, { values: { emissiveIntensity: intensity } }).unwrap();
       world.update(1 / 60).unwrap();
       const start = performance.now();
       const candidate = publisher.prepare(world.getResource(Time).elapsed).unwrap();
@@ -108,8 +104,13 @@ export async function verifyPublishedRayMaterial(
       });
       candidate.accept();
       installPublicationPrograms(received, packet.programs);
-      const accepted = receiver.accept(packet).unwrap();
-      const snapshot = accepted.frame.renderables[0]?.material;
+      const accepted = receiver.accept(packet, received).unwrap();
+      const frame = scene.consumePublication(accepted);
+      const resource = frame.renderables.at(0)?.material;
+      const snapshot =
+        resource === undefined
+          ? undefined
+          : scene.shadowCasterProjection()?.content.materials.get(resource)?.snapshot;
       assert(snapshot?.materialSurfacePrograms?.['ray-hit']);
       expect(snapshot.materialSurfacePrograms?.['ray-hit'].programKey).toBe(
         material.publication.program,
@@ -225,7 +226,7 @@ export async function verifyPublishedRayMaterial(
             if (!changed) {
               changed = true;
               // A real next publication arrives while the old GPU program is awaiting creation.
-              world.set(valueEntity, RuntimeMaterialValue, { value: [8] }).unwrap();
+              assets.update(handle, { values: { emissiveIntensity: 8 } }).unwrap();
               const next = publisher.prepare(world.getResource(Time).elapsed).unwrap();
               const nextPacket = structuredClone(next.packet, {
                 transfer: renderPublicationTransfers(next.packet),

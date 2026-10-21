@@ -182,13 +182,13 @@ describe('sprite-lit shader (flat 2D lighting, tweak-20260701 M1)', () => {
       expect(consumers.length).toBeGreaterThanOrEqual(2);
     });
 
-    it('VsOut carries vertex-produced ndc and viewZ for Standard cluster lookup', async () => {
+    it('Standard cluster lookup combines vertex ndc/viewZ with fragment pixels', async () => {
       const src = await readSpriteLitSource();
       expect(src).toMatch(/@location\(\s*2\s*\)\s+ndc\s*:\s*vec3<f32>/);
       expect(src).toMatch(/@location\(\s*3\s*\)\s+viewZ\s*:\s*f32/);
       expect(src).toMatch(/out\.ndc\s*=\s*clipPos\.xyz\s*\/\s*clipPos\.w\s*;/);
       expect(src).toMatch(/out\.viewZ\s*=\s*sceneViewZ\(/);
-      expect(src).toMatch(/evaluateStandardClusterLights\(\s*ndc,\s*viewZ,\s*worldPos/);
+      expect(src).toMatch(/evaluateStandardClusterLights\(\s*ndc,\s*pixel,\s*viewZ,\s*worldPos/);
     });
   });
 
@@ -211,10 +211,10 @@ describe('sprite-lit shader (flat 2D lighting, tweak-20260701 M1)', () => {
       expect(src).not.toContain('evalSpotFlat(');
     });
 
-    it('spriteLitShadeAccum consumes vertex-produced ndc/viewZ without a normal', async () => {
+    it('spriteLitShadeAccum consumes fragment pixels and vertex ndc/viewZ without a normal', async () => {
       const src = await readSpriteLitSource();
       const re =
-        /fn\s+spriteLitShadeAccum\s*\(\s*albedo\s*:\s*vec3<f32>\s*,\s*worldPos\s*:\s*vec3<f32>\s*,\s*ndc\s*:\s*vec3<f32>\s*,\s*viewZ\s*:\s*f32\s*,?\s*\)/;
+        /fn\s+spriteLitShadeAccum\s*\(\s*albedo\s*:\s*vec3<f32>\s*,\s*worldPos\s*:\s*vec3<f32>\s*,\s*ndc\s*:\s*vec3<f32>\s*,\s*pixel\s*:\s*vec2<f32>\s*,\s*viewZ\s*:\s*f32\s*,?\s*\)/;
       expect(re.test(src)).toBe(true);
       const bodyStart = src.indexOf('fn spriteLitShadeAccum');
       const bodyEnd = src.indexOf('fn fs_main(', bodyStart);

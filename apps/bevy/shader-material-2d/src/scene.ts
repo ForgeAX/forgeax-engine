@@ -2,6 +2,8 @@ import type { World } from '@forgeax/engine-ecs';
 import { Camera, DirectionalLight, MeshFilter, MeshRenderer, orthographic } from '@forgeax/engine-render';
 import { Transform } from '@forgeax/engine-scene';
 import type { MaterialAsset, MeshAsset, TextureAsset } from '@forgeax/engine-types';
+import { AssetRegistry } from '@forgeax/engine-assets-runtime';
+
 
 export const SHADER_ID = 'bevy::shader_material_2d';
 export const TEXTURE_SIZE = 64;
@@ -77,8 +79,11 @@ export function makeMaterial(texture: number): MaterialAsset {
 }
 
 export function buildShaderMaterial2dWorld(world: World, texture: number, aspect = 320 / 180): void {
-  const mesh = world.allocSharedRef('MeshAsset', QUAD);
-  const material = world.allocSharedRef('MaterialAsset', makeMaterial(texture));
+const sceneAssets = world.assets;
+if (!(sceneAssets instanceof AssetRegistry)) throw new Error('Scene requires its runtime asset owner');
+
+  const mesh = sceneAssets.create(QUAD).unwrap();
+  const material = sceneAssets.create(makeMaterial(texture)).unwrap();
   world.spawn(
     { component: Transform, data: { pos: [0, 0, 1], scale: [1.55, 1.55, 1] } },
     { component: MeshFilter, data: { assetHandle: mesh } },

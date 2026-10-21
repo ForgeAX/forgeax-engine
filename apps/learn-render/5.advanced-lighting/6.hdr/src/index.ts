@@ -23,7 +23,7 @@ import { configureRuntimeAssetCatalog, createRuntimeAssetImportTransport, runtim
 import { type App } from '@forgeax/engine-app';
 import { createApp } from '@forgeax/engine-app/browser';
 import { AssetGuid } from '@forgeax/engine-pack/guid';
-import { HANDLE_CUBE } from '@forgeax/engine-assets-runtime';
+
 import { Transform } from '@forgeax/engine-scene';
 
 import { Camera, MeshFilter, MeshRenderer } from '@forgeax/engine-render';
@@ -33,8 +33,8 @@ import { Materials } from '@forgeax/engine-render';
 import { PointLight, PostProcessParams } from '@forgeax/engine-render';
 
 import { createBoxGeometry } from '@forgeax/engine-geometry';
-import type { MaterialAsset, MeshAsset, TextureAsset } from '@forgeax/engine-types';
-import { unwrapHandle } from '@forgeax/engine-types';
+import type { MeshAsset } from '@forgeax/engine-types';
+
 import { forgeaxBundlerAdapter } from 'virtual:forgeax/bundler';
 import { captureCanvasPixels } from '@forgeax/apps-shared/canvas-capture';
 import { addFirstPersonSystem } from '../../../../shared/src/learn-render-first-person';
@@ -52,6 +52,8 @@ import {
   setHdrPipelineRegistryForTest,
   type HdrMode,
 } from './hdr-pipeline';
+import { createPrimitiveMesh } from '@forgeax/engine-geometry';
+
 
 // 2. example-specific glue
 
@@ -351,8 +353,12 @@ async function bootstrap(target: HTMLCanvasElement): Promise<void> {
     return;
   }
   const app = appRes.value;
+if (app.assets === undefined) throw new Error('This scene requires the App asset owner');
+
   exposeLearnRenderTestApp(app, target);
   const world = app.world;
+const primitiveCube = app.assets.create(createPrimitiveMesh('cube').unwrap()).unwrap();
+
   app.onError((error) => {
     console.error('[learn-render 5.6 hdr] app.onError:', error.code, error.hint);
     const bus = (
@@ -405,9 +411,9 @@ async function bootstrap(target: HTMLCanvasElement): Promise<void> {
     markLearnRenderTestBootstrapStage(target, `hdr.assets.${event.phase}`);
   };
   traceScope.__forgeaxAssetLoadTrace = traceSink;
-  let woodTexRes: Awaited<ReturnType<typeof assets.loadByGuid<TextureAsset>>>;
+  let woodTexRes: Awaited<ReturnType<typeof assets.load<'texture'>>>;
   try {
-    woodTexRes = await assets.loadByGuid<TextureAsset>(woodGuidRes.value);
+    woodTexRes = await assets.load(woodGuidRes.value, 'texture');
   } finally {
     if (traceScope.__forgeaxAssetLoadTrace === traceSink) {
       delete traceScope.__forgeaxAssetLoadTrace;
@@ -422,15 +428,12 @@ async function bootstrap(target: HTMLCanvasElement): Promise<void> {
 
   // Tunnel material: standard PBR wood baseColor, matte finish (rough +
   // non-metal) so the bright interior point lights paint clear highlights.
-  const tunnelMat = world.allocSharedRef<'MaterialAsset', MaterialAsset>(
-    'MaterialAsset',
-    Materials.standard({
+  const tunnelMat = assets.create(Materials.standard({
       baseColor: [1.0, 1.0, 1.0, 1.0],
       roughness: 0.85,
       metallic: 0.0,
-      baseColorTexture: unwrapHandle(world.allocSharedRef('TextureAsset', woodTex)),
-    }),
-  );
+      baseColorTexture: woodTex,
+    })).unwrap();
 
   // Tunnel mesh = an INWARD-facing unit box (verify round 1 V1 fix). The camera
   // sits inside the box; the built-in HANDLE_CUBE has outward normals, so its
@@ -447,7 +450,7 @@ async function bootstrap(target: HTMLCanvasElement): Promise<void> {
     console.error('[learn-render 5.6 hdr] createBoxGeometry failed:', tunnelMeshRes.error.code);
     return;
   }
-  const tunnelMeshHandle = world.allocSharedRef('MeshAsset', invertMesh(tunnelMeshRes.value));
+  const tunnelMeshHandle = assets.create(invertMesh(tunnelMeshRes.value)).unwrap();
   world
     .spawn(
       {
@@ -465,15 +468,12 @@ async function bootstrap(target: HTMLCanvasElement): Promise<void> {
   // offscreen via inverse-square attenuation -- the physical overbright source
   // (NOT emissive self-illumination). The companion light-box cube is a dim
   // position marker (emissiveIntensity 0.4, well under 1.0; R-B2/AC-B4).
-  const strongMarkerMat = world.allocSharedRef<'MaterialAsset', MaterialAsset>(
-    'MaterialAsset',
-    Materials.standard({
+  const strongMarkerMat = assets.create(Materials.standard({
       baseColor: [1.0, 1.0, 1.0, 1.0],
       roughness: 0.4,
       emissive: STRONG_LIGHT_COLOR,
       emissiveIntensity: LIGHT_BOX_EMISSIVE_INTENSITY,
-    }),
-  );
+    })).unwrap();
   world
     .spawn(
       {
@@ -481,7 +481,7 @@ async function bootstrap(target: HTMLCanvasElement): Promise<void> {
         data: {
           pos: [STRONG_LIGHT_POS[0], STRONG_LIGHT_POS[1], STRONG_LIGHT_POS[2]], scale: [LIGHT_BOX_SCALE, LIGHT_BOX_SCALE, LIGHT_BOX_SCALE],},
       },
-      { component: MeshFilter, data: { assetHandle: HANDLE_CUBE } },
+      { component: MeshFilter, data: { assetHandle: primitiveCube } },
       { component: MeshRenderer, data: { materials: [strongMarkerMat] } },
     )
     .unwrap();
@@ -510,15 +510,12 @@ async function bootstrap(target: HTMLCanvasElement): Promise<void> {
     const pos = WEAK_LIGHT_POSITIONS[i];
     const color = WEAK_LIGHT_COLORS[i];
     if (pos === undefined || color === undefined) continue;
-    const weakMarkerMat = world.allocSharedRef<'MaterialAsset', MaterialAsset>(
-      'MaterialAsset',
-      Materials.standard({
+    const weakMarkerMat = assets.create(Materials.standard({
         baseColor: [1.0, 1.0, 1.0, 1.0],
         roughness: 0.4,
         emissive: color,
         emissiveIntensity: LIGHT_BOX_EMISSIVE_INTENSITY,
-      }),
-    );
+      })).unwrap();
     world
       .spawn(
         {
@@ -526,7 +523,7 @@ async function bootstrap(target: HTMLCanvasElement): Promise<void> {
           data: {
             pos: [pos[0], pos[1], pos[2]], scale: [LIGHT_BOX_SCALE, LIGHT_BOX_SCALE, LIGHT_BOX_SCALE],},
         },
-        { component: MeshFilter, data: { assetHandle: HANDLE_CUBE } },
+        { component: MeshFilter, data: { assetHandle: primitiveCube } },
         { component: MeshRenderer, data: { materials: [weakMarkerMat] } },
       )
       .unwrap();

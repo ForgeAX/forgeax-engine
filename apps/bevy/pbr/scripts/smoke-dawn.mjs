@@ -1,5 +1,8 @@
 #!/usr/bin/env node
 import { encodePng } from '@forgeax/engine-image/png';
+import { createPrimitiveMesh } from '@forgeax/engine-geometry';
+import { constructRuntimeRendererHost } from '@forgeax/engine-runtime/internal/renderer-host';
+let smokeAssets;
 import testQuality from '../../../../scripts/test/render-quality.json' with { type: 'json' };
 import { createSmokeRenderer, drawSmokeFrame, rendererBackend, subscribeSmokeErrors } from "../../scripts/renderer-smoke.mjs";
 // bevy-pbr headless dawn smoke — proves Bevy PBR behavior:
@@ -101,7 +104,7 @@ const { createRenderer } = await import('@forgeax/engine-runtime');
 const { Materials, Skylight } = await import('@forgeax/engine-render');
 const { orthographic } = await import('@forgeax/engine-render');
 const { Transform } = await import('@forgeax/engine-scene');
-const { HANDLE_SPHERE } = await import('@forgeax/engine-assets-runtime');
+
 const { quat } = await import('@forgeax/engine-math');
 
 const here = dirname(fileURLToPath(import.meta.url));
@@ -110,7 +113,9 @@ const MANIFEST_URL = `data:application/json,${encodeURIComponent(readFileSync(MA
 
 let renderer;
 try {
-  renderer = await createSmokeRenderer(createRenderer, mockCanvas, {}, { shaderManifestUrl: MANIFEST_URL });
+  const hostResult = await constructRuntimeRendererHost(mockCanvas, {}, { shaderManifestUrl: MANIFEST_URL });
+if (!hostResult.ok) throw hostResult.error;
+({ renderer, assets: smokeAssets } = hostResult.value);
 } catch (err) {
   console.error(`[smoke] FAIL - createRenderer threw: ${err instanceof Error ? err.message : String(err)}`);
   process.exit(1);
@@ -125,7 +130,8 @@ subscribeSmokeErrors(renderer, (err) => errors.push({ code: err.code, hint: err.
 
 const GOLD = [1.0, 0.847, 0.569, 1.0];
 
-const world = new World();
+const world = new World({ assets: smokeAssets });
+const primitiveSphere = world.assets.create(createPrimitiveMesh('sphere').unwrap()).unwrap();
 const worldAttachment1 = renderer.attach(world);
 if (!worldAttachment1.ok) throw worldAttachment1.error;
 
@@ -134,20 +140,20 @@ for (let y = -2; y <= 2; y++) {
   for (let x = -5; x <= 5; x++) {
     const x01 = (x + 5) / 10; // roughness: 0→1 left-to-right
     const y01 = (y + 2) / 4;  // metallic: 0→1 bottom-to-top
-    const mat = world.allocSharedRef('MaterialAsset', Materials.standard({ baseColor: GOLD, metallic: y01, roughness: x01 }));
+    const mat = world.assets.create(Materials.standard({ baseColor: GOLD, metallic: y01, roughness: x01 })).unwrap();
     world.spawn(
       { component: Transform, data: { pos: [x, y + 0.5, 0], quat: [0, 0, 0, 1], scale: [1, 1, 1] } },
-      { component: MeshFilter, data: { assetHandle: HANDLE_SPHERE } },
+      { component: MeshFilter, data: { assetHandle: primitiveSphere } },
       { component: MeshRenderer, data: { materials: [mat] } },
     );
   }
 }
 
 // ── Unlit sphere below the grid at (-5, -2.5, 0) ──────────────────────
-const unlitMat = world.allocSharedRef('MaterialAsset', Materials.unlit(GOLD));
+const unlitMat = world.assets.create(Materials.unlit(GOLD)).unwrap();
 world.spawn(
   { component: Transform, data: { pos: [-5, -2.5, 0], quat: [0, 0, 0, 1], scale: [1, 1, 1] } },
-  { component: MeshFilter, data: { assetHandle: HANDLE_SPHERE } },
+  { component: MeshFilter, data: { assetHandle: primitiveSphere } },
   { component: MeshRenderer, data: { materials: [unlitMat] } },
 );
 

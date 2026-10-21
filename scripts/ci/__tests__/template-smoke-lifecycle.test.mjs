@@ -455,7 +455,7 @@ test('Preview browser server and client share the original startup deadline and 
   }
 });
 
-test('Preview dev server does not inherit a production-mode caller', () => {
+test('Preview dev server prepares producers before browser admission despite caller defaults', () => {
   execFileSync(
     process.execPath,
     [
@@ -465,6 +465,7 @@ test('Preview dev server does not inherit a production-mode caller', () => {
     import assert from 'node:assert/strict';
     import { resolve } from 'node:path';
     process.env.NODE_ENV = 'production';
+    process.env.FORGEAX_DEV_PACK_READINESS = 'on-demand';
     const ROOT = '/fixture', PORT = 5201;
     const createRequire = () => ({ resolve: () => '/fixture/vite/package.json' });
     let options;
@@ -478,7 +479,9 @@ test('Preview dev server does not inherit a production-mode caller', () => {
     assert.equal(options.env.FORGEAX_TEMPLATE_SMOKE_SLUGS, 'empty');
     assert.equal(options.env.NODE_ENV, 'development');
     assert.equal(options.env.FORGEAX_TEMPLATE_SMOKE, '1');
+    assert.equal(options.env.FORGEAX_DEV_PACK_READINESS, 'before-consume');
     assert.equal(process.env.NODE_ENV, 'production');
+    assert.equal(process.env.FORGEAX_DEV_PACK_READINESS, 'on-demand');
   `,
     ],
     { timeout: 5000 },

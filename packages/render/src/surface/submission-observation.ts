@@ -1,7 +1,5 @@
-import { err, ok, type Result } from '@forgeax/engine-types';
+import { err, type MaterialSurfacePassKind, ok, type Result } from '@forgeax/engine-types';
 import type { GpuDrivenLaneReason, PersistentRenderSceneInspection } from '../inspection-types';
-
-export type SurfacePassName = 'nearest-layer' | 'color';
 
 type SurfaceDirectCommandObservation = {
   readonly kind: 'draw' | 'draw-indexed';
@@ -32,7 +30,7 @@ export interface SurfaceGpuIndirectParameters {
   readonly deviceGeneration: number;
   readonly resourceGeneration: number | undefined;
   readonly viewIdentity: 'main:0';
-  readonly pass: SurfacePassName;
+  readonly pass: MaterialSurfacePassKind;
   readonly kind: 'draw-indirect' | 'draw-indexed-indirect';
   readonly indirectBufferIdentity: number;
   readonly indirectOffset: number;
@@ -63,7 +61,7 @@ type StoredSurfaceCommandObservation = SurfaceCommandObservation & {
 };
 
 export interface SurfaceGpuReadbackPassSnapshot {
-  readonly pass: SurfacePassName;
+  readonly pass: MaterialSurfacePassKind;
   readonly totalCommandCount: number;
   readonly savedCommandCount: number;
   readonly droppedCommandCount: number;
@@ -252,7 +250,7 @@ function sameIndirectParameters(
 }
 
 export class SurfaceSubmissionCandidate {
-  private readonly passes = new Map<SurfacePassName, SurfacePassRecording>();
+  private readonly passes = new Map<MaterialSurfacePassKind, SurfacePassRecording>();
   private state: 'recording' | 'submitted' | 'aborted' = 'recording';
   private resolvedResourceGeneration: number | undefined;
   private actualLaneReason: GpuDrivenLaneReason | undefined;
@@ -281,7 +279,7 @@ export class SurfaceSubmissionCandidate {
     if (this.state === 'recording') this.actualLaneReason = reason;
   }
 
-  record(pass: SurfacePassName, command: SurfaceCommandObservation): void {
+  record(pass: MaterialSurfacePassKind, command: SurfaceCommandObservation): void {
     if (this.state !== 'recording') return;
     let recording = this.passes.get(pass);
     if (recording === undefined) {
@@ -456,7 +454,7 @@ export class SurfaceSubmissionObservationOwner {
     candidate: SurfaceSubmissionCandidate,
     completed: Promise<unknown>,
     graphGeneration: number,
-    recordings: ReadonlyMap<SurfacePassName, SurfacePassRecording>,
+    recordings: ReadonlyMap<MaterialSurfacePassKind, SurfacePassRecording>,
   ): void {
     const sequence = candidate.sequence;
     const passes = (['nearest-layer', 'color'] as const).flatMap((pass) => {

@@ -1,5 +1,6 @@
-import { AssetRegistry, HANDLE_CUBE } from '@forgeax/engine-assets-runtime';
+import { AssetRegistry } from '@forgeax/engine-assets-runtime';
 import { Time, World } from '@forgeax/engine-ecs';
+import { createBoxGeometry } from '@forgeax/engine-geometry';
 import { vec3 } from '@forgeax/engine-math';
 import { AssetGuid } from '@forgeax/engine-pack';
 import {
@@ -26,22 +27,21 @@ import {
 } from '@forgeax/engine-shader';
 import { deriveMaterialDynamicInputLayout, err, ok } from '@forgeax/engine-types';
 import { describe, expect, it, vi } from 'vitest';
+import { publishRuntimeAssets } from '../../../assets-runtime/src/__tests__/fixtures/runtime-publication';
 import { materialParametersToParamSchema } from '../../../assets-runtime/src/material/runtime-shader';
 import { createMaterialPackCooker } from '../../../shader-compiler/src/material/pack-cooker';
 import { derive } from '../../../types/src/index';
 import { createRenderer as constructRenderer } from '../assembly/factory';
 import { resolveMaterialPipelineVertexEntry } from '../assembly/material/pipeline-helpers';
 import { Camera, DirectionalLight, MeshFilter, MeshRenderer, PointLight } from '../components';
-import { gpuDrivenDrawKey } from '../extract/gpu-driven';
 import { BatchTopology } from '../gpu-driven/batch-topology';
-import { projectMaterialBindingClasses } from '../gpu-driven/material-bindings';
 import { PreparedRasterBundleCache } from '../gpu-driven/prepared-raster-bundle';
 import { GpuDrivenProduction } from '../gpu-driven/production-raster';
 import {
   MaterialAbiRasterAdapter,
   resolveGpuDrivenMeshGroup,
 } from '../gpu-driven/production-raster-material';
-import { GPU_DRIVEN_VIEW_WGSL } from '../gpu-driven/view-gpu';
+import { GPU_DRIVEN_BATCH_STRIDE, GPU_DRIVEN_VIEW_WGSL } from '../gpu-driven/view-gpu';
 import { GpuScene } from '../gpu-scene';
 import { GPU_SCENE_LAYOUTS, gpuSceneFieldOffset } from '../gpu-scene-schema';
 import {
@@ -50,10 +50,10 @@ import {
   GPU_BUFFER_USAGE_UNIFORM,
 } from '../gpu-usage';
 import { RhiErrorListenerRegistry } from '../lifecycle';
+import { MaterialResource } from '../material-resource';
 import { Materials } from '../materials';
 import { renderPublicationTransfers } from '../publication/contract';
 import { createRenderPublisher } from '../publication/publisher';
-import * as cpuLod from '../record/cpu-lod';
 import {
   makeZeroCameraFallbackSnapshot,
   type RenderFrameState,
@@ -68,9 +68,9 @@ import type { RenderPipeline, RenderPipelineFrame } from '../render-pipeline';
 import type { ExtractedLights, RenderableSnapshot } from '../render-system-extract';
 import { PersistentRenderScene, RenderScene } from '../scene/render-scene';
 import { ReadonlyDynamicInputPage } from '../surface/dynamic-input';
-import { SurfaceSubmissionObservationOwner } from '../surface/submission-observation';
 import { createTemporalFrameTransaction } from '../temporal/frame';
 import {
+  admitGpuFixture,
   mesh,
   preparedPbrSnapshot as preparedPbrFixture,
   snapshot,
@@ -281,7 +281,20 @@ describe('GPU-driven production projection', () => {
       },
       { shaderManifestUrl: manifestDataUrl(`/* f_schlick( */ ${OUTPUT_TRANSFORM_WGSL}`, true) },
     );
-    const bundles = vi.spyOn(PreparedRasterBundleCache.prototype, 'resolve');
+    const recorded = new Set<unknown>();
+    const begin = PreparedRasterBundleCache.prototype.begin;
+    const bundles = vi
+      .spyOn(PreparedRasterBundleCache.prototype, 'begin')
+      .mockImplementation(function (this: PreparedRasterBundleCache, ...args) {
+        const recording = begin.apply(this, args);
+        const finish = recording.finish.bind(recording);
+        recording.finish = () => {
+          const bundle = finish();
+          recorded.add(bundle);
+          return bundle;
+        };
+        return recording;
+      });
     const executeOriginal = RhiNullRenderPassEncoder.prototype.executeBundles;
     const execute = vi.spyOn(RhiNullRenderPassEncoder.prototype, 'executeBundles');
     const submit = vi.spyOn(renderer.device.queue, 'submit');
@@ -295,7 +308,9 @@ describe('GPU-driven production projection', () => {
     renderer.onError((error) => errors.push(error));
     try {
       expect((await renderer.initialization).ok).toBe(true);
-      const world = new World();
+      const assets = renderer.assetRegistry;
+      const world = new World({ assets });
+      const cube = assets.create(createBoxGeometry(1, 1, 1).unwrap()).unwrap();
       const attached = renderer.attach(world);
       if (!attached.ok) throw attached.error;
       const lease = attached.value;
@@ -308,16 +323,11 @@ describe('GPU-driven production projection', () => {
       world
         .spawn(
           { component: Transform, data: {} },
-          { component: MeshFilter, data: { assetHandle: HANDLE_CUBE } },
+          { component: MeshFilter, data: { assetHandle: cube } },
           {
             component: MeshRenderer,
             data: {
-              materials: [
-                world.allocSharedRef(
-                  'MaterialAsset',
-                  Materials.standard({ baseColor: [1, 1, 1, 1] }),
-                ),
-              ],
+              materials: [assets.create(Materials.standard({ baseColor: [1, 1, 1, 1] })).unwrap()],
             },
           },
         )
@@ -334,6 +344,7 @@ describe('GPU-driven production projection', () => {
         expect(bundles).toHaveBeenCalled();
       }
       bundles.mockClear();
+      recorded.clear();
       submit.mockClear();
       submitted.mockClear();
       acknowledged.mockClear();
@@ -342,14 +353,7 @@ describe('GPU-driven production projection', () => {
       const before = renderer.inspect().renderScene.gpuDriven;
       execute.mockImplementation(function (this: RhiNullRenderPassEncoder, handles) {
         const values = [...handles];
-        if (
-          !rejected &&
-          values.some((bundle) =>
-            bundles.mock.results.some(
-              (result) => result.type === 'return' && result.value === bundle,
-            ),
-          )
-        ) {
+        if (!rejected && values.some((bundle) => recorded.has(bundle))) {
           rejected = true;
           return err(failure);
         }
@@ -404,30 +408,6 @@ describe('GPU-driven production projection', () => {
       (cooked.payload as { cooked: unknown }).cooked,
     ).unwrap();
     const wire = JSON.parse(serializeCookedMaterialRecord(record));
-    const packUrl = `/materials/${guid}.pack.json`;
-    const previousFetch = globalThis.fetch;
-    globalThis.fetch = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
-      const url = String(input);
-      if (url.endsWith('/static-shadow-index.json'))
-        return new Response(JSON.stringify([{ guid, packageUrl: packUrl, kind: 'material' }]));
-      if (url.endsWith(packUrl))
-        return new Response(
-          JSON.stringify({
-            schemaVersion: '2.0.0',
-            kind: 'internal-text-package',
-            assets: [
-              {
-                guid,
-                kind: 'material',
-                payload: { ...authored, cooked: wire },
-                refs: [],
-                artifacts: {},
-              },
-            ],
-          }),
-        );
-      return previousFetch(input, init);
-    });
     const identity = { source: 'static-shadow-publication', epoch: 1 };
     const manifest = renderLifecycleManifestUrl();
     const queue = new RecordingQueue();
@@ -448,8 +428,11 @@ describe('GPU-driven production projection', () => {
       },
       { shaderManifestUrl: manifest },
     );
-    const assets = new AssetRegistry(new ShaderRegistry({ manifestUrl: manifest }));
-    const world = new World();
+    const assets = new AssetRegistry({
+      shaderRegistry: new ShaderRegistry({ manifestUrl: manifest }),
+    });
+    const world = new World({ assets });
+    const cube = assets.create(createBoxGeometry(1, 1, 1).unwrap()).unwrap();
     const publisher = createRenderPublisher(world, assets, identity, device.caps);
     const prepare = vi.spyOn(GpuDrivenProduction.prototype, 'prepare');
     const directDraws = vi.spyOn(RhiNullRenderPassEncoder.prototype, 'drawIndexed');
@@ -457,13 +440,14 @@ describe('GPU-driven production projection', () => {
     renderer.onError((error) => errors.push(error));
     try {
       expect((await renderer.initialization).ok).toBe(true);
-      assets.configurePackIndex('/static-shadow-index.json');
+      const publishedMaterial = { ...authored, cooked: wire };
+      publishRuntimeAssets(assets, [{ guid, asset: publishedMaterial }]);
       const parsed = AssetGuid.parse(guid);
       if (!parsed.ok) throw parsed.error;
-      const load = await assets.loadByGuid(parsed.value);
+      const load = await assets.load(parsed.value, 'material');
       if (!load.ok) throw load.error;
       const loaded = load.value;
-      if (loaded.kind !== 'material') throw new Error('expected loaded material');
+
       const forward = record.programs
         .flatMap((program) => program.selections)
         .find(
@@ -498,10 +482,10 @@ describe('GPU-driven production projection', () => {
       world
         .spawn(
           { component: Transform, data: {} },
-          { component: MeshFilter, data: { assetHandle: HANDLE_CUBE } },
+          { component: MeshFilter, data: { assetHandle: cube } },
           {
             component: MeshRenderer,
-            data: { materials: [world.allocSharedRef('MaterialAsset', loaded)] },
+            data: { materials: [loaded] },
           },
         )
         .unwrap();
@@ -515,7 +499,7 @@ describe('GPU-driven production projection', () => {
       const prepared = prepare.mock.results.at(-1)?.value;
       expect(prepared).toMatchObject({
         ok: true,
-        value: { ownsAllDrawItems: true, ownsAllShadowCasters: true },
+        value: { shadowDirectRequired: false },
       });
       expect(errors).toEqual([]);
       if (!drawn.ok) throw drawn.error;
@@ -527,12 +511,32 @@ describe('GPU-driven production projection', () => {
       expect(state.projectionRecords).toBe(1);
       expect(state.gpuDriven.cpuFallbackDrawItems).toBe(0);
       expect(state.gpuDriven.gpuOwnedEntityCount).toBe(1);
-      expect(prepared.value.shadowDrawKeys.size).toBe(1);
+      expect(state.gpuDriven.shadowViews.some((view) => view.candidateCount === 1)).toBe(true);
       const scene = prepare.mock.calls.at(-1)?.[0].scene?.scene;
       if (scene === undefined) throw new Error('missing production GPU Scene');
-      const row = scene.materialIndexForSlot(0, 0);
+      const binding = prepare.mock.calls.at(-1)?.[0].scene?.plan.batches.at(0)?.binding;
+      if (binding === undefined) throw new Error('expected material binding');
+      const row = scene.materialIndexForResource(binding.material);
       if (row === undefined) throw new Error('missing uploaded material row');
-      const offset = row * 16;
+      const writesBeforeObservation = queue.writes.length;
+      const reads = scene.inputs.capture();
+      const inputBuffer = reads.buffer().unwrap().buffer;
+      reads.release();
+      expect(queue.writes).toHaveLength(writesBeforeObservation);
+      const pointerOffset = row * 4;
+      const pointerWrite = queue.writes.filter(
+        (write) =>
+          write.buffer === inputBuffer &&
+          write.offset <= pointerOffset &&
+          write.offset + write.bytes.byteLength >= pointerOffset + 4,
+      );
+      const latestPointerWrite = pointerWrite.at(-1);
+      if (latestPointerWrite === undefined) throw new Error('missing material descriptor upload');
+      const address = new DataView(
+        latestPointerWrite.bytes.buffer,
+        latestPointerWrite.bytes.byteOffset + pointerOffset - latestPointerWrite.offset,
+      ).getUint32(0, true);
+      const offset = address * 16;
       const layout = derive(materialParametersToParamSchema(record.resolved.parameters));
       const writes = queue.writes.filter(
         (write) =>
@@ -570,7 +574,9 @@ describe('GPU-driven production projection', () => {
         if (!completed.ok) throw completed.error;
         const prepared = prepare.mock.results.at(-1)?.value;
         expect(prepared?.ok).toBe(true);
-        expect(prepared.value.shadowDrawKeys.size).toBe(geometryLane === 'direct' ? 0 : 1);
+        const gpu = renderer.inspect().renderScene.gpuDriven;
+        expect(gpu.gpuOwnedEntityCount).toBe(geometryLane === 'direct' ? 0 : 1);
+        if (geometryLane === 'automatic') expect(prepared.value.shadowDirectRequired).toBe(false);
         if (geometryLane === 'direct') expect(directDraws).toHaveBeenCalled();
         expect(renderer.inspect().renderScene.projectionRecords).toBe(1);
         expect(errors).toEqual([]);
@@ -582,11 +588,10 @@ describe('GPU-driven production projection', () => {
       requestDevice.mockRestore();
       publisher.dispose();
       renderer.dispose();
-      globalThis.fetch = previousFetch;
     }
   }, 30_000);
 
-  it('records 744 published rows without inspection or same-domain row copies', async () => {
+  it('records 744 published entities with shared materials and exact draw receipts', async () => {
     const identity = { source: 'frame-projection-reuse', epoch: 1 };
     const manifest = manifestDataUrl(`/* f_schlick( */ ${OUTPUT_TRANSFORM_WGSL}`, true);
     const canvas = {
@@ -604,8 +609,11 @@ describe('GPU-driven production projection', () => {
       },
     );
     expect((await renderer.initialization).ok).toBe(true);
-    const world = new World();
-    const assets = new AssetRegistry(new ShaderRegistry({ manifestUrl: manifest }));
+    const assets = new AssetRegistry({
+      shaderRegistry: new ShaderRegistry({ manifestUrl: manifest }),
+    });
+    const world = new World({ assets });
+    const cube = assets.create(createBoxGeometry(1, 1, 1).unwrap()).unwrap();
     const publisher = createRenderPublisher(world, assets, identity);
     world
       .spawn(
@@ -613,30 +621,20 @@ describe('GPU-driven production projection', () => {
         { component: Camera, data: { fov: Math.PI / 3, aspect: 1, near: 0.1, far: 100 } },
       )
       .unwrap();
-    const red = world.allocSharedRef(
-      'MaterialAsset',
-      Materials.standard({ baseColor: [0.8, 0.1, 0.05, 1] }),
-    );
-    const blue = world.allocSharedRef(
-      'MaterialAsset',
-      Materials.standard({ baseColor: [0.05, 0.1, 0.8, 1] }),
-    );
+    const red = assets.create(Materials.standard({ baseColor: [0.8, 0.1, 0.05, 1] })).unwrap();
+    const blue = assets.create(Materials.standard({ baseColor: [0.05, 0.1, 0.8, 1] })).unwrap();
     const entities = Array.from({ length: 744 }, () =>
       world
         .spawn(
           { component: Transform, data: {} },
-          { component: MeshFilter, data: { assetHandle: HANDLE_CUBE } },
+          { component: MeshFilter, data: { assetHandle: cube } },
           { component: MeshRenderer, data: { materials: [red] } },
         )
         .unwrap(),
     );
     const inspect = vi.spyOn(GpuDrivenProduction.prototype, 'inspect');
-    const validate = vi.spyOn(GpuDrivenProduction.prototype, 'recordCpuValidation');
     const emit = vi.spyOn(gpuDrawReceipts, 'emitGpuDrivenDrawReceipts');
-    const project = vi.spyOn(cpuLod, 'projectValidatedRows');
-    const begin = vi.spyOn(SurfaceSubmissionObservationOwner.prototype, 'begin');
     const ssrInputs = vi.spyOn(mainPass, 'hasSsrSceneInputs');
-    let expectedGeneration: number | undefined;
     try {
       const changed = entities[371];
       if (changed === undefined) throw new Error('missing published entity');
@@ -650,10 +648,7 @@ describe('GPU-driven production projection', () => {
         });
         candidate.accept();
         inspect.mockClear();
-        validate.mockClear();
         emit.mockClear();
-        project.mockClear();
-        begin.mockClear();
         ssrInputs.mockClear();
         const submitted = renderer.draw({ publication: packet });
         if (!submitted.ok) throw submitted.error;
@@ -662,33 +657,28 @@ describe('GPU-driven production projection', () => {
         const completed = await receipt.completed;
         if (!completed.ok) throw completed.error;
         expect.soft(inspect, `frame ${frame} full inspection`).not.toHaveBeenCalled();
-        expect(validate).toHaveBeenCalledOnce();
         expect(emit).toHaveBeenCalledOnce();
-        expect(emit.mock.calls[0]?.[0]).toBe(validate.mock.calls[0]?.[0]);
-        const accepted = validate.mock.results[0]?.value;
-        expect(emit.mock.calls[0]?.[1]).toBe(accepted);
-        expect(accepted.renderableIndices).toHaveLength(744);
-        expect(accepted.submeshIndices).toHaveLength(744);
-        expect(begin).toHaveBeenCalledOnce();
+        expect(emit.mock.calls[0]?.[0]).toHaveLength(744);
+        expect(emit.mock.results[0]?.value).toMatchObject({
+          gpuDraws: 744,
+          gpuEntities: 744,
+          cpuDraws: 0,
+        });
+        expect(new Set(emit.mock.calls[0]?.[0].map((row) => row.material)).size).toBe(
+          frame < 3 ? 1 : 2,
+        );
         expect(ssrInputs).not.toHaveBeenCalled();
-        expect(begin.mock.calls[0]?.[0].resourceGeneration).toBe(expectedGeneration);
-        expect(project).toHaveBeenCalledOnce();
-        const input = project.mock.calls[0]?.[0];
-        expect(input).toHaveLength(744);
-        expect.soft(project.mock.results[0]?.value, `frame ${frame} same-domain rows`).toBe(input);
         const state = renderer.inspect().renderScene;
         expect(state.projectionRecords).toBe(744);
         expect(state.gpuDriven.cpuFallbackDrawItems).toBe(0);
-        expectedGeneration = state.gpuDriven.resourceGeneration;
-        expect(expectedGeneration).toBeGreaterThan(0);
+        expect(state.gpuDriven.gpuOwnedEntityCount).toBe(744);
+        expect(state.gpuDriven.gpuOwnedSnapshotsMaterialized).toBe(0);
+        expect(state.gpuDriven.cpuValidationScans).toBe(0);
         publisher.recycle(packet.revision, renderPublicationTransfers(packet)).unwrap();
       }
     } finally {
       inspect.mockRestore();
-      validate.mockRestore();
       emit.mockRestore();
-      project.mockRestore();
-      begin.mockRestore();
       ssrInputs.mockRestore();
       publisher.dispose();
       renderer.dispose();
@@ -737,7 +727,7 @@ describe('GPU-driven production projection', () => {
     availability.scene.sync(delta).unwrap();
     const topology = new BatchTopology();
     topology.rebuild(projection.slotsSnapshot());
-    const sourceBatch = topology.plan().batches[0];
+    const sourceBatch = topology.query(topology.sourcePlan(), undefined).batches.at(0);
     expect(sourceBatch?.lod?.ranges).toHaveLength(2);
     expect(sourceBatch?.lod).toBeDefined();
     if (sourceBatch?.lod === undefined) return;
@@ -750,42 +740,44 @@ describe('GPU-driven production projection', () => {
       level === readyLevel ? [{ first: 3, count: 3, baseVertex: 3 }] : [],
     );
     const prepared = production
-      .prepare({
-        ...pbrInputs,
-        scene: {
-          scene: availability.scene,
-          plan: topology.plan(),
-          slots: projection.slotsSnapshot(),
-          slotAt: projection.slotAt,
-        },
-        camera: makeZeroCameraFallbackSnapshot(),
-        meshBySlot: new Map([
-          [
-            0,
-            {
-              ...residentMesh,
-              lodRanges: [[{ first: 0, count: 3, baseVertex: 0 }], ...lowerRanges],
-            },
-          ],
-        ]),
-        viewBindGroupLayout: viewLayout,
-        meshResidencyEpoch: 1,
-      })
+      .prepare(
+        admitGpuFixture({
+          ...pbrInputs,
+          scene: {
+            scene: availability.scene,
+            plan: topology.query(topology.sourcePlan(), undefined),
+            slots: projection.slotsSnapshot(),
+            slotAt: projection.slotAt,
+          },
+          camera: makeZeroCameraFallbackSnapshot(),
+          meshBySlot: new Map([
+            [
+              0,
+              {
+                ...residentMesh,
+                lodRanges: [[{ first: 0, count: 3, baseVertex: 0 }], ...lowerRanges],
+              },
+            ],
+          ]),
+          viewBindGroupLayout: viewLayout,
+        }),
+      )
       .unwrap();
     expect(prepared).toBeDefined();
     if (prepared === undefined) return;
     expect(production.inspect()).toMatchObject({ batchCount: 1, indirectDrawCount: 3 });
     prepared.project(new RenderGraphBuilder<RenderPipelineFrame>(), 'rgba8unorm', 1).unwrap();
 
-    const candidateStride = 48 + 8 * GPU_SCENE_LAYOUTS.lod.stride;
-    const candidateWrite = queue.writes.find((write) => write.bytes.byteLength === candidateStride);
-    expect(candidateWrite).toBeDefined();
-    if (candidateWrite === undefined) return;
-    const bytes = new DataView(candidateWrite.bytes.buffer, candidateWrite.bytes.byteOffset);
+    const batchStride = GPU_DRIVEN_BATCH_STRIDE;
+    const lodOffset = batchStride - 8 * GPU_SCENE_LAYOUTS.lod.stride;
+    const batchWrite = queue.writes.find((write) => write.bytes.byteLength === batchStride);
+    expect(batchWrite).toBeDefined();
+    if (batchWrite === undefined) return;
+    const bytes = new DataView(batchWrite.bytes.buffer, batchWrite.bytes.byteOffset);
     const readyOffset = gpuSceneFieldOffset(GPU_SCENE_LAYOUTS.lod, 'ready');
     expect(
       [0, 1, 2].map((level) =>
-        bytes.getUint32(48 + level * GPU_SCENE_LAYOUTS.lod.stride + readyOffset, true),
+        bytes.getUint32(lodOffset + level * GPU_SCENE_LAYOUTS.lod.stride + readyOffset, true),
       ),
     ).toEqual([1, Number(readyLevel === 1), Number(readyLevel === 2)]);
 
@@ -805,12 +797,15 @@ describe('GPU-driven production projection', () => {
     const pbrInputs = standardPbrInputs(device, shader, viewLayout);
     const projection = new RenderScene();
     const lodMeshGuid = '00000000-0000-7000-8000-000000000001' as never;
+    const sharedMaterial = preparedPbrFixture(snapshot(0, 3)).material;
     const makeLodSnapshot = (entityKey: number): RenderableSnapshot => {
       const base = preparedPbrFixture(snapshot(entityKey, 3));
       const draw = base.gpuDrivenDraws?.[0];
       if (draw === undefined) throw new Error('LOD test snapshot has no draw');
       return {
         ...base,
+        material: sharedMaterial,
+        materials: [sharedMaterial],
         lods: [{ mesh: lodMeshGuid, screenCoverage: 0.5 }],
         gpuDrivenDraws: [{ ...draw, lodRanges: [{ first: 3, count: 1, baseVertex: 0 }] }],
       };
@@ -830,35 +825,37 @@ describe('GPU-driven production projection', () => {
     });
     const lodGpuMesh = mesh(device, true, true);
     const prepared = production
-      .prepare({
-        ...pbrInputs,
-        scene: {
-          scene: availability.scene,
-          plan: topology.plan(),
-          slots: projection.slotsSnapshot(),
-          slotAt: projection.slotAt,
-        },
-        camera: makeZeroCameraFallbackSnapshot(),
-        meshBySlot: new Map([
-          [0, lodGpuMesh],
-          [1, lodGpuMesh],
-        ]),
-        viewBindGroupLayout: viewLayout,
-        meshResidencyEpoch: 1,
+      .prepare(
+        admitGpuFixture({
+          ...pbrInputs,
+          scene: {
+            scene: availability.scene,
+            plan: topology.query(topology.sourcePlan(), undefined),
+            slots: projection.slotsSnapshot(),
+            slotAt: projection.slotAt,
+          },
+          camera: makeZeroCameraFallbackSnapshot(),
+          meshBySlot: new Map([
+            [0, lodGpuMesh],
+            [1, lodGpuMesh],
+          ]),
+          viewBindGroupLayout: viewLayout,
 
-        activeEntityKeys: new Set([worldEntityKey(0, 1)]),
-        activeEntityRevision: 1,
-      })
+          activeEntityKeys: new Set([worldEntityKey(0, 1)]),
+          activeEntityRevision: 1,
+        }),
+      )
       .unwrap();
-    expect(prepared?.drawKeys).toEqual(new Set(['1:-1:0', '2:-1:0']));
-    // Both candidates are uploaded to the selector (2 * 304 bytes), while
+    for (const slot of projection.slotsSnapshot())
+      expect(prepared?.selection.ownsAll(slot.snapshot)).toBe(true);
+    // Both candidates are uploaded to the selector (two compact candidate records), while
     // only the active entity is admitted into the compacted draw stream.
     // One shared-chain batch owns one indirect command per LOD level.
     expect(production.inspect()).toMatchObject({
-      candidateUploadBytes: 2 * 304,
       batchCount: 1,
       indirectDrawCount: 2,
     });
+    expect(production.inspect().sharedInputUploadBytes).toBeGreaterThan(0);
     if (prepared === undefined) return;
     const projected = prepared
       .project(new RenderGraphBuilder<RenderPipelineFrame>(), 'rgba8unorm', 1)
@@ -873,77 +870,83 @@ describe('GPU-driven production projection', () => {
     // projection. The raster owner must reuse the physical batch bind group;
     // a new group is only valid after one of those handles or the range
     // changes (resize/recovery/LOD admission).
+    prepared._commitResourceReplacement();
     const warm = production
-      .prepare({
-        ...pbrInputs,
-        scene: {
-          scene: availability.scene,
-          plan: topology.plan(),
-          slots: projection.slotsSnapshot(),
-          slotAt: projection.slotAt,
-        },
-        camera: makeZeroCameraFallbackSnapshot(),
-        meshBySlot: new Map([
-          [0, lodGpuMesh],
-          [1, lodGpuMesh],
-        ]),
-        viewBindGroupLayout: viewLayout,
-        meshResidencyEpoch: 1,
+      .prepare(
+        admitGpuFixture({
+          ...pbrInputs,
+          scene: {
+            scene: availability.scene,
+            plan: topology.query(topology.sourcePlan(), undefined),
+            slots: projection.slotsSnapshot(),
+            slotAt: projection.slotAt,
+          },
+          camera: makeZeroCameraFallbackSnapshot(),
+          meshBySlot: new Map([
+            [0, lodGpuMesh],
+            [1, lodGpuMesh],
+          ]),
+          viewBindGroupLayout: viewLayout,
 
-        activeEntityKeys: new Set([worldEntityKey(0, 1)]),
-        activeEntityRevision: 1,
-      })
+          activeEntityKeys: new Set([worldEntityKey(0, 1)]),
+          activeEntityRevision: 1,
+        }),
+      )
       .unwrap();
     expect(warm?.topologySignature).toBe(prepared.topologySignature);
     warm?.project(new RenderGraphBuilder<RenderPipelineFrame>(), 'rgba8unorm', 1).unwrap();
     expect(production.inspect()).toMatchObject({ batchBindGroupCreates: 0 });
 
+    warm?._commitResourceReplacement();
     const suppressed = production
-      .prepare({
-        ...pbrInputs,
-        scene: {
-          scene: availability.scene,
-          plan: topology.plan(),
-          slots: projection.slotsSnapshot(),
-          slotAt: projection.slotAt,
-        },
-        camera: makeZeroCameraFallbackSnapshot(),
-        meshBySlot: new Map([
-          [0, lodGpuMesh],
-          [1, lodGpuMesh],
-        ]),
-        viewBindGroupLayout: viewLayout,
-        meshResidencyEpoch: 1,
+      .prepare(
+        admitGpuFixture({
+          ...pbrInputs,
+          scene: {
+            scene: availability.scene,
+            plan: topology.query(topology.sourcePlan(), undefined),
+            slots: projection.slotsSnapshot(),
+            slotAt: projection.slotAt,
+          },
+          camera: makeZeroCameraFallbackSnapshot(),
+          meshBySlot: new Map([
+            [0, lodGpuMesh],
+            [1, lodGpuMesh],
+          ]),
+          viewBindGroupLayout: viewLayout,
 
-        activeEntityKeys: new Set(),
-        activeEntityRevision: 2,
-      })
+          activeEntityKeys: new Set(),
+          activeEntityRevision: 2,
+        }),
+      )
       .unwrap();
     // Admission is a per-view GPU bitmap indexed by primitive slot: hiding an
     // entity uploads dirty words but must not rebuild the plan or the graph.
     expect(suppressed?.topologySignature).toBe(prepared.topologySignature);
     expect(production.inspect()).toMatchObject({ batchCount: 1 });
 
+    suppressed?._commitResourceReplacement();
     const restored = production
-      .prepare({
-        ...pbrInputs,
-        scene: {
-          scene: availability.scene,
-          plan: topology.plan(),
-          slots: projection.slotsSnapshot(),
-          slotAt: projection.slotAt,
-        },
-        camera: makeZeroCameraFallbackSnapshot(),
-        meshBySlot: new Map([
-          [0, lodGpuMesh],
-          [1, lodGpuMesh],
-        ]),
-        viewBindGroupLayout: viewLayout,
-        meshResidencyEpoch: 1,
+      .prepare(
+        admitGpuFixture({
+          ...pbrInputs,
+          scene: {
+            scene: availability.scene,
+            plan: topology.query(topology.sourcePlan(), undefined),
+            slots: projection.slotsSnapshot(),
+            slotAt: projection.slotAt,
+          },
+          camera: makeZeroCameraFallbackSnapshot(),
+          meshBySlot: new Map([
+            [0, lodGpuMesh],
+            [1, lodGpuMesh],
+          ]),
+          viewBindGroupLayout: viewLayout,
 
-        activeEntityKeys: new Set([worldEntityKey(0, 1)]),
-        activeEntityRevision: 3,
-      })
+          activeEntityKeys: new Set([worldEntityKey(0, 1)]),
+          activeEntityRevision: 3,
+        }),
+      )
       .unwrap();
     expect(restored?.topologySignature).toBe(prepared.topologySignature);
     expect(production.inspect()).toMatchObject({ batchCount: 1 });
@@ -955,9 +958,9 @@ describe('GPU-driven production projection', () => {
     );
     expect(cullView.indexOf('atomicAdd(&counters[lodCounterIndex')).toBeGreaterThan(0);
     expect(cullView.indexOf('atomicAdd(&counters[lodCounterIndex')).toBeLessThan(
-      cullView.indexOf('if (isSuppressed(candidate.primitiveIndex))'),
+      cullView.indexOf('if (isSuppressed(candidate.sourceSlot))'),
     );
-    expect(cullView.indexOf('if (isSuppressed(candidate.primitiveIndex))')).toBeLessThan(
+    expect(cullView.indexOf('if (isSuppressed(candidate.sourceSlot))')).toBeLessThan(
       cullView.indexOf('appendCandidate('),
     );
     production.dispose();
@@ -990,37 +993,38 @@ describe('GPU-driven production projection', () => {
       ...pbrInputs,
       scene: {
         scene: availability.scene,
-        plan: topology.plan(),
+        plan: topology.query(topology.sourcePlan(), undefined),
         slots: projection.slotsSnapshot(),
         slotAt: projection.slotAt,
       },
       camera: makeZeroCameraFallbackSnapshot(),
       meshBySlot: new Map([[0, mesh(device)]]),
       viewBindGroupLayout: viewLayout,
-      meshResidencyEpoch: 1,
     };
     const prepared = production
-      .prepare({ ...input, activeEntityKeys: new Set(), activeEntityRevision: 1 })
+      .prepare(admitGpuFixture({ ...input, activeEntityKeys: new Set(), activeEntityRevision: 1 }))
       .unwrap();
     // The resident candidate stays in the stable plan; the per-view bitmap
     // suppresses its primitive slot on the GPU before any compaction.
     expect(prepared).toBeDefined();
-    expect(prepared?.ownsAllDrawItems).toBe(true);
+    expect(prepared?.selection.ownsAll(candidate)).toBe(true);
     expect(production.inspect()).toMatchObject({ batchCount: 1, suppressionUploadBytes: 4 });
     prepared?._commitResourceReplacement();
     // Falsifier: an unchanged admission set uploads nothing, and a flipped
     // entity uploads exactly its dirty word without a plan or graph rebuild.
     const steady = production
-      .prepare({ ...input, activeEntityKeys: new Set(), activeEntityRevision: 1 })
+      .prepare(admitGpuFixture({ ...input, activeEntityKeys: new Set(), activeEntityRevision: 1 }))
       .unwrap();
     expect(production.inspect()).toMatchObject({ suppressionUploadBytes: 0 });
     steady?._commitResourceReplacement();
     const admitted = production
-      .prepare({
-        ...input,
-        activeEntityKeys: new Set([worldEntityKey(0, 1)]),
-        activeEntityRevision: 2,
-      })
+      .prepare(
+        admitGpuFixture({
+          ...input,
+          activeEntityKeys: new Set([worldEntityKey(0, 1)]),
+          activeEntityRevision: 2,
+        }),
+      )
       .unwrap();
     expect(production.inspect()).toMatchObject({
       filteredPlanBuilds: 0,
@@ -1067,24 +1071,22 @@ describe('GPU-driven production projection', () => {
         .unwrap();
       topology.rebuild(projection.slotsSnapshot());
       const prepared = owner
-        .prepare({
-          ...pbrInputs,
-          scene: {
-            scene: availability.scene,
-            plan: topology.plan(),
-            slots: projection.slotsSnapshot(),
-            slotAt: projection.slotAt,
-          },
-          camera: makeZeroCameraFallbackSnapshot(),
-          meshBySlot: new Map(
-            projection.slotsSnapshot().map((entry) => [entry.slot, sharedMesh] as const),
-          ),
-          viewBindGroupLayout: viewLayout,
-          meshResidencyEpoch: 1,
-          materialBindingClasses: projectMaterialBindingClasses(
-            projection.slotsSnapshot().map((entry) => ({ source: entry.snapshot })),
-          ),
-        })
+        .prepare(
+          admitGpuFixture({
+            ...pbrInputs,
+            scene: {
+              scene: availability.scene,
+              plan: topology.query(topology.sourcePlan(), undefined),
+              slots: projection.slotsSnapshot(),
+              slotAt: projection.slotAt,
+            },
+            camera: makeZeroCameraFallbackSnapshot(),
+            meshBySlot: new Map(
+              projection.slotsSnapshot().map((entry) => [entry.slot, sharedMesh] as const),
+            ),
+            viewBindGroupLayout: viewLayout,
+          }),
+        )
         .unwrap();
       prepared?._commitResourceReplacement();
       return prepared?.topologySignature;
@@ -1097,7 +1099,7 @@ describe('GPU-driven production projection', () => {
       // A spawned member of an existing raster class revises the plan inside
       // the retained capacity: the compiled graph must survive it.
       const grown = spawn([4]);
-      expect(topology.plan().candidateCount).toBe(4);
+      expect(topology.query(topology.sourcePlan(), undefined).candidateCount).toBe(4);
       expect(grown).toBe(first);
       expect(pipelineInvalidations).not.toHaveBeenCalled();
       // Falsifier: crossing the power-of-two candidate capacity replaces the
@@ -1132,19 +1134,20 @@ describe('GPU-driven production projection', () => {
     let epoch = 1;
     const prepare = (scene = availability.scene) =>
       production
-        .prepare({
-          ...pbrInputs,
-          scene: {
-            scene,
-            plan: topology.plan(),
-            slots: projection.slotsSnapshot(),
-            slotAt: projection.slotAt,
-          },
-          camera: makeZeroCameraFallbackSnapshot(),
-          meshBySlot: new Map([[0, resident]]),
-          viewBindGroupLayout: viewLayout,
-          meshResidencyEpoch: epoch,
-        })
+        .prepare(
+          admitGpuFixture({
+            ...pbrInputs,
+            scene: {
+              scene,
+              plan: topology.query(topology.sourcePlan(), undefined),
+              slots: projection.slotsSnapshot(),
+              slotAt: projection.slotAt,
+            },
+            camera: makeZeroCameraFallbackSnapshot(),
+            meshBySlot: new Map([[0, resident]]),
+            viewBindGroupLayout: viewLayout,
+          }),
+        )
         .unwrap();
     let current = prepare();
     if (current === undefined) throw new Error('expected prepared frame');
@@ -1177,7 +1180,13 @@ describe('GPU-driven production projection', () => {
               if (current === undefined) throw new Error('expected current frame');
               projected.encode(viewBindGroup, pass, resources, {
                 ...current.standardPbrFrameResources,
-                materialBindGroups: [materialGroup],
+                prepareMaterialBinding: (
+                  (groups: readonly (import('@forgeax/engine-rhi').BindGroup | undefined)[]) =>
+                  (slot: number) => {
+                    const group = groups[slot];
+                    return group === undefined ? undefined : { group, byteOffset: slot * 1280 };
+                  }
+                )([materialGroup]),
               });
             },
           })
@@ -1236,7 +1245,12 @@ describe('GPU-driven production projection', () => {
       expect(state.compiledFrameGraph?.graph).toBe(compiled);
       const encoder = internals.device.createCommandEncoder().unwrap();
       expect(
-        executeCompiledFrameGraph(internals, state, { encoder } as RenderPipelineFrame, encoder),
+        executeCompiledFrameGraph(
+          internals,
+          state,
+          { encoder, pipelineState } as unknown as RenderPipelineFrame,
+          encoder,
+        ),
       ).toBe(true);
       expect(
         boundVertices.mock.calls.some(([, buffer]) => buffer === resident.vertexBuffer.handle),
@@ -1301,19 +1315,20 @@ describe('GPU-driven production projection', () => {
         nextScene.scene.sync(delta).unwrap();
         resident = mesh(nextDevice);
         current = nextProduction
-          .prepare({
-            ...standardPbrInputs(nextDevice, nextShader, nextLayout),
-            scene: {
-              scene: nextScene.scene,
-              plan: topology.plan(),
-              slots: projection.slotsSnapshot(),
-              slotAt: projection.slotAt,
-            },
-            camera: makeZeroCameraFallbackSnapshot(),
-            meshBySlot: new Map([[0, resident]]),
-            viewBindGroupLayout: nextLayout,
-            meshResidencyEpoch: 1,
-          })
+          .prepare(
+            admitGpuFixture({
+              ...standardPbrInputs(nextDevice, nextShader, nextLayout),
+              scene: {
+                scene: nextScene.scene,
+                plan: topology.query(topology.sourcePlan(), undefined),
+                slots: projection.slotsSnapshot(),
+                slotAt: projection.slotAt,
+              },
+              camera: makeZeroCameraFallbackSnapshot(),
+              meshBySlot: new Map([[0, resident]]),
+              viewBindGroupLayout: nextLayout,
+            }),
+          )
           .unwrap();
         dependencies.device = nextDevice;
         viewBindGroup = nextDevice.createBindGroup({ layout: nextLayout, entries: [] }).unwrap();
@@ -1347,7 +1362,7 @@ describe('GPU-driven production projection', () => {
       })
       .unwrap();
     const pbrInputs = standardPbrInputs(device, shader, viewLayout);
-    const baseArtifact = pbrInputs.standardPbrArtifact;
+    const baseArtifact = pbrInputs.materialArtifact;
     expect(baseArtifact).toBeDefined();
     if (baseArtifact === undefined) return;
     const dynamicSchema = {
@@ -1449,30 +1464,32 @@ describe('GPU-driven production projection', () => {
       .createBuffer({ size: 4096, usage: GPU_BUFFER_USAGE_STORAGE })
       .unwrap();
     const prepared = production
-      .prepare({
-        ...pbrInputs,
-        standardPbrArtifact: artifact,
-        scene: {
-          scene: availability.scene,
-          plan: topology.plan(),
-          slots: projection.slotsSnapshot(),
-          slotAt: projection.slotAt,
-          worldIdentities: ['world-a'],
-        },
-        camera: makeZeroCameraFallbackSnapshot(),
-        meshBySlot: new Map([[0, surfaceMesh]]),
-        viewBindGroupLayout: viewLayout,
-        meshResidencyEpoch: 1,
-        probeBlendRecordBuffer,
-        hdrp: false,
-        surfaceDynamicInput: {
-          page,
-          ranges: [secondRange, firstRange],
-          projectionRevision: 1,
-          frameTime: 1,
-        },
-        deviceGeneration: 1,
-      })
+      .prepare(
+        admitGpuFixture({
+          ...pbrInputs,
+          materialArtifact: artifact,
+          scene: {
+            scene: availability.scene,
+            plan: topology.query(topology.sourcePlan(), undefined),
+            slots: projection.slotsSnapshot(),
+            slotAt: projection.slotAt,
+            worldIdentities: ['world-a'],
+          },
+          camera: makeZeroCameraFallbackSnapshot(),
+          meshBySlot: new Map([[0, surfaceMesh]]),
+          viewBindGroupLayout: viewLayout,
+
+          probeBlendRecordBuffer,
+          hdrp: false,
+          surfaceDynamicInput: {
+            page,
+            ranges: [secondRange, firstRange],
+            projectionRevision: 1,
+            frameTime: 1,
+          },
+          deviceGeneration: 1,
+        }),
+      )
       .unwrap();
     expect(prepared?.surfaceSubmission).toMatchObject({
       model: 'single-layer-medium',
@@ -1527,26 +1544,29 @@ describe('GPU-driven production projection', () => {
       surfaceFrameRowAllocations: 2,
       surfaceFrameTimeWrites: 1,
     });
+    prepared?._commitResourceReplacement();
     const repeated = production
-      .prepare({
-        ...pbrInputs,
-        standardPbrArtifact: artifact,
-        scene: {
-          scene: availability.scene,
-          plan: topology.plan(),
-          slots: projection.slotsSnapshot(),
-          slotAt: projection.slotAt,
-          worldIdentities: ['world-a'],
-        },
-        camera: makeZeroCameraFallbackSnapshot(),
-        meshBySlot: new Map([[0, surfaceMesh]]),
-        viewBindGroupLayout: viewLayout,
-        meshResidencyEpoch: 1,
-        probeBlendRecordBuffer,
-        hdrp: false,
-        surfaceDynamicInput: { page, ranges: stableRanges, projectionRevision: 1, frameTime: 1 },
-        deviceGeneration: 1,
-      })
+      .prepare(
+        admitGpuFixture({
+          ...pbrInputs,
+          materialArtifact: artifact,
+          scene: {
+            scene: availability.scene,
+            plan: topology.query(topology.sourcePlan(), undefined),
+            slots: projection.slotsSnapshot(),
+            slotAt: projection.slotAt,
+            worldIdentities: ['world-a'],
+          },
+          camera: makeZeroCameraFallbackSnapshot(),
+          meshBySlot: new Map([[0, surfaceMesh]]),
+          viewBindGroupLayout: viewLayout,
+
+          probeBlendRecordBuffer,
+          hdrp: false,
+          surfaceDynamicInput: { page, ranges: stableRanges, projectionRevision: 1, frameTime: 1 },
+          deviceGeneration: 1,
+        }),
+      )
       .unwrap();
     expect(repeated).toBeDefined();
     expect(repeated?._consumeSurfaceDynamicInput?.(32)).toMatchObject({ ok: true });
@@ -1562,27 +1582,30 @@ describe('GPU-driven production projection', () => {
       surfaceFrameTimeWrites: 1,
     });
 
+    repeated?._commitResourceReplacement();
     const writesBeforeTimeAdvance = queue.writes.length;
-    production
-      .prepare({
-        ...pbrInputs,
-        standardPbrArtifact: artifact,
-        scene: {
-          scene: availability.scene,
-          plan: topology.plan(),
-          slots: projection.slotsSnapshot(),
-          slotAt: projection.slotAt,
-          worldIdentities: ['world-a'],
-        },
-        camera: makeZeroCameraFallbackSnapshot(),
-        meshBySlot: new Map([[0, surfaceMesh]]),
-        viewBindGroupLayout: viewLayout,
-        meshResidencyEpoch: 1,
-        probeBlendRecordBuffer,
-        hdrp: false,
-        surfaceDynamicInput: { page, ranges: stableRanges, projectionRevision: 1, frameTime: 2 },
-        deviceGeneration: 1,
-      })
+    const timeAdvanced = production
+      .prepare(
+        admitGpuFixture({
+          ...pbrInputs,
+          materialArtifact: artifact,
+          scene: {
+            scene: availability.scene,
+            plan: topology.query(topology.sourcePlan(), undefined),
+            slots: projection.slotsSnapshot(),
+            slotAt: projection.slotAt,
+            worldIdentities: ['world-a'],
+          },
+          camera: makeZeroCameraFallbackSnapshot(),
+          meshBySlot: new Map([[0, surfaceMesh]]),
+          viewBindGroupLayout: viewLayout,
+
+          probeBlendRecordBuffer,
+          hdrp: false,
+          surfaceDynamicInput: { page, ranges: stableRanges, projectionRevision: 1, frameTime: 2 },
+          deviceGeneration: 1,
+        }),
+      )
       .unwrap();
     const timeAdvanceWrites = queue.writes.slice(writesBeforeTimeAdvance);
     const sharedFrameBuffer = prepared?.standardPbrFrameResources.surfaceDynamicInput?.sharedFrame;
@@ -1598,55 +1621,60 @@ describe('GPU-driven production projection', () => {
       surfaceFrameTimeWrites: stableInspection.surfaceFrameTimeWrites + 1,
     });
 
-    const invalid = production.prepare({
-      ...pbrInputs,
-      standardPbrArtifact: artifact,
-      scene: {
-        scene: availability.scene,
-        plan: topology.plan(),
-        slots: projection.slotsSnapshot(),
-        slotAt: projection.slotAt,
-        worldIdentities: ['world-a'],
-      },
-      camera: makeZeroCameraFallbackSnapshot(),
-      meshBySlot: new Map([[0, surfaceMesh]]),
-      viewBindGroupLayout: viewLayout,
-      meshResidencyEpoch: 1,
-      probeBlendRecordBuffer,
-      hdrp: false,
-      surfaceDynamicInput: {
-        page,
-        ranges: [{ ...firstRange, byteOffset: firstRange.byteOffset + 4 }, secondRange],
-        projectionRevision: 2,
-        frameTime: 1,
-      },
-      deviceGeneration: 1,
-    });
+    timeAdvanced?._commitResourceReplacement();
+    const invalid = production.prepare(
+      admitGpuFixture({
+        ...pbrInputs,
+        materialArtifact: artifact,
+        scene: {
+          scene: availability.scene,
+          plan: topology.query(topology.sourcePlan(), undefined),
+          slots: projection.slotsSnapshot(),
+          slotAt: projection.slotAt,
+          worldIdentities: ['world-a'],
+        },
+        camera: makeZeroCameraFallbackSnapshot(),
+        meshBySlot: new Map([[0, surfaceMesh]]),
+        viewBindGroupLayout: viewLayout,
+
+        probeBlendRecordBuffer,
+        hdrp: false,
+        surfaceDynamicInput: {
+          page,
+          ranges: [{ ...firstRange, byteOffset: firstRange.byteOffset + 4 }, secondRange],
+          projectionRevision: 2,
+          frameTime: 1,
+        },
+        deviceGeneration: 1,
+      }),
+    );
     expect(invalid).toMatchObject({ ok: false, error: { code: 'rhi-descriptor-invalid' } });
-    const retried = production.prepare({
-      ...pbrInputs,
-      standardPbrArtifact: artifact,
-      scene: {
-        scene: availability.scene,
-        plan: topology.plan(),
-        slots: projection.slotsSnapshot(),
-        slotAt: projection.slotAt,
-        worldIdentities: ['world-a'],
-      },
-      camera: makeZeroCameraFallbackSnapshot(),
-      meshBySlot: new Map([[0, surfaceMesh]]),
-      viewBindGroupLayout: viewLayout,
-      meshResidencyEpoch: 1,
-      probeBlendRecordBuffer,
-      hdrp: false,
-      surfaceDynamicInput: {
-        page,
-        ranges: stableRanges,
-        projectionRevision: 2,
-        frameTime: 2,
-      },
-      deviceGeneration: 1,
-    });
+    const retried = production.prepare(
+      admitGpuFixture({
+        ...pbrInputs,
+        materialArtifact: artifact,
+        scene: {
+          scene: availability.scene,
+          plan: topology.query(topology.sourcePlan(), undefined),
+          slots: projection.slotsSnapshot(),
+          slotAt: projection.slotAt,
+          worldIdentities: ['world-a'],
+        },
+        camera: makeZeroCameraFallbackSnapshot(),
+        meshBySlot: new Map([[0, surfaceMesh]]),
+        viewBindGroupLayout: viewLayout,
+
+        probeBlendRecordBuffer,
+        hdrp: false,
+        surfaceDynamicInput: {
+          page,
+          ranges: stableRanges,
+          projectionRevision: 2,
+          frameTime: 2,
+        },
+        deviceGeneration: 1,
+      }),
+    );
     expect(retried.ok).toBe(true);
     production.dispose();
     availability.scene.dispose();
@@ -1676,22 +1704,23 @@ describe('GPU-driven production projection', () => {
       createShaderModule: () => ok(shader),
     });
     const prepared = production
-      .prepare({
-        ...pbrInputs,
-        scene: {
-          scene: availability.scene,
-          plan: topology.plan(),
-          slots: projection.slotsSnapshot(),
-          slotAt: projection.slotAt,
-        },
-        camera: makeZeroCameraFallbackSnapshot(),
-        meshBySlot: new Map([
-          [0, mesh(device)],
-          [1, mesh(device)],
-        ]),
-        viewBindGroupLayout: viewLayout,
-        meshResidencyEpoch: 1,
-      })
+      .prepare(
+        admitGpuFixture({
+          ...pbrInputs,
+          scene: {
+            scene: availability.scene,
+            plan: topology.query(topology.sourcePlan(), undefined),
+            slots: projection.slotsSnapshot(),
+            slotAt: projection.slotAt,
+          },
+          camera: makeZeroCameraFallbackSnapshot(),
+          meshBySlot: new Map([
+            [0, mesh(device)],
+            [1, mesh(device)],
+          ]),
+          viewBindGroupLayout: viewLayout,
+        }),
+      )
       .unwrap();
     expect(prepared).toBeDefined();
     expect(production.inspect()).toMatchObject({ batchCount: 2, indirectDrawCount: 2 });
@@ -1699,7 +1728,7 @@ describe('GPU-driven production projection', () => {
     availability.scene.dispose();
   });
 
-  it('splits texture masks in GPU batches and invalidates the raster projection on edits', async () => {
+  it('preserves distinct materials when texture masks converge and reuses their PSO', async () => {
     const device = (
       await (await rhi.requestAdapter()).unwrap().requestDevice()
     ).unwrap() as RhiNullDevice;
@@ -1719,24 +1748,28 @@ describe('GPU-driven production projection', () => {
     const pipelines = vi.spyOn(device, 'createRenderPipeline');
     const row = (id: number, mask: number) => {
       const source = preparedPbrFixture(snapshot(id, 3));
-      const material = { ...source.material, standardTextureMask: mask };
+      const material = new MaterialResource({
+        ...source.material.snapshot,
+        standardTextureMask: mask,
+      });
       return { ...source, material, materials: [material] };
     };
     const prepare = () =>
       production
-        .prepare({
-          ...pbrInputs,
-          scene: {
-            scene: availability.scene,
-            plan: topology.plan(),
-            slots: projection.slotsSnapshot(),
-            slotAt: projection.slotAt,
-          },
-          camera: makeZeroCameraFallbackSnapshot(),
-          meshBySlot: meshes,
-          viewBindGroupLayout: viewLayout,
-          meshResidencyEpoch: 1,
-        })
+        .prepare(
+          admitGpuFixture({
+            ...pbrInputs,
+            scene: {
+              scene: availability.scene,
+              plan: topology.query(topology.sourcePlan(), undefined),
+              slots: projection.slotsSnapshot(),
+              slotAt: projection.slotAt,
+            },
+            camera: makeZeroCameraFallbackSnapshot(),
+            meshBySlot: meshes,
+            viewBindGroupLayout: viewLayout,
+          }),
+        )
         .unwrap();
     try {
       availability.scene
@@ -1755,15 +1788,17 @@ describe('GPU-driven production projection', () => {
       );
       const zeroPipeline = pipelines.mock.results[zeroIndex]?.value.unwrap();
       expect(zeroPipeline).toBeDefined();
+      first?._commitResourceReplacement();
       const stable = prepare();
       expect(stable?.topologySignature).toBe(first?.topologySignature);
       stable?.project(new RenderGraphBuilder<RenderPipelineFrame>(), 'rgba8unorm', 1).unwrap();
+      stable?._commitResourceReplacement();
       pipelines.mockClear();
       availability.scene.sync(projection.apply([updateSnapshot(row(2, 0))])).unwrap();
       topology.rebuild(projection.slotsSnapshot());
       const changed = prepare();
       expect(changed?.topologySignature).not.toBe(first?.topologySignature);
-      expect(production.inspect().batchCount).toBe(1);
+      expect(production.inspect().batchCount).toBe(2);
       if (changed === undefined) throw new Error('expected changed GPU frame');
       const graph = new RenderGraphBuilder<RenderPipelineFrame>();
       const gpu = changed.project(graph, 'rgba8unorm', 1).unwrap();
@@ -1788,8 +1823,14 @@ describe('GPU-driven production projection', () => {
               resources,
               {
                 ...changed.standardPbrFrameResources,
-                materialStride: 256,
-                materialBindGroups: [emptyGroup],
+
+                prepareMaterialBinding: (
+                  (groups: readonly (import('@forgeax/engine-rhi').BindGroup | undefined)[]) =>
+                  (slot: number) => {
+                    const group = groups[slot];
+                    return group === undefined ? undefined : { group, byteOffset: slot * 256 };
+                  }
+                )([emptyGroup, emptyGroup]),
               },
               'opaque',
               STANDARD_OPAQUE_FRAGMENT_ENTRY,
@@ -1830,10 +1871,13 @@ describe('GPU-driven production projection', () => {
     const sharedMesh = mesh(device);
     const layout = vi.spyOn(String.prototype, 'replace');
     try {
-      if (pbrInputs.standardPbrArtifact === undefined) throw new Error('Missing fixture artifact');
+      if (pbrInputs.materialArtifact === undefined) throw new Error('Missing fixture artifact');
       const rows = [0, 4].map((mask, index) => {
         const source = preparedPbrFixture(snapshot(index + 1, 3));
-        const material = { ...source.material, standardTextureMask: mask };
+        const material = new MaterialResource({
+          ...source.material.snapshot,
+          standardTextureMask: mask,
+        });
         return updateSnapshot({ ...source, material, materials: [material] });
       });
       availability.scene.sync(projection.apply(rows)).unwrap();
@@ -1842,29 +1886,32 @@ describe('GPU-driven production projection', () => {
         const program = createMaterialShaderProgram(source);
         layout.mockClear();
         const prepared = production
-          .prepare({
-            ...pbrInputs,
-            standardPbrArtifact: { ...pbrInputs.standardPbrArtifact, program },
-            scene: {
-              scene: availability.scene,
-              plan: topology.plan(),
-              slots: projection.slotsSnapshot(),
-              slotAt: projection.slotAt,
-            },
-            camera: makeZeroCameraFallbackSnapshot(),
-            meshBySlot: new Map([
-              [0, sharedMesh],
-              [1, sharedMesh],
-            ]),
-            viewBindGroupLayout: viewLayout,
-            meshResidencyEpoch: 1,
-          })
+          .prepare(
+            admitGpuFixture({
+              ...pbrInputs,
+              materialArtifact: { ...pbrInputs.materialArtifact, program },
+              scene: {
+                scene: availability.scene,
+                plan: topology.query(topology.sourcePlan(), undefined),
+                slots: projection.slotsSnapshot(),
+                slotAt: projection.slotAt,
+              },
+              camera: makeZeroCameraFallbackSnapshot(),
+              meshBySlot: new Map([
+                [0, sharedMesh],
+                [1, sharedMesh],
+              ]),
+              viewBindGroupLayout: viewLayout,
+            }),
+          )
           .unwrap();
         expect(production.inspect().batchCount).toBe(2);
         if (prepared === undefined) throw new Error('Missing GPU projection');
         prepared.project(new RenderGraphBuilder<RenderPipelineFrame>(), 'rgba8unorm', 1).unwrap();
+        prepared._commitResourceReplacement();
         expect(layout.mock.contexts.filter((value) => String(value) === source)).toHaveLength(0);
         prepared.project(new RenderGraphBuilder<RenderPipelineFrame>(), 'rgba8unorm', 1).unwrap();
+        prepared._commitResourceReplacement();
         expect(layout.mock.contexts.filter((value) => String(value) === source)).toHaveLength(0);
       }
     } finally {
@@ -1872,123 +1919,6 @@ describe('GPU-driven production projection', () => {
       production.dispose();
       availability.scene.dispose();
     }
-  });
-
-  it('uses concrete draw keys for CPU validation telemetry', async () => {
-    const adapter = (await rhi.requestAdapter()).unwrap();
-    const device = (await adapter.requestDevice()).unwrap() as RhiNullDevice;
-    const shader = (await rhi.createShaderModule(device, { code: 'synthetic' })).unwrap();
-    const production = new GpuDrivenProduction(device, {
-      createShaderModule: () => ok(shader),
-    });
-    const gpuLodRow = {
-      ...snapshot(7, 3),
-      worldId: 1,
-      lods: [{ mesh: '00000000-0000-7000-8000-000000000001' as never, screenCoverage: 0.5 }],
-    };
-    const plainFallbackRow = { ...snapshot(2, 3), worldId: 0 };
-    const gpuOwned = new Set([
-      gpuDrivenDrawKey(worldEntityKey(gpuLodRow.worldId, gpuLodRow.entityKey), -1, 0),
-    ]);
-
-    // A GPU-owned row is removed from validation before this telemetry hook;
-    // the remaining plain row must still be counted as the one CPU fallback.
-    production.recordCpuValidation([{ source: plainFallbackRow }], gpuOwned);
-    expect(production.inspect()).toMatchObject({
-      cpuFallbackDrawItems: 1,
-      validatedGpuOwnedRows: 0,
-    });
-
-    // A GPU-only row contributes ownership telemetry without inflating the
-    // CPU residual row count.
-    production.recordCpuValidation([{ source: gpuLodRow }], gpuOwned);
-    expect(production.inspect()).toMatchObject({
-      cpuFallbackDrawItems: 0,
-      validatedGpuOwnedRows: 0,
-    });
-
-    // Composition-local world indices do not necessarily equal the retained
-    // stable world identity used by the GPU draw-key producer.
-    const worldKeys = [101, 202] as const;
-    const stableGpuOwned = new Set([
-      gpuDrivenDrawKey(
-        worldEntityKey(worldKeys[gpuLodRow.worldId] ?? -1, gpuLodRow.entityKey),
-        -1,
-        0,
-      ),
-    ]);
-    production.recordCpuValidation(
-      [{ source: gpuLodRow }],
-      stableGpuOwned,
-      'stable-world',
-      worldKeys,
-    );
-    expect(production.inspect()).toMatchObject({
-      cpuFallbackDrawItems: 0,
-      validatedGpuOwnedRows: 0,
-    });
-
-    const stableBaseline = production.inspect();
-    production.recordCpuValidation(
-      [{ source: gpuLodRow }],
-      stableGpuOwned,
-      'stable-world',
-      worldKeys,
-    );
-    expect(production.inspect()).toMatchObject({
-      cpuValidationScans: stableBaseline.cpuValidationScans,
-      cpuValidationCacheHits: stableBaseline.cpuValidationCacheHits + 1,
-    });
-
-    production.recordCpuValidation(
-      [{ source: { ...gpuLodRow } }],
-      stableGpuOwned,
-      'stable-world',
-      worldKeys,
-    );
-    expect(production.inspect()).toMatchObject({
-      cpuValidationScans: stableBaseline.cpuValidationScans + 1,
-      cpuValidationCacheHits: stableBaseline.cpuValidationCacheHits + 1,
-    });
-    production.dispose();
-  });
-
-  it('keeps unclaimed mixed draws on the CPU lane while GPU receipts stay concrete', async () => {
-    const adapter = (await rhi.requestAdapter()).unwrap();
-    const device = (await adapter.requestDevice()).unwrap() as RhiNullDevice;
-    const shader = (await rhi.createShaderModule(device, { code: 'synthetic' })).unwrap();
-    const production = new GpuDrivenProduction(device, {
-      createShaderModule: () => ok(shader),
-    });
-    const base = snapshot(8, 3);
-    const firstDraw = base.gpuDrivenDraws?.[0];
-    if (firstDraw === undefined) throw new Error('mixed ownership fixture has no first draw');
-    const mixed = {
-      ...base,
-      gpuDrivenDraws: [
-        firstDraw,
-        { ...firstDraw, drawItemIndex: 1, first: firstDraw.first + firstDraw.count },
-      ],
-    };
-    const claimed = new Set([
-      gpuDrivenDrawKey(worldEntityKey(mixed.worldId, mixed.entityKey), -1, 0),
-    ]);
-    const gpuReceipts: { readonly submeshIndex: number; readonly lane: string }[] = [];
-    const rows = [{ source: mixed }];
-    const acceptedReceipts = production.recordCpuValidation(rows, claimed);
-    gpuDrawReceipts.emitGpuDrivenDrawReceipts(
-      rows,
-      acceptedReceipts,
-      (_entry, submeshIndex, receipt) => gpuReceipts.push({ submeshIndex, lane: receipt.lane }),
-    );
-    expect(gpuReceipts).toEqual([{ submeshIndex: 0, lane: 'gpu' }]);
-    expect(gpuReceipts.some((receipt) => receipt.submeshIndex === 1)).toBe(false);
-
-    expect(production.inspect()).toMatchObject({
-      cpuFallbackDrawItems: 1,
-      validatedGpuOwnedRows: 1,
-    });
-    production.dispose();
   });
 
   it.each([
@@ -2020,7 +1950,7 @@ describe('GPU-driven production projection', () => {
     availability.scene.sync(delta).unwrap();
     const topology = new BatchTopology();
     topology.rebuild(projection.slotsSnapshot());
-    const sourcePlan = topology.plan();
+    const sourcePlan = topology.query(topology.sourcePlan(), undefined);
     expect(sourcePlan.batches).toHaveLength(1);
     const serialize = vi.fn((key: object) => key);
     const compatibilityScan = vi.fn();
@@ -2039,25 +1969,26 @@ describe('GPU-driven production projection', () => {
     };
     const production = new GpuDrivenProduction(device, { createShaderModule: () => ok(shader) });
     production
-      .prepare({
-        ...standardPbrInputs(device, shader, viewLayout),
-        scene: {
-          scene: availability.scene,
-          plan,
-          slots: projection.slotsSnapshot(),
-          slotAt: projection.slotAt,
-        },
-        camera: makeZeroCameraFallbackSnapshot(),
-        meshBySlot: new Map([[0, mesh(device)]]),
-        viewBindGroupLayout: viewLayout,
-        meshResidencyEpoch: 1,
-      })
+      .prepare(
+        admitGpuFixture({
+          ...standardPbrInputs(device, shader, viewLayout),
+          scene: {
+            scene: availability.scene,
+            plan,
+            slots: projection.slotsSnapshot(),
+            slotAt: projection.slotAt,
+          },
+          camera: makeZeroCameraFallbackSnapshot(),
+          meshBySlot: new Map([[0, mesh(device)]]),
+          viewBindGroupLayout: viewLayout,
+        }),
+      )
       .unwrap();
     expect(production.inspect()).toMatchObject({
       batchCount: 1,
       indirectDrawCount: 1,
-      candidateUploadBytes: instanceCount * 304,
     });
+    expect(production.inspect().sharedInputUploadBytes).toBeGreaterThan(0);
     // One scene preparation shared by main and shadow views, independent of instances.
     expect(serialize).toHaveBeenCalledTimes(1);
     // Mesh compatibility of a non-LOD batch is a batch fact: no member scan.
@@ -2078,12 +2009,15 @@ describe('GPU-driven production projection', () => {
     const pbrInputs = standardPbrInputs(device, shader, viewLayout);
     const projection = new RenderScene();
     const lodMeshGuid = '00000000-0000-7000-8000-000000000001' as never;
+    const sharedMaterial = preparedPbrFixture(snapshot(0, 3)).material;
     const makeLodSnapshot = (entityKey: number): RenderableSnapshot => {
       const base = preparedPbrFixture(snapshot(entityKey, 3));
       const draw = base.gpuDrivenDraws?.[0];
       if (draw === undefined) throw new Error('LOD test snapshot has no draw');
       return {
         ...base,
+        material: sharedMaterial,
+        materials: [sharedMaterial],
         lods: [{ mesh: lodMeshGuid, screenCoverage: 0.5 }],
         gpuDrivenDraws: [{ ...draw, lodRanges: [{ first: 3, count: 1, baseVertex: 0 }] }],
       };
@@ -2106,7 +2040,7 @@ describe('GPU-driven production projection', () => {
       ...pbrInputs,
       scene: {
         scene: availability.scene,
-        plan: topology.plan(),
+        plan: topology.query(topology.sourcePlan(), undefined),
         slots: projection.slotsSnapshot(),
         slotAt: projection.slotAt,
       },
@@ -2116,30 +2050,31 @@ describe('GPU-driven production projection', () => {
         [1, lodGpuMesh],
       ]),
       viewBindGroupLayout: viewLayout,
-      meshResidencyEpoch: 1,
     };
-    const prepared = production.prepare(input).unwrap();
+    const prepared = production.prepare(admitGpuFixture(input)).unwrap();
     expect(prepared).toBeDefined();
     // One shared-chain batch owns one indirect command per LOD level.
     expect(production.inspect()).toMatchObject({
       batchCount: 1,
       indirectDrawCount: 2,
-      candidateUploadBytes: 2 * 304,
     });
+    expect(production.inspect().sharedInputUploadBytes).toBeGreaterThan(0);
     if (prepared === undefined) throw new Error('expected initial GPU projection');
-    expect(production.inspect().gpuOwnedSnapshotsMaterialized).toBe(2);
+    expect(production.inspect().gpuOwnedSnapshotsMaterialized).toBe(0);
     prepared._commitResourceReplacement();
     const nearInput = { ...input, camera: { ...input.camera, position: vec3.create(0, 0, 0.5) } };
-    const near = production.prepare(nearInput).unwrap();
+    const near = production.prepare(admitGpuFixture(nearInput)).unwrap();
     expect(near).toBeDefined();
     // Crossing a LOD threshold is a GPU cull decision: the plan is retained.
     expect(production.inspect()).toMatchObject({
       filteredPlanBuilds: 0,
-      candidateUploadBytes: 0,
+      sharedInputUploadBytes: 0,
       gpuOwnedSnapshotsMaterialized: 0,
     });
     near?._commitResourceReplacement();
-    const visible = production.prepare({ ...nearInput, activeEntityKeys: new Set([1]) }).unwrap();
+    const visible = production
+      .prepare(admitGpuFixture({ ...nearInput, activeEntityKeys: new Set([1]) }))
+      .unwrap();
     expect(visible).toBeDefined();
     // Visibility admission is the per-view suppression bitmap, not plan data.
     expect(production.inspect()).toMatchObject({
@@ -2149,28 +2084,42 @@ describe('GPU-driven production projection', () => {
     expect(production.inspect().suppressionUploadBytes).toBeGreaterThan(0);
     visible?._commitResourceReplacement();
     const shadow = production
-      .prepare({ ...nearInput, shadowCasterDrawKeys: new Set(['1:-1:0:0']) })
+      .prepare(admitGpuFixture({ ...nearInput, shadowViews: true }))
       .unwrap();
-    expect(shadow?.shadowDrawKeys).toEqual(new Set(['1:-1:0:0']));
+    shadow
+      ?.updateShadowViews?.([
+        {
+          identity: { kind: 'directional', index: 0, layer: 'static' },
+          planes: new Float32Array(24),
+          candidatePrimitiveIndices: [0],
+        },
+      ])
+      .unwrap();
+    expect(shadow?.shadowViewPool).toBeDefined();
+    const shadowSource = projection.slotsSnapshot().at(0)?.snapshot;
+    if (shadowSource === undefined) throw new Error('expected retained shadow source');
+    expect(shadow?.selection.ownsAll(shadowSource)).toBe(true);
     expect(production.inspect().gpuOwnedSnapshotsMaterialized).toBe(0);
     shadow?._commitResourceReplacement();
-    const rebound = production.prepare({ ...nearInput, meshResidencyEpoch: 2 }).unwrap();
+    const rebound = production.prepare(admitGpuFixture({ ...nearInput })).unwrap();
     expect(rebound).toBeDefined();
     expect(production.inspect().gpuOwnedSnapshotsMaterialized).toBe(0);
     rebound?._commitResourceReplacement();
-    if (input.standardPbrArtifact === undefined) throw new Error('expected fixture artifact');
+    if (input.materialArtifact === undefined) throw new Error('expected fixture artifact');
     const republished = production
-      .prepare({
-        ...nearInput,
-        meshResidencyEpoch: 2,
-        standardPbrArtifact: {
-          ...input.standardPbrArtifact,
-          program: createMaterialShaderProgram('republished'),
-        },
-      })
+      .prepare(
+        admitGpuFixture({
+          ...nearInput,
+
+          materialArtifact: {
+            ...input.materialArtifact,
+            program: createMaterialShaderProgram('republished'),
+          },
+        }),
+      )
       .unwrap();
     expect(republished).toBeDefined();
-    expect(production.inspect().gpuOwnedSnapshotsMaterialized).toBe(2);
+    expect(production.inspect().gpuOwnedSnapshotsMaterialized).toBe(0);
     production.dispose();
     availability.scene.dispose();
   });
@@ -2192,7 +2141,10 @@ describe('GPU-driven production projection', () => {
     if (availability.status !== 'available') throw new Error('expected GPU Scene');
     const rows = Array.from({ length: 8 }, (_, index) => {
       const source = preparedPbrFixture(snapshot(index + 1, index + 10));
-      const material = { ...source.material, standardTextureMask: index === 6 ? 4 : 0 };
+      const material = new MaterialResource({
+        ...source.material.snapshot,
+        standardTextureMask: index === 6 ? 4 : 0,
+      });
       return { ...source, material, materials: [material] };
     });
     availability.scene.sync(projection.apply(rows.map(updateSnapshot))).unwrap();
@@ -2201,19 +2153,20 @@ describe('GPU-driven production projection', () => {
     const production = new GpuDrivenProduction(device, { createShaderModule: () => ok(shader) });
     const sharedMesh = mesh(device);
     const prepared = production
-      .prepare({
-        ...pbrInputs,
-        scene: {
-          scene: availability.scene,
-          plan: topology.plan(),
-          slots: projection.slotsSnapshot(),
-          slotAt: projection.slotAt,
-        },
-        camera: makeZeroCameraFallbackSnapshot(),
-        meshBySlot: new Map(projection.slotsSnapshot().map(({ slot }) => [slot, sharedMesh])),
-        viewBindGroupLayout: viewLayout,
-        meshResidencyEpoch: 1,
-      })
+      .prepare(
+        admitGpuFixture({
+          ...pbrInputs,
+          scene: {
+            scene: availability.scene,
+            plan: topology.query(topology.sourcePlan(), undefined),
+            slots: projection.slotsSnapshot(),
+            slotAt: projection.slotAt,
+          },
+          camera: makeZeroCameraFallbackSnapshot(),
+          meshBySlot: new Map(projection.slotsSnapshot().map(({ slot }) => [slot, sharedMesh])),
+          viewBindGroupLayout: viewLayout,
+        }),
+      )
       .unwrap();
     if (prepared === undefined) throw new Error('expected prepared frame');
     expect(production.inspect().batchCount).toBe(8);
@@ -2239,10 +2192,16 @@ describe('GPU-driven production projection', () => {
         encode: ({ pass, resources }) => {
           const frameResources = {
             ...prepared.standardPbrFrameResources,
-            materialStride: 256,
-            materialBindGroups: [sharedMaterial, sharedMaterial, otherMaterial],
-            materialSlotIndicesByEntity: new Map(
-              rows.map((row, index) => [worldEntityKey(0, row.entityKey), [slots[index] ?? 0]]),
+
+            prepareMaterialBinding: (
+              (groups: readonly (import('@forgeax/engine-rhi').BindGroup | undefined)[]) =>
+              (slot: number) => {
+                const group = groups[slot];
+                return group === undefined ? undefined : { group, byteOffset: slot * 256 };
+              }
+            )([sharedMaterial, sharedMaterial, otherMaterial]),
+            materialSlotIndicesByBinding: new Map(
+              rows.map((row, index) => [row.material, new Map([['', slots.at(index) ?? 0]])]),
             ),
           };
           const bound = new Map<number, { group: BindGroup; offsets: readonly number[] }>();
@@ -2263,7 +2222,7 @@ describe('GPU-driven production projection', () => {
           const draws = vi
             .spyOn(pass, 'drawIndexedIndirect')
             .mockImplementation((buffer, offset) => {
-              const slot = slots[draws.mock.calls.length - 1];
+              const slot = slots.at(draws.mock.calls.length - 1);
               expect(bound.get(1)).toEqual({
                 group: slot === 2 ? otherMaterial : sharedMaterial,
                 offsets: [(slot ?? 0) * 256],
@@ -2335,11 +2294,11 @@ describe('GPU-driven production projection', () => {
     const secondDraw = second.gpuDrivenDraws?.[0];
     expect(secondDraw).toBeDefined();
     if (secondDraw === undefined) return;
-    const preparedMaterial = {
-      ...second.material,
+    const preparedMaterial = new MaterialResource({
+      ...second.material.snapshot,
       materialHandle: 42,
       renderState: { cullMode: 'none' as const, depthCompare: 'less-equal' as const },
-    };
+    });
     const renderables = [
       { ...first, gpuDrivenDraws: [firstDraw, { ...firstDraw, first: 3 }] },
       {
@@ -2355,7 +2314,7 @@ describe('GPU-driven production projection', () => {
           },
         ],
       },
-    ];
+    ].map(preparedPbrFixture);
     const projection = new RenderScene();
     const delta = projection.apply(renderables.map((renderable) => updateSnapshot(renderable)));
     const availability = GpuScene.create(device, 2).unwrap();
@@ -2364,11 +2323,15 @@ describe('GPU-driven production projection', () => {
     availability.scene.sync(delta).unwrap();
     const topology = new BatchTopology();
     topology.rebuild(projection.slotsSnapshot());
-    expect(topology.plan()).toMatchObject({
+    expect(topology.query(topology.sourcePlan(), undefined)).toMatchObject({
       candidateCount: 3,
-      visibleCapacity: 128,
-      batches: [{ visibleBase: 0 }, { visibleBase: 64 }],
+      visibleCapacity: 192,
     });
+    expect([...topology.query(topology.sourcePlan(), undefined).batches]).toMatchObject([
+      { visibleBase: 0 },
+      { visibleBase: 64 },
+      { visibleBase: 128 },
+    ]);
     const production = new GpuDrivenProduction(device, {
       createShaderModule: () => ok(shader),
     });
@@ -2377,62 +2340,60 @@ describe('GPU-driven production projection', () => {
       [1, mesh(device, false)],
     ]);
     const prepared = production
-      .prepare({
-        ...pbrInputs,
-        scene: {
-          scene: availability.scene,
-          plan: topology.plan(),
-          slots: projection.slotsSnapshot(),
-          slotAt: projection.slotAt,
-        },
-        camera: makeZeroCameraFallbackSnapshot(),
-        meshBySlot: meshes,
-        viewBindGroupLayout: viewLayout,
-        meshResidencyEpoch: 1,
-      })
+      .prepare(
+        admitGpuFixture({
+          ...pbrInputs,
+          scene: {
+            scene: availability.scene,
+            plan: topology.query(topology.sourcePlan(), undefined),
+            slots: projection.slotsSnapshot(),
+            slotAt: projection.slotAt,
+          },
+          camera: makeZeroCameraFallbackSnapshot(),
+          meshBySlot: meshes,
+          viewBindGroupLayout: viewLayout,
+        }),
+      )
       .unwrap();
     expect(prepared).toBeDefined();
     if (prepared === undefined) return;
-    expect(prepared.drawKeys).toEqual(
-      new Set([
-        gpuDrivenDrawKey(worldEntityKey(0, 1), -1, 0),
-        gpuDrivenDrawKey(worldEntityKey(0, 1), -1, 1),
-        gpuDrivenDrawKey(worldEntityKey(1, 2), 42, 0),
-      ]),
-    );
+    for (const row of renderables) expect(prepared.selection.ownsAll(row)).toBe(true);
     expect(production.inspect()).toMatchObject({
-      gpuOwnedSnapshotsMaterialized: 2,
+      gpuOwnedSnapshotsMaterialized: 0,
       filteredPlanBuilds: 1,
-      candidateUploadBytes: 912,
-      batchUploadBytes: 64,
+
+      batchUploadBytes: 3 * GPU_DRIVEN_BATCH_STRIDE,
       viewBindGroupCreates: 1,
     });
+    expect(production.inspect().sharedInputUploadBytes).toBeGreaterThan(0);
 
+    prepared?._commitResourceReplacement();
     const stable = production
-      .prepare({
-        ...pbrInputs,
-        scene: {
-          scene: availability.scene,
-          plan: topology.plan(),
-          slots: projection.slotsSnapshot(),
-          slotAt: projection.slotAt,
-        },
-        camera: makeZeroCameraFallbackSnapshot(),
-        meshBySlot: meshes,
-        viewBindGroupLayout: viewLayout,
-        meshResidencyEpoch: 1,
-      })
+      .prepare(
+        admitGpuFixture({
+          ...pbrInputs,
+          scene: {
+            scene: availability.scene,
+            plan: topology.query(topology.sourcePlan(), undefined),
+            slots: projection.slotsSnapshot(),
+            slotAt: projection.slotAt,
+          },
+          camera: makeZeroCameraFallbackSnapshot(),
+          meshBySlot: meshes,
+          viewBindGroupLayout: viewLayout,
+        }),
+      )
       .unwrap();
     expect(stable?.topologySignature).toBe(prepared.topologySignature);
     expect(production.inspect()).toMatchObject({
       gpuOwnedSnapshotsMaterialized: 0,
       filteredPlanBuilds: 0,
-      candidateUploadBytes: 0,
+      sharedInputUploadBytes: 0,
       batchUploadBytes: 0,
       viewConstantsUploadBytes: 528,
       viewBindGroupCreates: 0,
       batchBindGroupCreates: 0,
-      indirectDrawCount: 2,
+      indirectDrawCount: 3,
     });
 
     // This mixed batch has no LOD relation. Camera movement updates view
@@ -2441,25 +2402,27 @@ describe('GPU-driven production projection', () => {
       ...makeZeroCameraFallbackSnapshot(),
       position: vec3.create(0, 0, 6),
     };
+    stable?._commitResourceReplacement();
     const moved = production
-      .prepare({
-        ...pbrInputs,
-        scene: {
-          scene: availability.scene,
-          plan: topology.plan(),
-          slots: projection.slotsSnapshot(),
-          slotAt: projection.slotAt,
-        },
-        camera: movedCamera,
-        meshBySlot: meshes,
-        viewBindGroupLayout: viewLayout,
-        meshResidencyEpoch: 1,
-      })
+      .prepare(
+        admitGpuFixture({
+          ...pbrInputs,
+          scene: {
+            scene: availability.scene,
+            plan: topology.query(topology.sourcePlan(), undefined),
+            slots: projection.slotsSnapshot(),
+            slotAt: projection.slotAt,
+          },
+          camera: movedCamera,
+          meshBySlot: meshes,
+          viewBindGroupLayout: viewLayout,
+        }),
+      )
       .unwrap();
     expect(moved).toBeDefined();
     expect(production.inspect()).toMatchObject({
       filteredPlanBuilds: 0,
-      candidateUploadBytes: 0,
+      sharedInputUploadBytes: 0,
       batchUploadBytes: 0,
     });
     if (moved === undefined) return;
@@ -2472,9 +2435,17 @@ describe('GPU-driven production projection', () => {
     const materialBindGroup = device.createBindGroupLayout({ entries: [] }).unwrap();
     const frameResources = {
       ...moved.standardPbrFrameResources,
-      materialBindGroups: [
-        device.createBindGroup({ layout: materialBindGroup, entries: [] }).unwrap(),
-      ],
+      prepareMaterialBinding: (
+        (groups: readonly (import('@forgeax/engine-rhi').BindGroup | undefined)[]) =>
+        (slot: number) => {
+          const group = groups[slot];
+          return group === undefined ? undefined : { group, byteOffset: slot * 1280 };
+        }
+      )([
+        ...Array.from({ length: 3 }, () =>
+          device.createBindGroup({ layout: materialBindGroup, entries: [] }).unwrap(),
+        ),
+      ]),
     };
     expect(gpu.hasWork()).toBe(true);
     expect(gpu.hasWork('single-layer-medium')).toBe(false);
@@ -2533,15 +2504,21 @@ describe('GPU-driven production projection', () => {
       'main',
     ]);
     expect(device.totalDispatchCount).toBe(3);
-    expect(device.totalDrawCount).toBe(2);
-    expect(production.inspect().indirectDrawCount).toBe(2);
+    expect(device.totalDrawCount).toBe(3);
+    expect(production.inspect().indirectDrawCount).toBe(3);
     expect(production.inspect().indirectDrawCount).toBeLessThanOrEqual(
       production.inspect().batchCount,
     );
 
     const missingMaterialFrameResources = {
       ...frameResources,
-      materialBindGroups: [undefined] as unknown as typeof frameResources.materialBindGroups,
+      prepareMaterialBinding: (
+        (groups: readonly (import('@forgeax/engine-rhi').BindGroup | undefined)[]) =>
+        (slot: number) => {
+          const group = groups[slot];
+          return group === undefined ? undefined : { group, byteOffset: slot * 1280 };
+        }
+      )([undefined]),
     };
     activeFrameResources = missingMaterialFrameResources;
     const missingMaterialEncoder = device
@@ -2568,46 +2545,49 @@ describe('GPU-driven production projection', () => {
     // The facet projection is the same admission set consumed by the GPU
     // candidate upload. A suppressed entity must disappear from the indirect
     // plan without making the remaining entity fall back to CPU validation.
+    moved?._commitResourceReplacement();
     const activeOnly = production
-      .prepare({
-        ...pbrInputs,
-        scene: {
-          scene: availability.scene,
-          plan: topology.plan(),
-          slots: projection.slotsSnapshot(),
-          slotAt: projection.slotAt,
-        },
-        camera: movedCamera,
-        meshBySlot: meshes,
-        viewBindGroupLayout: viewLayout,
-        meshResidencyEpoch: 1,
+      .prepare(
+        admitGpuFixture({
+          ...pbrInputs,
+          scene: {
+            scene: availability.scene,
+            plan: topology.query(topology.sourcePlan(), undefined),
+            slots: projection.slotsSnapshot(),
+            slotAt: projection.slotAt,
+          },
+          camera: movedCamera,
+          meshBySlot: meshes,
+          viewBindGroupLayout: viewLayout,
 
-        activeEntityKeys: new Set([worldEntityKey(0, 1)]),
-        activeEntityRevision: 1,
-      })
+          activeEntityKeys: new Set([worldEntityKey(0, 1)]),
+          activeEntityRevision: 1,
+        }),
+      )
       .unwrap();
-    expect(activeOnly?.drawKeys?.size).toBe(3);
-    expect(activeOnly?.ownsAllDrawItems).toBe(true);
+    for (const row of renderables) expect(activeOnly?.selection.ownsAll(row)).toBe(true);
 
+    activeOnly?._commitResourceReplacement();
     const changedActive = production
-      .prepare({
-        ...pbrInputs,
-        scene: {
-          scene: availability.scene,
-          plan: topology.plan(),
-          slots: projection.slotsSnapshot(),
-          slotAt: projection.slotAt,
-        },
-        camera: movedCamera,
-        meshBySlot: meshes,
-        viewBindGroupLayout: viewLayout,
-        meshResidencyEpoch: 1,
+      .prepare(
+        admitGpuFixture({
+          ...pbrInputs,
+          scene: {
+            scene: availability.scene,
+            plan: topology.query(topology.sourcePlan(), undefined),
+            slots: projection.slotsSnapshot(),
+            slotAt: projection.slotAt,
+          },
+          camera: movedCamera,
+          meshBySlot: meshes,
+          viewBindGroupLayout: viewLayout,
 
-        activeEntityKeys: new Set([worldEntityKey(1, 2)]),
-        activeEntityRevision: 2,
-      })
+          activeEntityKeys: new Set([worldEntityKey(1, 2)]),
+          activeEntityRevision: 2,
+        }),
+      )
       .unwrap();
-    expect(changedActive?.drawKeys?.size).toBe(3);
+    for (const row of renderables) expect(changedActive?.selection.ownsAll(row)).toBe(true);
     // A changed admission revision only rewrites dirty suppression words; the
     // filtered plan and its per-frame build counter stay untouched.
     expect(production.inspect().filteredPlanBuilds).toBe(0);
@@ -2617,20 +2597,22 @@ describe('GPU-driven production projection', () => {
     expect(replacement.status).toBe('available');
     if (replacement.status !== 'available') return;
     replacement.scene.sync(delta).unwrap();
+    changedActive?._commitResourceReplacement();
     const replacementPrepared = production
-      .prepare({
-        ...pbrInputs,
-        scene: {
-          scene: replacement.scene,
-          plan: topology.plan(),
-          slots: projection.slotsSnapshot(),
-          slotAt: projection.slotAt,
-        },
-        camera: makeZeroCameraFallbackSnapshot(),
-        meshBySlot: meshes,
-        viewBindGroupLayout: viewLayout,
-        meshResidencyEpoch: 1,
-      })
+      .prepare(
+        admitGpuFixture({
+          ...pbrInputs,
+          scene: {
+            scene: replacement.scene,
+            plan: topology.query(topology.sourcePlan(), undefined),
+            slots: projection.slotsSnapshot(),
+            slotAt: projection.slotAt,
+          },
+          camera: makeZeroCameraFallbackSnapshot(),
+          meshBySlot: meshes,
+          viewBindGroupLayout: viewLayout,
+        }),
+      )
       .unwrap();
     expect(replacementPrepared?.topologySignature).not.toBe(prepared.topologySignature);
 
@@ -2649,10 +2631,10 @@ describe('GPU-driven production projection', () => {
       })
       .unwrap();
     const base = snapshot(1, 3);
-    const material = {
-      ...base.material,
+    const material = new MaterialResource({
+      ...base.material.snapshot,
       materialShaderId: 'forgeax::default-standard-pbr',
-    };
+    });
     const projection = new RenderScene();
     const delta = projection.apply([updateSnapshot({ ...base, material, materials: [material] })]);
     const availability = GpuScene.create(device, 1).unwrap();
@@ -2667,7 +2649,7 @@ describe('GPU-driven production projection', () => {
     const input = {
       scene: {
         scene: availability.scene,
-        plan: topology.plan(),
+        plan: topology.query(topology.sourcePlan(), undefined),
         slots: projection.slotsSnapshot(),
         slotAt: projection.slotAt,
       },
@@ -2677,21 +2659,23 @@ describe('GPU-driven production projection', () => {
 
     expect(
       production
-        .prepare({
-          ...input,
-          camera: makeZeroCameraFallbackSnapshot(),
-          meshResidencyEpoch: 1,
-        })
+        .prepare(
+          admitGpuFixture({
+            ...input,
+            camera: makeZeroCameraFallbackSnapshot(),
+          }),
+        )
         .unwrap(),
     ).toBeUndefined();
     expect(production.inspect().filteredPlanBuilds).toBe(0);
     expect(
       production
-        .prepare({
-          ...input,
-          camera: { ...makeZeroCameraFallbackSnapshot(), position: vec3.create(0, 0, 6) },
-          meshResidencyEpoch: 2,
-        })
+        .prepare(
+          admitGpuFixture({
+            ...input,
+            camera: { ...makeZeroCameraFallbackSnapshot(), position: vec3.create(0, 0, 6) },
+          }),
+        )
         .unwrap(),
     ).toBeUndefined();
     expect(production.inspect()).toMatchObject({
@@ -2722,7 +2706,9 @@ describe('GPU-driven production projection', () => {
     const pipelines = vi.spyOn(renderer.device, 'createRenderPipeline');
     try {
       expect((await renderer.initialization).ok).toBe(true);
-      const world = new World();
+      const assets = renderer.assetRegistry;
+      const world = new World({ assets });
+      const cube = assets.create(createBoxGeometry(1, 1, 1).unwrap()).unwrap();
       expect(renderer.attach(world)).toMatchObject({ ok: true });
       world
         .spawn(
@@ -2730,22 +2716,30 @@ describe('GPU-driven production projection', () => {
           { component: Camera, data: { fov: Math.PI / 4, aspect: 1, near: 0.1, far: 100 } },
         )
         .unwrap();
-      for (const values of [
-        {},
-        { normalTexture: { texture: '11111111-1111-1111-1111-111111111111' } },
-      ]) {
-        const material = world.allocSharedRef(
-          'MaterialAsset',
-          Materials.standard({
-            baseColor: [1, 1, 1, 1],
-            renderState: { blend: { color: {}, alpha: {} } },
-            ...values,
-          }),
-        );
+      const normalTexture = assets
+        .create({
+          kind: 'texture',
+          shape: { viewDimension: '2d', extent: { width: 1, height: 1 } },
+          format: 'rgba8unorm',
+          data: new Uint8Array([128, 128, 255, 255]),
+          colorSpace: 'linear',
+          mips: { kind: 'none' },
+        })
+        .unwrap();
+      for (const values of [{}, { normalTexture: { texture: normalTexture } }]) {
+        const material = assets
+          .create(
+            Materials.standard({
+              baseColor: [1, 1, 1, 1],
+              renderState: { blend: { color: {}, alpha: {} } },
+              ...values,
+            }),
+          )
+          .unwrap();
         world
           .spawn(
             { component: Transform, data: {} },
-            { component: MeshFilter, data: { assetHandle: HANDLE_CUBE } },
+            { component: MeshFilter, data: { assetHandle: cube } },
             { component: MeshRenderer, data: { materials: [material] } },
           )
           .unwrap();
@@ -2792,7 +2786,9 @@ describe('GPU-driven production projection', () => {
     const pipelines = vi.spyOn(renderer.device, 'createRenderPipeline');
     try {
       expect((await renderer.initialization).ok).toBe(true);
-      const world = new World();
+      const assets = renderer.assetRegistry;
+      const world = new World({ assets });
+      const cube = assets.create(createBoxGeometry(1, 1, 1).unwrap()).unwrap();
       expect(renderer.attach(world)).toMatchObject({ ok: true });
       world
         .spawn(
@@ -2804,17 +2800,18 @@ describe('GPU-driven production projection', () => {
         { colorWriteMask: 0, depthBias: -2, depthBiasSlopeScale: -1, depthBiasClamp: -0.1 },
         { colorWriteMask: 5, depthBias: 2, depthBiasSlopeScale: 1, depthBiasClamp: 0.1 },
       ]) {
-        const material = world.allocSharedRef(
-          'MaterialAsset',
-          Materials.standard({
-            baseColor: [1, 1, 1, 1],
-            renderState,
-          }),
-        );
+        const material = assets
+          .create(
+            Materials.standard({
+              baseColor: [1, 1, 1, 1],
+              renderState,
+            }),
+          )
+          .unwrap();
         world
           .spawn(
             { component: Transform, data: {} },
-            { component: MeshFilter, data: { assetHandle: HANDLE_CUBE } },
+            { component: MeshFilter, data: { assetHandle: cube } },
             { component: MeshRenderer, data: { materials: [material] } },
           )
           .unwrap();
@@ -2882,7 +2879,9 @@ describe('GPU-driven production projection', () => {
       { shaderManifestUrl: manifestDataUrl() },
     );
     expect((await renderer.initialization).ok).toBe(true);
-    const world = new World();
+    const assets = renderer.assetRegistry;
+    const world = new World({ assets });
+    const cube = assets.create(createBoxGeometry(1, 1, 1).unwrap()).unwrap();
     expect(renderer.attach(world).ok).toBe(true);
     world
       .spawn(
@@ -2893,7 +2892,7 @@ describe('GPU-driven production projection', () => {
     world
       .spawn(
         { component: Transform, data: {} },
-        { component: MeshFilter, data: { assetHandle: HANDLE_CUBE } },
+        { component: MeshFilter, data: { assetHandle: cube } },
         { component: MeshRenderer, data: {} },
       )
       .unwrap();
@@ -2931,7 +2930,7 @@ describe('GPU-driven production projection', () => {
       gpuDriven: {
         gpuOwnedSnapshotsMaterialized: 0,
         filteredPlanBuilds: 0,
-        candidateUploadBytes: 0,
+        sharedInputUploadBytes: 0,
         batchUploadBytes: 0,
         batchBindGroupCreates: 0,
         viewBindGroupCreates: 0,
@@ -2956,8 +2955,10 @@ describe('GPU-driven production projection', () => {
       { shaderManifestUrl: manifestDataUrl() },
     );
     expect((await renderer.initialization).ok).toBe(true);
-    const cameraWorld = new World();
-    const sceneWorld = new World();
+    const cameraWorld = new World({ assets: new AssetRegistry() });
+    const assets = new AssetRegistry();
+    const sceneWorld = new World({ assets });
+    const cube = assets.create(createBoxGeometry(1, 1, 1).unwrap()).unwrap();
     expect(renderer.attach(cameraWorld).ok).toBe(true);
     expect(renderer.attach(sceneWorld).ok).toBe(true);
     cameraWorld
@@ -2969,7 +2970,7 @@ describe('GPU-driven production projection', () => {
     const rendered = sceneWorld
       .spawn(
         { component: Transform, data: {} },
-        { component: MeshFilter, data: { assetHandle: HANDLE_CUBE } },
+        { component: MeshFilter, data: { assetHandle: cube } },
         { component: MeshRenderer, data: {} },
       )
       .unwrap();
@@ -3019,7 +3020,9 @@ describe('GPU-driven production projection', () => {
       { shaderManifestUrl: manifestDataUrl() },
     );
     expect((await renderer.initialization).ok).toBe(true);
-    const world = new World();
+    const assets = renderer.assetRegistry;
+    const world = new World({ assets });
+    const cube = assets.create(createBoxGeometry(1, 1, 1).unwrap()).unwrap();
     expect(renderer.attach(world).ok).toBe(true);
     const camera = world
       .spawn(
@@ -3030,7 +3033,7 @@ describe('GPU-driven production projection', () => {
     world
       .spawn(
         { component: Transform, data: {} },
-        { component: MeshFilter, data: { assetHandle: HANDLE_CUBE } },
+        { component: MeshFilter, data: { assetHandle: cube } },
         { component: MeshRenderer, data: {} },
       )
       .unwrap();
@@ -3115,7 +3118,9 @@ describe('GPU-driven early GBuffer ordering diagnostic command contract', () => 
           gbufferBatchOrderDiagnostic: { order: 'near', programDigests: [] },
         }).ok,
       ).toBe(true);
-      const world = new World();
+      const assets = renderer.assetRegistry;
+      const world = new World({ assets });
+      const meshHandle = assets.create(createBoxGeometry(1, 1, 1).unwrap()).unwrap();
       expect(renderer.attach(world).ok).toBe(true);
       world
         .spawn(
@@ -3123,15 +3128,12 @@ describe('GPU-driven early GBuffer ordering diagnostic command contract', () => 
           { component: Camera, data: { fov: Math.PI / 3, aspect: 1, near: 0.1, far: 100 } },
         )
         .unwrap();
-      const material = world.allocSharedRef(
-        'MaterialAsset',
-        Materials.standard({ baseColor: [1, 1, 1, 1] }),
-      );
+      const material = assets.create(Materials.standard({ baseColor: [1, 1, 1, 1] })).unwrap();
       for (const z of [0, -2])
         world
           .spawn(
             { component: Transform, data: { pos: [0, 0, z] } },
-            { component: MeshFilter, data: { assetHandle: HANDLE_CUBE } },
+            { component: MeshFilter, data: { assetHandle: meshHandle } },
             { component: MeshRenderer, data: { materials: [material] } },
           )
           .unwrap();
@@ -3164,8 +3166,8 @@ describe('GPU-driven early GBuffer ordering diagnostic command contract', () => 
     const shader = (await rhi.createShaderModule(device, { code: 'synthetic' })).unwrap();
     const viewLayout = device.createBindGroupLayout({ entries: [] }).unwrap();
     const pbrInputs = standardPbrInputs(device, shader, viewLayout);
-    const baseArtifact = pbrInputs.standardPbrArtifact;
-    const pipelineLayout = pbrInputs.standardPbrPipelineState?.gpuDrivenPbrPipelineLayout;
+    const baseArtifact = pbrInputs.materialArtifact;
+    const pipelineLayout = pbrInputs.materialPipelineState?.gpuDrivenPbrPipelineLayout;
     if (baseArtifact === undefined || pipelineLayout === undefined || pipelineLayout === null)
       throw Error('missing fixture material pipeline');
     const forwardArtifact = {
@@ -3205,14 +3207,22 @@ describe('GPU-driven early GBuffer ordering diagnostic command contract', () => 
     const rows = [8, 2, 4, 9, 1].map((depth, index) => {
       const source = preparedPbrFixture(snapshot(index + 1, index + 1));
       source.transform.world[14] = -depth;
-      const material = {
-        ...source.material,
+      const material = new MaterialResource({
+        ...source.material.snapshot,
         deferredPass: true,
         renderState: {
           depthCompare: 'greater' as const,
           ...(index === 2 ? { depthWriteEnabled: false } : {}),
         },
-      };
+        passes: source.material.snapshot.passes.map((pass) => ({
+          ...pass,
+          renderState: {
+            ...pass.renderState,
+            depthCompare: 'greater' as const,
+            ...(index === 2 ? { depthWriteEnabled: false } : {}),
+          },
+        })),
+      });
       return { ...source, material, materials: [material] };
     });
     availability.scene.sync(projection.apply(rows.map(updateSnapshot))).unwrap();
@@ -3225,57 +3235,58 @@ describe('GPU-driven early GBuffer ordering diagnostic command contract', () => 
       stock = true,
       sourceFailure?: 'morph' | 'displacement' | 'bounds',
     ) => {
-      const prepared = production
-        .prepare({
-          ...pbrInputs,
-          standardPbrArtifact: forwardArtifact,
-          materialPipelineFactory: pipelineFactory,
-          scene: {
-            scene: availability.scene,
-            plan: topology.plan(),
-            slots: projection.slotsSnapshot(),
-            slotAt:
-              sourceFailure === undefined
-                ? projection.slotAt
-                : (index: number) => {
-                    const slot = projection.slotAt(index);
-                    if (slot === undefined) return undefined;
-                    const source = { ...slot.snapshot };
-                    if (sourceFailure === 'bounds') delete source.localAabb;
-                    return {
-                      ...slot,
-                      snapshot: {
-                        ...source,
-                        ...(sourceFailure === 'morph'
-                          ? { morph: {} as NonNullable<RenderableSnapshot['morph']> }
-                          : {}),
-                        ...(sourceFailure === 'displacement'
-                          ? {
-                              materials: [],
-                              material: {
-                                ...source.material,
-                                paramSnapshot: { displacementScale: 2 },
-                              },
-                            }
-                          : {}),
-                      },
-                    };
-                  },
+      for (const row of rows)
+        row.material.adopt({
+          ...row.material.snapshot,
+          paramSnapshot: {
+            ...row.material.snapshot.paramSnapshot,
+            displacementScale: sourceFailure === 'displacement' ? 2 : 0,
           },
-          camera: makeZeroCameraFallbackSnapshot(),
-          meshBySlot: meshes,
-          viewBindGroupLayout: viewLayout,
-          meshResidencyEpoch: 1,
-          ...(order === undefined
-            ? {}
-            : {
-                gbufferBatchOrderDiagnostic: {
-                  order,
-                  programDigests: [gbufferProgramDigest(known ? 'synthetic' : 'unknown')],
+        });
+      const admitted = admitGpuFixture({
+        ...pbrInputs,
+        materialArtifact: forwardArtifact,
+        materialPipelineFactory: pipelineFactory,
+        scene: {
+          scene: availability.scene,
+          plan: topology.query(topology.sourcePlan(), undefined),
+          slots: projection.slotsSnapshot(),
+          slotAt:
+            sourceFailure === undefined || sourceFailure === 'displacement'
+              ? projection.slotAt
+              : (index: number) => {
+                  const slot = projection.slotAt(index);
+                  if (slot === undefined) return undefined;
+                  const source = { ...slot.snapshot };
+                  if (sourceFailure === 'bounds') delete source.localAabb;
+                  return {
+                    ...slot,
+                    snapshot: {
+                      ...source,
+                      ...(sourceFailure === 'morph'
+                        ? { morph: {} as NonNullable<RenderableSnapshot['morph']> }
+                        : {}),
+                    },
+                  };
                 },
-              }),
-        })
+        },
+        camera: makeZeroCameraFallbackSnapshot(),
+        meshBySlot: meshes,
+        viewBindGroupLayout: viewLayout,
+        ...(order === undefined
+          ? {}
+          : {
+              gbufferBatchOrderDiagnostic: {
+                order,
+                programDigests: [gbufferProgramDigest(known ? 'synthetic' : 'unknown')],
+              },
+            }),
+      });
+      if (admitted.materialFrame === undefined) throw new Error('Missing accepted material frame');
+      availability.scene
+        .sync({ ...projection.apply([]), materials: admitted.materialFrame })
         .unwrap();
+      const prepared = production.prepare(admitted).unwrap();
       if (prepared === undefined) throw new Error('Missing prepared GPU fixture');
       const graph = new RenderGraphBuilder<RenderPipelineFrame>();
       const formats = ['r32uint', 'r32uint', 'r32uint', 'r32uint', 'rg32uint'] as const;
@@ -3311,8 +3322,7 @@ describe('GPU-driven early GBuffer ordering diagnostic command contract', () => 
               resources,
               {
                 ...prepared.standardPbrFrameResources,
-                materialStride: 256,
-                materialBindGroups: [emptyGroup],
+                prepareMaterialBinding: (slot) => ({ group: emptyGroup, byteOffset: slot * 256 }),
                 colorFormats: ['rgba16float', ...formats],
               },
               'deferred-opaque',
@@ -3328,6 +3338,7 @@ describe('GPU-driven early GBuffer ordering diagnostic command contract', () => 
         compiled.execute({ encoder } as RenderPipelineFrame).unwrap();
         encoder.finish().unwrap();
       } finally {
+        prepared._commitResourceReplacement();
         (await compiled.retire()).unwrap();
       }
       return offsets;

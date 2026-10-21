@@ -85,14 +85,12 @@ export interface HostTransportServer {
 }
 
 interface ServiceRecord {
-  readonly identity: symbol;
   generation: number;
   handler: (request: HostServiceRequest<unknown>) => Promise<unknown> | unknown;
   pending: Set<AbortController>;
 }
 
 interface ClientState {
-  connected: boolean;
   readonly caller: HostCallerIdentity;
   readonly subscriptions: Map<string, Set<(payload: unknown) => void>>;
   readonly pending: Set<AbortController>;
@@ -127,13 +125,11 @@ export function createHostTransport(): HostTransportServer {
     });
 
   const closeClient = (state: ClientState, reason?: unknown): void => {
-    if (!state.connected) return;
-    state.connected = false;
+    if (!clients.delete(state)) return;
     for (const controller of state.pending) controller.abort();
     state.pending.clear();
     for (const callbacks of state.subscriptions.values()) callbacks.clear();
     state.subscriptions.clear();
-    clients.delete(state);
     const authoritativeCaller = Object.freeze({ ...state.caller });
     for (const listener of disconnectListeners) listener(authoritativeCaller);
     const error = new HostAssemblyError(
@@ -150,7 +146,6 @@ export function createHostTransport(): HostTransportServer {
     isConnected(caller) {
       return [...clients].some(
         (client) =>
-          client.connected &&
           client.caller.connectionId === caller.connectionId &&
           client.caller.capability === caller.capability,
       );
@@ -164,18 +159,17 @@ export function createHostTransport(): HostTransportServer {
       const generation = (generations.get(service) ?? 0) + 1;
       generations.set(service, generation);
       for (const controller of previous?.pending ?? []) controller.abort();
-      const identity = Symbol(service);
-      services.set(service, {
-        identity,
+      const record: ServiceRecord = {
         generation,
         handler: handler as unknown as (
           request: HostServiceRequest<unknown>,
         ) => Promise<unknown> | unknown,
         pending: new Set(),
-      });
+      };
+      services.set(service, record);
       return () => {
         const current = services.get(service);
-        if (current?.identity !== identity) return;
+        if (current !== record) return;
         for (const controller of current.pending) controller.abort();
         generations.set(service, current.generation + 1);
         services.delete(service);
@@ -206,7 +200,6 @@ export function createHostTransport(): HostTransportServer {
     connect(options = {}) {
       if (closed) throw new Error('host transport is closed');
       const state: ClientState = {
-        connected: true,
         caller: newCaller(options),
         subscriptions: new Map(),
         pending: new Set(),
@@ -221,7 +214,7 @@ export function createHostTransport(): HostTransportServer {
       }
       const client: HostTransportClient = {
         get connected() {
-          return state.connected;
+          return clients.has(state);
         },
         get generation() {
           let current = 0;
@@ -232,7 +225,7 @@ export function createHostTransport(): HostTransportServer {
           return state.caller;
         },
         async request(service, payload, options = {}) {
-          if (!state.connected) {
+          if (!clients.has(state)) {
             throw new HostAssemblyError(
               'host-assembly-service-unavailable',
               `service ${service} to be available on the current connection`,
@@ -339,7 +332,7 @@ export function createHostTransport(): HostTransportServer {
           }
         },
         subscribe(topic, listener) {
-          if (!state.connected) return () => {};
+          if (!clients.has(state)) return () => {};
           const callbacks = state.subscriptions.get(topic) ?? new Set();
           callbacks.add(listener as (payload: unknown) => void);
           state.subscriptions.set(topic, callbacks);
@@ -349,7 +342,7 @@ export function createHostTransport(): HostTransportServer {
           };
         },
         onDisconnect(listener) {
-          if (!state.connected) {
+          if (!clients.has(state)) {
             listener(
               new HostAssemblyError(
                 'host-transport-failure',
@@ -541,16 +534,20 @@ export async function createHostWebSocketClient(
     throw transportFailure('host/connect', `socket already retired (state ${socket.readyState})`);
   if (socket.readyState !== undefined && socket.readyState !== 1) {
     await new Promise<void>((resolve, reject) => {
-      const removeOpen = addSocketListener(socket, 'open', () => {
+      const settle = (failure?: HostAssemblyError): void => {
         removeOpen();
         removeError();
-        resolve();
-      });
-      const removeError = addSocketListener(socket, 'error', (cause) => {
-        removeOpen();
-        removeError();
-        reject(transportFailure('host/connect', String(cause ?? 'socket error')));
-      });
+        removeClose();
+        if (failure === undefined) resolve();
+        else reject(failure);
+      };
+      const removeOpen = addSocketListener(socket, 'open', () => settle());
+      const removeError = addSocketListener(socket, 'error', (cause) =>
+        settle(transportFailure('host/connect', String(cause ?? 'socket error'))),
+      );
+      const removeClose = addSocketListener(socket, 'close', () =>
+        settle(transportFailure('host/connect', 'socket closed before opening')),
+      );
     });
   }
   const pending = new Map<
@@ -573,9 +570,13 @@ export async function createHostWebSocketClient(
   });
   const disconnectError = (reason: unknown): HostAssemblyError =>
     transportFailure('host/socket', reason instanceof Error ? reason.message : String(reason));
-  const failPending = (reason: unknown): void => {
+  const disconnect = (reason: unknown): void => {
     if (!connected) return;
     connected = false;
+    removeMessage();
+    removeClose();
+    removeError();
+    socket.close();
     for (const request of pending.values()) {
       request.cleanup();
       request.reject(reason);
@@ -608,15 +609,12 @@ export async function createHostWebSocketClient(
         ),
       );
   });
-  const removeClose = addSocketListener(socket, 'close', (reason) => {
-    removeMessage();
-    removeClose();
-    removeError();
-    failPending(disconnectError(reason));
-  });
-  const removeError = addSocketListener(socket, 'error', (reason) => {
-    failPending(disconnectError(reason));
-  });
+  const removeClose = addSocketListener(socket, 'close', (reason) =>
+    disconnect(disconnectError(reason)),
+  );
+  const removeError = addSocketListener(socket, 'error', (reason) =>
+    disconnect(disconnectError(reason)),
+  );
   const client: HostTransportClient = {
     get connected() {
       return connected;
@@ -715,12 +713,7 @@ export async function createHostWebSocketClient(
       return () => disconnectListeners.delete(listener);
     },
     close(reason) {
-      if (!connected) return;
-      failPending(disconnectError(reason ?? 'client closed the host connection'));
-      removeMessage();
-      removeClose();
-      removeError();
-      socket.close();
+      disconnect(disconnectError(reason ?? 'client closed the host connection'));
     },
   };
   return client;

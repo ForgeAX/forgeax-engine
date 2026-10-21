@@ -66,7 +66,12 @@ export async function startRemoteServer(
   plugins?: unknown,
 ): Promise<{ readonly port: number; close(): Promise<void> } | undefined> {
   try {
-    const remoteServerMod = await import(/* @vite-ignore */ '@forgeax/engine-remote/server');
+    // A literal import is still pretransformed by Vite, even with @vite-ignore.
+    // Keep this Node-only transport out of the browser's speculative module crawl.
+    const specifier = '@forgeax/engine-remote/server';
+    const remoteServerMod: typeof import('@forgeax/engine-remote/server') = await import(
+      /* @vite-ignore */ specifier
+    );
     const serverResult = await remoteServerMod.startServer({
       port: 0,
       host: '127.0.0.1',
@@ -360,6 +365,9 @@ export async function buildApp(args: BuildAppArgs): Promise<Result<App, AppError
         args.onFrameSubmitted?.({
           frameId: receipt.frameId,
           deviceGeneration: receipt.deviceGeneration,
+          ...(receipt.shadowWorkload === undefined
+            ? {}
+            : { shadowWorkload: receipt.shadowWorkload }),
           ...(receipt.graphGeneration === undefined
             ? {}
             : { graphGeneration: receipt.graphGeneration }),
@@ -378,6 +386,9 @@ export async function buildApp(args: BuildAppArgs): Promise<Result<App, AppError
         args.onFrameCompleted?.({
           frameId: receipt.frameId,
           deviceGeneration: receipt.deviceGeneration,
+          ...(receipt.shadowWorkload === undefined
+            ? {}
+            : { shadowWorkload: receipt.shadowWorkload }),
           // A receipt produced by the current Render contract always carries
           // presentation. If a legacy adapter omits it, do not turn an
           // unproven frame into startup success.
@@ -637,7 +648,7 @@ export async function buildApp(args: BuildAppArgs): Promise<Result<App, AppError
           }
         }
       } else if (event.kind === 'memory-pressure') {
-        assets?.releaseReadCaches();
+        assets?.trimReadCache();
       } else if (event.kind === 'surface-lost') {
         resumeAfterHostShow = false;
         resumeAfterSurfaceRestore = false;

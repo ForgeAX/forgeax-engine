@@ -1,5 +1,4 @@
 import { AssetGuid } from '@forgeax/engine/pack/guid';
-import type { AudioClipAsset } from '@forgeax/engine/types';
 import { defineFeature, type FeatureCheck } from '../../lab/feature';
 import { spawnStage } from '../../lab/stage';
 import { errorCode, guid, installMemoryPack } from './fixtures/memory-pack';
@@ -46,7 +45,7 @@ export default defineFeature({
     if (assets === undefined || !parsed.ok || !unknown.ok)
       return { checks: () => [{ name: 'app.assets and GUIDs present', ok: false }] };
     const wav = tinyWav();
-    installMemoryPack(
+    await installMemoryPack(
       assets,
       [
         {
@@ -65,14 +64,14 @@ export default defineFeature({
       ],
       'https://feature-lab.invalid/asset-formats/audio.pack.json',
     );
-    const first = await assets.loadByGuid<AudioClipAsset>(parsed.value);
+    const first = await assets.load(parsed.value, 'audio');
     checks.push({
       name: 'audio row loads',
       ok: first.ok,
       ...(first.ok ? {} : { detail: errorCode(first.error) }),
     });
     if (first.ok) {
-      const clip = first.value;
+      const clip = assets.read(first.value).unwrap();
       checks.push({
         name: 'sourceKey is the GUID',
         ok: clip.sourceKey === CLIP,
@@ -84,10 +83,10 @@ export default defineFeature({
         ok: !clip.stream && clip.bytes.byteLength === wav.byteLength && clip.bytes[0] === 0x52,
         detail: clip.stream ? 'unexpected streaming clip' : `${clip.bytes.byteLength}B`,
       });
-      const second = await assets.loadByGuid<AudioClipAsset>(parsed.value);
-      checks.push({ name: 'second load is cached', ok: second.ok && second.value === clip });
+      const second = await assets.load(parsed.value, 'audio');
+      checks.push({ name: 'second load is cached', ok: second.ok && second.value === first.value });
     }
-    const missing = await assets.loadByGuid<AudioClipAsset>(unknown.value);
+    const missing = await assets.load(unknown.value, 'audio');
     checks.push({
       name: 'unknown GUID fails',
       ok: !missing.ok,

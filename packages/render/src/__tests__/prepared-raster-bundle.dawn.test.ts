@@ -5,6 +5,7 @@ import {
   type PreparedRasterBindings,
   PreparedRasterBundleCache,
   type PreparedRasterCounters,
+  PreparedRasterPassCache,
   recordPreparedRaster,
 } from '../gpu-driven/prepared-raster-bundle';
 import { nativeDeviceFixture } from './native-device-fixture';
@@ -75,6 +76,7 @@ it('matches direct native pixels for 60 frames across uploads, ranges, attachmen
     const readback = allocate(256 * 16, 1 | 8);
     const pipelines = new Map<TextureFormat, RenderPipeline>();
     const cache = new PreparedRasterBundleCache();
+    const passes = new PreparedRasterPassCache();
     const counters: PreparedRasterCounters = { hits: 0, builds: 0, commands: 0, evictions: 0 };
     let previousPixels: Uint8Array | undefined;
     let changedPixels = 0;
@@ -134,11 +136,15 @@ it('matches direct native pixels for 60 frames across uploads, ranges, attachmen
               },
             ],
           });
-          if (cached)
-            pass.executeBundles([
-              cache.resolve(format, device, { colorFormats: [format] }, [bindings], counters),
-            ]);
-          else recordPreparedRaster(pass, bindings);
+          if (cached) {
+            const recording = cache.begin(
+              passes.prepare('native', { colorFormats: [format] }),
+              device,
+              counters,
+            );
+            recording.push(bindings);
+            pass.executeBundles([recording.finish()]);
+          } else recordPreparedRaster(pass, bindings);
           pass.end();
           encoder.copyTextureToBuffer(
             { texture: target },

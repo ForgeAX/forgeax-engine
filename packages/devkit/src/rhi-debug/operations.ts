@@ -33,6 +33,7 @@ import {
   type WorkOutput,
   workOutputs,
 } from '@forgeax/engine-rhi-debug';
+import type { ToolJsonSchema } from '@forgeax/engine-tool-runtime';
 import { ok, type Result } from '@forgeax/engine-types';
 import type { CommandError, CommandResult } from '../types.js';
 
@@ -223,37 +224,21 @@ export function createRhiDebugOperationContext(
   };
 }
 
-type JsonSchemaType = 'object' | 'string' | 'integer' | 'number' | 'array' | 'boolean';
-
-export interface JsonSchema {
-  readonly type: JsonSchemaType | readonly JsonSchemaType[];
-  readonly description?: string;
-  readonly properties?: Readonly<Record<string, JsonSchema>>;
-  readonly required?: readonly string[];
-  readonly items?: JsonSchema;
-  readonly enum?: readonly string[];
-  readonly minimum?: number;
-  readonly maximum?: number;
-  readonly minItems?: number;
-  readonly maxItems?: number;
-  readonly additionalProperties?: boolean;
-}
-
 export interface RhiDebugOperationDescriptor {
   readonly name: RhiDebugOperationName;
   readonly summary: string;
-  readonly inputSchema: JsonSchema;
-  readonly outputSchema: JsonSchema;
+  readonly inputSchema: ToolJsonSchema;
+  readonly outputSchema: ToolJsonSchema;
   readonly recoveryCodes: readonly string[];
 }
 
 export interface RhiDebugOperationManifest {
   readonly schemaVersion: '1.0.0';
-  readonly artifactRefSchema: JsonSchema;
+  readonly artifactRefSchema: ToolJsonSchema;
   readonly operations: readonly RhiDebugOperationDescriptor[];
 }
 
-const artifactRefSchema: JsonSchema = {
+const artifactRefSchema: ToolJsonSchema = {
   type: 'object',
   properties: {
     kind: { type: 'string', enum: [RHI_TAPE_ARTIFACT_KIND] },
@@ -265,7 +250,7 @@ const artifactRefSchema: JsonSchema = {
   additionalProperties: false,
 };
 
-const summaryOutputSchema: JsonSchema = {
+const summaryOutputSchema: ToolJsonSchema = {
   type: 'object',
   properties: {
     artifact: artifactRefSchema,
@@ -275,7 +260,7 @@ const summaryOutputSchema: JsonSchema = {
   additionalProperties: false,
 };
 
-const inspectOutputSchema: JsonSchema = {
+const inspectOutputSchema: ToolJsonSchema = {
   type: 'object',
   properties: {
     artifact: artifactRefSchema,
@@ -286,7 +271,7 @@ const inspectOutputSchema: JsonSchema = {
   additionalProperties: false,
 };
 
-const recordLayoutSchema: JsonSchema = {
+const recordLayoutSchema: ToolJsonSchema = {
   type: 'object',
   properties: {
     stride: { type: 'integer', minimum: 4, maximum: 65536 },
@@ -309,7 +294,7 @@ const recordLayoutSchema: JsonSchema = {
   additionalProperties: false,
 };
 
-const recordsSchema: JsonSchema = {
+const recordsSchema: ToolJsonSchema = {
   type: 'object',
   properties: {
     layout: recordLayoutSchema,
@@ -345,7 +330,7 @@ export const RHI_INSPECT_INPUT_SCHEMA = {
   additionalProperties: false,
 } as const;
 
-const readImageSchema: JsonSchema = {
+const readImageSchema: ToolJsonSchema = {
   type: 'object',
   properties: {
     format: { type: 'string' },

@@ -51,7 +51,7 @@ it('captures a shared delivered dependency once across all admission roots', asy
     };
   });
   const reads = new Map<string, number>();
-  const assets = new AssetRegistry({} as never);
+  const assets = new AssetRegistry({ shaderRegistry: {} as never });
   const assembly = createAssetRuntimeAssembly(assets, {
     catalogSource: createCatalogSource({ entries: records.map((record) => record.row) }),
     fetcher: async (input) => {
@@ -147,7 +147,7 @@ it.each([
       }),
     ),
   );
-  const assets = new AssetRegistry({} as never);
+  const assets = new AssetRegistry({ shaderRegistry: {} as never });
   const assembly = createAssetRuntimeAssembly(assets, {
     catalogSource: createCatalogSource({ entries: [] }),
   }).unwrap();
@@ -173,7 +173,7 @@ it.each([
 });
 
 it('keeps runtime programs in the asset provider and mounts roots after independent game readiness', async () => {
-  const assets = new AssetRegistry({} as never);
+  const assets = new AssetRegistry({ shaderRegistry: {} as never });
   const base = createCatalogSource({ entries: [] });
   let enumerations = 0;
   const assembly = createAssetRuntimeAssembly(assets, {
@@ -312,7 +312,7 @@ it('preserves structured root mount failures through Cordis startup', async () =
 });
 
 it('keeps a shared tool executor until the last restored plugin publication withdraws', async () => {
-  const assets = new AssetRegistry({} as never);
+  const assets = new AssetRegistry({ shaderRegistry: {} as never });
   const assembly = createAssetRuntimeAssembly(assets, {
     catalogSource: createCatalogSource({ entries: [] }),
   }).unwrap();
@@ -497,7 +497,7 @@ it.each([
       generation: defined(yRow.publication).generation + (version === 'changed' ? 1 : 0),
     },
   };
-  const assets = new AssetRegistry({} as never);
+  const assets = new AssetRegistry({ shaderRegistry: {} as never });
   let currentRows = [...siblings.rows, ...left.rows, ...(version === 'missing' ? [] : [externalY])];
   let emit: ((delta: import('@forgeax/engine-types').CatalogDelta) => void) | undefined;
   const assembly = createAssetRuntimeAssembly(assets, {
@@ -580,7 +580,7 @@ it.each([
 it('reconciles a recoverable stale Catalog before validating a new runtime publication', async () => {
   let changed: ((delta: import('@forgeax/engine-types').CatalogDelta) => void) | undefined;
   let enumerations = 0;
-  const assets = new AssetRegistry({} as never);
+  const assets = new AssetRegistry({ shaderRegistry: {} as never });
   const assembly = createAssetRuntimeAssembly(assets, {
     catalogSource: {
       enumerate: async () => {
@@ -679,7 +679,7 @@ it('captures one plugin execution projection for an entire dependency batch', as
       ]),
     ),
   };
-  const assets = new AssetRegistry({} as never);
+  const assets = new AssetRegistry({ shaderRegistry: {} as never });
   let reads = 0;
   const assembly = createAssetRuntimeAssembly(assets, {
     catalogSource: createCatalogSource({ entries: records.map((record) => record.row) }),
@@ -747,7 +747,7 @@ it('joins the pending delivered baseline when the runtime Pack overlay replaces 
     await held;
     return new CatalogResponse('[]');
   });
-  const assets = new AssetRegistry({} as never);
+  const assets = new AssetRegistry({ shaderRegistry: {} as never });
   const assembly = createAssetRuntimeAssembly(assets, {
     catalogSource: createCatalogSource({
       url: 'https://delivered.invalid/pack-index.json',

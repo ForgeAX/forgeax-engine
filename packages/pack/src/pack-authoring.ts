@@ -1,6 +1,11 @@
 import type { Asset, AssetGuid, Result } from '@forgeax/engine-types';
 import { err, isValidAssetGuidString, ok } from '@forgeax/engine-types';
 import { AssetGuid as AssetGuidCodec, isValidPackSourceKey, PackageId } from './guid.js';
+import type {
+  PackDraftRequest,
+  PackDraftSnapshot,
+  PackDraftUpdate,
+} from './pack-authoring-draft.js';
 import {
   lowerPluginConfig,
   type PluginAssetSource,
@@ -12,20 +17,6 @@ import { isScriptablePackField } from './scriptable-pack-wire.js';
 /** Values deliberately stay finite and serialisable at the authoring boundary. */
 export type PackParameterScalar = boolean | number | string;
 export type PackParameterValue = PackParameterScalar | readonly number[] | AssetGuid;
-
-export type PackParameterType =
-  | 'bool'
-  | 'u32'
-  | 'i32'
-  | 'f32'
-  | 'f64'
-  | 'string'
-  | 'enum'
-  | 'vec2'
-  | 'vec3'
-  | 'vec4'
-  | 'color'
-  | 'asset-guid';
 
 export const PACK_PARAMETER_TYPES = [
   'bool',
@@ -40,7 +31,9 @@ export const PACK_PARAMETER_TYPES = [
   'vec4',
   'color',
   'asset-guid',
-] as const satisfies readonly PackParameterType[];
+] as const;
+
+export type PackParameterType = (typeof PACK_PARAMETER_TYPES)[number];
 
 export interface PackParameterDefinition<
   TName extends string = string,
@@ -56,7 +49,17 @@ export interface PackParameterDefinition<
   readonly values?: readonly PackParameterScalar[];
   /** Optional authoring-only kind constraint for asset GUID parameters. */
   readonly kind?: Asset['kind'];
+  /** Omitted/build preserves generation input; a binding fills an output field after generation. */
+  readonly apply?: 'build' | PackParameterBinding;
 }
+
+export interface PackParameterBinding {
+  readonly asset: string;
+  readonly path: readonly string[];
+}
+
+export type PackBuildParameterValues<T extends readonly PackParameterDefinition[]> =
+  PackParameterValues<Exclude<T[number], { readonly apply: PackParameterBinding }>[]>;
 
 export type PackParameterValueFor<T extends PackParameterType> = T extends 'bool'
   ? boolean
@@ -390,7 +393,7 @@ function parameterValueError(
   );
 }
 
-function normalizeParameterValue(
+export function normalizeParameterValue(
   parameter: PackParameterDefinition,
   value: unknown,
   propertyPath: string,
@@ -414,7 +417,7 @@ function normalizeParameterValue(
   return ok(cloneValue(value as PackParameterValue));
 }
 
-function validateParameterDefinitions(
+export function validateParameterDefinitions(
   parameters: unknown,
   propertyPath = '$.parameters',
 ): Result<readonly PackParameterDefinition[], PackAuthoringError> {
@@ -463,13 +466,14 @@ function validateParameterDefinitions(
       );
     names.add(name);
     const unknown = Object.keys(candidate).find(
-      (key) => !['name', 'type', 'default', 'minimum', 'maximum', 'values', 'kind'].includes(key),
+      (key) =>
+        !['name', 'type', 'default', 'minimum', 'maximum', 'values', 'kind', 'apply'].includes(key),
     );
     if (unknown !== undefined) {
       return failure(
         parameterFailure(
           `${path}.${unknown}`,
-          'only name, type, default, minimum, maximum, values, and kind fields',
+          'only name, type, default, minimum, maximum, values, kind, and apply fields',
           candidate[unknown],
           'parameter descriptors are a closed authoring schema',
         ),
@@ -491,6 +495,49 @@ function validateParameterDefinitions(
       name,
       type: type as PackParameterType,
     } as PackParameterDefinition;
+    const apply = candidate.apply;
+    if (apply !== undefined && apply !== 'build') {
+      if (
+        !isRecord(apply) ||
+        Object.keys(apply).some((key) => key !== 'asset' && key !== 'path') ||
+        typeof apply.asset !== 'string' ||
+        !isValidPackSourceKey(apply.asset) ||
+        !Array.isArray(apply.path) ||
+        apply.path.length === 0 ||
+        apply.path.length > 32 ||
+        apply.path.some(
+          (part) =>
+            typeof part !== 'string' ||
+            part.length === 0 ||
+            ['__proto__', 'prototype', 'constructor'].includes(part),
+        )
+      ) {
+        return failure(
+          parameterFailure(
+            `${path}.apply`,
+            'build or a safe { asset, path } binding',
+            apply,
+            'invalid live parameter binding',
+          ),
+        );
+      }
+      const bindingPath = apply.path;
+      for (const previous of normalized) {
+        const target = previous.apply;
+        if (target === undefined || target === 'build' || target.asset !== apply.asset) continue;
+        const length = Math.min(target.path.length, apply.path.length);
+        if (target.path.slice(0, length).every((part, index) => part === bindingPath[index])) {
+          return failure(
+            parameterFailure(
+              `${path}.apply`,
+              'disjoint live parameter paths',
+              apply,
+              `binding overlaps parameter ${previous.name}`,
+            ),
+          );
+        }
+      }
+    }
     if (typed.values !== undefined) {
       if (
         typed.type !== 'enum' ||
@@ -569,6 +616,14 @@ function validateParameterDefinitions(
       ...typed,
       default: defaultResult.value,
       ...(typed.values === undefined ? {} : { values: Object.freeze([...typed.values]) }),
+      ...(typed.apply === undefined || typed.apply === 'build'
+        ? {}
+        : {
+            apply: Object.freeze({
+              asset: typed.apply.asset,
+              path: Object.freeze([...typed.apply.path]),
+            }),
+          }),
     });
   }
   return ok(Object.freeze(normalized));
@@ -586,7 +641,7 @@ export interface PackBuildContextWithParameters<
   TParameters extends readonly PackParameterDefinition[],
 > extends PackBuildReadContext {
   readonly packageId: PackageId;
-  readonly values: PackParameterValues<TParameters>;
+  readonly values: PackBuildParameterValues<TParameters>;
 }
 
 export type PackBuildContext<TParameters extends readonly PackParameterDefinition[] | undefined> =
@@ -616,6 +671,8 @@ interface PackDefinitionBase {
   readonly schemaVersion: '2.0.0';
   readonly packageId: PackageId;
   readonly name?: string;
+  /** Opt in when this source can produce plugins during source-only bootstrap. */
+  readonly plugins?: true;
   readonly runtime?: ScriptablePackRuntime;
   /** Neutral component schemas used only to externalize SceneAsset refs at cook time. */
   readonly sceneComponents?: readonly ScriptablePackSceneComponentInput[];
@@ -734,6 +791,7 @@ export interface ScriptablePackSourceMeta {
   readonly kind: 'scriptable-pack-source';
   readonly packageId: string;
   readonly source: string;
+  readonly plugins?: true;
   readonly parameters?: readonly Readonly<Record<string, unknown>>[];
   readonly runtime?: ScriptablePackRuntime;
 }
@@ -748,6 +806,7 @@ export function projectScriptablePackMeta(
     kind: 'scriptable-pack-source',
     packageId: PackageId.format(definition.packageId),
     source: sourcePath,
+    ...(definition.plugins === true ? { plugins: true as const } : {}),
     ...(definition.runtime === undefined
       ? {}
       : {
@@ -763,6 +822,7 @@ export function projectScriptablePackMeta(
             ...(parameter.maximum === undefined ? {} : { maximum: parameter.maximum }),
             ...(parameter.values === undefined ? {} : { values: parameter.values }),
             ...(parameter.kind === undefined ? {} : { kind: parameter.kind }),
+            ...(parameter.apply === undefined ? {} : { apply: parameter.apply }),
           })),
         }
       : {}),
@@ -790,7 +850,7 @@ export function validatePackDefinition(
     return failure(
       parameterFailure(
         `$.${unknown}`,
-        'only schemaVersion, packageId, name, parameters, sceneComponents, runtime, and build fields',
+        'only schemaVersion, packageId, name, plugins, parameters, sceneComponents, runtime, and build fields',
         value[unknown],
         'legacy static output declarations and external asset tables are not part of v2 authoring',
       ),
@@ -822,6 +882,15 @@ export function validatePackDefinition(
       parameterFailure('$.name', 'a string when present', value.name, 'display name is malformed'),
     );
   }
+  if (value.plugins !== undefined && value.plugins !== true)
+    return failure(
+      parameterFailure(
+        '$.plugins',
+        'the literal true when a Pack produces plugins',
+        value.plugins,
+        'plugin production is an explicit capability',
+      ),
+    );
   if (typeof value.build !== 'function') {
     return failure(
       parameterFailure('$.build', 'a build function', value.build, 'build is not callable'),
@@ -860,6 +929,7 @@ export function validatePackDefinition(
         schemaVersion: '2.0.0',
         packageId: value.packageId,
         ...(value.name === undefined ? {} : { name: value.name }),
+        ...(value.plugins === true ? { plugins: true as const } : {}),
         ...(runtime === undefined ? {} : { runtime }),
         ...(sceneComponents.value === undefined ? {} : { sceneComponents: sceneComponents.value }),
         build: value.build,
@@ -873,18 +943,13 @@ export function validatePackDefinition(
       schemaVersion: '2.0.0',
       packageId: value.packageId,
       ...(value.name === undefined ? {} : { name: value.name }),
+      ...(value.plugins === true ? { plugins: true as const } : {}),
       ...(runtime === undefined ? {} : { runtime }),
       ...(sceneComponents.value === undefined ? {} : { sceneComponents: sceneComponents.value }),
       parameters: parameters.value,
       build: value.build,
     }) as ScriptablePackDefinition<NonEmptyParameters>,
   );
-}
-
-export function hasPackParameters(
-  value: ScriptablePackDefinition | unknown,
-): value is ScriptablePackDefinition<NonEmptyParameters> {
-  return isRecord(value) && Array.isArray(value.parameters) && value.parameters.length > 0;
 }
 
 /** Resolve defaults plus a sparse instance override with shallow replacement. */
@@ -1390,11 +1455,15 @@ export const PACK_AUTHORING_OPERATION_IDS = [
   'asset.source.values.apply',
   'asset.source.rebuild',
   'asset.source.cold-cook',
+  'asset.source.draft',
 ] as const;
 
 export type PackAuthoringOperationId = (typeof PACK_AUTHORING_OPERATION_IDS)[number];
 
 export interface PackAuthoringOperation {
+  /** Inspect only editable .pack.ts declarations; no inventory, module execution or generation. */
+  readonly parametersOnly?: boolean;
+  readonly draft?: PackDraftRequest;
   readonly requestId: string;
   readonly expectedRevision?: string;
   readonly operation: PackAuthoringOperationId;
@@ -1422,6 +1491,7 @@ export interface PackAuthoringOperation {
 export type PackAuthoringResolutionStatus = 'identity' | 'present' | 'ready';
 
 export interface PackAuthoringOperationResult {
+  readonly draft?: PackDraftSnapshot | PackDraftUpdate | { readonly closed: string };
   readonly operation: PackAuthoringOperationId;
   readonly requestId: string;
   readonly schemaVersion?: 'asset-verification-v1';
@@ -1482,6 +1552,7 @@ export interface PackAuthoringOperationResult {
 
 export interface PackAuthoringGatewayPort<TResult = unknown> {
   execute(operation: PackAuthoringOperation): Promise<Result<TResult, PackAuthoringError>>;
+  dispose?(): void;
 }
 
 /** One idempotent gateway wrapper shared by Editor and CLI adapters. */
@@ -1557,13 +1628,21 @@ export function createPackAuthoringGateway<TResult = unknown>(
       requests.set(operation.requestId, { fingerprint, result });
       return result;
     },
+    ...(port.dispose === undefined
+      ? {}
+      : {
+          dispose() {
+            requests.clear();
+            port.dispose?.();
+          },
+        }),
   };
 }
 
 export const PACK_AUTHORING_OPERATION_DESCRIPTORS = PACK_AUTHORING_OPERATION_IDS.map((id) => ({
   id,
   domain: id.startsWith('asset.source.') ? 'session' : 'asset',
-  readOnly: id.startsWith('asset.'),
+  readOnly: id !== 'asset.source.draft' && id.startsWith('asset.'),
   requiresRevision: !id.startsWith('asset.') && id !== 'asset.source.create',
 })) as readonly {
   id: PackAuthoringOperationId;

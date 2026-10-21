@@ -1,5 +1,10 @@
 # @forgeax/engine-import
 
+A registered importer may emit ordinary engine asset kinds such as `texture` or
+`mesh`. Catalog projection records the declared schema and GUID; it does not grant
+the importer ownership of the runtime kind. The existing domain decoder validates
+the complete cooked output before runtime adoption.
+
 ## Authoring and recovery index
 
 ## 灯光资产 producer 入口
@@ -171,6 +176,10 @@ and source/reference validation remain in effect.
 Source path projection preserves nested imports: `assets/original/assets/ui.pack.ts`
 and `assets/cloned/assets/ui.pack.ts` remain distinct in both development and build
 publications. Re-projecting an already-relative path must preserve its first asset root.
+`projectPackBuildCatalog` owns the cooked output rows for both paths: staged semantic
+keys join by GUID, while source indices, references, package identity and producer
+provenance derive from the same completed Pack product. Hosts append their own
+publication receipts and revisions after this projection.
 
 Build-time asset **import** runner + `ImporterRegistry` — the build-time half of
 the engine's import/load split.
@@ -214,6 +223,11 @@ source and fixed recipes remain durable; cache entries remain disposable.
 `admit` and `generate` return `RuntimePackPublicationReceipt`: identity, status,
 publication evidence and Catalog rows. They do not copy the full source or mesh
 into every operation result. Use `snapshot` or `exportSource` for original data.
+Content-derived publication generations and repeated receipts remain stable.
+Each producer owns one fresh Catalog root and advances its revision only when a
+publication commits; its snapshot rows and incremental windows carry that order.
+Reconstructing a producer starts a new root without changing fixed publication
+identities. These live counters are not saved recipes or caller-maintained versions.
 App injects the actual consuming Registry for private candidate preparation.
 Native Mesh publications reuse domain payloads for same-realm GUID loading;
 `openPackage` encodes the ordinary mesh binary only when a transport reader asks
@@ -432,11 +446,12 @@ Material, Mesh, and Scene producers. Material output derives
 parent/texture/sampler refs. Material texture references serialize as
 `{ texture: refsIndex, sampler?: refsIndex }`, including GUID string shorthand;
 bare numeric values remain scalars in children without a local parameter schema.
-Mesh output derives default-material refs. Its `mesh-binary/6` producer emits
+Mesh output derives default-material refs. Its `mesh-binary/7` producer emits
 the `mesh-binary/5` body and admitted distance-field sidecars; the alternative
 data producer is `mesh-data/2`. These producer versions invalidate cached
-publications when the distance-field contract changes, without changing the Mesh
-body codec. Scene output uses the definition-bound neutral schema
+publications when the output contract changes, without changing the Mesh
+body codec. The binary body owns geometry; its JSON payload carries only kind
+and optional distance-field metadata. Scene output uses the definition-bound neutral schema
 through the shared ECS externalization contract. A specialized host may instead
 register only the admitted kinds:
 
@@ -475,8 +490,7 @@ without a source returns structured `asset-not-found`; no empty snapshot or
 stale content is invented. Production Vite hosts provide the staged generation
 source described above.
 
-`ImporterRegistry` mirrors the runtime `LoaderRegistry` and the Console
-`Registry`: `register(importer)` (fail-fast on a malformed importer, idempotent
+`ImporterRegistry` owns build-time producer dispatch: `register(importer)` (fail-fast on a malformed importer, idempotent
 on a repeated key) + `get(key)` (returns `undefined`, which the runner maps to a
 structured `ImportError(code='importer-not-registered')`).
 
@@ -557,10 +571,15 @@ Result boundary. A digest-capability refusal during CookProduct finalization
 does not publish a partial product; repair that capability and retry the same
 Meta/GUID through the same `ImporterRegistry`.
 
+Successful source-package publication projects Catalog revisions from the head
+accepted by its DDC commit. It does not reread a later writer's head or repeat
+the complete entry validation; stale-owner recovery and transport rollback
+retain their existing fences.
+
 ### Source-format LOD adapters
 
-FBX and glTF producers pass `MeshLodMetaEntry` values directly to
-`reconcileMeshLodMeta(previous, next)`. That owner preserves source-key/GUID
+FBX and glTF producers pass the retained sidecar plus next `MeshLodMetaEntry` values
+directly to `reconcileMeshLodMeta(previous, next)`. That owner preserves source-key/GUID
 identity, prior authored coverage and shared first-import defaults; both formats
 use `meshGuid` throughout this projection.
 
@@ -591,6 +610,8 @@ adapter; a shipped bundle must carry its build-time product and keeps
 `asset-not-imported` fail-fast semantics.
 
 ## Mesh LOD normalization and recovery
+
+`reconcileMeshLodMeta` reads the retained sidecar value directly. Both glTF and FBX use its admission policy: non-array values and entries without string source keys/GUIDs contribute no retained fact; numeric coverage still passes through the existing LOD contract validation.
 
 The shared helper in `src/mesh-lod.ts` owns validation, default coverage, and
 prefix-stable reimport. For `n` lower levels, first-import defaults are derived
@@ -733,7 +754,7 @@ const generated = (await generateMeshLods(sourceMesh, {
 The caller supplies stable GUIDs through the existing source-key identity route.
 Publish the root and all generated siblings atomically through the ordinary
 Pack production path. The Mesh producer emits the root's lower-level refs and
-mesh-binary v5 artifacts; Catalog and `loadByGuid` consume them unchanged.
+mesh-binary v5 artifacts; Catalog and `assets.load(guid, 'mesh')` consume them.
 For ScriptablePack, declare the same output keys and return the root and siblings
 from `build`. Generation never allocates GUIDs, writes source, or changes the input.
 
@@ -916,3 +937,31 @@ mesh GUID and dependency closure. Scriptable Packs can invoke this kernel or
 Binary16 output uses the Math codec, including rounded mantissa carry into the
 next exponent. Source parsing, LUT channel order, IES normalization and GUIDs
 remain owned by their existing producers.
+
+Producer payload typing derives unchanged kinds from the Asset union and lists
+only serialized overrides explicitly. Product payload, reference and artifact
+fields derive from ImportedAsset; runtime Assets still never carry ref indices.
+
+### Small mesh transport chunks
+
+`FORGEAX_BUNDLE_SMALL_MESHES` opts a production build into physical mesh
+bundling. Unset, empty, or `0` disables it; `1` selects all source publications;
+any other nonempty value selects a project-relative source-path prefix. Prefer
+a measured source family over a global opt-in: unrelated consumers can have
+different read orders and transfer costs. Asset GUIDs, payloads, refs, codecs and individual
+integrity facts remain unchanged.
+
+| Constraint | Value |
+| :-- | --: |
+| Eligible identity-encoded mesh artifact | At most 8 KiB |
+| Stored container | At most 64 KiB |
+| Minimum members per container | 4 |
+| Private runtime container cache | 4 MiB, at most 256 entries |
+
+Chunks follow the producer's asset order. A loader should read in that order to
+avoid redundant transfers when its working set exceeds the cache. Each range
+retains individual integrity and declares a complete container digest. Runtime
+admission verifies the container once, verifies each logical artifact, and gives
+each decoder a private window. Memory pressure and source disposal release
+completed chunk bytes. Fixed publication capture retains complete containers
+for portable replay.

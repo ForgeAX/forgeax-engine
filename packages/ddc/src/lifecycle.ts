@@ -33,13 +33,24 @@ export interface DdcCurrentEntry {
   readonly entry: DdcEntry | null;
 }
 
-export interface DdcCommitResult {
-  readonly result: 'current' | 'stale' | 'lease-lost' | 'invalid';
-  readonly key: string;
-  readonly revision?: number;
-  /** Internal CAS evidence retained for a later generation rollback. */
-  readonly restoreFence?: DdcRestoreFence;
-}
+export type DdcCommitResult =
+  | {
+      readonly result: 'current';
+      /** The head accepted by this CAS, independent of later writers. */
+      readonly head: DdcHead;
+      readonly restoreFence: DdcRestoreFence;
+    }
+  | {
+      readonly result: 'invalid';
+      readonly key: string;
+      readonly revision: number;
+      readonly restoreFence: DdcRestoreFence;
+    }
+  | {
+      readonly result: 'stale' | 'lease-lost';
+      readonly key: string;
+      readonly revision: number;
+    };
 
 export interface DdcRestoreFence {
   readonly attempt: string;
@@ -99,19 +110,6 @@ function headFile(heads: string, guid: string): string {
 
 function lockFile(root: string, name: string): string {
   return join(root, 'locks', `${encodeURIComponent(name)}.lock`);
-}
-
-function withRevision(
-  result: Omit<DdcCommitResult, 'revision'>,
-  revision: number,
-  restoreFence?: DdcRestoreFence,
-): DdcCommitResult {
-  const value = { ...result } as DdcCommitResult;
-  Object.defineProperty(value, 'revision', { value: revision, enumerable: false });
-  if (restoreFence !== undefined) {
-    Object.defineProperty(value, 'restoreFence', { value: restoreFence, enumerable: false });
-  }
-  return value;
 }
 
 async function delay(ms: number): Promise<void> {
@@ -363,9 +361,9 @@ export class DdcLifecycle {
       if (current === null || active === undefined || active.attempt !== lease.attempt) {
         if (current?.supersededAttempts?.includes(lease.attempt)) {
           await this.write({ ...current, stale: true });
-          return withRevision({ result: 'stale', key: validatedKey }, current.revision);
+          return { result: 'stale', key: validatedKey, revision: current.revision };
         }
-        return withRevision({ result: 'lease-lost', key: validatedKey }, current?.revision ?? 0);
+        return { result: 'lease-lost', key: validatedKey, revision: current?.revision ?? 0 };
       }
       // The persisted active lease is the authority. The caller may still hold
       // an older token while a session heartbeat has already refreshed the
@@ -389,7 +387,7 @@ export class DdcLifecycle {
         validatedKey !== lease.desiredKey
       ) {
         await this.write({ ...current, stale: true });
-        return withRevision({ result: 'stale', key: validatedKey }, current.revision);
+        return { result: 'stale', key: validatedKey, revision: current.revision };
       }
       if (entry === null || entry.guid !== lease.guid || entry.receipt.key !== validatedKey) {
         const nextRevision = current.revision + 1;
@@ -411,24 +409,29 @@ export class DdcLifecycle {
             : { supersededAttempts: current.supersededAttempts }),
           failure,
         });
-        return withRevision({ result: 'invalid', key: validatedKey }, nextRevision, {
-          attempt: lease.attempt,
-          generation: lease.generation,
+        return {
+          result: 'invalid',
+          key: validatedKey,
           revision: nextRevision,
-          desiredKey: lease.desiredKey,
-          outcome: 'invalid',
-          ...(current.lastKnownGoodKey === undefined
-            ? {}
-            : { lastKnownGoodKey: current.lastKnownGoodKey }),
-          failure: { code: failure.code, detail: failure.detail },
-        });
+          restoreFence: {
+            attempt: lease.attempt,
+            generation: lease.generation,
+            revision: nextRevision,
+            desiredKey: lease.desiredKey,
+            outcome: 'invalid',
+            ...(current.lastKnownGoodKey === undefined
+              ? {}
+              : { lastKnownGoodKey: current.lastKnownGoodKey }),
+            failure: { code: failure.code, detail: failure.detail },
+          },
+        };
       }
       const lastKnownGoodKey =
         current.currentKey !== undefined && current.currentKey !== validatedKey
           ? current.currentKey
           : current.lastKnownGoodKey;
       const nextRevision = current.revision + 1;
-      await this.write({
+      const accepted = {
         guid: lease.guid,
         desiredKey: lease.desiredKey,
         revision: nextRevision,
@@ -439,17 +442,30 @@ export class DdcLifecycle {
           ? {}
           : { supersededAttempts: current.supersededAttempts }),
         ...(lastKnownGoodKey === undefined ? {} : { lastKnownGoodKey }),
-      });
-      return withRevision({ result: 'current', key: validatedKey }, nextRevision, {
-        attempt: lease.attempt,
-        generation: lease.generation,
-        revision: nextRevision,
-        desiredKey: lease.desiredKey,
-        outcome: 'current',
-        key: validatedKey,
-        currentKey: validatedKey,
-        ...(lastKnownGoodKey === undefined ? {} : { lastKnownGoodKey }),
-      });
+      } satisfies HeadRecord;
+      await this.write(accepted);
+      return {
+        result: 'current',
+        head: {
+          guid: accepted.guid,
+          desiredKey: accepted.desiredKey,
+          state: 'current',
+          currentKey: accepted.currentKey,
+          lastKnownGoodKey: accepted.lastKnownGoodKey,
+          revision: accepted.revision,
+          generation: accepted.generation,
+        },
+        restoreFence: {
+          attempt: lease.attempt,
+          generation: lease.generation,
+          revision: nextRevision,
+          desiredKey: lease.desiredKey,
+          outcome: 'current',
+          key: validatedKey,
+          currentKey: validatedKey,
+          ...(lastKnownGoodKey === undefined ? {} : { lastKnownGoodKey }),
+        },
+      };
     });
   }
 

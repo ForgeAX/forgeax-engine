@@ -1,3 +1,5 @@
+import { AssetRegistry } from '@forgeax/engine-assets-runtime';
+import { audioContribution } from '@forgeax/engine-audio';
 import { testPlatform } from './platform-fixture';
 // feat-20260612-rhi-destroy-renderer-dispose-gpu-lifecycle / M6 / w22.
 //
@@ -460,14 +462,17 @@ describe('feat-20260619 M3: auto-register audioTickSystem', () => {
       const rafStub = installRafStub();
 
       try {
-        const world = new World();
-
-        // Alloc a clip handle so clipResolver can resolve it.
-        const clipHandle = world.sharedRefs.alloc('AudioClipAsset', {
-          kind: 'audio',
-          sourceKey: 'stop-fixture-a',
-          bytes: new Uint8Array([1]),
-        });
+        const assets = new AssetRegistry();
+        assets.installDecoder(audioContribution.kind, audioContribution.decoder);
+        const world = new World({ assets });
+        const clipHandle = assets
+          .create({
+            kind: 'audio',
+            sourceKey: 'stop-fixture-a',
+            mediaType: 'audio/wav',
+            bytes: new Uint8Array([1]),
+          })
+          .unwrap();
 
         // Spawn entity with playing=false. After frame 1, turn playing=true
         // to produce a false→true edge on frame 2.
@@ -491,16 +496,13 @@ describe('feat-20260619 M3: auto-register audioTickSystem', () => {
         const playSpy = vi.spyOn(backend, 'play');
 
         const { renderer } = makeRendererStubForStop();
-        // Attach sharedRefs as renderer.assets so buildApp inserts
-        // ASSET_REGISTRY_RESOURCE_KEY (clipResolver reads world.sharedRefs
-        // directly though, so this is primarily for buildApp coverage).
-        const rendererWithAssets = { ...renderer, assets: world.sharedRefs } as unknown as Renderer;
         // New assemble contract (D-2 / D-4): host inserts the audio backend
         // resource + passes audioPlugin() in the plugin list. audioPlugin reads
         // the resource and registers the audio-tick world system.
         const result = await createApp({
           platform: testPlatform(),
-          renderer: rendererWithAssets,
+          renderer,
+          assets,
           world,
           plugins: [audioBackendPlugin(createWebAudioBackend(backend)), audioPlugin()],
         });
@@ -548,12 +550,17 @@ describe('feat-20260619 M3: auto-register audioTickSystem', () => {
       const rafStub = installRafStub();
 
       try {
-        const world = new World();
-        const clipHandle = world.sharedRefs.alloc('AudioClipAsset', {
-          kind: 'audio',
-          sourceKey: 'stop-fixture-b',
-          bytes: new Uint8Array([2]),
-        });
+        const assets = new AssetRegistry();
+        assets.installDecoder(audioContribution.kind, audioContribution.decoder);
+        const world = new World({ assets });
+        const clipHandle = assets
+          .create({
+            kind: 'audio',
+            sourceKey: 'stop-fixture-b',
+            mediaType: 'audio/wav',
+            bytes: new Uint8Array([2]),
+          })
+          .unwrap();
         world.spawn({
           // biome-ignore lint/suspicious/noExplicitAny: handle type is opaque branded via alloc
           component: AudioSource as any,
@@ -615,12 +622,17 @@ describe('feat-20260619 M3: auto-register audioTickSystem', () => {
       const rafStub = installRafStub();
 
       try {
-        const world = new World();
-        const clipHandle = world.sharedRefs.alloc('AudioClipAsset', {
-          kind: 'audio',
-          sourceKey: 'stop-fixture-c',
-          bytes: new Uint8Array([3]),
-        });
+        const assets = new AssetRegistry();
+        assets.installDecoder(audioContribution.kind, audioContribution.decoder);
+        const world = new World({ assets });
+        const clipHandle = assets
+          .create({
+            kind: 'audio',
+            sourceKey: 'stop-fixture-c',
+            mediaType: 'audio/wav',
+            bytes: new Uint8Array([3]),
+          })
+          .unwrap();
 
         // Spawn entity with playing=false so first frame walks the
         // archetype without attempting to play — the key assertion is
@@ -640,12 +652,12 @@ describe('feat-20260619 M3: auto-register audioTickSystem', () => {
 
         const backend = new WebAudioEngine();
         const { renderer } = makeRendererStubForStop();
-        const rendererWithAssets = { ...renderer, assets: world.sharedRefs } as unknown as Renderer;
         // New assemble contract (D-2 / D-4): host inserts the audio resource +
         // passes audioPlugin() so the audio-tick world system is registered.
         const result = await createApp({
           platform: testPlatform(),
-          renderer: rendererWithAssets,
+          renderer,
+          assets,
           world,
           plugins: [audioBackendPlugin(createWebAudioBackend(backend)), audioPlugin()],
         });

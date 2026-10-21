@@ -1,3 +1,4 @@
+import { createMeshBuilder } from '@forgeax/engine-geometry';
 // apps/hello/multi-material -- multi-prim + mixed-topology MeshAsset demo
 // (feat-20260608-mesh-multi-section-primitive-multi-material-slot / M5 / w21).
 //
@@ -33,10 +34,10 @@
 //
 // Recipe (charter P1 progressive disclosure):
 //   (1) createApp(canvas, { clearColor, shaderManifestUrl })
-//   (2) world.allocSharedRef('MeshAsset', { kind:'mesh', vertices, indices,
+//   (2) assets.create( { kind:'mesh', vertices, indices,
 //        attributes, submeshes:[T0, T1] }) -> meshHandle
-//   (3) world.allocSharedRef('MaterialAsset', red unlit)  -> redHandle
-//   (4) world.allocSharedRef('MaterialAsset', cyan unlit) -> cyanHandle
+//   (3) assets.create( red unlit)  -> redHandle
+//   (4) assets.create( cyan unlit) -> cyanHandle
 //   (5) world.spawn Transform + MeshFilter(meshHandle) +
 //        MeshRenderer({ materials:[redHandle, cyanHandle] })
 //   (6) world.spawn Camera (no light needed for unlit)
@@ -44,30 +45,21 @@
 
 import { createApp } from '@forgeax/engine-app/browser';
 import type { CanvasAppError } from '@forgeax/engine-app';
-import { buildMeshAttributeMapForUvSets } from '@forgeax/engine-geometry';
 import { forgeaxBundlerAdapter } from 'virtual:forgeax/bundler';
 
 import { Transform } from '@forgeax/engine-scene';
 import { Camera, MeshFilter, MeshRenderer } from '@forgeax/engine-render';
 import { perspective } from '@forgeax/engine-render';
 import { EngineEnvironmentError } from '@forgeax/engine-runtime';
-import { resolveAssetHandle } from '@forgeax/engine-assets-runtime';
 
 import {
-  handleGeneration,
-  handleSlot,
-  type AssetGuid,
-  type Handle,
+  type AssetHandle,
   type MaterialAsset,
   type MeshAsset,
 } from '@forgeax/engine-types';
 
-const FLOATS_PER_VERTEX = 12;
-const RED_GUID = '019d0000-0000-7000-8000-000000000001';
-const CYAN_GUID = '019d0000-0000-7000-8000-000000000002';
-const BLUE_GUID = '019d0000-0000-7000-8000-000000000003';
 
-type MaterialHandle = Handle<'MaterialAsset', 'shared'>;
+type MaterialHandle = AssetHandle<'material'>;
 
 interface MultiMaterialDemoState {
   readonly stage: 'defaults' | 'overflow' | 'repaired' | 'cleaned';
@@ -84,23 +76,13 @@ interface M32SharedMaterialState {
   readonly oldHandle: number;
   readonly replacementHandle: number | null;
   readonly siblingHandle: number;
-  readonly oldSlot: number;
-  readonly oldGeneration: number;
-  readonly replacementGeneration: number | null;
-  readonly stale: {
-    readonly code: 'shared-ref-stale';
-    readonly detail: {
-      readonly slot: number;
-      readonly expectedGeneration: number;
-      readonly actualGeneration: number;
-    };
-  } | null;
+  readonly stale: { readonly code: 'asset-reference-invalid'; readonly expected: string; readonly hint: string } | null;
   readonly bindings: readonly unknown[];
   readonly diagnostics: readonly unknown[];
-  readonly refcounts: {
-    readonly old: number;
-    readonly replacement: number;
-    readonly sibling: number;
+  readonly retained: {
+    readonly old: boolean;
+    readonly replacement: boolean;
+    readonly sibling: boolean;
   };
 }
 
@@ -131,7 +113,7 @@ interface Built {
  * into the index range. The result is a single GPU mesh upload servicing two
  * draw calls with two different PSOs at record time.
  */
-function buildMultiPrimMesh(defaultMaterials: readonly [AssetGuid, AssetGuid]): Built {
+function buildMultiPrimMesh(defaultMaterials: readonly [MaterialHandle, MaterialHandle]): Built {
   // 4 quad corners (XY plane at z=0, half-side = 0.6).
   const half = 0.6;
   const quadCorners: readonly (readonly [number, number, number])[] = [
@@ -157,24 +139,8 @@ function buildMultiPrimMesh(defaultMaterials: readonly [AssetGuid, AssetGuid]): 
     [-lineHalf * 0.5, +lineHalf * 0.5, lineZ],
   ];
 
-  const totalVerts = quadCorners.length + lineCorners.length;
-  const vertices = new Float32Array(totalVerts * FLOATS_PER_VERTEX);
-  const positions = new Float32Array(totalVerts * 3);
+  const positions = new Float32Array([...quadCorners, ...lineCorners].flat());
 
-  let v = 0;
-  for (const corner of [...quadCorners, ...lineCorners]) {
-    const base = v * FLOATS_PER_VERTEX;
-    vertices[base + 0] = corner[0];
-    vertices[base + 1] = corner[1];
-    vertices[base + 2] = corner[2];
-    // normal (3), uv (2), tangent (4) left at 0 -- unlit ignores them.
-    positions[v * 3 + 0] = corner[0];
-    positions[v * 3 + 1] = corner[1];
-    positions[v * 3 + 2] = corner[2];
-    v++;
-  }
-
-  // Quad indices (vertex indices 0..3): 2 triangles = 6 indices.
   const quadIndices: readonly number[] = [0, 1, 2, 0, 2, 3];
 
   // Wireframe-box indices (vertex indices 4..11): two nested squares = 8
@@ -200,11 +166,14 @@ function buildMultiPrimMesh(defaultMaterials: readonly [AssetGuid, AssetGuid]): 
   const indices = new Uint16Array([...quadIndices, ...lineIndices]);
 
   return {
-    mesh: {
-      kind: 'mesh',
-      vertices,
+    mesh: createMeshBuilder({
       indices,
-      attributes: { ...buildMeshAttributeMapForUvSets(1), position: positions },
+      attributes: {
+        position: positions,
+        normal: new Float32Array(positions.length),
+        tangent: new Float32Array((positions.length / 3) * 4),
+        uv: new Float32Array((positions.length / 3) * 2),
+      },
       submeshes: [
         {
           indexOffset: 0,
@@ -225,7 +194,7 @@ function buildMultiPrimMesh(defaultMaterials: readonly [AssetGuid, AssetGuid]): 
         { slotName: 'Surface', defaultMaterial: defaultMaterials[0] },
         { slotName: 'Outline', defaultMaterial: defaultMaterials[1] },
       ],
-    },
+    }).build().unwrap(),
     quadIndexCount: quadIndices.length,
     lineIndexCount: lineIndices.length,
   };
@@ -263,22 +232,15 @@ async function bootstrap(target: HTMLCanvasElement): Promise<void> {
   }
   const world = app.world;
 
-  const redCatalog = assets.catalog(RED_GUID, makeUnlitMaterial([1.0, 0.15, 0.15]));
-  if (!redCatalog.ok) throw redCatalog.error;
-  const cyanCatalog = assets.catalog(CYAN_GUID, makeUnlitMaterial([0.1, 0.9, 1.0]));
-  if (!cyanCatalog.ok) throw cyanCatalog.error;
-  const blueCatalog = assets.catalog(BLUE_GUID, makeUnlitMaterial([0.1, 0.2, 1.0]));
-  if (!blueCatalog.ok) throw blueCatalog.error;
-
-  const built = buildMultiPrimMesh([assets.parseGuid(RED_GUID), assets.parseGuid(CYAN_GUID)]);
-  const meshHandle: Handle<'MeshAsset', 'shared'> = world.allocSharedRef('MeshAsset', built.mesh);
-  const blueHandle: MaterialHandle = world.allocSharedRef('MaterialAsset', blueCatalog.value);
-  // M32 handles are independent producer grants. Their payload identities match
-  // the catalogued colors so the pre-repair frame is pixel-stable while the
-  // consumer edge and old producer grant are removed.
-  const m32OldHandle: MaterialHandle = world.allocSharedRef('MaterialAsset', redCatalog.value);
-  const m32SiblingHandle: MaterialHandle = world.allocSharedRef('MaterialAsset', cyanCatalog.value);
-  const inheritHandle = 0 as unknown as MaterialHandle;
+  const defaultFirst = assets.create(makeUnlitMaterial([1.0, 0.15, 0.15])).unwrap();
+  const defaultSecond = assets.create(makeUnlitMaterial([0.1, 0.9, 1.0])).unwrap();
+  const built = buildMultiPrimMesh([defaultFirst, defaultSecond]);
+  const meshHandle = assets.create(built.mesh).unwrap();
+  const blueHandle = assets.create(makeUnlitMaterial([0.1, 0.2, 1.0])).unwrap();
+  const m32OldHandle = assets.copy(defaultFirst).unwrap();
+  const m32SiblingHandle = assets.copy(defaultSecond).unwrap();
+  assets.release(defaultFirst).unwrap();
+  assets.release(defaultSecond).unwrap();
 
   // Spawn with an empty override vector. The render owner must resolve both
   // declared MeshAsset defaults; no submesh topology inference is allowed.
@@ -337,20 +299,13 @@ async function bootstrap(target: HTMLCanvasElement): Promise<void> {
       oldHandle: m32OldHandle,
       replacementHandle: m32ReplacementHandle ?? null,
       siblingHandle: m32SiblingHandle,
-      oldSlot: handleSlot(m32OldHandle),
-      oldGeneration: handleGeneration(m32OldHandle),
-      replacementGeneration:
-        m32ReplacementHandle === undefined ? null : handleGeneration(m32ReplacementHandle),
       stale: m32Stale,
       bindings: observation?.bindings ?? [],
       diagnostics: observation?.diagnostics ?? [],
-      refcounts: {
-        old: world.sharedRefs.refcount(m32OldHandle),
-        replacement:
-          m32ReplacementHandle === undefined
-            ? 0
-            : world.sharedRefs.refcount(m32ReplacementHandle),
-        sibling: world.sharedRefs.refcount(m32SiblingHandle),
+      retained: {
+        old: assets.validate(m32OldHandle).ok,
+        replacement: m32ReplacementHandle !== undefined && assets.validate(m32ReplacementHandle).ok,
+        sibling: assets.validate(m32SiblingHandle).ok,
       },
     };
   };
@@ -372,36 +327,19 @@ async function bootstrap(target: HTMLCanvasElement): Promise<void> {
     // Remove the consumer edge first. The old producer grant is the only
     // remaining reference, so releasing it makes the slot recyclable without
     // letting the replacement become visible through the old handle.
-    setM32Materials([inheritHandle, m32SiblingHandle]);
-    if (world.sharedRefs.refcount(m32OldHandle) !== 1) {
-      throw new Error('M32 old MaterialAsset consumer edge was not released');
-    }
-    const released = world.sharedRefs.release(m32OldHandle);
+    setM32Materials([defaultFirst, m32SiblingHandle]);
+    if (!assets.validate(m32OldHandle).ok) throw new Error('old producer grant was lost');
+    const released = assets.release(m32OldHandle);
     if (!released.ok) throw released.error;
 
-    const replacement = world.allocSharedRef(
-      'MaterialAsset',
-      makeUnlitMaterial([0.1, 0.2, 1.0]),
-    );
-    if (handleSlot(replacement) !== handleSlot(m32OldHandle)) {
-      throw new Error('M32 replacement did not reuse the released MaterialAsset slot');
-    }
-    if (handleGeneration(replacement) !== handleGeneration(m32OldHandle) + 1) {
-      throw new Error('M32 replacement generation did not advance exactly once');
-    }
+    const replacement = assets.create(makeUnlitMaterial([0.1, 0.2, 1.0])).unwrap();
+    if (replacement === m32OldHandle) throw new Error('replacement aliased the retired identity');
     m32ReplacementHandle = replacement;
-
-    const stale = resolveAssetHandle<MaterialAsset>(
-      world,
-      m32OldHandle as Handle<string, 'shared'>,
-    );
-    if (stale.ok || stale.error.code !== 'shared-ref-stale') {
-      throw new Error(`M32 old handle was not rejected as stale: ${stale.ok ? 'resolved' : stale.error.code}`);
+    const stale = assets.read(m32OldHandle);
+    if (stale.ok || stale.error.code !== 'asset-reference-invalid') {
+      throw new Error('retired asset identity resolved to replacement content');
     }
-    m32Stale = {
-      code: 'shared-ref-stale',
-      detail: { ...stale.error.detail },
-    };
+    m32Stale = { code: stale.error.code, expected: stale.error.expected, hint: stale.error.hint };
     m32Stage = 'stale';
     publishState();
     return m32State();
@@ -419,14 +357,14 @@ async function bootstrap(target: HTMLCanvasElement): Promise<void> {
     if (m32Stage === 'cleaned') return m32State();
     if (m32Stage !== 'idle') setM32Materials([]);
     if (m32Stage === 'idle' || m32Stage === 'baseline') {
-      const released = world.sharedRefs.release(m32OldHandle);
+      const released = assets.release(m32OldHandle);
       if (!released.ok) throw released.error;
     }
     if (m32ReplacementHandle !== undefined) {
-      const released = world.sharedRefs.release(m32ReplacementHandle);
+      const released = assets.release(m32ReplacementHandle);
       if (!released.ok) throw released.error;
     }
-    const releasedSibling = world.sharedRefs.release(m32SiblingHandle);
+    const releasedSibling = assets.release(m32SiblingHandle);
     if (!releasedSibling.ok) throw releasedSibling.error;
     m32Stage = 'cleaned';
     publishState();
@@ -434,8 +372,8 @@ async function bootstrap(target: HTMLCanvasElement): Promise<void> {
   };
   const demoApi: MultiMaterialDemoApi = {
     readState: state,
-    injectOverflow: () => applyMaterials('overflow', [inheritHandle, inheritHandle, blueHandle]),
-    repair: () => applyMaterials('repaired', [blueHandle, inheritHandle]),
+    injectOverflow: () => applyMaterials('overflow', [defaultFirst, defaultSecond, blueHandle]),
+    repair: () => applyMaterials('repaired', [blueHandle, defaultSecond]),
     cleanup: () => applyMaterials('cleaned', []),
     readM32State: m32State,
     m32Baseline,

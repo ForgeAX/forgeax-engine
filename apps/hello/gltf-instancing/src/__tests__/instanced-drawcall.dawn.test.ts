@@ -1,3 +1,5 @@
+import { publishGltfFixture } from '../../../gltf/src/__tests__/source-fixture';
+import { Materials } from '@forgeax/engine-render';
 // w28 - dawn (real GPU) drawIndexed test for hello-gltf-instancing Tier-B fork.
 //
 // Spec anchors: AC-15 (real-GPU drawIndexed exercise via the @forgeax/
@@ -32,17 +34,11 @@ import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import { World } from '@forgeax/engine-ecs';
-import { gltfDocToSceneAsset, parseGltf } from '@forgeax/engine-gltf';
+import { gltfDocToSceneAsset, meshIrToMeshAsset, parseGltf } from '@forgeax/engine-gltf';
 import { AssetGuid } from '@forgeax/engine-pack/guid';
 import { parsePackV2 } from '@forgeax/engine-pack';
-import { HANDLE_CUBE, type AssetRegistry, type MeshAsset } from '@forgeax/engine-assets-runtime';
-import {
-  Camera,
-  Instances,
-  MeshFilter,
-  MeshRenderer,
-  SceneInstance,
-} from '@forgeax/engine-render';
+import { type AssetRegistry } from '@forgeax/engine-assets-runtime';
+import { Camera, Instances, MeshFilter, MeshRenderer, SceneInstance } from '@forgeax/engine-render';
 import type { Renderer } from '@forgeax/engine-render';
 import {
   ChildOf,
@@ -52,7 +48,7 @@ import {
   Transform,
 } from '@forgeax/engine-scene';
 import { constructRuntimeRendererHost } from '@forgeax/engine-runtime/internal/renderer-host';
-import type { Handle, MaterialAsset, SceneAsset } from '@forgeax/engine-types';
+import type { SceneAsset } from '@forgeax/engine-types';
 import { afterAll, describe, expect, it } from 'vitest';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
@@ -65,12 +61,7 @@ const PIXEL_THRESHOLD = 0.05;
 const TARGET_FRAMES = 3;
 const CLEAR_COLOR: readonly [number, number, number] = [0.05, 0.05, 0.08];
 
-const IDENTITY = new Float32Array([
-  1, 0, 0, 0,
-  0, 1, 0, 0,
-  0, 0, 1, 0,
-  0, 0, 0, 1,
-]);
+const IDENTITY = new Float32Array([1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1]);
 
 function translated(x: number): Float32Array {
   const matrix = new Float32Array(IDENTITY);
@@ -123,31 +114,6 @@ function registerSceneComponents(world: World): void {
   }
 }
 
-// Expand positions-only meshIr to canonical 12F interleaved layout
-// (position vec3 + normal vec3 + uv vec2 + tangent vec4).
-// GLTF Tier-B defaults: normal=(0,1,0), uv=(0,0), tangent=(1,0,0,1).
-function meshIrToPod12F(meshIr: { positions: Float32Array }): Float32Array {
-  const vertexCount = meshIr.positions.length / 3;
-  const out = new Float32Array(vertexCount * 12);
-  for (let i = 0; i < vertexCount; i++) {
-    const src = i * 3;
-    const dst = i * 12;
-    out[dst] = meshIr.positions[src]!;
-    out[dst + 1] = meshIr.positions[src + 1]!;
-    out[dst + 2] = meshIr.positions[src + 2]!;
-    out[dst + 3] = 0;
-    out[dst + 4] = 1;
-    out[dst + 5] = 0;
-    out[dst + 6] = 0;
-    out[dst + 7] = 0;
-    out[dst + 8] = 1;
-    out[dst + 9] = 0;
-    out[dst + 10] = 0;
-    out[dst + 11] = 1;
-  }
-  return out;
-}
-
 describe('hello-gltf-instancing w28 - dawn drawIndexed real GPU spine (AC-15)', () => {
   it('keeps instance source assets addressable by Pack v2 GUID and refs', () => {
     const parsed = parsePackV2({
@@ -177,9 +143,7 @@ describe('hello-gltf-instancing w28 - dawn drawIndexed real GPU spine (AC-15)', 
     });
     expect(parsed.ok).toBe(true);
     if (!parsed.ok) return;
-    expect(parsed.value.assets[1]?.refs).toEqual([
-      '019e39e4-dd6a-7afd-8893-f10111360a2f',
-    ]);
+    expect(parsed.value.assets[1]?.refs).toEqual(['019e39e4-dd6a-7afd-8893-f10111360a2f']);
   });
 
   it('renders >=3 frames + clear-color-distance >= eps on at least one mesh site', async () => {
@@ -248,9 +212,13 @@ describe('hello-gltf-instancing w28 - dawn drawIndexed real GPU spine (AC-15)', 
     let renderer: Renderer;
     let assets: AssetRegistry;
     try {
-      const constructed = await constructRuntimeRendererHost(mockCanvas, {}, {
-        shaderManifestUrl: ENGINE_MANIFEST_URL,
-      });
+      const constructed = await constructRuntimeRendererHost(
+        mockCanvas,
+        {},
+        {
+          shaderManifestUrl: ENGINE_MANIFEST_URL,
+        },
+      );
       if (!constructed.ok) throw constructed.error;
       renderer = constructed.value.renderer;
       assets = constructed.value.assets;
@@ -280,28 +248,10 @@ describe('hello-gltf-instancing w28 - dawn drawIndexed real GPU spine (AC-15)', 
     if (meshIr === undefined || matIr === undefined) return;
 
     if (meshIr.indices === undefined) throw new Error('box.gltf fixture must be indexed');
-    const meshAsset: MeshAsset = {
-      kind: 'mesh',
-      vertices: meshIrToPod12F(meshIr),
-      indices: meshIr.indices,
-      attributes: { position: meshIr.positions },
-      submeshes: [
-        {
-          indexOffset: 0,
-          indexCount: meshIr.indices.length,
-          vertexCount: meshIr.positions.length,
-          topology: 'triangle-list',
-          materialSlot: 0,
-        },
-      ],
-      materialSlots: [{ slotName: 'Default' }],
-    };
-    const materialAsset: MaterialAsset = {
-      kind: 'material',
-      passes: [{ name: 'Forward', program: { module: 'forgeax::default-unlit' }, renderState: { tags: { LightMode: 'Forward' }, queue: 2000 } }],
-      values: { baseColor: matIr.baseColorFactor },
-    };
-    const world = new World();
+    const meshAsset = meshIrToMeshAsset([meshIr]).unwrap();
+    const materialAsset = Materials.unlit(matIr.baseColorFactor);
+    const world = new World({ assets: assets });
+    registerSceneComponents(world);
     registerPropagateTransforms(world);
     const worldAttachment1 = renderer.attach(world);
     if (!worldAttachment1.ok) throw worldAttachment1.error;
@@ -313,21 +263,22 @@ describe('hello-gltf-instancing w28 - dawn drawIndexed real GPU spine (AC-15)', 
 
     // feat-20260614 M8: registerWithGuid deleted. catalog(guid, payload) feeds
     // loadByGuid; world.allocSharedRef mints the column handle the bridge needs.
-    assets.catalog<MeshAsset>(meshGuid, meshAsset);
-    assets.catalog<MaterialAsset>(matGuid, materialAsset);
-    const matHandle: Handle<'MaterialAsset', 'shared'> = world.allocSharedRef<
-      'MaterialAsset',
-      MaterialAsset
-    >('MaterialAsset', materialAsset);
 
     // Build SceneAsset via the bridge SSOT (feat-20260518 M3) so the
     // EXT_mesh_gpu_instancing decode path is exercised end-to-end. Mesh
     // routes to HANDLE_CUBE per the v1 GPU upload pattern.
     const sceneAsset: SceneAsset = gltfDocToSceneAsset(doc, {
-      meshHandles: new Map([[0, HANDLE_CUBE]]),
-      materialHandles: new Map([[0, matHandle]]),
+      meshHandles: new Map([[0, 0 as import('@forgeax/engine-types').AssetHandle<'mesh'>]]),
+      materialHandles: new Map([[0, 0 as import('@forgeax/engine-types').AssetHandle<'material'>]]),
     });
 
+    for (const entity of Object.values(sceneAsset.entities)) {
+      const fields = entity.components as Record<string, Record<string, unknown>>;
+      if (fields.MeshFilter !== undefined)
+        fields.MeshFilter.assetHandle = AssetGuid.format(meshGuid);
+      if (fields.MeshRenderer !== undefined)
+        fields.MeshRenderer.materials = [AssetGuid.format(matGuid)];
+    }
     // The imported SceneAsset retains all four instance matrices without a Renderer identity.
     const instancedNode = Object.values(sceneAsset.entities).find(
       (n) => (n.components.Instances as { transforms?: Float32Array } | undefined) !== undefined,
@@ -340,15 +291,21 @@ describe('hello-gltf-instancing w28 - dawn drawIndexed real GPU spine (AC-15)', 
     // AC-06: Name component pinned on the InstancedBox node.
     expect(instancedNode.components.Name).toEqual({ value: 'InstancedBox' });
 
-    assets.catalog<SceneAsset>(sceneGuid, sceneAsset);
+    publishGltfFixture(assets, {
+      mesh: meshAsset,
+      material: materialAsset,
+      scene: sceneAsset,
+      meshGuid: AssetGuid.format(meshGuid),
+      materialGuid: AssetGuid.format(matGuid),
+      sceneGuid: AssetGuid.format(sceneGuid),
+    });
 
-    const sceneRes = await assets.loadByGuid<SceneAsset>(sceneGuid);
+    const sceneRes = await assets.load(sceneGuid, 'scene');
     expect(sceneRes.ok).toBe(true);
     if (!sceneRes.ok) return;
     // loadByGuid returns the payload (D-17); mint a user-tier column handle.
-    const sceneHandle = world.allocSharedRef('SceneAsset', sceneRes.value);
-    registerSceneComponents(world);
-    const instRes = assets.instantiate<SceneAsset>(sceneHandle, world);
+    const sceneHandle = sceneRes.value;
+    const instRes = assets.instantiate(sceneHandle, world);
     expect(instRes.ok).toBe(true);
     if (!instRes.ok) return;
 

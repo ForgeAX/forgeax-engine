@@ -22,6 +22,10 @@ import { existsSync, readFileSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { emitSmokeReceipt } from '../../../../shared/scripts/smoke-receipt.mjs';
+import { AssetRegistry } from '@forgeax/engine-assets-runtime';
+
+import { createPrimitiveMesh } from '@forgeax/engine-geometry';
+
 
 const SMOKE_MIN_FRAMES = Number.parseInt(process.env.SMOKE_MIN_FRAMES ?? '60', 10);
 const WIDTH = 512;
@@ -140,7 +144,7 @@ const { decodeImageFromFile } = await import('@forgeax/engine-image/decode-image
 const { constructRuntimeRendererHost } = await import('@forgeax/engine-runtime/internal/renderer-host');
 const { Camera, MeshFilter, MeshRenderer } = await import('@forgeax/engine-render');
 const { Transform } = await import('@forgeax/engine-scene');
-const { HANDLE_QUAD } = await import('@forgeax/engine-assets-runtime');
+
 const { unwrapHandle } = await import('@forgeax/engine-types');
 const { AssetGuid } = await import('@forgeax/engine-pack/guid');
 
@@ -218,22 +222,24 @@ if (!guids.diffuse.ok || !guids.normal.ok || !guids.height.ok) {
   process.exit(1);
 }
 
-const world = new World();
+const world = new World({ assets: assets });
+const sceneAssets = world.assets;
+if (!(sceneAssets instanceof AssetRegistry)) throw new Error('Scene requires its runtime asset owner');
+
+const primitiveQuad = sceneAssets.create(createPrimitiveMesh('quad').unwrap()).unwrap();
+
 const worldAttachment1 = renderer.attach(world);
 if (!worldAttachment1.ok) throw worldAttachment1.error;
 const lease = worldAttachment1.value;
 const diffuseTex = mkTex(diffuseDecoded);
 const normalTex = mkTex(normalDecoded);
 const heightTex = mkTex(heightDecoded);
-assets.catalog(guids.diffuse.value, diffuseTex);
-assets.catalog(guids.normal.value, normalTex);
-assets.catalog(guids.height.value, heightTex);
-const diffuseHandle = world.allocSharedRef('TextureAsset', diffuseTex);
-const normalHandle = world.allocSharedRef('TextureAsset', normalTex);
-const heightHandle = world.allocSharedRef('TextureAsset', heightTex);
+const diffuseHandle = world.assets.create(diffuseTex).unwrap();
+const normalHandle = world.assets.create(normalTex).unwrap();
+const heightHandle = world.assets.create(heightTex).unwrap();
 console.log(`[learn-render-5-5-parallax] registered bricks2 handle id=${diffuseHandle}`);
 
-const matHandle = world.allocSharedRef('MaterialAsset', {
+const matHandle = world.assets.create({
   kind: 'material',
   passes: [{ name: 'Forward', program: { module: 'learn_render::5_5_parallax' }, renderState: { tags: { LightMode: 'Forward' } } }],
   values: {
@@ -246,7 +252,7 @@ const matHandle = world.allocSharedRef('MaterialAsset', {
     normalTexture: unwrapHandle(normalHandle),
     heightTexture: unwrapHandle(heightHandle),
   },
-});
+}).unwrap();
 
 world
   .spawn(
@@ -255,7 +261,7 @@ world
       data: {
         pos: [0, 0, 0], quat: [0, 0, 0, 1], scale: [1, 1, 1],},
     },
-    { component: MeshFilter, data: { assetHandle: HANDLE_QUAD } },
+    { component: MeshFilter, data: { assetHandle: primitiveQuad } },
     { component: MeshRenderer, data: { materials: [matHandle] } },
   )
   .unwrap();

@@ -33,6 +33,7 @@ import { type MaterialAsset, type MeshAsset, ok } from '@forgeax/engine-types';
 import { expect } from 'vitest';
 import { constructRuntimeRendererHost } from '../renderer-host';
 import threePixels from './continuous-lines-three.json';
+import { testAssets } from './helpers/runtime-assets';
 import { renderValue } from './standard-gbuffer-replay.fixture';
 
 /** The real retained -> prepare -> Standard scene draw, with no application shader. */
@@ -189,11 +190,11 @@ export async function verifyContinuousLines(options: {
       const entity = world
         .spawn(
           { component: Transform, data: {} },
-          { component: MeshFilter, data: { assetHandle: world.allocSharedRef('MeshAsset', mesh) } },
+          { component: MeshFilter, data: { assetHandle: testAssets(world).create(mesh).unwrap() } },
           {
             component: MeshRenderer,
             data: {
-              materials: [world.allocSharedRef('MaterialAsset', material)],
+              materials: [testAssets(world).create(material).unwrap()],
             },
           },
         )

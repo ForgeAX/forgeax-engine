@@ -4,10 +4,7 @@ import { describe, expect, it } from 'vitest';
 import { Camera, LensEffects, resolveLensEffects } from '../components';
 import { createRenderFeatureHost, runRenderFeatureFrame } from '../features/host';
 import { createLensEffectsRenderFeature, packLensEffectsParams } from '../features/lens-effects';
-import {
-  createStandardOutputPlan,
-  validateStandardOutputPlan,
-} from '../pipeline/standard-output/graph';
+import { createStandardOutputPlan } from '../pipeline/standard-output/graph';
 import { extractCameraSnapshots } from '../render-system-extract';
 import { setActiveCamera } from '../systems/active-camera';
 
@@ -107,7 +104,6 @@ describe('camera LensEffects', () => {
 
   it('composes after FXAA and barrel distortion with one final encoding', () => {
     const request = {
-      lane: 'direct' as const,
       temporal: true,
       meter: false,
       bloom: true,
@@ -117,7 +113,6 @@ describe('camera LensEffects', () => {
       barrelDistortion: true,
       fxaa: true,
       lensEffects: true,
-      outputEncoding: 'explicit-oetf' as const,
     };
     const plan = createStandardOutputPlan(request);
     expect(plan.logicalStages.slice(-4)).toEqual([
@@ -131,8 +126,6 @@ describe('camera LensEffects', () => {
       input: 'linear-ldr',
       output: 'linear-ldr',
     });
-    expect(validateStandardOutputPlan(plan).ok).toBe(true);
-    expect(plan.outputEncodingCount).toBe(1);
     expect(
       createStandardOutputPlan({ ...request, lensEffects: false }).incrementalResources,
     ).not.toContain('standard-lens-effects');

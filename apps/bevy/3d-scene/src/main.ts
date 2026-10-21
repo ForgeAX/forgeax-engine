@@ -21,17 +21,19 @@
 //            this demo originally used).
 
 import { createApp } from '@forgeax/engine-app/browser';
-import { HANDLE_CUBE } from '@forgeax/engine-assets-runtime';
+
 import { Transform } from '@forgeax/engine-scene';
 
 import { perspective } from '@forgeax/engine-render';
-import type { MaterialAsset } from '@forgeax/engine-runtime';
+
 import { Materials } from '@forgeax/engine-render';
 import { PointLight } from '@forgeax/engine-render';
 import { Camera, MeshFilter, MeshRenderer } from '@forgeax/engine-render';
 
 import { quat } from '@forgeax/engine-math';
 import { forgeaxBundlerAdapter } from 'virtual:forgeax/bundler';
+import { createPrimitiveMesh } from '@forgeax/engine-geometry';
+
 
 const canvas = document.querySelector<HTMLCanvasElement>('#app');
 if (!canvas) throw new Error('bevy-3d-scene: missing <canvas id="app"> in index.html');
@@ -47,29 +49,27 @@ async function bootstrap(target: HTMLCanvasElement): Promise<void> {
     return;
   }
   const app = appResult.value;
+  const assets = app.assets;
+  if (assets === undefined) throw new Error('App asset service is unavailable');
 
 
   const world = app.world;
+const primitiveCube = assets.create(createPrimitiveMesh('cube').unwrap()).unwrap();
+
 
   // ── Base plane (flat-scaled cube), white PBR ──────────────────────────
-  const baseMat = world.allocSharedRef<'MaterialAsset', MaterialAsset>(
-    'MaterialAsset',
-    Materials.standard({ baseColor: [1, 1, 1, 1] }),
-  );
+  const baseMat = assets.create(Materials.standard({ baseColor: [1, 1, 1, 1] })).unwrap();
   world.spawn(
     { component: Transform, data: { pos: [0, 0, 0], quat: [0, 0, 0, 1], scale: [8, 0.02, 8] } },
-    { component: MeshFilter, data: { assetHandle: HANDLE_CUBE } },
+    { component: MeshFilter, data: { assetHandle: primitiveCube } },
     { component: MeshRenderer, data: { materials: [baseMat] } },
   );
 
   // ── Cube, blue PBR (Bevy srgb_u8(124,144,255)) at y=0.5 ───────────────
-  const cubeMat = world.allocSharedRef<'MaterialAsset', MaterialAsset>(
-    'MaterialAsset',
-    Materials.standard({ baseColor: [124 / 255, 144 / 255, 255 / 255, 1] }),
-  );
+  const cubeMat = assets.create(Materials.standard({ baseColor: [124 / 255, 144 / 255, 255 / 255, 1] })).unwrap();
   world.spawn(
     { component: Transform, data: { pos: [0, 0.5, 0], quat: [0, 0, 0, 1], scale: [1, 1, 1] } },
-    { component: MeshFilter, data: { assetHandle: HANDLE_CUBE } },
+    { component: MeshFilter, data: { assetHandle: primitiveCube } },
     { component: MeshRenderer, data: { materials: [cubeMat] } },
   );
 

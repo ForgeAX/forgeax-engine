@@ -1,6 +1,5 @@
 import { createApp } from '@forgeax/engine-app/browser';
-import type { TextureAsset } from '@forgeax/engine-types';
-import { unwrapHandle } from '@forgeax/engine-types';
+
 import { forgeaxBundlerAdapter } from 'virtual:forgeax/bundler';
 import './shader-material.wgsl';
 import { buildShaderMaterialWorld, makeTextureAsset, makeTexturePixels } from './scene';
@@ -21,10 +20,12 @@ async function bootstrap(target: HTMLCanvasElement): Promise<void> {
     return;
   }
   const app = result.value;
+  const assets = app.assets;
+  if (assets === undefined) throw new Error('App asset service is unavailable');
   const pixels = makeTexturePixels();
   const texture = makeTextureAsset(pixels);
-  const textureHandle = app.world.allocSharedRef<'TextureAsset', TextureAsset>('TextureAsset', texture);
-  if (!buildShaderMaterialWorld(app.world, unwrapHandle(textureHandle), target.width / Math.max(target.height, 1))) {
+  const textureHandle = assets.create(texture).unwrap();
+  if (!buildShaderMaterialWorld(app.world, textureHandle, target.width / Math.max(target.height, 1))) {
     console.error('[bevy-shader-material] scene construction failed');
     return;
   }

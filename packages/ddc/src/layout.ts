@@ -122,11 +122,3 @@ export function resolveDdcLayout(options: DdcServeOptions): ClosedLayoutResult {
     },
   };
 }
-
-export function isDdcLayout(value: unknown): value is DdcLayout {
-  return (
-    value !== null &&
-    typeof value === 'object' &&
-    (value as { readonly version?: unknown }).version === DDC_LAYOUT_VERSION
-  );
-}

@@ -18,7 +18,7 @@ engine-specific lighting adaptation:
 | Input | <kbd>Space</kbd> toggles shadows; <kbd>P</kbd> pauses/resumes the light; <kbd>R</kbd> resets light time to zero; buttons expose the same controls |
 
 The five inner cubes use the exact positions and source scales from
-`renderScene()`. Because the engine's `HANDLE_CUBE` is 1 unit wide while the
+`renderScene()`. Because the engine's `createPrimitiveMesh('cube')` is 1 unit wide while the
 source helper spans 2 units, the transform scales below are doubled to keep
 the same world-space sizes:
 

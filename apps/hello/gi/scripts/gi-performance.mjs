@@ -32,9 +32,9 @@ const scene = sceneId === 'sponza' ? SPONZA : PROCEDURAL_SCENES[sceneId];
 if (scene === undefined) throw new Error(`unknown scene ${sceneId}`);
 const cooked = sceneId === 'sponza' ? undefined : await gi.cookGiMaterials();
 const { renderer, assets, errors } = await gi.createGiRenderer({ width: size, height: size, timing });
-const world = new World();
+const world = new World({ assets: assets });
 if (sceneId === 'sponza') await gi.spawnSponza(world, assets, dist);
-else spawnProceduralScene(world, scene, gi.publishMaterials(world, assets, cooked), 1,
+else spawnProceduralScene(world, scene, await gi.publishMaterials(world, assets, cooked), 1,
   await createGiBoxMesh());
 const lease = renderer.attach(world).unwrap();
 const driver = await gi.createFrameDriver({ renderer, world, lease });

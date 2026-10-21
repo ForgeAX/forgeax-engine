@@ -2,7 +2,7 @@ import { defineComponent } from '@forgeax/engine-ecs';
 
 /** Transform maps the unit projection box to world space; +Z faces the receiver normal. */
 export const ProjectedDecal = defineComponent('ProjectedDecal', {
-  material: { type: 'shared<MaterialAsset>' },
+  material: { type: 'asset<material>' },
   order: { type: 'i32', default: 0 },
   opacity: { type: 'f32', default: 1 },
   normalThreshold: { type: 'f32', default: 0 },

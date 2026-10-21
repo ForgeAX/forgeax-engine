@@ -1,3 +1,4 @@
+import { runtimeAssets } from '@forgeax/engine-assets-runtime/internal';
 // feat-20260713-mount-override-component-add-and-shared-ref-round M5 / w20 —
 // collect fold: derive the runtime-authored MountOverride[] for one nested
 // SceneInstance anchor (plan-strategy D-3).
@@ -40,7 +41,6 @@
 // member land in the PARENT anchor's state, not the folded child anchor's; the
 // child anchor's own mountTimeOverrides is empty. See the M5 implement report.)
 
-import { resolveAssetHandle } from '@forgeax/engine-assets-runtime';
 import {
   componentDefinition,
   type Component as EcsComponent,
@@ -53,7 +53,7 @@ import type { MountOverride, SceneInstanceState } from '@forgeax/engine-scene';
 import type { Handle, LocalEntityId, SceneAsset } from '@forgeax/engine-types';
 
 /** The SceneInstanceState fields the fold reads. */
-export type FoldSceneInstanceState = Pick<
+type FoldSceneInstanceState = Pick<
   SceneInstanceState,
   'source' | 'keyByLocalId' | 'entityToLocalId'
 >;
@@ -138,8 +138,7 @@ function liveFields(
  * header for the full contract. Returns [] when nothing differs from source.
  */
 export function foldMountOverrides(world: World, state: FoldSceneInstanceState): MountOverride[] {
-  const sourceRes = resolveAssetHandle<SceneAsset>(
-    world,
+  const sourceRes = runtimeAssets(world.assets).resolveAsset<SceneAsset>(
     state.source as unknown as Handle<string, 'shared'>,
   );
   if (!sourceRes.ok) return [];

@@ -1,72 +1,32 @@
-import { resolveReflectionProbeBinding } from '../record/frame-lighting';
-import type { ValidatedRenderable } from '../record/frame-snapshot';
-import type { ReflectionProbeRecordState } from '../record/render-context';
-import type { RenderableSnapshot } from '../render-system-extract';
+import type { ReflectionProbeTable } from '../reflection/gpu-table';
+import type { ReflectionProbeSelectionResult } from '../reflection/projection';
 
-const mapHas = Map.prototype.has;
-const mapGet = Map.prototype.get;
-const mapIterator = Map.prototype[Symbol.iterator];
-const mapForEach = Map.prototype.forEach;
-const stringify = JSON.stringify;
+export const EMPTY_MATERIAL_BINDINGS: ReadonlyMap<string, string> = new Map();
 
-/** null is an empty ordinary domain; undefined requires consumed-value checks.
- * Other inputs retain their complete serialization observation as a string.
- */
-export function materialBindingSignature(
-  classes: ReadonlyMap<string, string> | undefined,
-): string | null | undefined {
-  if (classes === undefined) return null;
-  let ordinary = false;
-  try {
-    // Intrinsic brand checking does not invoke a Proxy or caller method.
-    mapHas.call(classes, undefined as unknown as string);
-    ordinary =
-      Object.getPrototypeOf(classes) === Map.prototype &&
-      Reflect.ownKeys(classes).length === 0 &&
-      Object.getOwnPropertyDescriptor(Map.prototype, 'get')?.value === mapGet &&
-      Object.getOwnPropertyDescriptor(Map.prototype, Symbol.iterator)?.value === mapIterator &&
-      !('toJSON' in Array.prototype) &&
-      JSON.stringify === stringify;
-  } catch {
-    // The original iterator remains the authority for unknown inputs and errors.
-  }
-  let empty = true;
-  if (ordinary) {
-    mapForEach.call(classes, (value, key) => {
-      empty = false;
-      if (typeof key !== 'string' || typeof value !== 'string') ordinary = false;
-    });
-  }
-  return ordinary ? (empty ? null : undefined) : `${JSON.stringify([...classes])}`;
-}
+/** Probe selection is an object fact; no material values participate in this projection. */
+export class ReflectionProbeBindingProjection {
+  private selections: ReadonlyMap<string, ReflectionProbeSelectionResult> | undefined;
+  private indices = '';
+  private value: ReadonlyMap<string, string> = EMPTY_MATERIAL_BINDINGS;
 
-export function materialBindingKey(
-  source: Pick<RenderableSnapshot, 'worldId' | 'entityKey'>,
-  handle: number,
-): string {
-  return `${source.worldId}:${source.entityKey}:${handle}`;
-}
-
-/** Per-object bindings and pass membership are part of an indirect batch's resource identity. */
-export function projectMaterialBindingClasses(
-  rows: readonly Pick<ValidatedRenderable, 'source'>[],
-  probes?: Pick<ReflectionProbeRecordState, 'selections' | 'table'>,
-): ReadonlyMap<string, string> {
-  const classes = new Map<string, string>();
-  for (const row of rows) {
-    const selection = probes?.selections.get(`${row.source.worldId}:${row.source.entityKey}`);
-    const probe =
-      selection === undefined
-        ? undefined
-        : resolveReflectionProbeBinding(selection, probes?.table).probeIndex;
-    const materials =
-      row.source.materials.length > 0 ? row.source.materials : [row.source.material];
-    for (const material of materials) {
-      const handle = material.materialHandle ?? -1;
-      const passClass = material.deferredPass === true ? '' : 'forward';
-      if (probe !== undefined || passClass !== '')
-        classes.set(materialBindingKey(row.source, handle), `${passClass}|probe:${probe ?? ''}`);
+  project(
+    selections: ReadonlyMap<string, ReflectionProbeSelectionResult>,
+    table: ReflectionProbeTable,
+  ): ReadonlyMap<string, string> {
+    // Only resident probe addresses affect binding classes, not texture generations or shading.
+    const indices = JSON.stringify(table.rows.map((row) => [row.primitiveKey, row.index]));
+    if (this.selections === selections && this.indices === indices) return this.value;
+    const classes = new Map<string, string>();
+    if (table.rows.length > 0) {
+      for (const [key, selection] of selections) {
+        if (selection.kind !== 'probe') continue;
+        const index = table.cpuIndexByPrimitive(`${selection.worldId}:${selection.entityKey}`);
+        if (index !== undefined) classes.set(key, `probe:${index}`);
+      }
     }
+    this.value = classes.size === 0 ? EMPTY_MATERIAL_BINDINGS : classes;
+    this.selections = selections;
+    this.indices = indices;
+    return this.value;
   }
-  return classes;
 }

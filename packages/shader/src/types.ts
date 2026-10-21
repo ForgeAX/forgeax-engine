@@ -1,3 +1,4 @@
+import type { ShaderEntryPointReads } from '@forgeax/engine-types';
 // @forgeax/engine-shader/types — shared variant types consumed by the runtime
 // variant resolution layer (createRenderer.ts M3). The SSOT for the manifest
 // schema stays in @forgeax/engine-vite-plugin-shader; this file re-declares the
@@ -17,13 +18,14 @@
  * no longer carry a bindingLayout sidecar (§Change stance: no v1/v2
  * dual-path, no incremental drop window).
  */
-import type { MaterialShaderArtifactReceipt } from './material/artifact-types.js';
+import type { MaterialProgramAbi } from '@forgeax/engine-types';
 export interface MaterialShaderManifestVariant {
+  readonly entryPoints?: readonly ShaderEntryPointReads[];
   readonly definesKey: string;
   readonly defines: Record<string, boolean>;
   readonly composedWgsl: string;
   /** ABI facts for this exact composed variant, when the producer publishes them. */
-  readonly receipt?: MaterialShaderArtifactReceipt;
+  readonly receipt?: MaterialProgramAbi;
 }
 
 /**
@@ -36,14 +38,14 @@ export interface MaterialShaderManifestVariant {
  *
  * For Engine.create() internal use only; AI users never see this type.
  */
-export interface MaterialShaderManifestEntry extends Partial<MaterialShaderArtifactReceipt> {
+export interface MaterialShaderManifestEntry extends Partial<MaterialProgramAbi> {
   readonly identifier: string;
   readonly sourcePath: string;
   readonly composedWgsl: string;
   readonly paramSchema: string;
   readonly variants: readonly MaterialShaderManifestVariant[];
   /** Producer-owned ABI facts for the selected primary artifact. */
-  readonly receipt?: MaterialShaderArtifactReceipt;
+  readonly receipt?: MaterialProgramAbi;
   /**
    * feat-20260629 M4: uvSetCount from naga vertex @location reflection.
    * Populated by vite-plugin-shader at build time from compileShader output.

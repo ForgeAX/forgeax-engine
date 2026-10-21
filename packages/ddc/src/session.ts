@@ -61,7 +61,7 @@ export class DdcGenerationSession {
     corruptCount: 0,
     writeFailureCount: 0,
   };
-  private accepting = true;
+  private closeTask: Promise<void> | undefined;
 
   public constructor(root: string, options: DdcSessionOptions) {
     if (!Number.isSafeInteger(options.generation) || options.generation < 1) {
@@ -108,8 +108,7 @@ export class DdcGenerationSession {
         detail: error instanceof Error ? error.message : String(error),
       });
       if (fence !== undefined) this.restoreFences.set(candidate, fence);
-      this.stopHeartbeat(candidate.lease.attempt);
-      this.candidates.delete(candidate.lease.attempt);
+      this.retireCandidate(candidate.lease.attempt);
       this.counters.writeFailureCount += 1;
       throw error;
     }
@@ -129,13 +128,7 @@ export class DdcGenerationSession {
   ): Promise<DdcCommitResult> {
     const registered = this.assertCandidate(candidate);
     try {
-      const result = await this.lifecycle.commit(registered.lease, validatedKey);
-      if (result.restoreFence !== undefined)
-        this.restoreFences.set(registered, result.restoreFence);
-      if (result.result === 'invalid') this.counters.corruptCount += 1;
-      this.stopHeartbeat(registered.lease.attempt);
-      this.candidates.delete(registered.lease.attempt);
-      return result;
+      return await this.commitRegistered(registered, validatedKey);
     } catch (error) {
       this.stopHeartbeat(registered.lease.attempt);
       this.counters.writeFailureCount += 1;
@@ -158,12 +151,7 @@ export class DdcGenerationSession {
           actual: { key: published.key },
         });
       }
-      const result = await this.lifecycle.commit(registered.lease, validatedKey);
-      if (result.restoreFence !== undefined)
-        this.restoreFences.set(registered, result.restoreFence);
-      this.stopHeartbeat(registered.lease.attempt);
-      this.candidates.delete(registered.lease.attempt);
-      return result;
+      return await this.commitRegistered(registered, validatedKey);
     } catch (error) {
       this.stopHeartbeat(registered.lease.attempt);
       const fence = await this.lifecycle.fail(registered.lease, {
@@ -172,7 +160,7 @@ export class DdcGenerationSession {
       });
       if (fence !== undefined) this.restoreFences.set(registered, fence);
       await this.entries.discard(candidate.staged).catch(() => {});
-      this.candidates.delete(registered.lease.attempt);
+      this.retireCandidate(registered.lease.attempt);
       this.counters.writeFailureCount += 1;
       throw error;
     }
@@ -184,7 +172,7 @@ export class DdcGenerationSession {
     try {
       this.stopHeartbeat(registered.lease.attempt);
       await this.lifecycle.discard(registered.lease);
-      this.candidates.delete(registered.lease.attempt);
+      this.retireCandidate(registered.lease.attempt);
     } catch (error) {
       this.counters.writeFailureCount += 1;
       throw error;
@@ -215,7 +203,7 @@ export class DdcGenerationSession {
     } finally {
       await this.entries.discard(candidate.staged).catch(() => {});
       if (registered !== undefined) {
-        this.candidates.delete(registered.lease.attempt);
+        this.retireCandidate(registered.lease.attempt);
       }
     }
     if (restoreError !== undefined) throw restoreError;
@@ -226,23 +214,43 @@ export class DdcGenerationSession {
     return { ...this.counters };
   }
 
-  public async close(): Promise<void> {
-    if (!this.accepting) return;
-    this.accepting = false;
+  public close(): Promise<void> {
+    if (this.closeTask !== undefined) return this.closeTask;
     const pending = [...this.candidates.values()];
-    for (const { candidate } of pending) this.stopHeartbeat(candidate.lease.attempt);
-    for (const { candidate } of pending) {
-      try {
-        await this.lifecycle.discard(candidate.lease);
-      } catch {
-        this.counters.writeFailureCount += 1;
+    this.closeTask = Promise.resolve().then(async () => {
+      for (const { candidate } of pending) {
+        try {
+          await this.lifecycle.discard(candidate.lease);
+        } catch {
+          this.counters.writeFailureCount += 1;
+        } finally {
+          this.retireCandidate(candidate.lease.attempt);
+        }
       }
-    }
-    this.candidates.clear();
+    });
+    for (const { candidate } of pending) this.stopHeartbeat(candidate.lease.attempt);
+    return this.closeTask;
+  }
+
+  private async commitRegistered(
+    candidate: MutableDdcGenerationCandidate,
+    validatedKey: string,
+  ): Promise<DdcCommitResult> {
+    const result = await this.lifecycle.commit(candidate.lease, validatedKey);
+    if (result.result === 'current' || result.result === 'invalid')
+      this.restoreFences.set(candidate, result.restoreFence);
+    if (result.result === 'invalid') this.counters.corruptCount += 1;
+    this.retireCandidate(candidate.lease.attempt);
+    return result;
+  }
+
+  private retireCandidate(attempt: string): void {
+    this.stopHeartbeat(attempt);
+    this.candidates.delete(attempt);
   }
 
   private assertOpen(): void {
-    if (!this.accepting) throw new Error('DDC generation session is closed');
+    if (this.closeTask !== undefined) throw new Error('DDC generation session is closed');
   }
 
   private assertCandidate(candidate: DdcGenerationCandidate): MutableDdcGenerationCandidate {
@@ -262,11 +270,11 @@ export class DdcGenerationSession {
     if (entry === undefined || entry.candidate !== candidate) return;
     const timer = setTimeout(() => {
       entry.heartbeat = undefined;
-      if (!this.accepting || this.candidates.get(attempt) !== entry) return;
+      if (this.closeTask !== undefined || this.candidates.get(attempt) !== entry) return;
       void this.lifecycle
         .heartbeat(candidate.lease)
         .then((lease) => {
-          if (!this.accepting || this.candidates.get(attempt) !== entry) return;
+          if (this.closeTask !== undefined || this.candidates.get(attempt) !== entry) return;
           candidate.lease = lease;
           this.scheduleHeartbeat(candidate);
         })

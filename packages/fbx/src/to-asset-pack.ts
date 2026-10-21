@@ -49,6 +49,12 @@ import {
 import type { FbxLodGroupPod } from './lod/parse-lod-group.js';
 import { buildFbxNodePaths } from './parse-scene.js';
 
+function meshSourceGuid(reference: AssetGuidType | number): string {
+  if (typeof reference === 'number')
+    throw new TypeError('Pack Mesh references require source GUIDs');
+  return AssetGuid.format(reference);
+}
+
 /** Resolve the meta-declared GUID for a parsed (kind, sourceIndex) pair. */
 function makeGuidResolver(
   subAssets: readonly ImportSubAsset[],
@@ -69,7 +75,7 @@ export function buildMeshAsset(
     readonly lods?: readonly MeshLodLevel[];
     readonly meshCollision?: unknown;
   } = {},
-): ImportedAsset {
+): ImportedAsset<unknown> {
   const vc = pod.vertices.length / 3;
   const n = pod.attributes.NORMAL as Float32Array | undefined;
   // feat-20260629-multi-uv-set-support m1-w6: scan all TEXCOORD_n sets
@@ -132,7 +138,7 @@ export function buildMeshAsset(
     kind: 'mesh',
     vertices: packed.value.vertices,
     ...(pod.indices ? { indices: pod.indices } : {}),
-    aabb: box3.fromPositions(box3.create(), pod.vertices),
+    aabb: vc === 0 ? new Float32Array(6) : box3.fromPositions(box3.create(), pod.vertices),
     attributes,
     ...(pod.morphTargets === undefined
       ? {}
@@ -191,7 +197,7 @@ export function buildMeshAsset(
   for (let slotIndex = 0; slotIndex < mesh.materialSlots.length; slotIndex++) {
     const defaultMaterial = mesh.materialSlots[slotIndex]?.defaultMaterial;
     const materialGuid =
-      defaultMaterial === undefined ? undefined : AssetGuid.format(defaultMaterial);
+      defaultMaterial === undefined ? undefined : meshSourceGuid(defaultMaterial);
     if (materialGuid !== undefined && !seenRefs.has(materialGuid.toLowerCase())) {
       seenRefs.add(materialGuid.toLowerCase());
       refs.push({
@@ -201,7 +207,7 @@ export function buildMeshAsset(
     }
   }
   for (const [lodIndex, level] of (mesh.lods ?? []).entries()) {
-    const lodGuid = AssetGuid.format(level.mesh);
+    const lodGuid = meshSourceGuid(level.mesh);
     if (!seenRefs.has(lodGuid.toLowerCase())) {
       seenRefs.add(lodGuid.toLowerCase());
       refs.push({ guid: lodGuid, sourceField: { fieldName: 'lods', arrayIndex: lodIndex } });
@@ -212,7 +218,7 @@ export function buildMeshAsset(
     guid,
     kind: 'mesh',
     ...(pod.name !== undefined ? { name: pod.name } : {}),
-    payload: mesh,
+    payload: { kind: 'mesh' },
     refs,
     artifacts: {
       body: {
@@ -244,7 +250,7 @@ function buildMaterialAsset(
   guid: string,
   skinned = false,
   standardMaterialGuid?: string,
-): ImportedAsset {
+): ImportedAsset<unknown> {
   // A material consumed by a skinned mesh must select the pbr-skin shader so the
   // runtime PSO chain (LayoutKind 'pbr-skin' + 18-float vertex layout + joint
   // palette) is exercised; the render-system fail-fasts otherwise (mirror of
@@ -307,7 +313,7 @@ interface SceneBuildContext {
   readonly refs: readonly string[];
   /**
    * Skin GUIDs (inline strings) injected into the SceneAsset payload and the
-   * scene envelope's refs[] so the runtime recursive loadByGuid walk pulls each
+   * scene envelope's refs[] so the runtime source closure pulls each
    * SkinAsset on the browser-async pack-fetch path. Mirrors gltf-importer:
    * stored as GUID strings (the on-disk round-trip + parseScenePayload's
    * resolveSkinGuids accept both shapes).
@@ -320,7 +326,11 @@ interface SceneBuildContext {
   >;
 }
 
-function buildSceneAsset(pod: ScenePod, guid: string, ctx: SceneBuildContext): ImportedAsset {
+function buildSceneAsset(
+  pod: ScenePod,
+  guid: string,
+  ctx: SceneBuildContext,
+): ImportedAsset<unknown> {
   // ChildOf wiring: ScenePod.children[] holds flattened-array indices; invert to
   // a parent map so each entity emits ChildOf { parent } (localId === array idx).
   const parentOf = new Map<number, number>();
@@ -414,7 +424,7 @@ function buildSceneAsset(pod: ScenePod, guid: string, ctx: SceneBuildContext): I
 
 // M3: TextureAsset requires decoded pixel data — deferred to M4.
 // TexturePod.filePath is preserved for diagnostics during M3.
-function buildTextureNote(_pod: TexturePod, _guid: string): ImportedAsset {
+function buildTextureNote(_pod: TexturePod, _guid: string): ImportedAsset<unknown> {
   // Produce a minimal placeholder; real texture import (decode + upload)
   // lands with M4 material parsing.
   return {
@@ -441,8 +451,8 @@ export function toAssetPack(params: {
   readonly standardMaterialGuid?: string;
   readonly sourceOverrides?: SourceOverrideMap;
   readonly lodGroups?: readonly FbxLodGroupPod[];
-}): readonly ImportedAsset[] {
-  const assets: ImportedAsset[] = [];
+}): readonly ImportedAsset<unknown>[] {
+  const assets: ImportedAsset<unknown>[] = [];
   const guidOf = makeGuidResolver(params.subAssets);
   const materialGuidByIndex = new Map<number, string>();
   const materialNameByIndex = new Map<number, string>();
@@ -489,25 +499,10 @@ export function toAssetPack(params: {
       return [{ sourceKey: declaration.sourceKey, meshGuid: declaration.guid }];
     });
     if (levels.length !== lowerMeshIndices.length) continue;
-    const previousRaw = params.sourceOverrides?.[rootDeclaration.sourceKey]?.lods;
-    const previous = Array.isArray(previousRaw)
-      ? previousRaw.flatMap((entry) => {
-          if (entry === null || typeof entry !== 'object') return [];
-          const value = entry as Record<string, unknown>;
-          return typeof value.sourceKey === 'string' && typeof value.meshGuid === 'string'
-            ? [
-                {
-                  sourceKey: value.sourceKey,
-                  meshGuid: value.meshGuid,
-                  ...(typeof value.screenCoverage === 'number'
-                    ? { screenCoverage: value.screenCoverage }
-                    : {}),
-                },
-              ]
-            : [];
-        })
-      : undefined;
-    const projected = reconcileMeshLodMeta(previous ?? [], levels);
+    const projected = reconcileMeshLodMeta(
+      params.sourceOverrides?.[rootDeclaration.sourceKey]?.lods,
+      levels,
+    );
     if (!projected.ok) {
       throw new ImportError({
         code: 'mesh-lod-contract-invalid',

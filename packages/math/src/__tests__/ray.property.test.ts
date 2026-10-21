@@ -93,7 +93,6 @@ describe('ray world->screen->world round-trip (AC-02)', () => {
       CANVAS_H,
       view,
       proj,
-      'perspective',
     );
 
     // v must lie on the recovered ray within the chained-mul tolerance.

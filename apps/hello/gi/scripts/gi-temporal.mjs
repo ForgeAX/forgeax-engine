@@ -59,7 +59,7 @@ const cooked = SCENES.some((id) => id !== 'sponza') ? await gi.cookGiMaterials()
 async function spawn(world, assets, id) {
   if (id !== 'sponza') {
     const scene = PROCEDURAL_SCENES[id];
-    const controls = spawnProceduralScene(world, scene, gi.publishMaterials(world, assets, cooked), 1, boxMesh);
+    const controls = spawnProceduralScene(world, scene, await gi.publishMaterials(world, assets, cooked), 1, boxMesh);
     return { scene, controls };
   }
   const { createWorldContext } = await import('@forgeax/engine-ecs');
@@ -68,8 +68,8 @@ async function spawn(world, assets, id) {
   await createWorldContext(world, [renderComponentsPlugin(), scenePlugin()]);
   const restore = gi.installDistCatalog(assets, SPONZA_DIST);
   try {
-    const asset = (await assets.loadByGuid(assets.parseGuid(SPONZA.sceneGuid))).unwrap();
-    assets.instantiate(world.allocSharedRef('SceneAsset', asset), world).unwrap();
+    const asset = (await assets.load(assets.parseGuid(SPONZA.sceneGuid), 'scene')).unwrap();
+    assets.instantiate(world.assets.create(asset).unwrap(), world).unwrap();
   } finally {
     restore();
   }
@@ -127,7 +127,7 @@ for (const id of SCENES)
     for (const event of EVENTS) {
       const { renderer, assets, errors, recorder } = await gi.createGiRenderer({ width: SIZE, height: SIZE, capture: CAPTURE_FRAMES.length > 0 });
       try {
-        const world = new World();
+        const world = new World({ assets: assets });
         const { scene, controls } = await spawn(world, assets, id);
         const lease = renderer.attach(world).unwrap();
         const driver = await gi.createFrameDriver({ renderer, world, lease });

@@ -1,10 +1,11 @@
+import { createPrimitiveMesh } from '@forgeax/engine-geometry';
 import { writeFileSync } from 'node:fs';
 import { cpus } from 'node:os';
 import * as assetsRuntime from '@forgeax/engine-assets-runtime';
-import { type Component, defineComponent, type EntityHandle, World } from '@forgeax/engine-ecs';
+import { defineComponent, type EntityHandle, World } from '@forgeax/engine-ecs';
 import { createRenderReadLease } from '@forgeax/engine-ecs/projection';
 import { ChildOf, registerPropagateTransforms, Transform } from '@forgeax/engine-scene';
-import type { ShaderRegistry } from '@forgeax/engine-shader';
+import { ShaderRegistry } from '@forgeax/engine-shader';
 import type { MaterialAsset } from '@forgeax/engine-types';
 import { Camera, MeshFilter, MeshRenderer } from '../src/components';
 import { extractFrames } from '../src/render-system-extract-tail';
@@ -46,7 +47,9 @@ function measureStateProjection() {
       (mode) =>
         !process.env.FORGEAX_PROJECTION_MODE || mode === process.env.FORGEAX_PROJECTION_MODE,
     )) {
-      const world = new World();
+      const assets = new assetsRuntime.AssetRegistry({ shaderRegistry: new ShaderRegistry({ manifestUrl: undefined }) });
+      const world = new World({ assets });
+      const mesh = assets.create(createPrimitiveMesh('cube').unwrap()).unwrap();
       registerPropagateTransforms(world);
       const entities: EntityHandle[] = [];
       const count = workload === 'small' ? contract.smallEntities : contract.entities;
@@ -85,24 +88,12 @@ function measureStateProjection() {
           },
         ],
       };
-      const handle = world.allocSharedRef('MaterialAsset', material);
-      const contentType = Reflect.get(assetsRuntime, 'RuntimeMaterialValue') as
-        | Component
-        | undefined;
-      const content =
-        workload === 'material' && contentType !== undefined
-          ? world
-              .spawn({
-                component: contentType,
-                data: { asset: handle, parameter: 'roughness', value: [0.5] },
-              })
-              .unwrap()
-          : undefined;
+      const handle = assets.create(material).unwrap();
       for (let index = 0; index < count; index++) {
         const entity = world
           .spawn(
             { component: Transform, data: { pos: [(index % 16) / 16, 0, 0] } },
-            { component: MeshFilter, data: { assetHandle: assetsRuntime.HANDLE_CUBE } },
+            { component: MeshFilter, data: { assetHandle: mesh } },
             { component: MeshRenderer, data: { materials: [handle] } },
           )
           .unwrap();
@@ -114,9 +105,6 @@ function measureStateProjection() {
       }
       const scene = new PersistentRenderScene();
       const lease = createRenderReadLease(world);
-      const assets = new assetsRuntime.AssetRegistry({
-        findMaterialArtifact: () => ({ ok: false, error: new Error('not registered') }),
-      } as unknown as ShaderRegistry);
       const owner = { cameraOwner: 0, resourceOwner: 0 };
       const build = (request: PersistentRenderCandidateRequest) =>
         extractFrames(
@@ -152,20 +140,13 @@ function measureStateProjection() {
             world.set(parent, Transform, { pos: [Math.sin(frame / 10), 0, 0] }).unwrap();
           if (workload === 'material') {
             const value = (frame % 10) / 10;
-            if (content !== undefined && contentType !== undefined)
-              world.set(content, contentType, { value: [value] }).unwrap();
-            else {
-              values.roughness = value;
-              (world.sharedRefs as unknown as { markChanged(handle: number): void }).markChanged(
-                handle,
-              );
-            }
+            assets.update(handle, { values: { roughness: value } }).unwrap();
           }
           world.update(1 / 60).unwrap();
           const simulated = performance.now();
           const result =
             mode === 'persistent'
-              ? scene.extractComposition([world], owner, 0, build, [lease])
+              ? scene.extractComposition([world], owner, assets, build, [lease])
               : build('full');
           const projected = performance.now();
           finalCount = result.renderables.length;
@@ -173,7 +154,7 @@ function measureStateProjection() {
             workload === 'material' &&
             result.renderables.some(
               (renderable) =>
-                Math.abs((renderable.materials[0]?.roughness ?? -1) - (frame % 10) / 10) > 0.000001,
+                Math.abs((renderable.materials[0]?.snapshot.roughness ?? -1) - (frame % 10) / 10) > 0.000001,
             )
           ) {
             throw new Error('material workload failed semantic equivalence');
@@ -207,6 +188,7 @@ function measureStateProjection() {
       } finally {
         lease.dispose();
         scene.dispose();
+        assets.dispose();
       }
     }
   const result = {

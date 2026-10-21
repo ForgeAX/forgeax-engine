@@ -40,12 +40,8 @@ const HAS_TRANSFER: boolean =
 interface SlotState {
   /** Bucket index, SIZE_CLASSES.length for dedicated storage, or -1 for zero length. */
   sizeClassIdx: number;
-  /** Underlying ArrayBuffer for the slot's current bucket (zero-length for sizeClassIdx === -1). */
-  buffer: ArrayBuffer;
   /** Live view; sliced to `byteLength <= buffer.byteLength`. */
-  view: Uint8Array;
-  /** Logical byteLength (== view.byteLength). */
-  byteLength: number;
+  view: Uint8Array<ArrayBuffer>;
   /** false when the slot has been released and its id is parked on the free-list. */
   live: boolean;
 }
@@ -104,7 +100,7 @@ export class BufferPool {
       const id = this.nextId++;
       const buffer = new ArrayBuffer(0);
       const view = new Uint8Array(buffer);
-      this.slots.set(id, { sizeClassIdx: -1, buffer, view, byteLength: 0, live: true });
+      this.slots.set(id, { sizeClassIdx: -1, view, live: true });
       return ok({ id, view });
     }
     if (!Number.isSafeInteger(byteLength) || byteLength < 0) {
@@ -118,7 +114,7 @@ export class BufferPool {
         const buffer = new ArrayBuffer(byteLength);
         const view = new Uint8Array(buffer);
         const id = this.nextId++;
-        this.slots.set(id, { sizeClassIdx: idx, buffer, view, byteLength, live: true });
+        this.slots.set(id, { sizeClassIdx: idx, view, live: true });
         return ok({ id, view });
       } catch {
         return err(new ManagedBufferOutOfBoundsError(byteLength, 0));
@@ -140,12 +136,12 @@ export class BufferPool {
       }
       // Re-slice the parked buffer to the new logical length; bucket buffer
       // is reused as-is (D-7 no realloc on release).
-      slot.byteLength = byteLength;
-      slot.view = new Uint8Array(slot.buffer, 0, byteLength);
+
+      slot.view = new Uint8Array(slot.view.buffer, 0, byteLength);
       slot.live = true;
       // Defensively clear bytes so AI users never see stale data from the
       // prior tenant of the slot.
-      new Uint8Array(slot.buffer).fill(0);
+      new Uint8Array(slot.view.buffer).fill(0);
       return ok({ id, view: slot.view });
     }
     // Fresh allocation: bucket bytes (rounded up) -> sliced view of byteLength.
@@ -154,9 +150,7 @@ export class BufferPool {
     const view = new Uint8Array(buffer, 0, byteLength);
     this.slots.set(id, {
       sizeClassIdx: idx,
-      buffer,
       view,
-      byteLength,
       live: true,
     });
     return ok({ id, view });
@@ -182,31 +176,32 @@ export class BufferPool {
     newBytes: number,
   ): Result<Uint8Array, ManagedBufferShrinkNotSupportedError | ManagedBufferOutOfBoundsError> {
     const slot = this.slots.get(id);
-    if (slot === undefined) {
+    if (slot === undefined || !slot.live) {
       // Treat unknown id as out-of-bounds against a 0-byte slot (closes the
       // surface; AI users hit this only on use-after-release of a slot id).
       return err(new ManagedBufferOutOfBoundsError(newBytes, 0));
     }
-    if (newBytes < slot.byteLength) {
-      return err(new ManagedBufferShrinkNotSupportedError(newBytes, slot.byteLength));
+    if (newBytes < slot.view.byteLength) {
+      return err(new ManagedBufferShrinkNotSupportedError(newBytes, slot.view.byteLength));
     }
-    if (newBytes === slot.byteLength) {
+    if (newBytes === slot.view.byteLength) {
       return ok(slot.view);
     }
     if (!Number.isSafeInteger(newBytes) || newBytes < 0) {
-      return err(new ManagedBufferOutOfBoundsError(newBytes, slot.buffer.byteLength));
+      return err(new ManagedBufferOutOfBoundsError(newBytes, slot.view.buffer.byteLength));
     }
     const newIdx = bucketIndex(newBytes);
-    if (newBytes <= slot.buffer.byteLength) {
+    if (newBytes <= slot.view.buffer.byteLength) {
       // Same bucket: re-slice the existing backing ArrayBuffer to the new
       // logical length. No transfer; old view stays valid until next grow.
-      slot.byteLength = newBytes;
-      slot.view = new Uint8Array(slot.buffer, 0, newBytes);
+
+      slot.view = new Uint8Array(slot.view.buffer, 0, newBytes);
       return ok(slot.view);
     }
     // Cross-bucket: detach old buffer + carry old bytes into the new bucket.
-    const newBucketBytes = SIZE_CLASSES[newIdx] ?? Math.max(newBytes, slot.buffer.byteLength * 2);
-    const oldByteLength = slot.byteLength;
+    const newBucketBytes =
+      SIZE_CLASSES[newIdx] ?? Math.max(newBytes, slot.view.buffer.byteLength * 2);
+    const oldByteLength = slot.view.byteLength;
     let nextBuffer: ArrayBuffer;
     try {
       if (HAS_TRANSFER) {
@@ -214,18 +209,17 @@ export class BufferPool {
         // bucket size and detach the source. The transferred buffer keeps the
         // old prefix bytes intact.
         nextBuffer = (
-          slot.buffer as unknown as { transfer(newByteLength: number): ArrayBuffer }
+          slot.view.buffer as unknown as { transfer(newByteLength: number): ArrayBuffer }
         ).transfer(newBucketBytes);
       } /* istanbul ignore next -- fallback only on runtimes without ES2024 transfer() */ else {
         nextBuffer = new ArrayBuffer(newBucketBytes);
-        new Uint8Array(nextBuffer).set(new Uint8Array(slot.buffer, 0, oldByteLength));
+        new Uint8Array(nextBuffer).set(new Uint8Array(slot.view.buffer, 0, oldByteLength));
       }
     } catch {
-      return err(new ManagedBufferOutOfBoundsError(newBytes, slot.buffer.byteLength));
+      return err(new ManagedBufferOutOfBoundsError(newBytes, slot.view.buffer.byteLength));
     }
     slot.sizeClassIdx = newIdx;
-    slot.buffer = nextBuffer;
-    slot.byteLength = newBytes;
+
     slot.view = new Uint8Array(nextBuffer, 0, newBytes);
     return ok(slot.view);
   }
@@ -274,7 +268,7 @@ export class BufferPool {
     const slot = this.slots.get(id);
     if (slot === undefined || !slot.live) return 0;
     if (slot.sizeClassIdx < 0) return 0;
-    return slot.buffer.byteLength;
+    return slot.view.buffer.byteLength;
   }
 
   /**
@@ -295,29 +289,31 @@ export class BufferPool {
     newByteLength: number,
   ): Result<Uint8Array, ManagedBufferShrinkNotSupportedError | ManagedBufferOutOfBoundsError> {
     const slot = this.slots.get(id);
-    if (slot === undefined) {
+    if (slot === undefined || !slot.live) {
       return err(new ManagedBufferOutOfBoundsError(newByteLength, 0));
+    }
+    if (!Number.isSafeInteger(newByteLength) || newByteLength < 0) {
+      return err(new ManagedBufferOutOfBoundsError(newByteLength, slot.view.buffer.byteLength));
     }
     if (slot.sizeClassIdx < 0) {
       // alloc(0) slot has no bucket; only newByteLength === 0 is legal.
       if (newByteLength === 0) {
-        slot.byteLength = 0;
-        slot.view = new Uint8Array(slot.buffer);
+        slot.view = new Uint8Array(slot.view.buffer);
         return ok(slot.view);
       }
       return err(new ManagedBufferOutOfBoundsError(newByteLength, 0));
     }
-    const bucketBytes = slot.buffer.byteLength;
+    const bucketBytes = slot.view.buffer.byteLength;
     if (newByteLength > bucketBytes) {
       return err(new ManagedBufferOutOfBoundsError(newByteLength, bucketBytes));
     }
     // Zero-fill the prefix bytes that fall past the new logical length so
     // AI users never see stale tail bytes through a future grow.
-    if (newByteLength < slot.byteLength) {
-      new Uint8Array(slot.buffer, newByteLength, slot.byteLength - newByteLength).fill(0);
+    if (newByteLength < slot.view.byteLength) {
+      new Uint8Array(slot.view.buffer, newByteLength, slot.view.byteLength - newByteLength).fill(0);
     }
-    slot.byteLength = newByteLength;
-    slot.view = new Uint8Array(slot.buffer, 0, newByteLength);
+
+    slot.view = new Uint8Array(slot.view.buffer, 0, newByteLength);
     return ok(slot.view);
   }
 

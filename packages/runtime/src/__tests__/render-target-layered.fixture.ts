@@ -29,6 +29,7 @@ import { propagateTransforms, Transform } from '@forgeax/engine-scene';
 import type { MaterialAsset } from '@forgeax/engine-types';
 import { expect } from 'vitest';
 import { halfToFloat } from './contact-shadow.fixture';
+import { testAssets } from './helpers/runtime-assets';
 
 /** Module id of `fixtures/layered-target/layered-target.wgsl`. */
 export const LAYERED_TARGET_SHADER = 'layered_fixture::layered_target';
@@ -116,13 +117,19 @@ function spawnMarker(world: World): void {
       {
         component: MeshFilter,
         data: {
-          assetHandle: world.allocSharedRef('MeshAsset', createBoxGeometry(2, 2, 2).unwrap()),
+          assetHandle: testAssets(world)
+            .create(createBoxGeometry(2, 2, 2).unwrap())
+            .unwrap(),
         },
       },
       {
         component: MeshRenderer,
         data: {
-          materials: [world.allocSharedRef('MaterialAsset', Materials.unlit([...MARKER_COLOR, 1]))],
+          materials: [
+            testAssets(world)
+              .create(Materials.unlit([...MARKER_COLOR, 1]))
+              .unwrap(),
+          ],
         },
       },
     )
@@ -193,12 +200,11 @@ function buildLayeredScene(renderer: Renderer): LayeredScene {
     }),
   );
   spawnMarker(world);
-  const volumeHandle = world.allocSharedRef('RenderTargetTextureSource', volumeSource);
-  const arrayHandle = world.allocSharedRef('RenderTargetTextureSource', arraySource);
-  const plane = world.allocSharedRef(
-    'MeshAsset',
-    createPlaneGeometry(QUAD_SIZE, QUAD_SIZE).unwrap(),
-  );
+  const volumeHandle = { source: volumeSource };
+  const arrayHandle = { source: arraySource };
+  const plane = testAssets(world)
+    .create(createPlaneGeometry(QUAD_SIZE, QUAD_SIZE).unwrap())
+    .unwrap();
   const quad = (kind: 'volume' | 'array', index: number) => {
     const material: MaterialAsset = {
       kind: 'material',
@@ -235,7 +241,7 @@ function buildLayeredScene(renderer: Renderer): LayeredScene {
         { component: MeshFilter, data: { assetHandle: plane } },
         {
           component: MeshRenderer,
-          data: { materials: [world.allocSharedRef('MaterialAsset', material)] },
+          data: { materials: [testAssets(world).create(material).unwrap()] },
         },
       )
       .unwrap();

@@ -1,10 +1,8 @@
-import {
-  type MaterialShaderArtifactReceipt,
-  STANDARD_PIPELINE_PARAM_SCHEMA,
-} from '@forgeax/engine-shader';
+import { STANDARD_PIPELINE_PARAM_SCHEMA } from '@forgeax/engine-shader';
 import {
   derive,
   getAdmittedParamSchemaInterface,
+  type MaterialProgramAbi,
   type ParamSchemaEntry,
   type UboFieldLayout,
 } from '@forgeax/engine-types';
@@ -130,7 +128,7 @@ function writeNumeric(
   }
 }
 
-function validateReceipt(receipt: MaterialShaderArtifactReceipt): void {
+function validateReceipt(receipt: MaterialProgramAbi): void {
   const expectedFields = ROW.fields
     .filter((field) => !field.name.startsWith('_gpuDrivenPadding'))
     .map((field) => field.name);
@@ -147,7 +145,7 @@ function validateReceipt(receipt: MaterialShaderArtifactReceipt): void {
 
 /** Pack the producer receipt's numeric Standard PBR row into the GPU Scene table. */
 export function packStandardPbrMaterialRow(
-  receipt: MaterialShaderArtifactReceipt,
+  receipt: MaterialProgramAbi,
   material: MaterialSnapshot,
 ): Uint8Array {
   validateReceipt(receipt);

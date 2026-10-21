@@ -5,27 +5,22 @@ import { writeFile } from 'node:fs/promises';
 import { dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { AssetRegistry } from '@forgeax/engine-assets-runtime';
-import {
-  ktx2ColorSpace,
-  parseKtx2,
-  selectTranscodeTarget,
-  transcodeBasis,
-  transcodeKtx2,
-} from '@forgeax/engine-codec';
+import { selectTranscodeTarget, type TranscodeCaps } from '@forgeax/engine-codec';
 import { basisEncode } from '@forgeax/engine-codec/encode';
 import { World } from '@forgeax/engine-ecs';
-import { AssetGuid } from '@forgeax/engine-pack/guid';
 import type { RhiDevice, Texture } from '@forgeax/engine-rhi';
 import { ok } from '@forgeax/engine-rhi';
 import { createShaderModule, rhi } from '@forgeax/engine-rhi-webgpu';
-import type { TextureAsset, TranscodeCaps } from '@forgeax/engine-types';
+import type { TextureAsset } from '@forgeax/engine-types';
 import { beforeAll, describe, expect, it } from 'vitest';
 import type {
   BasisEncoderModule,
   BasisModuleFactory,
 } from '../../../codec/src/wasm/basis-types.js';
+import { textureContribution } from '../../../image/src/runtime/asset-decoders';
 import { GpuResidencyCache } from '../device/gpu-residency.js';
 import { GPU_BUFFER_USAGE_COPY_DST, GPU_BUFFER_USAGE_MAP_READ } from '../gpu-usage.js';
+import { worldRenderResources } from '../publication/resource-scope';
 
 const ENCODER_GLUE = new URL('../../../codec/pkg/encode/basis_encoder.mjs', import.meta.url);
 const ENCODER_WASM = new URL('../../../codec/pkg/encode/basis_encoder.wasm', import.meta.url);
@@ -299,89 +294,30 @@ async function textureFor(
     { model: input.model, srgb: input.colorSpace === 'srgb', channels: 'rgba' },
     caps,
   );
-  if (input.container === 'ktx2') {
-    const parsed = await parseKtx2(input.bytes);
-    if (!parsed.ok)
-      return {
-        ok: false,
-        error: structuredError(parsed.error.code, 'real KTX2 parses', parsed.error.hint),
-      };
-    const colorSpace = ktx2ColorSpace(parsed.value);
-    if (colorSpace !== input.colorSpace) {
-      return {
-        ok: false,
-        error: structuredError(
-          'image-color-space-mismatch',
-          'DFD color space matches source Meta',
-          'preserve the KTX2 DFD transfer function',
-        ),
-      };
-    }
-    const transcoded = await transcodeKtx2(parsed.value, selected);
-    if (!transcoded.ok)
-      return {
-        ok: false,
-        error: structuredError(
-          transcoded.error.code,
-          'real KTX2 transcodes to selected target',
-          transcoded.error.hint,
-        ),
-      };
-    const mip = transcoded.value.mips[0];
-    if (mip === undefined)
-      return {
-        ok: false,
-        error: structuredError(
-          'transcode-failed',
-          'real KTX2 returns mip 0',
-          'keep the source mip chain intact',
-        ),
-      };
-    return {
-      ok: true,
-      selected,
-      texture: {
-        kind: 'texture',
-        shape: { viewDimension: '2d', extent: { width: mip.width, height: mip.height } },
-        format: selected,
-        data: mip.data,
-        colorSpace: input.colorSpace,
-        mips: { kind: 'none' },
-      },
-    };
-  }
-  const transcoded = await transcodeBasis(input.bytes, selected);
-  if (!transcoded.ok)
-    return {
-      ok: false,
-      error: structuredError(
-        transcoded.error.code,
-        'real Basis transcodes to selected target',
-        transcoded.error.hint,
-      ),
-    };
-  const mip = transcoded.value.mips[0];
-  if (mip === undefined)
-    return {
-      ok: false,
-      error: structuredError(
-        'transcode-failed',
-        'real Basis returns mip 0',
-        'keep the source mip chain intact',
-      ),
-    };
-  return {
-    ok: true,
-    selected,
-    texture: {
+  const decoded = await textureContribution.decoder.decode({
+    envelope: {
+      guid: input.id,
       kind: 'texture',
-      shape: { viewDimension: '2d', extent: { width: mip.width, height: mip.height } },
-      format: selected,
-      data: mip.data,
-      colorSpace: input.colorSpace,
-      mips: { kind: 'none' },
+      payload: { kind: 'texture', colorSpace: input.colorSpace } as TextureAsset,
+      refs: [],
+      artifacts: {
+        body: {
+          path: `image.${input.container}`,
+          mediaType: `image/${input.container}`,
+          contentEncoding: 'identity',
+          byteLength: input.bytes.byteLength,
+          integrity: {
+            algorithm: 'sha256',
+            digest: `sha256:${createHash('sha256').update(input.bytes).digest('hex')}`,
+          },
+          assetCodec: { name: 'basis', container: input.container, profile: input.model },
+        },
+      },
     },
-  };
+    artifacts: { read: async () => ok(input.bytes) },
+    signal: new AbortController().signal,
+  });
+  return decoded.ok ? { ok: true, selected, texture: decoded.value } : decoded;
 }
 
 async function readbackTexture(
@@ -556,17 +492,8 @@ describe.skipIf(!pkgBuilt)('KTX2/Basis real GPU texture consumer matrix', () => 
     }
     const device = deviceResult.value;
     const store = new GpuResidencyCache();
-    store.configureGpuDevice(
-      device as never,
-      undefined,
-      (source, pod) => {
-        if ('resolveAsset' in source) throw new Error('This fixture only allocates World assets');
-        return ok(source.allocSharedRef('EquirectAsset', pod));
-      },
-      device.caps,
-    );
     const rows: GpuCell[] = [];
-    const world = new World();
+    const registries: AssetRegistry[] = [];
     for (const [inputIndex, input] of inputs.entries()) {
       for (const [armIndex, [caps, arm]] of capabilityArms.entries()) {
         const guid = guidFor(inputIndex, armIndex);
@@ -592,6 +519,25 @@ describe.skipIf(!pkgBuilt)('KTX2/Basis real GPU texture consumer matrix', () => 
           });
           continue;
         }
+        store.destroyAll();
+        store.configureGpuDevice(device, undefined, {
+          ...device.caps,
+          textureCompressionBc: caps.bc,
+          textureCompressionAstc: caps.astc,
+          textureCompressionEtc2: caps.etc2,
+        });
+        const registry = new AssetRegistry();
+        registries.push(registry);
+        const world = new World({ assets: registry });
+        const handle = registry.create(result.texture).unwrap();
+        const loaded = registry.read(handle);
+        if (!loaded.ok) throw loaded.error;
+        store.prepareTextureData(handle, loaded.value, worldRenderResources(world));
+        await store.waitTextureData(handle, worldRenderResources(world));
+        const derived = store
+          .prepareTextureData(handle, loaded.value, worldRenderResources(world))
+          .unwrap();
+        expect(derived.format).toBe(result.selected);
         const requiredFeature = requiredCompressionFeature(result.selected);
         if (requiredFeature !== undefined && !device.features.has(requiredFeature)) {
           const error = structuredError(
@@ -613,15 +559,7 @@ describe.skipIf(!pkgBuilt)('KTX2/Basis real GPU texture consumer matrix', () => 
           });
           continue;
         }
-        const registry = new AssetRegistry({} as never);
-        const parsedGuid = AssetGuid.parse(guid);
-        if (!parsedGuid.ok) throw new Error('GPU matrix GUID construction failed');
-        const catalog = registry.catalog(parsedGuid.value, result.texture);
-        if (!catalog.ok) throw new Error(`GPU matrix catalog failed: ${catalog.error.code}`);
-        const loaded = await registry.loadByGuid<TextureAsset>(parsedGuid.value);
-        if (!loaded.ok) throw new Error(`GPU matrix loadByGuid failed: ${loaded.error.code}`);
-        const handle = world.allocSharedRef('TextureAsset', loaded.value);
-        const resident = store.ensureResident(handle, loaded.value);
+        const resident = store.ensureResident(handle, loaded.value, worldRenderResources(world));
         if (!resident.ok) {
           rows.push({
             source: input.id,
@@ -641,7 +579,7 @@ describe.skipIf(!pkgBuilt)('KTX2/Basis real GPU texture consumer matrix', () => 
           });
           continue;
         }
-        const gpuTexture = store._getTextureGpuTexture(handle);
+        const gpuTexture = store._getTextureGpuTexture(handle, worldRenderResources(world));
         if (gpuTexture === undefined) throw new Error('GPU matrix residency returned no texture');
         try {
           const readback = await readbackTexture(device, loaded.value, gpuTexture);
@@ -702,6 +640,7 @@ describe.skipIf(!pkgBuilt)('KTX2/Basis real GPU texture consumer matrix', () => 
       }
     }
     store.destroyAll();
+    for (const registry of registries) registry.dispose();
     await writeFile(
       GPU_EVIDENCE_PATH,
       `${JSON.stringify({ schemaVersion: 'format-tier1-ktx2-gpu/1', featureId: FEATURE_ID, generatedAt: new Date().toISOString(), sourceCodeSha: SOURCE_CODE_SHA, status: 'complete', rows }, null, 2)}\n`,

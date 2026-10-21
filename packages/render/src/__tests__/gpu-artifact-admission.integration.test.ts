@@ -1,13 +1,14 @@
 import { type RhiNullDevice, rhi } from '@forgeax/engine-rhi-null';
 import { ok } from '@forgeax/engine-types';
 import { expect, it, vi } from 'vitest';
-import { gpuDrivenMaterialArtifactKey } from '../extract/gpu-driven';
 import { BatchTopology } from '../gpu-driven/batch-topology';
 import { GpuDrivenProduction } from '../gpu-driven/production-raster';
 import { GpuScene } from '../gpu-scene';
+import { MaterialResource } from '../material-resource';
 import { makeZeroCameraFallbackSnapshot } from '../record/frame-snapshot';
 import { RenderScene } from '../scene/render-scene';
 import {
+  admitGpuFixture,
   mesh,
   preparedPbrSnapshot,
   snapshot,
@@ -22,37 +23,28 @@ async function fixture() {
   const shader = (await rhi.createShaderModule(device, { code: 'synthetic' })).unwrap();
   const layout = device.createBindGroupLayout({ entries: [] }).unwrap();
   const inputs = standardPbrInputs(device, shader, layout);
-  const base = inputs.standardPbrArtifact;
+  const base = inputs.materialArtifact;
   if (base?.receipt === undefined) throw new Error('expected receipt');
   const receipt = base.receipt;
   const artifacts = [0, 1].map((index) => ({
     ...base,
     receipt: { ...receipt, receiptIdentity: `admission-${index}` },
   }));
-  const artifactKey = (artifact: (typeof artifacts)[number]) =>
-    gpuDrivenMaterialArtifactKey({
-      material: artifact.material,
-      deformation: 'rigid',
-      receiptIdentity: artifact.receipt.receiptIdentity,
-      receiptGeneration: artifact.receipt.generation,
-    });
+  const keyOf = (index: number) => `admission-${index}`;
+  const keys = artifacts.map((_, index) => keyOf(index));
   const materialArtifacts = new Map(
-    artifacts.map((artifact) => [artifactKey(artifact), artifact] as const),
+    artifacts.map((artifact, index) => [keyOf(index), artifact] as const),
   );
-  const keys = [...materialArtifacts.keys()];
   const projection = new RenderScene();
-  const rows = artifacts.map((artifact, index) => {
+  const rows = artifacts.map((_, index) => {
     const row = preparedPbrSnapshot(snapshot(index + 1, index + 10));
-    return {
-      ...row,
-      gpuDrivenDraws: (row.gpuDrivenDraws ?? []).map((draw) => {
-        if (draw.prepared === undefined) throw new Error('expected prepared draw');
-        return {
-          ...draw,
-          prepared: { ...draw.prepared, receiptIdentity: artifact.receipt.receiptIdentity },
-        };
-      }),
-    };
+    const material = new MaterialResource({
+      ...row.material.snapshot,
+      materialSceneIndexProgramKeys: {
+        forward: { pass: 'forward', specializationKey: keyOf(index) },
+      },
+    });
+    return { ...row, material, materials: [material] };
   });
   const available = GpuScene.create(device, 4).unwrap();
   if (available.status !== 'available') throw new Error('expected GPU Scene');
@@ -60,7 +52,7 @@ async function fixture() {
   scene.sync(projection.apply(rows.map(updateSnapshot))).unwrap();
   const topology = new BatchTopology();
   topology.rebuild(projection.slotsSnapshot());
-  const plan = topology.plan();
+  const plan = topology.query(topology.sourcePlan(), undefined);
   expect(plan.batches).toHaveLength(2);
   const shared = mesh(device);
   const meshes = new Map(projection.slotsSnapshot().map(({ slot }) => [slot, shared]));
@@ -73,19 +65,22 @@ async function fixture() {
     scene,
     production,
     replaceFirstMesh() {
-      meshes.set(plan.batches[0]?.candidates[0]?.primitiveIndex ?? -1, mesh(device));
+      meshes.set(plan.batches.at(0)?.candidates.at(0)?.primitiveIndex ?? -1, mesh(device));
     },
-    prepare(meshResidencyEpoch = 1) {
-      return production.prepare({
-        ...inputs,
-        materialArtifacts,
-        scene: { scene, plan, slots: projection.slotsSnapshot(), slotAt: projection.slotAt },
-        camera: makeZeroCameraFallbackSnapshot(),
-        meshBySlot: meshes,
-        meshResidencyEpoch,
-        viewBindGroupLayout: layout,
-        shadowCasterMembership: [],
-      });
+    prepare() {
+      const result = production.prepare(
+        admitGpuFixture({
+          ...inputs,
+          materialArtifacts,
+          scene: { scene, plan, slots: projection.slotsSnapshot(), slotAt: projection.slotAt },
+          camera: makeZeroCameraFallbackSnapshot(),
+          meshBySlot: meshes,
+
+          viewBindGroupLayout: layout,
+        }),
+      );
+      if (result.ok) result.value?._commitResourceReplacement();
+      return result;
     },
     close() {
       production.dispose();
@@ -105,18 +100,12 @@ it('checks each retained batch artifact once while keeping missing-receipt admis
     f.materialArtifacts.delete(f.keys[1] ?? '');
     const missing = f.artifacts[1];
     if (missing === undefined) throw new Error('expected second artifact');
-    expect(f.prepare()).toMatchObject({
-      ok: false,
-      error: {
+    expect(() => f.prepare()).toThrow(
+      expect.objectContaining({
         code: 'missing-material-receipt',
-        expected: 'a producer-owned material program receipt is present',
-        detail: {
-          owner: 'material',
-          reason: 'material-receipt-missing',
-          expected: `published artifact for ${missing.material} (${missing.receipt.receiptIdentity}@${missing.receipt.generation})`,
-        },
-      },
-    });
+        detail: expect.objectContaining({ owner: 'material', reason: 'material-receipt-missing' }),
+      }),
+    );
   } finally {
     lookup.mockRestore();
     f.close();
@@ -132,21 +121,24 @@ it('preserves mesh content invalidation across missing-artifact failure and retr
     expect(allocationCount).toBeDefined();
     f.replaceFirstMesh();
     f.materialArtifacts.delete(f.keys[1] ?? '');
-    expect(f.prepare(2)).toMatchObject({
-      ok: false,
-      error: { code: 'missing-material-receipt', detail: { owner: 'material' } },
-    });
+    expect(() => f.prepare()).toThrow(
+      expect.objectContaining({
+        code: 'missing-material-receipt',
+        detail: expect.objectContaining({ owner: 'material' }),
+      }),
+    );
     expect(f.production.inspect().resourceAllocation?.successfulAllocationCount).toBe(
       allocationCount,
     );
     const restored = f.artifacts[1];
     if (restored === undefined) throw new Error('expected second artifact');
     f.materialArtifacts.set(f.keys[1] ?? '', restored);
-    const recovered = f.prepare(2).unwrap();
-    expect(recovered?.drawKeys?.size).toBe(2);
-    expect(f.scene.changedSlotsSince(revision)).toEqual([0]);
+    const recovered = f.prepare().unwrap();
+    expect(recovered?.materialBindings).toHaveLength(2);
+    expect(f.production.inspect().preparedBatchBuilds).toBe(1);
+    expect(f.scene.contentRevision).toBe(revision);
     const stableRevision = f.scene.contentRevision;
-    const stable = f.prepare(2).unwrap();
+    const stable = f.prepare().unwrap();
     expect(stable?.topologySignature).toBe(recovered?.topologySignature);
     expect(f.production.inspect().preparedBatchBuilds).toBe(0);
     expect(f.scene.contentRevision).toBe(stableRevision);

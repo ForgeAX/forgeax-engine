@@ -1,25 +1,20 @@
 import { STANDARD_PIPELINE_PARAM_SCHEMA } from '@forgeax/engine-shader';
 import { derive, MATERIAL_NUMERIC_LAYOUT, WGSL_NUMERIC_LAYOUT } from '@forgeax/engine-types';
 
-export type GpuSceneScalar = 'u32' | 'i32' | 'f32';
-export type GpuSceneFieldType =
-  | GpuSceneScalar
-  | 'vec2<f32>'
-  | 'vec3<f32>'
-  | 'vec4<f32>'
-  | 'mat4x4<f32>';
+type GpuSceneScalar = 'u32' | 'i32' | 'f32';
+type GpuSceneFieldType = GpuSceneScalar | 'vec2<f32>' | 'vec3<f32>' | 'vec4<f32>' | 'mat4x4<f32>';
 
-export interface GpuSceneField {
+interface GpuSceneField {
   readonly name: string;
   readonly type: GpuSceneFieldType;
 }
 
-export interface GpuSceneTableSchema {
+interface GpuSceneTableSchema {
   readonly name: string;
   readonly fields: readonly GpuSceneField[];
 }
 
-export interface GpuSceneFieldLayout extends GpuSceneField {
+interface GpuSceneFieldLayout extends GpuSceneField {
   readonly offset: number;
   readonly size: number;
   readonly alignment: number;
@@ -42,7 +37,7 @@ function align(value: number, alignment: number): number {
   return Math.ceil(value / alignment) * alignment;
 }
 
-export function deriveGpuSceneTableLayout(schema: GpuSceneTableSchema): GpuSceneTableLayout {
+function deriveGpuSceneTableLayout(schema: GpuSceneTableSchema): GpuSceneTableLayout {
   let cursor = 0;
   let tableAlignment = 4;
   const fields = schema.fields.map((field) => {
@@ -120,10 +115,9 @@ export const GPU_SCENE_SCHEMAS = Object.freeze({
       { name: 'flags', type: 'u32' },
       { name: 'transformIndex', type: 'u32' },
       { name: 'materialIndex', type: 'u32' },
-      { name: 'drawTemplateIndex', type: 'u32' },
       { name: 'instanceStart', type: 'u32' },
       { name: 'instanceCount', type: 'u32' },
-      { name: 'assetHandle', type: 'u32' },
+      { name: 'sourceIndex', type: 'u32' },
       { name: 'localBoundsMin', type: 'vec3<f32>' },
       { name: 'lightingChannels', type: 'u32' },
       { name: 'localBoundsMax', type: 'vec4<f32>' },
@@ -143,19 +137,6 @@ export const GPU_SCENE_SCHEMAS = Object.freeze({
     fields: [
       { name: 'currentWorld', type: 'mat4x4<f32>' },
       { name: 'previousWorld', type: 'mat4x4<f32>' },
-    ],
-  },
-  drawTemplate: {
-    name: 'GpuSceneDrawTemplate',
-    fields: [
-      { name: 'pipelineClass', type: 'u32' },
-      { name: 'materialIndex', type: 'u32' },
-      { name: 'firstIndex', type: 'u32' },
-      { name: 'indexCount', type: 'u32' },
-      { name: 'baseVertex', type: 'i32' },
-      { name: 'firstInstance', type: 'u32' },
-      { name: 'passFlags', type: 'u32' },
-      { name: 'reserved', type: 'u32' },
     ],
   },
   material: {

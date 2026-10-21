@@ -71,14 +71,14 @@ afterEach(() => vi.unstubAllGlobals());
 
 async function programTransportFixture() {
   vi.stubGlobal('Worker', CreditWorker);
-  const world = new World();
   const shaders = new ShaderRegistry({ manifestUrl: undefined });
   shaders.installMaterialArtifact('test::candidate-program', {
     source:
       '@vertex fn vs_main() -> @builtin(position) vec4<f32> { return vec4<f32>(0.0); }\n@fragment fn fs_main() -> @location(0) vec4<f32> { return vec4<f32>(1.0); }',
     paramSchema: DEFAULT_UNLIT_PARAM_SCHEMA,
   });
-  const assets = new AssetRegistry(shaders);
+  const assets = new AssetRegistry({ shaderRegistry: shaders });
+  const world = new World({ assets });
   const canvas = {} as OffscreenCanvas;
   const source = new SourceRenderWorker(
     world,
@@ -92,20 +92,22 @@ async function programTransportFixture() {
     },
     () => {},
   );
-  const previous = world.allocSharedRef('MeshAsset', createBoxGeometry(1, 1, 1).unwrap());
+  const previous = assets.create(createBoxGeometry(1, 1, 1).unwrap()).unwrap();
   const mesh = createBoxGeometry(2, 2, 2).unwrap();
-  const meshHandle = world.allocSharedRef('MeshAsset', mesh);
-  const material = world.allocSharedRef('MaterialAsset', {
-    kind: 'material',
-    passes: [
-      {
-        name: 'forward',
-        program: { module: 'test::candidate-program' },
-        renderState: { tags: { LightMode: 'Forward' } },
-      },
-    ],
-    values: { baseColor: [1, 1, 1, 1] },
-  });
+  const meshHandle = assets.create(mesh).unwrap();
+  const material = assets
+    .create({
+      kind: 'material',
+      passes: [
+        {
+          name: 'forward',
+          program: { module: 'test::candidate-program' },
+          renderState: { tags: { LightMode: 'Forward' } },
+        },
+      ],
+      values: { baseColor: [1, 1, 1, 1] },
+    })
+    .unwrap();
   await source.start(canvas);
   const worker = CreditWorker.current;
   const prepare = (signal?: AbortSignal) => {
@@ -118,7 +120,7 @@ async function programTransportFixture() {
       .unwrap();
     world.update(1 / 60).unwrap();
     return source.dynamicGeometry.prepareDynamicGeometry(
-      { world, entity, meshHandle, mesh, revision: 1 },
+      { world, entity, meshHandle, revision: 1 },
       signal === undefined ? undefined : { signal },
     );
   };
@@ -218,8 +220,10 @@ it.each([
 
 it('publishes geometry without a global temporal reset and faults paired recovery when release is unconfirmed', async () => {
   vi.stubGlobal('Worker', CreditWorker);
-  const world = new World();
-  const assets = new AssetRegistry(new ShaderRegistry({ manifestUrl: undefined }));
+  const assets = new AssetRegistry({
+    shaderRegistry: new ShaderRegistry({ manifestUrl: undefined }),
+  });
+  const world = new World({ assets });
   const canvas = {} as OffscreenCanvas;
   const messages: EngineToHostMessage[] = [];
   const source = new SourceRenderWorker(
@@ -235,8 +239,8 @@ it('publishes geometry without a global temporal reset and faults paired recover
     (message) => messages.push(message),
   );
   const mesh = createBoxGeometry(1, 1, 1).unwrap();
-  const meshHandle = world.allocSharedRef('MeshAsset', mesh);
-  const previous = world.allocSharedRef('MeshAsset', createBoxGeometry(2, 2, 2).unwrap());
+  const meshHandle = assets.create(mesh).unwrap();
+  const previous = assets.create(createBoxGeometry(2, 2, 2).unwrap()).unwrap();
   const entity = world
     .spawn(
       { component: Transform, data: {} },
@@ -251,7 +255,6 @@ it('publishes geometry without a global temporal reset and faults paired recover
       world,
       entity,
       meshHandle,
-      mesh,
       revision: 1,
     });
     await vi.waitFor(() =>
@@ -383,7 +386,9 @@ it.each([
 }) => {
   vi.stubGlobal('Worker', CreditWorker);
   const world = new World();
-  const assets = new AssetRegistry(new ShaderRegistry({ manifestUrl: undefined }));
+  const assets = new AssetRegistry({
+    shaderRegistry: new ShaderRegistry({ manifestUrl: undefined }),
+  });
   const canvas = {} as OffscreenCanvas;
   const hostMessages: EngineToHostMessage[] = [];
   const init: ExecutionInitMessage = {
@@ -496,7 +501,9 @@ it.each([
 ])('forwards timing and depth experiment %s to the child and retains the latest completed observation', async (featureReadOnlyDepthBatchDiagnostic) => {
   vi.stubGlobal('Worker', CreditWorker);
   const world = new World();
-  const assets = new AssetRegistry(new ShaderRegistry({ manifestUrl: undefined }));
+  const assets = new AssetRegistry({
+    shaderRegistry: new ShaderRegistry({ manifestUrl: undefined }),
+  });
   const canvas = {} as OffscreenCanvas;
   const messages: EngineToHostMessage[] = [];
   const source = new SourceRenderWorker(
@@ -614,7 +621,9 @@ it.each([
 it('routes capture results once, cancels the remote request, and settles it on render loss', async () => {
   vi.stubGlobal('Worker', CreditWorker);
   const world = new World();
-  const assets = new AssetRegistry(new ShaderRegistry({ manifestUrl: undefined }));
+  const assets = new AssetRegistry({
+    shaderRegistry: new ShaderRegistry({ manifestUrl: undefined }),
+  });
   const canvas = {} as OffscreenCanvas;
   const source = new SourceRenderWorker(
     world,
@@ -683,7 +692,9 @@ it('uses the App startup budget for child initialization and still bounds a stal
   vi.useFakeTimers();
   vi.stubGlobal('Worker', DelayedReadyWorker);
   const world = new World();
-  const assets = new AssetRegistry(new ShaderRegistry({ manifestUrl: undefined }));
+  const assets = new AssetRegistry({
+    shaderRegistry: new ShaderRegistry({ manifestUrl: undefined }),
+  });
   const canvas = {} as OffscreenCanvas;
   const init = {
     kind: 'init',
@@ -727,7 +738,9 @@ it('uses the App startup budget for child initialization and still bounds a stal
 it('reads remote bounds without advancing a frame and retires pending reads on disposal', async () => {
   vi.stubGlobal('Worker', CreditWorker);
   const world = new World();
-  const assets = new AssetRegistry(new ShaderRegistry({ manifestUrl: undefined }));
+  const assets = new AssetRegistry({
+    shaderRegistry: new ShaderRegistry({ manifestUrl: undefined }),
+  });
   const canvas = {} as OffscreenCanvas;
   const source = new SourceRenderWorker(
     world,
@@ -763,7 +776,9 @@ it('reads remote bounds without advancing a frame and retires pending reads on d
 it('keeps renderer capabilities beside the exact failed publication in the host fault', async () => {
   vi.stubGlobal('Worker', CreditWorker);
   const world = new World();
-  const assets = new AssetRegistry(new ShaderRegistry({ manifestUrl: undefined }));
+  const assets = new AssetRegistry({
+    shaderRegistry: new ShaderRegistry({ manifestUrl: undefined }),
+  });
   const canvas = {} as OffscreenCanvas;
   const posted = vi.fn();
   const source = new SourceRenderWorker(
@@ -820,7 +835,9 @@ it('keeps renderer capabilities beside the exact failed publication in the host 
 it('forwards only the current child Renderer error without consuming publication credit', async () => {
   vi.stubGlobal('Worker', CreditWorker);
   const world = new World();
-  const assets = new AssetRegistry(new ShaderRegistry({ manifestUrl: undefined }));
+  const assets = new AssetRegistry({
+    shaderRegistry: new ShaderRegistry({ manifestUrl: undefined }),
+  });
   const canvas = {} as OffscreenCanvas;
   const forwarded = vi.fn();
   const source = new SourceRenderWorker(
@@ -907,7 +924,9 @@ it('forwards only the current child Renderer error without consuming publication
 async function inspectionOwner() {
   vi.stubGlobal('Worker', CreditWorker);
   const world = new World();
-  const assets = new AssetRegistry(new ShaderRegistry({ manifestUrl: undefined }));
+  const assets = new AssetRegistry({
+    shaderRegistry: new ShaderRegistry({ manifestUrl: undefined }),
+  });
   const canvas = {} as OffscreenCanvas;
   const source = new SourceRenderWorker(
     world,

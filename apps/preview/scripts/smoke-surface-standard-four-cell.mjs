@@ -10,6 +10,7 @@ import { fileURLToPath } from 'node:url';
 import { setTimeout as sleep } from 'node:timers/promises';
 import { chromium } from 'playwright';
 import { PNG } from 'pngjs';
+import browserLaunch from '../../../scripts/ci/browser-launch.json' with { type: 'json' };
 
 const ROOT = resolve(import.meta.dirname, '..', '..', '..');
 
@@ -65,12 +66,9 @@ export async function runSurfaceStandardSmoke(options = {}) {
     }
     if (Date.now() >= deadline) throw new Error(`Preview server did not start: ${serverOutput}`);
     browser = await chromium.launch({
-      headless: true,
-      args: backend === 'webgpu' ? [
-        '--enable-unsafe-webgpu',
-        '--enable-features=Vulkan,UseSkiaRenderer,SharedArrayBuffer',
-        '--ignore-gpu-blocklist',
-      ] : [
+      headless: process.env.FORGEAX_BROWSER_HEADLESS !== '0',
+      channel: process.env.FORGEAX_CHROME_CHANNEL ?? browserLaunch.channel,
+      args: backend === 'webgpu' ? browserLaunch.args : [
         '--disable-features=WebGPU',
         '--disable-gpu',
         '--disable-gpu-driver-bug-workarounds',

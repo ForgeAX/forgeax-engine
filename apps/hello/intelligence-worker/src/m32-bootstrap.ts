@@ -4,7 +4,7 @@ import type {
   ExecutionBootstrapValue,
   Plugin,
 } from '@forgeax/engine-app';
-import { HANDLE_CUBE } from '@forgeax/engine-assets-runtime';
+
 import {
   activityId,
   createIntelligencePortClient,
@@ -21,6 +21,10 @@ import {
   M32_PROVIDER_B_ID,
   M32_PROVIDER_C_ID,
 } from './m32-provider';
+import { AssetRegistry } from '@forgeax/engine-assets-runtime';
+
+import { createPrimitiveMesh } from '@forgeax/engine-geometry';
+
 
 interface M32HostCloseDetail {
   readonly origin: 'host-binding.close';
@@ -270,6 +274,11 @@ const bootstrap: ExecutionBootstrapEntry = (data) => {
     inject: ['world', 'intelligence'],
     apply(ctx) {
       const world = ctx.world;
+const sceneAssets = world.assets;
+if (!(sceneAssets instanceof AssetRegistry)) throw new Error('Scene requires its runtime asset owner');
+
+const primitiveCube = sceneAssets.create(createPrimitiveMesh('cube').unwrap()).unwrap();
+
       const clientA = ctx.intelligence as IntelligencePortClient | undefined;
       if (clientA === undefined) throw new Error('M32 provider-A intelligence service was not provided');
       const proof: M32Proof = {
@@ -602,7 +611,7 @@ const bootstrap: ExecutionBootstrapEntry = (data) => {
         world
           .spawn(
             { component: Transform, data: { pos: [0, 0, 0] } },
-            { component: MeshFilter, data: { assetHandle: HANDLE_CUBE } },
+            { component: MeshFilter, data: { assetHandle: primitiveCube } },
             { component: MeshRenderer, data: {} },
           )
           .unwrap(),

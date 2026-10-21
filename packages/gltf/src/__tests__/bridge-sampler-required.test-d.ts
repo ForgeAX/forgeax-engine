@@ -4,7 +4,7 @@
 // toMaterialAsset no longer takes a shadingModel parameter; it accepts
 // GltfMaterialIr + optional MaterialBridgeContext and returns MaterialAsset.
 
-import type { Handle } from '@forgeax/engine-types';
+import type { AssetHandle } from '@forgeax/engine-types';
 import { describe, expectTypeOf, it } from 'vitest';
 import type { MaterialBridgeContext } from '../bridge.js';
 import { toMaterialAsset } from '../bridge.js';
@@ -17,8 +17,8 @@ const matIr: GltfMaterialIr = {
   roughnessFactor: 0.5,
 };
 
-const textureHandles = new Map<number, Handle<'TextureAsset', 'shared'>>();
-const samplerHandles = new Map<number, Handle<'SamplerAsset', 'shared'>>();
+const textureHandles = new Map<number, AssetHandle<'texture'>>();
+const samplerHandles = new Map<number, AssetHandle<'sampler'>>();
 
 describe('toMaterialAsset — pass-based type-level', () => {
   it('positive: with undefined ctx compiles', () => {
@@ -42,6 +42,13 @@ describe('toMaterialAsset — pass-based type-level', () => {
   it('positive: with textureHandles only compiles', () => {
     const result = toMaterialAsset(matIr, { textureHandles });
     expectTypeOf(result).toMatchTypeOf<ReturnType<typeof toMaterialAsset>>();
+  });
+
+  it("rejects sampler and texture identities in each other's maps", () => {
+    // @ts-expect-error Texture references cannot supply sampler assets.
+    toMaterialAsset(matIr, { samplerHandles: textureHandles });
+    // @ts-expect-error Sampler references cannot supply texture assets.
+    toMaterialAsset(matIr, { textureHandles: samplerHandles });
   });
 
   it('type-level: MaterialBridgeContext has optional samplerHandles', () => {

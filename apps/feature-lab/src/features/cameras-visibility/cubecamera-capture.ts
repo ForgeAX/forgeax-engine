@@ -1,8 +1,10 @@
+import { AssetRegistry } from '@forgeax/engine/assets-runtime';
 import type { World } from '@forgeax/engine/ecs';
+import { createPrimitiveMesh } from '@forgeax/engine/geometry';
 import { CubeCamera } from '@forgeax/engine/render';
 import { Transform } from '@forgeax/engine/scene';
 import { CheckList, defineFeature } from '../../lab/feature';
-import { MESH, spawnCamera, spawnMesh, unlit, type Vec3 } from '../../lab/stage';
+import { spawnCamera, spawnMesh, unlit, type Vec3 } from '../../lab/stage';
 import { serial } from './support/serial';
 import { meanColor, readTarget, sampledTarget } from './support/target';
 
@@ -13,8 +15,14 @@ const WALLS: readonly { pos: Vec3; scale: Vec3; rgb: Vec3 }[] = [
 ];
 
 function spawnWalls(world: World): void {
+  const primitiveAssets = world.assets;
+  if (!(primitiveAssets instanceof AssetRegistry))
+    throw new Error('Scene requires its runtime asset owner');
+
+  const stageCube = primitiveAssets.create(createPrimitiveMesh('cube').unwrap()).unwrap();
+
   for (const wall of WALLS) {
-    spawnMesh(world, MESH.cube, unlit(world, [wall.rgb[0], wall.rgb[1], wall.rgb[2], 1]), {
+    spawnMesh(world, stageCube, unlit(world, [wall.rgb[0], wall.rgb[1], wall.rgb[2], 1]), {
       pos: [wall.pos[0], wall.pos[1] + 40, wall.pos[2]],
       scale: wall.scale,
     });

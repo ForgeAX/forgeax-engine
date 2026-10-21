@@ -1,6 +1,8 @@
+import { AssetRegistry } from '@forgeax/engine/assets-runtime';
+import { createPrimitiveMesh } from '@forgeax/engine/geometry';
 import { createProfiler, type Profiler } from '@forgeax/engine/profiler';
 import { defineFeature, type FeatureCheck } from '../../lab/feature';
-import { MESH, spawnMesh, spawnStage, standard } from '../../lab/stage';
+import { spawnMesh, spawnStage, standard } from '../../lab/stage';
 
 const CHILDREN = ['plan', 'filter', 'shadow-views'].map(
   (child) => `record/gpu-driven-prepare/${child}`,
@@ -24,9 +26,15 @@ export default defineFeature({
     return { profiler: sharedProfiler() };
   },
   async setup({ app, world, frames }) {
+    const primitiveAssets = world.assets;
+    if (!(primitiveAssets instanceof AssetRegistry))
+      throw new Error('Scene requires its runtime asset owner');
+
+    const stageCube = primitiveAssets.create(createPrimitiveMesh('cube').unwrap()).unwrap();
+
     spawnStage(world);
     for (let i = 0; i < 6; i++) {
-      spawnMesh(world, MESH.cube, standard(world, { baseColor: [0.2, 0.5 + i * 0.08, 0.9, 1] }), {
+      spawnMesh(world, stageCube, standard(world, { baseColor: [0.2, 0.5 + i * 0.08, 0.9, 1] }), {
         pos: [i - 2.5, 0.5, 0],
         scale: [0.6, 0.6, 0.6],
       });

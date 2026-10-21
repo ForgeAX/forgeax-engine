@@ -15,7 +15,7 @@ import { classifyEntityField, remapEntityFieldValue } from '@forgeax/engine-ecs/
 import { componentSchema } from '@forgeax/engine-ecs/internal';
 import { fillComponentDefaults, StaleEntityError } from '@forgeax/engine-ecs/projection';
 import type {
-  Handle,
+  AssetHandle,
   LocalEntityId,
   PackErrorCode,
   PackErrorDetail,
@@ -24,12 +24,12 @@ import type {
   SceneEntityRef,
 } from '@forgeax/engine-types';
 import {
+  AssetError,
   err,
   ok,
   PACK_ERROR_HINTS,
   type Result,
   toUnique,
-  unwrapHandle,
 } from '@forgeax/engine-types';
 import { ComponentNotDefinedError } from '../errors';
 import { resolveSceneEntity, sceneEntityAddressKey } from './binding.js';
@@ -54,36 +54,12 @@ const entityIndex = (entity: EntityHandle): number => (entity as number) & 0x00f
 const entityGeneration = (entity: EntityHandle): number => ((entity as number) >>> 24) & 0xff;
 
 /**
- * Legacy diagnostic shape retained on the scene-instantiation result for
- * non-blocking runtime observations. SceneAsset schema violations are
- * rejected by the keyed compiler before this result is produced; no authored
- * unknown-field record is emitted by the current path.
- *
- *   const r = worldInstantiateScene(world, handle);
- *   if (r.ok) for (const d of r.value.diagnostics)
- *     console.warn('scene diagnostic', d);
- *
- * Direct `world.spawn` / `world.addComponent` / `Commands.spawn` remain
- * fail-fast with `SpawnDataUnknownFieldError`.
- */
-export type SceneInstantiateDiagnostic = {
-  /** Component name associated with the observation. */
-  readonly component: string;
-  /** Field associated with the observation. */
-  readonly field: string;
-  /** LocalEntityId within the owning SceneAsset, when applicable. */
-  readonly localId: number;
-};
-
-/**
  * Success value of `worldInstantiateScene`. `root` is the synthetic scene-root
- * EntityHandle (carries `SceneInstance`); `diagnostics` contains only
- * non-blocking runtime observations. Schema-invalid authored fields fail before
- * an entity is created.
+ * EntityHandle (carries `SceneInstance`). Schema-invalid authored fields fail
+ * before an entity is created.
  */
 export type SceneInstantiateOk = {
   readonly root: EntityHandle;
-  readonly diagnostics: readonly SceneInstantiateDiagnostic[];
 };
 
 /**
@@ -105,7 +81,6 @@ export type SceneInstantiateFlatOk = {
    * but still delimit a nested prefab subtree for post-spawn hooks.
    */
   readonly mountEntities: EntityHandle[];
-  readonly diagnostics: readonly SceneInstantiateDiagnostic[];
 };
 
 /**
@@ -153,6 +128,7 @@ function collectSceneEntityBindings(
   root: EntityHandle,
   prefix: readonly string[],
   bindings: Map<string, EntityHandle>,
+  addresses: Map<EntityHandle, SceneEntityAddress>,
   visited = new Set<number>(),
 ): void {
   const rootRaw = root as unknown as number;
@@ -171,19 +147,27 @@ function collectSceneEntityBindings(
     const address: SceneEntityAddress =
       prefix.length === 0 ? key : ([...prefix, key] as unknown as [string, ...string[]]);
     bindings.set(sceneEntityAddressKey(address), raw as unknown as EntityHandle);
+    addresses.set(raw as unknown as EntityHandle, address);
   }
   for (const childRoot of state.value.mountRoots) {
     const childState = worldGetSceneInstanceState(world, childRoot);
     const childKey = childState.ok ? childState.value.instanceKey : undefined;
     if (childKey === undefined) continue;
-    collectSceneEntityBindings(world, childRoot, [...prefix, childKey], bindings, visited);
+    collectSceneEntityBindings(
+      world,
+      childRoot,
+      [...prefix, childKey],
+      bindings,
+      addresses,
+      visited,
+    );
   }
 }
 
 export type SceneAssetResolver = (
   source: number | string,
-  parentHandle: Handle<'SceneAsset', 'shared'>,
-) => Result<Handle<'SceneAsset', 'shared'>, unknown>;
+  parent: AssetHandle<'scene'>,
+) => Result<AssetHandle<'scene'>, unknown>;
 
 /** @internal */
 export function worldSetSceneAssetResolver(world: World, resolver: SceneAssetResolver): void {
@@ -210,57 +194,26 @@ export function worldGetSceneAssetResolver(world: World): SceneAssetResolver | n
  * @example
  *   const r = worldInstantiateScene(world, handle);
  *   if (!r.ok) return r;
- *   const { root, diagnostics } = r.value;
- *   for (const d of diagnostics) // non-blocking runtime observations
- *     console.warn('scene diagnostic', d);
+ *   const { root } = r.value;
  *   const inst = world.get(root, SceneInstance).value;
  *   const member = inst.mapping[0]; // first member entity
  */
 export function worldInstantiateScene(
   world: World,
-  handle: Handle<'SceneAsset', 'shared'>,
+  handle: AssetHandle<'scene'>,
   parent?: EntityHandle,
   sceneSourceKey?: string,
 ): Result<SceneInstantiateOk, EcsError> {
-  const stack = new Set<number>();
-  // Keep the existing result shape for non-blocking runtime observations. The
-  // keyed compiler rejects schema-invalid authoring data before spawning.
-  const diagnostics: SceneInstantiateDiagnostic[] = [];
   const r = worldInstantiateSceneRec(
     world,
     handle,
     parent,
-    stack,
-    diagnostics,
+    new Set<number>(),
     undefined,
     sceneSourceKey,
   );
   if (!r.ok) return r;
-  return ok({ root: r.value, diagnostics });
-}
-
-/**
- * Materialise a projected `SceneAsset` payload without exposing the temporary
- * shared-ref handle to the caller. The World remains the owner of both the
- * handle and the instantiated SceneInstance: the producer grant is released
- * after the SceneInstance retains its source, including when instantiation
- * fails. This is the payload-shaped counterpart to `worldInstantiateScene` for
- * hosts that load a SceneAsset directly from the Engine AssetRegistry.
- */
-export function worldInstantiateScenePayload(
-  world: World,
-  asset: SceneAsset,
-  parent?: EntityHandle,
-): Result<SceneInstantiateOk, EcsError> {
-  const handle = world.allocSharedRef('SceneAsset', asset);
-  try {
-    return worldInstantiateScene(world, handle, parent);
-  } finally {
-    // The SceneInstance source column retains the handle on success. On a
-    // failed materialisation there should be no remaining holder; either way
-    // release the producer grant owned by this convenience entrypoint.
-    world.sharedRefs.release(handle);
-  }
+  return ok({ root: r.value });
 }
 
 /**
@@ -278,26 +231,25 @@ export function worldInstantiateScenePayload(
  * @example
  *   const r = worldInstantiateSceneFlat(world, handle);
  *   if (!r.ok) return r;
- *   const { roots, diagnostics } = r.value; // roots = top-level handles
+ *   const { roots } = r.value; // roots = top-level handles
  */
 export function worldInstantiateSceneFlat(
   world: World,
-  handle: Handle<'SceneAsset', 'shared'>,
+  handle: AssetHandle<'scene'>,
 ): Result<SceneInstantiateFlatOk, EcsError> {
   const stack = new Set<number>();
-  const diagnostics: SceneInstantiateDiagnostic[] = [];
-  const handleKey = unwrapHandle(handle);
+  const handleKey = handle as number;
   const resolved = worldResolveSceneAsset(world, handle);
   if (!resolved.ok) return resolved;
   stack.add(handleKey);
   let r: Result<{ roots: EntityHandle[]; mountEntities: EntityHandle[] }, EcsError>;
   try {
-    r = worldInstantiateSceneAssetFlat(world, handle, resolved.value, stack, diagnostics);
+    r = worldInstantiateSceneAssetFlat(world, handle, resolved.value, stack);
   } finally {
     stack.delete(handleKey);
   }
   if (!r.ok) return r;
-  return ok({ ...r.value, diagnostics });
+  return r;
 }
 /**
  * @internal Recursive helper carrying the cycle-detection stack. Sugar /
@@ -306,14 +258,13 @@ export function worldInstantiateSceneFlat(
  */
 export function worldInstantiateSceneRec(
   world: World,
-  handle: Handle<'SceneAsset', 'shared'>,
+  handle: AssetHandle<'scene'>,
   parent: EntityHandle | undefined,
   stack: Set<number>,
-  diagnostics: SceneInstantiateDiagnostic[],
   instanceKey?: string,
   sceneSourceKey?: string,
 ): Result<EntityHandle, EcsError> {
-  const handleKey = unwrapHandle(handle);
+  const handleKey = handle as number;
   if (stack.has(handleKey)) {
     const cycleArr: string[] = [];
     for (const k of stack) cycleArr.push(String(k));
@@ -341,7 +292,6 @@ export function worldInstantiateSceneRec(
       asset,
       parent,
       stack,
-      diagnostics,
       instanceKey,
       sceneSourceKey,
     );
@@ -349,22 +299,26 @@ export function worldInstantiateSceneRec(
     stack.delete(handleKey);
   }
 }
-/**
- * @internal Resolve a SceneAsset handle through the SharedRefStore.
- * The handle u32 is the SharedRefStore slot id (`world.allocSharedRef
- * ('SceneAsset', asset)` is the producer; rc starts at 1, the SceneInstance
- * spawn retains to rc=2 in M4 / w13). Errors propagate as EcsError so the
- * instantiateScene chain returns a single closed union.
- */
+/** Resolve through the runtime asset owner, with optional schema/GUID preparation. */
 export function worldResolveSceneAsset(
   world: World,
-  handle: Handle<'SceneAsset', 'shared'>,
+  handle: AssetHandle<'scene'>,
 ): Result<SceneAsset, EcsError> {
-  const r = world.sharedRefs.resolve(handle);
-  if (!r.ok) {
-    return err(r.error as unknown as EcsError);
+  const owner = world.assets;
+  const valid = owner?.validate(handle, 'scene');
+  if (owner === undefined || valid === undefined || !valid.ok) {
+    return err(
+      (valid !== undefined && !valid.ok
+        ? valid.error
+        : new AssetError({
+            code: 'asset-reference-invalid',
+            expected: 'a Scene reference owned by this World',
+            hint: 'bind the runtime asset owner before instantiating a scene',
+          })) as unknown as EcsError,
+    );
   }
-  return ok(r.value as SceneAsset);
+  const result = owner.read(handle);
+  return result.ok ? ok(result.value) : err(result.error as EcsError);
 }
 /**
  * @internal Spawn one SceneAsset's members — the shared body of both scene
@@ -376,10 +330,9 @@ export function worldResolveSceneAsset(
  */
 export function worldSpawnSceneMembers(
   world: World,
-  handle: Handle<'SceneAsset', 'shared'>,
+  handle: AssetHandle<'scene'>,
   asset: CompiledSceneAsset,
   stack: Set<number>,
-  diagnostics: SceneInstantiateDiagnostic[],
   mountKeys?: ReadonlyMap<number, string>,
 ): Result<SceneMembersSpawn, EcsError> {
   const sceneInstanceToken = world.components.resolve('SceneInstance');
@@ -506,7 +459,7 @@ export function worldSpawnSceneMembers(
 
     // Spawn the mount entity (carries mount.components).
     const mountLid = mount.localId as unknown as number;
-    const mountSpawnRes = worldSpawnMountEntity(world, mount, mapping, diagnostics);
+    const mountSpawnRes = worldSpawnMountEntity(world, mount, mapping);
     if (!mountSpawnRes.ok) return mountSpawnRes;
     const mountEntity = mountSpawnRes.value;
     mountEntities.push(mountEntity);
@@ -518,14 +471,12 @@ export function worldSpawnSceneMembers(
     const childHandle = childHandleRes.value;
 
     // Recursively instantiate the child. Its synthetic root attaches as a
-    // child of the mount entity; runtime observations share the same result
-    // accumulator and bubble to the top-level instance.
+    // child of the mount entity.
     const childRes = worldInstantiateSceneRec(
       world,
       childHandle,
       mountEntity,
       stack,
-      diagnostics,
       mountKeys?.get(mountLid),
     );
     if (!childRes.ok) return childRes;
@@ -616,7 +567,7 @@ export function worldSpawnSceneMembers(
     const node = ownEntities[idx];
     if (node === undefined) continue;
     const lid = node.localId as unknown as number;
-    const compDataRes = worldBuildSceneEntityComponentDatas(world, node, mapping, diagnostics);
+    const compDataRes = worldBuildSceneEntityComponentDatas(world, node, mapping);
     if (!compDataRes.ok) return compDataRes;
     const sp = (world.spawn as (...c: ComponentData[]) => Result<EntityHandle, EcsError>)(
       ...compDataRes.value,
@@ -638,7 +589,7 @@ export function worldSpawnSceneMembers(
     ...ownMounts.map((mount) => ({ localId: mount.localId, components: mount.components ?? {} })),
   ]) {
     const entity = mapping[node.localId as unknown as number] as EntityHandle;
-    const componentDatas = worldBuildSceneEntityComponentDatas(world, node, mapping, diagnostics);
+    const componentDatas = worldBuildSceneEntityComponentDatas(world, node, mapping);
     if (!componentDatas.ok) return componentDatas;
     for (const { component, data } of componentDatas.value) {
       const references = Object.fromEntries(
@@ -693,11 +644,10 @@ export function worldSpawnSceneMembers(
  */
 export function worldInstantiateSceneAsset(
   world: World,
-  handle: Handle<'SceneAsset', 'shared'>,
+  handle: AssetHandle<'scene'>,
   asset: SceneAsset,
   parent: EntityHandle | undefined,
   stack: Set<number>,
-  diagnostics: SceneInstantiateDiagnostic[],
   instanceKey?: string,
   sceneSourceKey?: string,
 ): Result<EntityHandle, EcsError> {
@@ -723,7 +673,6 @@ export function worldInstantiateSceneAsset(
     handle,
     compiledAsset,
     stack,
-    diagnostics,
     compiled.value.mountKeyByLocalId,
   );
   if (!membersRes.ok) {
@@ -739,12 +688,15 @@ export function worldInstantiateSceneAsset(
   // identity and release; Scene holds no parallel handle-to-state registry.
   const detached = new Set<LocalEntityId>();
   const bindings = new Map<string, EntityHandle>();
+  const entityAddresses = new Map<EntityHandle, SceneEntityAddress>();
   const state: SceneInstanceState = {
     source: handle,
+    sourceContent: asset,
     ...(sceneSourceKey === undefined ? {} : { sceneSourceKey }),
     keyByLocalId: new Map(compiled.value.keyByLocalId),
     ...(instanceKey === undefined ? {} : { instanceKey }),
     bindings,
+    entityAddresses,
     entityToLocalId,
     detachedLocalIds: detached,
     overrides: new Map(),
@@ -830,7 +782,7 @@ export function worldInstantiateSceneAsset(
   // Populate direct and nested keyed addresses only after this root state is
   // visible. Child SceneInstance states were published by the recursive spawn
   // above, so the same walk can project the complete address closure.
-  collectSceneEntityBindings(world, rootEntity, [], bindings);
+  collectSceneEntityBindings(world, rootEntity, [], bindings, entityAddresses);
 
   // 5. Wire ChildOf for every owned root entity (no ChildOf at layer-1)
   //    to the synthetic root.
@@ -885,10 +837,9 @@ export function worldInstantiateSceneAsset(
  */
 export function worldInstantiateSceneAssetFlat(
   world: World,
-  handle: Handle<'SceneAsset', 'shared'>,
+  handle: AssetHandle<'scene'>,
   asset: SceneAsset,
   stack: Set<number>,
-  diagnostics: SceneInstantiateDiagnostic[],
 ): Result<{ roots: EntityHandle[]; mountEntities: EntityHandle[] }, EcsError> {
   const compiled = compileKeyedSceneAsset(world, handle, asset, {
     resolveSource: (source, parentHandle) => worldResolveMountSource(world, source, parentHandle),
@@ -906,7 +857,6 @@ export function worldInstantiateSceneAssetFlat(
       handle,
       compiled.value.asset,
       stack,
-      diagnostics,
       compiled.value.mountKeyByLocalId,
     );
     if (!membersRes.ok) return membersRes;
@@ -980,7 +930,6 @@ export function worldBuildSceneEntityComponentDatas(
   world: World,
   node: CompiledSceneEntity,
   mapping: Uint32Array,
-  _diagnostics: SceneInstantiateDiagnostic[],
 ): Result<ComponentData[], EcsError> {
   const out: ComponentData[] = [];
   const nodeLocalId = node.localId as unknown as number;
@@ -1221,13 +1170,12 @@ export function worldSpawnMountEntity(
   world: World,
   mount: SceneInstanceMount,
   mapping: Uint32Array,
-  diagnostics: SceneInstantiateDiagnostic[],
 ): Result<EntityHandle, EcsError> {
   const fakeNode: CompiledSceneEntity = {
     localId: mount.localId,
     components: mount.components ?? {},
   };
-  const cdRes = worldBuildSceneEntityComponentDatas(world, fakeNode, mapping, diagnostics);
+  const cdRes = worldBuildSceneEntityComponentDatas(world, fakeNode, mapping);
   if (!cdRes.ok) return cdRes;
   // R2/B-1: ensure Transform is attached so propagateTransforms can expand
   // through this entity. Layer-2 defaults supply identity TRS; the
@@ -1259,8 +1207,13 @@ export function worldSpawnMountEntity(
 export function worldResolveMountSource(
   world: World,
   source: number | string,
-  parentHandle: Handle<'SceneAsset', 'shared'>,
-): Result<Handle<'SceneAsset', 'shared'>, EcsError> {
+  parentHandle: AssetHandle<'scene'>,
+): Result<AssetHandle<'scene'>, EcsError> {
+  if (typeof source === 'number') {
+    const valid = world.assets?.validate(source, 'scene');
+    if (valid?.ok) return ok(source as AssetHandle<'scene'>);
+    if (valid !== undefined) return err(valid.error as unknown as EcsError);
+  }
   const resolver = worldGetSceneAssetResolver(world);
   if (resolver === null) {
     return err({
@@ -1548,10 +1501,8 @@ export function worldRemoveSceneOverride<S extends ComponentSchema>(
     if (fieldMap.size === 0) state.overrides.delete(lid);
   }
   // Look up the source SceneAsset layer-1 value.
-  const assetRes = worldResolveSceneAsset(world, state.source);
-  if (!assetRes.ok) return assetRes;
   const key = state.keyByLocalId.get(lid as unknown as number);
-  const node = key === undefined ? undefined : assetRes.value.entities[key];
+  const node = key === undefined ? undefined : state.sourceContent.entities[key];
   const layer1 = node?.components[component.name] as Record<string, unknown> | undefined;
   if (layer1 !== undefined && field in layer1) {
     const r = world.set(member, component, { [field]: layer1[field] } as Partial<InputShapeOf<S>>);
@@ -1598,7 +1549,7 @@ export function worldReattachSceneMember(
 export function worldGetSceneAssetForInstance(
   world: World,
   root: EntityHandle,
-): Result<Handle<'SceneAsset', 'shared'>, EcsError> {
+): Result<AssetHandle<'scene'>, EcsError> {
   const stateRes = worldGetSceneInstanceState(world, root);
   if (!stateRes.ok) return stateRes;
   return ok(stateRes.value.source);

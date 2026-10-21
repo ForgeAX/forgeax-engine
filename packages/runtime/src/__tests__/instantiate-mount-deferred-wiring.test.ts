@@ -1,74 +1,43 @@
-import { AssetRegistry } from '@forgeax/engine-assets-runtime';
 import { type EntityHandle, World } from '@forgeax/engine-ecs';
-import { AssetGuid } from '@forgeax/engine-pack/guid';
 import { SceneInstance } from '@forgeax/engine-render';
-import { ChildOf, Children, Transform } from '@forgeax/engine-scene';
-import type { Asset, Handle, SceneAsset } from '@forgeax/engine-types';
-import { describe, expect, it } from 'vitest';
-import { makeMockShaderRegistry } from './helpers/mock-shader-registry';
+import { ChildOf, Transform } from '@forgeax/engine-scene';
+import { expect, it } from 'vitest';
+import { registerSceneComponents } from './helpers/register-scene-components';
+import { testAssets } from './helpers/runtime-assets';
 
-const G_CHILD = '11111111-1111-4111-8111-111111111111';
-const G_PARENT = '22222222-2222-4222-8222-222222222222';
-
-function guid(value: string): AssetGuid {
-  const parsed = AssetGuid.parse(value);
-  if (!parsed.ok) throw new Error(`bad GUID: ${value}`);
-  return parsed.value;
-}
-
-function makeWorld(): World {
+it('attaches a nested SceneInstance root under the keyed instance entity', () => {
   const world = new World();
-  for (const component of [ChildOf, Children, SceneInstance, Transform]) {
-    world.components.register(component).unwrap();
-  }
-  return world;
-}
-
-describe('instantiate keyed nested instance wiring', () => {
-  it('attaches a nested SceneInstance root under the keyed instance entity', () => {
-    const registry = new AssetRegistry(makeMockShaderRegistry());
-    const world = makeWorld();
-    const child: SceneAsset = {
-      kind: 'scene',
-      entities: { childRoot: { components: { Transform: { pos: [7, 0, 0] } } } },
-    };
-    registry.catalog(guid(G_CHILD), child as Asset);
-    const parent: SceneAsset = {
-      kind: 'scene',
-      entities: {
-        wrapper: {
-          components: { Transform: { pos: [1, 0, 0] } },
-          instance: { source: G_CHILD },
+  registerSceneComponents(world);
+  const assets = testAssets(world);
+  try {
+    const child = assets
+      .create({
+        kind: 'scene',
+        entities: { childRoot: { components: { Transform: { pos: [7, 0, 0] } } } },
+      })
+      .unwrap();
+    const parent = assets
+      .create({
+        kind: 'scene',
+        entities: {
+          wrapper: { components: { Transform: { pos: [1, 0, 0] } }, instance: { source: child } },
         },
-      },
-    };
-    registry.catalog(guid(G_PARENT), parent as Asset);
-
-    const result = registry.instantiate(
-      world.allocSharedRef('SceneAsset', parent) as Handle<'SceneAsset', 'shared'>,
-      world,
+      })
+      .unwrap();
+    const root = assets.instantiate(parent, world).unwrap();
+    const wrapper = world.get(root, SceneInstance).unwrap().mapping[0];
+    if (wrapper === undefined) throw new Error('missing keyed instance wrapper');
+    const nested = [...world.iterDescendants(root)].filter(
+      (entity) => world.get(entity, SceneInstance).ok,
     );
-    expect(result.ok).toBe(true);
-    if (!result.ok) return;
-    const outer = world.get(result.value, SceneInstance);
-    expect(outer.ok).toBe(true);
-    if (!outer.ok) return;
-    const wrapper = outer.value.mapping[0] as unknown as EntityHandle;
-    expect(wrapper).toBeDefined();
-
-    let nestedRoot: EntityHandle | undefined;
-    for (const entity of world.iterDescendants(result.value)) {
-      if (entity === result.value) continue;
-      if (world.get(entity, SceneInstance).ok) {
-        nestedRoot = entity;
-        break;
-      }
-    }
-    expect(nestedRoot).toBeDefined();
-    if (nestedRoot === undefined) return;
-    const childOf = world.get(nestedRoot, ChildOf);
-    expect(childOf.ok).toBe(true);
-    if (!childOf.ok) return;
-    expect(childOf.value.parent).toBe(wrapper);
-  });
+    expect(nested).toHaveLength(1);
+    const nestedRoot = nested[0];
+    if (nestedRoot === undefined) throw new Error('missing nested SceneInstance root');
+    expect(world.get(nestedRoot, ChildOf).unwrap().parent).toBe(wrapper);
+    expect(world.get(wrapper as EntityHandle, Transform).unwrap().pos).toEqual(
+      new Float32Array([1, 0, 0]),
+    );
+  } finally {
+    assets.dispose();
+  }
 });

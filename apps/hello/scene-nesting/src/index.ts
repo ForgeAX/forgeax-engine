@@ -1,9 +1,13 @@
-import { configureRuntimeAssetCatalog, runtimeBinding } from '@forgeax/apps-shared/asset-runtime-config';
+import type { AssetHandle } from '@forgeax/engine-types';
+import {
+  configureRuntimeAssetCatalog,
+  createRuntimeAssetImportTransport,
+  runtimeBinding,
+} from '@forgeax/apps-shared/asset-runtime-config';
 import { createWorldContext, World, type EntityHandle } from '@forgeax/engine-ecs';
 import { AssetGuid } from '@forgeax/engine-pack/guid';
 import {
   Camera,
-  Materials,
   MeshFilter,
   MeshRenderer,
   renderComponentsPlugin,
@@ -14,17 +18,18 @@ import {
   scenePlugin,
   worldDespawnScene,
   worldInstantiateScene,
-  worldSetSceneAssetResolver,
 } from '@forgeax/engine-scene';
 import { constructRuntimeRendererHost } from '@forgeax/engine-runtime/internal/renderer-host';
-import { err, ok, type Handle, type MaterialAsset, type MeshAsset, type SceneAsset } from '@forgeax/engine-types';
+import { type SceneAsset } from '@forgeax/engine-types';
+import { forgeaxBundlerAdapter } from 'virtual:forgeax/bundler';
+import { AssetRegistry } from '@forgeax/engine-assets-runtime';
 
 type MutableSceneEntity = {
   components: Record<string, Record<string, unknown>>;
   instance?: {
-    source: string;
+    source: string | AssetHandle<'scene'>;
     overrides?: Array<{
-      target: string[];
+      target: [string, ...string[]];
       components: Record<string, Record<string, unknown>>;
     }>;
   };
@@ -38,8 +43,8 @@ type MutableSceneAsset = {
 type ScenePair = {
   readonly inner: MutableSceneAsset;
   readonly outer: MutableSceneAsset;
-  readonly innerHandle: Handle<'SceneAsset', 'shared'>;
-  readonly outerHandle: Handle<'SceneAsset', 'shared'>;
+  readonly innerHandle: AssetHandle<'scene'>;
+  readonly outerHandle: AssetHandle<'scene'>;
   root: EntityHandle | undefined;
 };
 
@@ -83,8 +88,8 @@ type SceneSource = SceneAsset | MutableSceneAsset;
 function bindRenderableScene(
   innerSource: SceneSource,
   outerSource: SceneSource,
-  meshHandle: Handle<'MeshAsset', 'shared'>,
-  materialHandle: Handle<'MaterialAsset', 'shared'>,
+  meshHandle: AssetHandle<'mesh'>,
+  materialHandle: AssetHandle<'material'>,
 ): { inner: MutableSceneAsset; outer: MutableSceneAsset } {
   const inner = cloneScene(innerSource);
   const outer = cloneScene(outerSource);
@@ -108,8 +113,12 @@ function bindRenderableScene(
 
 export async function bootstrap(canvas: HTMLCanvasElement): Promise<void> {
   const reportElement = document.getElementById('scene-nesting-report');
-  const recoveryButton = document.getElementById('scene-nesting-recover') as HTMLButtonElement | null;
-  const cleanupButton = document.getElementById('scene-nesting-cleanup') as HTMLButtonElement | null;
+  const recoveryButton = document.getElementById(
+    'scene-nesting-recover',
+  ) as HTMLButtonElement | null;
+  const cleanupButton = document.getElementById(
+    'scene-nesting-cleanup',
+  ) as HTMLButtonElement | null;
   const publish = (report: SceneNestingReport): void => {
     if (reportElement === null) return;
     reportElement.dataset.status = report.phase;
@@ -117,7 +126,14 @@ export async function bootstrap(canvas: HTMLCanvasElement): Promise<void> {
   };
 
   try {
-    const host = await constructRuntimeRendererHost(canvas);
+    const host = await constructRuntimeRendererHost(
+      canvas,
+      {},
+      {
+        ...forgeaxBundlerAdapter(),
+        importTransport: createRuntimeAssetImportTransport(runtimeBinding),
+      },
+    );
     if (!host.ok) throw host.error;
     const { renderer, assets } = host.value;
     configureRuntimeAssetCatalog(assets, runtimeBinding);
@@ -130,46 +146,50 @@ export async function bootstrap(canvas: HTMLCanvasElement): Promise<void> {
       throw new Error('scene-nesting fixture GUID parse failed');
     }
 
-    assets.catalog(unlitMatGuid.value, Materials.unlit([0.8, 0.4, 0.2, 1]));
-    const [innerResult, outerResult, meshResult, materialResult] = await Promise.all([
-      assets.loadByGuid<SceneAsset>(innerCubeGuid.value),
-      assets.loadByGuid<SceneAsset>(outerSceneGuid.value),
-      assets.loadByGuid<MeshAsset>(cubeGuid.value),
-      assets.loadByGuid<MaterialAsset>(unlitMatGuid.value),
-    ]);
-    if (!innerResult.ok) throw new Error(`inner scene loadByGuid failed: ${innerResult.error.code}`);
-    if (!outerResult.ok) throw new Error(`outer scene loadByGuid failed: ${outerResult.error.code}`);
-    if (!meshResult.ok) throw new Error(`cube mesh loadByGuid failed: ${meshResult.error.code}`);
-    if (!materialResult.ok) throw new Error(`unlit material loadByGuid failed: ${materialResult.error.code}`);
+    const world = new World({ assets: assets });
+    const sceneAssets = world.assets;
+    if (!(sceneAssets instanceof AssetRegistry))
+      throw new Error('Scene requires its runtime asset owner');
 
-    const loadedInnerSnapshot = sceneSnapshot(cloneScene(innerResult.value));
-    const loadedOuterSnapshot = sceneSnapshot(cloneScene(outerResult.value));
-    const world = new World();
     const worldContext = await createWorldContext(world, [renderComponentsPlugin(), scenePlugin()]);
     void worldContext;
     const attachment = renderer.attach(world);
     if (!attachment.ok) throw attachment.error;
     const lease = attachment.value;
 
-    const meshHandle = world.allocSharedRef('MeshAsset', meshResult.value);
-    const materialHandle = world.allocSharedRef('MaterialAsset', materialResult.value);
-    const sceneChildren = new Map<number, Handle<'SceneAsset', 'shared'>>();
-    worldSetSceneAssetResolver(world, (_source, parent) => {
-      const child = sceneChildren.get(Number(parent));
-      return child === undefined
-        ? err({ code: 'asset-not-found', expected: 'outer scene handle', hint: 'scene pair not registered' })
-        : ok(child);
-    });
+    const [innerResult, outerResult, meshResult, materialResult] = await Promise.all([
+      assets.load(innerCubeGuid.value, 'scene'),
+      assets.load(outerSceneGuid.value, 'scene'),
+      assets.load(cubeGuid.value, 'mesh'),
+      assets.load(unlitMatGuid.value, 'material'),
+    ]);
+    if (!innerResult.ok)
+      throw new Error(`inner scene loadByGuid failed: ${innerResult.error.code}`);
+    if (!outerResult.ok)
+      throw new Error(`outer scene loadByGuid failed: ${outerResult.error.code}`);
+    if (!meshResult.ok) throw new Error(`cube mesh loadByGuid failed: ${meshResult.error.code}`);
+    if (!materialResult.ok)
+      throw new Error(`unlit material loadByGuid failed: ${materialResult.error.code}`);
 
+    const innerSource = assets.read(innerResult.value).unwrap();
+    const outerSource = assets.read(outerResult.value).unwrap();
+    assets.release(innerResult.value).unwrap();
+    assets.release(outerResult.value).unwrap();
+    const loadedInnerSnapshot = sceneSnapshot(cloneScene(innerSource));
+    const loadedOuterSnapshot = sceneSnapshot(cloneScene(outerSource));
+    const meshHandle = meshResult.value;
+    const materialHandle = materialResult.value;
     const makePair = (innerSource: SceneSource, outerSource: SceneSource): ScenePair => {
       const bound = bindRenderableScene(innerSource, outerSource, meshHandle, materialHandle);
-      const innerHandle = world.allocSharedRef('SceneAsset', bound.inner);
-      const outerHandle = world.allocSharedRef('SceneAsset', bound.outer);
-      sceneChildren.set(Number(outerHandle), innerHandle);
+      const innerHandle = sceneAssets.create(bound.inner).unwrap();
+      const nested = entityAt(bound.outer, 'inner').instance;
+      if (nested === undefined) throw new Error('nested Scene source missing');
+      nested.source = innerHandle;
+      const outerHandle = sceneAssets.create(bound.outer).unwrap();
       return { ...bound, innerHandle, outerHandle, root: undefined };
     };
 
-    const baselinePair = makePair(innerResult.value, outerResult.value);
+    const baselinePair = makePair(innerSource, outerSource);
     const camera = world.spawn(
       { component: Transform, data: { pos: [0, 1.5, 3], quat: [0, 0, 0, 1], scale: [1, 1, 1] } },
       { component: Camera, data: { fov: 60, aspect: WIDTH / HEIGHT, near: 0.1, far: 100 } },
@@ -180,13 +200,15 @@ export async function bootstrap(canvas: HTMLCanvasElement): Promise<void> {
     renderer.subscribe((event) => {
       if (event.kind !== 'error') return;
       renderErrors.push({ code: event.error.code });
-      const bus = (globalThis as unknown as { __learnRenderErrors?: unknown[] }).__learnRenderErrors;
+      const bus = (globalThis as unknown as { __learnRenderErrors?: unknown[] })
+        .__learnRenderErrors;
       bus?.push(event.error);
       console.error('[hello-scene-nesting] renderer error:', event.error.code, event.error.hint);
     });
 
     const baselineInstance = worldInstantiateScene(world, baselinePair.outerHandle);
-    if (!baselineInstance.ok) throw new Error(`baseline instantiate failed: ${baselineInstance.error.code}`);
+    if (!baselineInstance.ok)
+      throw new Error(`baseline instantiate failed: ${baselineInstance.error.code}`);
     baselinePair.root = baselineInstance.value.root;
     const sceneInstanceToken = SceneInstance;
     const mappingFor = (root: EntityHandle): Uint32Array => {
@@ -197,14 +219,15 @@ export async function bootstrap(canvas: HTMLCanvasElement): Promise<void> {
     const baselineMapping = mappingFor(baselinePair.root);
     const baselineSibling = baselineMapping[0] as unknown as EntityHandle;
     const baselineMountedMember = baselineMapping[2] as unknown as EntityHandle;
-    const baselineSiblingRenderable = world.get(baselineSibling, MeshFilter).ok && world.get(baselineSibling, MeshRenderer).ok;
-    const baselineMountedRenderable = world.get(baselineMountedMember, MeshFilter).ok && world.get(baselineMountedMember, MeshRenderer).ok;
+    const baselineSiblingRenderable =
+      world.get(baselineSibling, MeshFilter).ok && world.get(baselineSibling, MeshRenderer).ok;
+    const baselineMountedRenderable =
+      world.get(baselineMountedMember, MeshFilter).ok &&
+      world.get(baselineMountedMember, MeshRenderer).ok;
     const baselineCount = world.inspect().entityCount;
-    const baselineDiagnostics = baselineInstance.value.diagnostics;
     publish({
       phase: 'baseline',
       baseline: {
-        diagnostics: baselineDiagnostics,
         root: Number(baselinePair.root),
         sibling: Number(baselineSibling),
         mountedMember: Number(baselineMountedMember),
@@ -238,7 +261,7 @@ export async function bootstrap(canvas: HTMLCanvasElement): Promise<void> {
       }
       const result = worldDespawnScene(world, root);
       if (!result.ok) throw result.error;
-      sceneChildren.delete(Number(pair.outerHandle));
+
       pair.root = undefined;
       return { changed: true, count: result.value };
     };
@@ -248,8 +271,9 @@ export async function bootstrap(canvas: HTMLCanvasElement): Promise<void> {
       if (recoveryButton.disabled) return;
       recoveryButton.disabled = true;
       try {
-        const pair = makePair(innerResult.value, outerResult.value);
+        const pair = makePair(innerSource, outerSource);
         componentAt(pair.inner, 'cube', 'Transform').unknownField = 'M30-unknown-field';
+        assets.update(pair.innerHandle, { entities: pair.inner.entities }).unwrap();
         const faultyInputSnapshot = sceneSnapshot(pair.inner);
         const faulty = worldInstantiateScene(world, pair.outerHandle);
         const faultyEntityCount = world.inspect().entityCount;
@@ -260,23 +284,29 @@ export async function bootstrap(canvas: HTMLCanvasElement): Promise<void> {
               readonly code?: string;
               readonly detail?: unknown;
             });
-        const faultyDetail = faultyError?.detail as {
-          readonly reason?: unknown;
-          readonly component?: unknown;
-          readonly field?: unknown;
-          readonly entity?: unknown;
-        } | undefined;
-        const rejectedBeforeSpawn = faultyError?.code === 'asset-package-invalid'
-          && faultyDetail?.reason === 'unknown component field'
-          && faultyDetail.component === 'Transform'
-          && faultyDetail.field === 'unknownField'
-          && faultyDetail.entity === 'cube';
+        const faultyDetail = faultyError?.detail as
+          | {
+              readonly reason?: unknown;
+              readonly component?: unknown;
+              readonly field?: unknown;
+              readonly entity?: unknown;
+            }
+          | undefined;
+        const rejectedBeforeSpawn =
+          faultyError?.code === 'asset-package-invalid' &&
+          faultyDetail?.reason === 'unknown component field' &&
+          faultyDetail.component === 'Transform' &&
+          faultyDetail.field === 'unknownField' &&
+          faultyDetail.entity === 'cube';
         const faultyCleanup = faulty.ok ? cleanupPair(pair) : { changed: false, count: 0 };
         const noOrphanAfterFault = world.inspect().entityCount === baselineCount;
-        const healthyRetainedAfterFault = world.get(baselinePair.root as EntityHandle, sceneInstanceToken).ok;
-        sceneChildren.delete(Number(pair.outerHandle));
-        world.sharedRefs.release(pair.innerHandle);
-        world.sharedRefs.release(pair.outerHandle);
+        const healthyRetainedAfterFault = world.get(
+          baselinePair.root as EntityHandle,
+          sceneInstanceToken,
+        ).ok;
+
+        sceneAssets.release(pair.innerHandle);
+        sceneAssets.release(pair.outerHandle);
 
         const correctedInner = cloneScene(pair.inner);
         delete componentAt(correctedInner, 'cube', 'Transform').unknownField;
@@ -290,17 +320,17 @@ export async function bootstrap(canvas: HTMLCanvasElement): Promise<void> {
         const correctedMember = correctedMapping[2] as unknown as EntityHandle;
         const correctedEntityCount = world.inspect().entityCount;
         const correctionInputUnchanged = sceneSnapshot(correctedInner) === correctedInputSnapshot;
-        const freshIdentity = Number(correctedPair.root) !== Number(baselinePair.root)
-          && Number(correctedMember) !== Number(baselineMountedMember);
-        const correctedEmpty = corrected.value.diagnostics.length === 0;
+        const freshIdentity =
+          Number(correctedPair.root) !== Number(baselinePair.root) &&
+          Number(correctedMember) !== Number(baselineMountedMember);
         const healthyRetained = world.get(baselinePair.root as EntityHandle, sceneInstanceToken).ok;
-        const loadedInputsUnchanged = sceneSnapshot(cloneScene(innerResult.value)) === loadedInnerSnapshot
-          && sceneSnapshot(cloneScene(outerResult.value)) === loadedOuterSnapshot;
+        const loadedInputsUnchanged =
+          sceneSnapshot(cloneScene(innerSource)) === loadedInnerSnapshot &&
+          sceneSnapshot(cloneScene(outerSource)) === loadedOuterSnapshot;
 
         publish({
           phase: 'repaired',
           baseline: {
-            diagnostics: baselineDiagnostics,
             entityCount: baselineCount,
             healthyRetained,
           },
@@ -313,8 +343,6 @@ export async function bootstrap(canvas: HTMLCanvasElement): Promise<void> {
             healthyRetained,
             inputUnchanged,
             faultyCleanup,
-            correctedDiagnostics: corrected.value.diagnostics,
-            correctedEmpty,
             correctedInputUnchanged: correctionInputUnchanged,
             loadedInputsUnchanged,
             freshIdentity,
@@ -341,15 +369,18 @@ export async function bootstrap(canvas: HTMLCanvasElement): Promise<void> {
         if (displayPair === undefined) throw new Error('run recovery before cleanup');
         const first = cleanupPair(displayPair);
         const second = cleanupPair(displayPair);
-        const healthyRetainedBeforeFinalTeardown = world.get(baselinePair.root as EntityHandle, sceneInstanceToken).ok;
+        const healthyRetainedBeforeFinalTeardown = world.get(
+          baselinePair.root as EntityHandle,
+          sceneInstanceToken,
+        ).ok;
         const baselineCleanup = cleanupPair(baselinePair);
         world.despawn(camera.value).unwrap();
-        world.sharedRefs.release(displayPair.innerHandle);
-        world.sharedRefs.release(displayPair.outerHandle);
-        world.sharedRefs.release(baselinePair.innerHandle);
-        world.sharedRefs.release(baselinePair.outerHandle);
-        world.sharedRefs.release(meshHandle);
-        world.sharedRefs.release(materialHandle);
+        sceneAssets.release(displayPair.innerHandle);
+        sceneAssets.release(displayPair.outerHandle);
+        sceneAssets.release(baselinePair.innerHandle);
+        sceneAssets.release(baselinePair.outerHandle);
+        sceneAssets.release(meshHandle);
+        sceneAssets.release(materialHandle);
         frameLoop = false;
         publish({
           phase: 'cleaned',
@@ -360,13 +391,13 @@ export async function bootstrap(canvas: HTMLCanvasElement): Promise<void> {
             healthyRetainedBeforeFinalTeardown,
             baselineCleanup,
             finalEntityCount: world.inspect().entityCount,
-            sharedRefCounts: {
-              mesh: world.sharedRefs.refcount(meshHandle),
-              material: world.sharedRefs.refcount(materialHandle),
-              displayInner: world.sharedRefs.refcount(displayPair.innerHandle),
-              displayOuter: world.sharedRefs.refcount(displayPair.outerHandle),
-              baselineInner: world.sharedRefs.refcount(baselinePair.innerHandle),
-              baselineOuter: world.sharedRefs.refcount(baselinePair.outerHandle),
+            releasedAssets: {
+              mesh: !assets.read(meshHandle).ok,
+              material: !assets.read(materialHandle).ok,
+              displayInner: !assets.read(displayPair.innerHandle).ok,
+              displayOuter: !assets.read(displayPair.outerHandle).ok,
+              baselineInner: !assets.read(baselinePair.innerHandle).ok,
+              baselineOuter: !assets.read(baselinePair.outerHandle).ok,
             },
             rendererErrors: renderErrors,
           },

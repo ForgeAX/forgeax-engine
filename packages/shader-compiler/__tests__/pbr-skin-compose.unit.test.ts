@@ -58,6 +58,7 @@ function loadEngineImports(): Record<string, string> {
     'forgeax_pbr::temporal': read('pbr-temporal.wgsl'),
     'forgeax_pbr::ibl_shared': read('ibl-shared.wgsl'),
     'forgeax_pbr::ibl_sampling': read('ibl-sampling.wgsl'),
+    'forgeax_pbr::pmrem': read('ibl-pmrem.wgsl'),
     'forgeax_pbr::tbn': read('tbn.wgsl'),
     'forgeax_pbr::lighting_directional': read('lighting-directional.wgsl'),
     'forgeax_pbr::lighting_punctual': read('lighting-punctual.wgsl'),

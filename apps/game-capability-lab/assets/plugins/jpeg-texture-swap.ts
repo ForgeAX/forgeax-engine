@@ -1,8 +1,9 @@
+import type { AssetHandle } from '@forgeax/engine-types';
 import type { AssetRegistry } from '@forgeax/engine-assets-runtime';
 import type { EntityHandle, World } from '@forgeax/engine-ecs';
 import { AssetGuid } from '@forgeax/engine-pack/guid';
 import { MeshRenderer } from '@forgeax/engine-render';
-import type { Handle, MaterialAsset, TextureAsset } from '@forgeax/engine-runtime';
+import type { TextureAsset } from '@forgeax/engine-runtime';
 
 /** Sub-asset emitted by the licensed wood-container JPEG sidecar. */
 export const GAME_DEFAULT_JPEG_TEXTURE_GUID = '019e2cc6-0c86-79da-aa76-b0984c86d45c';
@@ -22,9 +23,9 @@ export type JpegTextureSnapshot = {
 
 export type JpegTextureSwap = {
   readonly entity: EntityHandle;
-  readonly originalMaterials: readonly Handle<'MaterialAsset', 'shared'>[];
-  readonly jpegMaterials: readonly Handle<'MaterialAsset', 'shared'>[];
-  readonly texture: Handle<'TextureAsset', 'shared'>;
+  readonly originalMaterials: readonly AssetHandle<'material'>[];
+  readonly jpegMaterials: readonly AssetHandle<'material'>[];
+  readonly texture: AssetHandle<'texture'>;
   readonly texturePayload: TextureAsset;
   readonly guid: string;
   readonly name: string;
@@ -61,21 +62,13 @@ function snapshotFrom(state: JpegTextureSwap | undefined): JpegTextureSnapshot {
   };
 }
 
-export function cloneWithTexture(world: World, source: Handle<'MaterialAsset', 'shared'>, assets: AssetRegistry, texture: Handle<'TextureAsset', 'shared'>): Handle<'MaterialAsset', 'shared'> | undefined {
-  const resolved = world.sharedRefs.resolve<'MaterialAsset', MaterialAsset>(source);
-  if (!resolved.ok) return undefined;
-  const sourceGuid = assets.guidOf(resolved.value);
-  const parsed = sourceGuid === undefined ? undefined : AssetGuid.parse(sourceGuid);
-  const parent = resolved.value.parent ?? (parsed?.ok ? parsed.value : undefined);
-  if (parent === undefined) return undefined;
-  return world.allocSharedRef('MaterialAsset', {
-    kind: 'material',
-    parent,
-    values: {
-      ...(resolved.value.parent === undefined ? {} : resolved.value.values),
-      baseColorTexture: texture,
-    },
-  });
+export function cloneWithTexture(source: AssetHandle<'material'>, assets: AssetRegistry, texture: AssetHandle<'texture'>): AssetHandle<'material'> | undefined {
+  const copied = assets.copy(source);
+  if (!copied.ok) return undefined;
+  const updated = assets.update(copied.value, { values: { baseColorTexture: texture } });
+  if (updated.ok) return copied.value;
+  assets.release(copied.value).unwrap();
+  return undefined;
 }
 
 /** Load one authored JPEG and clone the existing target materials around it. */
@@ -92,16 +85,18 @@ export async function createJpegTextureSwap(
     console.warn(`[game] JPEG texture GUID invalid: ${guid.error.code}`);
     return undefined;
   }
-  const loaded = await assets.loadByGuid<TextureAsset>(guid.value);
+  const loaded = await assets.load(guid.value, 'texture');
   if (!loaded.ok) {
     console.warn(`[game] JPEG texture unavailable: ${loaded.error.code} — ${loaded.error.hint}`);
     return undefined;
   }
-  const texture = world.allocSharedRef('TextureAsset', loaded.value);
-  const jpegMaterials: Handle<'MaterialAsset', 'shared'>[] = [];
+  const texture = loaded.value;
+  const jpegMaterials: AssetHandle<'material'>[] = [];
   for (const material of renderer.value.materials) {
-    const clone = cloneWithTexture(world, material, assets, texture);
+    const clone = cloneWithTexture(material, assets, texture);
     if (clone === undefined) {
+      for (const material of jpegMaterials) assets.release(material).unwrap();
+      assets.release(texture).unwrap();
       console.warn('[game] JPEG texture material clone failed; retaining authored materials');
       return undefined;
     }
@@ -112,9 +107,9 @@ export async function createJpegTextureSwap(
     originalMaterials: [...renderer.value.materials],
     jpegMaterials,
     texture,
-    texturePayload: loaded.value,
+    texturePayload: assets.read(texture).unwrap(),
     guid: GAME_DEFAULT_JPEG_TEXTURE_GUID,
-    name: assets.resolveName(GAME_DEFAULT_JPEG_TEXTURE_GUID),
+    name: assets.catalogEntry(GAME_DEFAULT_JPEG_TEXTURE_GUID)?.name ?? GAME_DEFAULT_JPEG_TEXTURE_GUID,
     active: 'original',
     swaps: 0,
   };

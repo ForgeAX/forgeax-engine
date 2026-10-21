@@ -1,5 +1,6 @@
 import { readFileSync } from 'node:fs';
 import { expect, it } from 'vitest';
+import { composeShader } from '../../../naga/src/index';
 
 it('matches Three Vogel footprints at interior and clamped texture edges with receiver correction', async () => {
   const adapter = await navigator.gpu.requestAdapter();
@@ -40,9 +41,10 @@ it('matches Three Vogel footprints at interior and clamped texture edges with re
     const shared = readFileSync(
       new URL('../../../shader/src/shadow-pcf.wgsl', import.meta.url),
       'utf8',
-    ).replace(/^#.*$/gm, '');
+    ).replace(/^#define_import_path.*$/gm, '');
     const module = device.createShaderModule({
-      code: `${shared}
+      code: await composeShader(
+        `${shared}
       @group(0) @binding(0) var depths: texture_depth_2d_array;
       @group(0) @binding(1) var comparison: sampler_comparison;
       @group(0) @binding(2) var<storage,read_write> result: array<vec4<f32>>;
@@ -52,7 +54,7 @@ it('matches Three Vogel footprints at interior and clamped texture edges with re
         let uv = vec2<f32>(positions[id.x%8u], positions[id.x/8u])/32.0;
         let texel = vec2<f32>(1.0/32.0);
         let gradient = select(vec2<f32>(0.0), vec2<f32>(0.01,-0.02), id.x%2u == 0u);
-        let actual = sample_shadow_2d_vogel(depths, comparison, uv, 0, texel, 0.5, gradient, pixel);
+        let actual = sample_shadow_2d_vogel(depths, comparison, uv, 0, texel, 0.5, gradient, pixel, vec2<f32>(1.0));
         let phi = fract(52.9829189*fract(dot(pixel,vec2(0.06711056,0.00583715))))*6.28318530718;
         var reference = 0.0;
         var inward = 0.0;
@@ -68,6 +70,14 @@ it('matches Three Vogel footprints at interior and clamped texture edges with re
         }
         result[id.x] = vec4(actual, reference*0.2, inward*0.2, 0.0);
       }`,
+        {
+          'forgeax_view::common': readFileSync(
+            new URL('../../../shader/src/common.wgsl', import.meta.url),
+            'utf8',
+          ),
+        },
+        { STORAGE_BUFFER_AVAILABLE: true },
+      ),
     });
     const pipeline = await device.createComputePipelineAsync({
       layout: 'auto',

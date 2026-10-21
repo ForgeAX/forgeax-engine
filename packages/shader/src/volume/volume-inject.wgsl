@@ -1,5 +1,5 @@
 #define_import_path forgeax_view::volume_inject
-#import forgeax_pbr::shadow_pcf::{sample_shadow_2d_kernel, sample_shadow_2d_vogel}
+#import forgeax_pbr::shadow_pcf::{sample_shadow_2d_kernel, sample_shadow_2d_vogel, sample_shadow_2d_punctual}
 #import forgeax_pbr::lighting_attenuation::{projectSpotUv}
 #import forgeax_view::common::{DirectLightSlot}
 // forgeax_pbr::lighting_punctual exports the surface-equivalent
@@ -101,7 +101,7 @@ fn volume_cascade(world_position : vec3<f32>, view_depth : f32) -> f32 {
   let filter_profile = clamp(u32(round(view.directionalShadowFilter.x)), 1u, 6u);
   if (filter_profile == 6u) {
     return sample_shadow_2d_vogel(shadowMap, shadowSampler, tile_uv, i32(layer),
-      1.0 / shadow_size, projected.z + view.depthBias, vec2<f32>(0.0), tile_uv * shadow_size);
+      1.0 / shadow_size, projected.z + view.depthBias, vec2<f32>(0.0), tile_uv * shadow_size, vec2<f32>(1.0));
   }
   // Volumetric injection currently owns a depth-only PCF receiver. Directional
   // PCSS profiles remain an explicit capability fallback here: the surface
@@ -161,9 +161,9 @@ fn spot_shadow_visibility_at(world_position : vec3<f32>) -> f32 {
     return 1.0;
   }
   let shadow_size = vec2<f32>(textureDimensions(spotShadowMap, 0));
-  return sample_shadow_2d_kernel(
-    spotShadowMap, shadowSampler, local_uv, i32(tile), 1.0 / shadow_size, projected.z,
-    light.auxiliary.y, light.auxiliary.x, 1.0, 3.0,
+  return sample_shadow_2d_punctual(
+    spotShadowMap, shadowSampler, local_uv, i32(tile), 1.0 / shadow_size, projected.z + light.auxiliary.x,
+    f32(max(light.metadata.x >> 8u, 1u)), local_uv * shadow_size, vec2<f32>(1.0),
   );
 }
 

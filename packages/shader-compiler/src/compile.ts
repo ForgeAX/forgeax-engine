@@ -566,6 +566,9 @@ export async function compileShaderProgram(
         wgsl: composed,
         glsl: undefined,
         bindings: bindingsJson,
+        ...(reflectionParsed.wire.entryPoints === undefined
+          ? {}
+          : { entryPoints: reflectionParsed.wire.entryPoints }),
       },
       deps: [],
       uvSetCount,

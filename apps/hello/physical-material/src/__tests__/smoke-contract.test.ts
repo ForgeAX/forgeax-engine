@@ -21,7 +21,7 @@ describe('physical material smoke contract', () => {
     const source = read('smoke-browser.mjs');
     expect(source).toContain('materialLoad?.status === \'ok\'');
     expect(source).toContain('physical material GUID load timeout');
-    expect(readSource('main.ts')).toContain('assets.loadByGuid<MaterialAsset>');
+    expect(readSource('main.ts')).toContain("assets.load(materialGuid, 'material')");
   });
 
   it('starts Vite from the carrier root', () => {
@@ -94,7 +94,7 @@ describe('physical material smoke contract', () => {
     expect(smokeSource).toContain("'..', 'evidence', 'case-input.json'");
     expect(smokeSource).toContain('caseInput.geometry.casePositions');
     expect(smokeSource).toContain('caseInput.geometry.skinned.pose');
-    expect(smokeSource).toContain('assets.loadByGuid(fullMaterialGuid.value)');
+    expect(smokeSource).toContain("assets.load(fullMaterialGuid.value, 'material')");
     expect(smokeSource).toContain('materialLoad: fullPhysicalMaterialLoad');
   });
 

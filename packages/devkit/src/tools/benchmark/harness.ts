@@ -1,20 +1,21 @@
 import {
   type AdmissionThresholds,
+  BENCHMARK_MODES,
+  BENCHMARK_PHASES,
   type BenchmarkAdmissionReport,
   type BenchmarkRecipe,
   type BenchmarkSample,
   createAdmissionReport,
+  DEFAULT_ADMISSION_THRESHOLDS,
 } from './report.js';
 
-export interface BenchmarkMeasurement {
-  readonly durationMs: number;
-  readonly peakRssBytes: number;
-  readonly exclusivePhasesMs?: Readonly<Record<string, number>>;
-  readonly rhiDebugOverheadMs?: number;
-  readonly carrierRendezvousMs?: number;
-  readonly cleanupPassed: boolean;
-  readonly evictionPassed: boolean;
-}
+export type BenchmarkMeasurement = Pick<
+  BenchmarkSample,
+  'durationMs' | 'peakRssBytes' | 'cleanupPassed' | 'evictionPassed'
+> &
+  Partial<
+    Pick<BenchmarkSample, 'exclusivePhasesMs' | 'rhiDebugOverheadMs' | 'carrierRendezvousMs'>
+  >;
 
 export interface BenchmarkHarnessOptions {
   readonly recipe: BenchmarkRecipe;
@@ -29,13 +30,11 @@ export interface BenchmarkHarnessOptions {
 export async function runBenchmarkAdmission(
   options: BenchmarkHarnessOptions,
 ): Promise<BenchmarkAdmissionReport> {
-  const sampleCount = options.thresholds?.sampleCountPerPhase ?? 30;
+  const thresholds = options.thresholds ?? DEFAULT_ADMISSION_THRESHOLDS;
   const samples: BenchmarkSample[] = [];
-  const phases = ['cold', 'warm'] as const satisfies readonly BenchmarkSample['phase'][];
-  const modes = ['private', 'service'] as const satisfies readonly BenchmarkSample['mode'][];
-  for (const phase of phases) {
-    for (let index = 0; index < sampleCount; index += 1) {
-      for (const mode of modes) {
+  for (const phase of BENCHMARK_PHASES) {
+    for (let index = 0; index < thresholds.sampleCountPerPhase; index += 1) {
+      for (const mode of BENCHMARK_MODES) {
         const measurement = await options.measure(mode, phase, index);
         samples.push({
           mode,
@@ -52,5 +51,5 @@ export async function runBenchmarkAdmission(
       }
     }
   }
-  return createAdmissionReport(options.recipe, samples, options.thresholds);
+  return createAdmissionReport(options.recipe, samples, thresholds);
 }

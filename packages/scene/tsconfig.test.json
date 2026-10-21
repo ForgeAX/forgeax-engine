@@ -1,0 +1,16 @@
+{
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "noEmit": true,
+    "emitDeclarationOnly": false,
+    "composite": false
+  },
+  "exclude": [],
+  "references": [
+    { "path": "../assets-runtime" },
+    { "path": "../ecs" },
+    { "path": "../math" },
+    { "path": "../plugin" },
+    { "path": "../types" }
+  ]
+}

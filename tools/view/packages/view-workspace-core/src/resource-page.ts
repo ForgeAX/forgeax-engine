@@ -5,7 +5,7 @@ import type { ViewWorkspaceClient } from './client.ts';
 import { liveEnginePresentation } from './engine-presentation.ts';
 import { dedicatedPreviewPresentation } from './preview-surface.ts';
 import { logResourceOpen } from './resource-open.ts';
-import { createResourcePageTitleController } from './page-title.ts';
+import { createResourcePageController } from './resource-page-controller.ts';
 import { createWorkspaceStateReader } from './workspace-state.ts';
 import { reportWorkspaceCommandError } from './command-error.ts';
 
@@ -102,8 +102,10 @@ export async function applyResourcePagePlugin(ctx: Context, config: FrontendConf
 
 async function mountResourcePage(ctx: Context, config: FrontendConfig & PresentationConfig, identity: ResourceIdentity, pageHost: PageHost, panelHost: PanelHost, extras: ResourcePageExtras = {}) {
   const presentation = liveEnginePresentation(ctx, config);
+  let resourcePresentation: ViewPresentation | undefined;
+  let resourceController: ReturnType<typeof createResourcePageController> | undefined;
   const unregisterPageType = pageHost.registerType(createResourcePageTypeContribution(identity, extras.createController
-    ?? (() => createResourcePageTitleController(ctx.get('viewOperationClient'), identity.RESOURCE_SELECTOR.kinds ?? []))));
+    ?? (() => resourceController = createResourcePageController(ctx.get('viewOperationClient'), identity.RESOURCE_SELECTOR.kinds ?? [], async target => { await resourcePresentation?.releaseSurface?.(target); }))));
   logResourceOpen('resource-page-registered', {
     pageType: identity.PAGE_TYPE,
     kinds: identity.RESOURCE_SELECTOR?.kinds ?? null,
@@ -136,8 +138,11 @@ async function mountResourcePage(ctx: Context, config: FrontendConfig & Presenta
   };
   const disposers: Dispose[] = [];
   ctx.effect(() => async () => {
-    for (const dispose of [...disposers].reverse()) await dispose?.();
-    unregisterPageType();
+    try { await resourceController?.beforeClose?.(new AbortController().signal); }
+    finally {
+      for (const dispose of [...disposers].reverse()) await dispose?.();
+      unregisterPageType();
+    }
   });
   try {
     for (const claim of createResourcePanelClaims(identity, {
@@ -146,6 +151,7 @@ async function mountResourcePage(ctx: Context, config: FrontendConfig & Presenta
       previewProps: extras.previewProps,
       assetActions,
     })) {
+      if (claim.id === identity.PREVIEW_SLOT) resourcePresentation = claim.props?.presentation as ViewPresentation | undefined;
       disposers.push(await panelHost.mountPanel(claim));
     }
   } catch (error) {

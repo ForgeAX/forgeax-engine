@@ -34,7 +34,7 @@ The two scenes share the same texture + the same 3 `colorTint` slots (warm red /
 
 ### Section 1 · region+quad 经典区（屏幕下半屏，scene-A / scene-B 切换）
 
-下半屏的 3 个 sprite 共用 `HANDLE_QUAD`（builtin mesh id=3）+ `forgeax::sprite` shader，`values` 内**不带** `slices` / `sliceMode` 字段——`paramSchema` 默认让两字段走 sentinel `[0, 0, 0, 0]` / `0`，runtime record-stage 自动绑定 `HANDLE_QUAD` 而非 `HANDLE_NINESLICE_QUAD`（plan-strategy D-1 + D-2 sentinel 早退）。键盘 `1` / `2` 在 scene-A（layer-z 横向）与 scene-B（pivot 脚锚 + layer-y JRPG sort）间切换。
+下半屏的 3 个 sprite 共用受管理的 quad 资产 + `forgeax::sprite` shader，`values` 内**不带** `slices` / `sliceMode` 字段——`paramSchema` 默认让两字段走 sentinel `[0, 0, 0, 0]` / `0`，runtime record-stage 消费绑定的普通 quad（plan-strategy D-1 + D-2 sentinel 早退）。键盘 `1` / `2` 在 scene-A（layer-z 横向）与 scene-B（pivot 脚锚 + layer-y JRPG sort）间切换。
 
 ### Section 2 · 9-slice stretch（屏幕上半屏，左右两面板）
 
@@ -113,7 +113,7 @@ The two scenes share the same texture + the same 3 `colorTint` slots (warm red /
 | Path | Purpose |
 |:--|:--|
 | `index.html` | `<canvas id="app">` host page + keyboard hint overlay |
-| `src/main.ts` | `createApp(canvas, { clearColor })` bootstrap + `loadByGuid<TextureAsset>` (wood-container.jpg analogue) + 6 sprite materials (3 colors x 2 pivots) + ortho Camera + `applyScene(target)` despawn-and-respawn switcher + scene-switch system reading `renderer.input.snapshot(world)` (`keyboard.up('1')` / `keyboard.up('2')` / `mouse.wheelDelta`) |
+| `src/main.ts` | `createApp(canvas, { clearColor })` bootstrap + `assets.load(guid, 'texture')` (wood-container.jpg analogue) + 6 sprite materials (3 colors x 2 pivots) + ortho Camera + `applyScene(target)` despawn-and-respawn switcher + scene-switch system reading `renderer.input.snapshot(world)` (`keyboard.up('1')` / `keyboard.up('2')` / `mouse.wheelDelta`) |
 | `scripts/smoke-dawn.mjs` | dawn-node headless smoke; renders 4 cases (scene-A/B x `tonemap = 'none'` / `'reinhard-extended'`) and compares each against `reference-dawn-scene-<a|b>-tonemap-<none|reinhard>.png` byte-for-byte (eps <= `SMOKE_PIXEL_THRESHOLD`, default `0.05`) |
 | `vite.config.ts` | Two-plugin stack (`forgeaxShader` + `pluginPack`) so the production build carries the sprite + tonemap + pbr + unlit shader manifest plus the local `/pack-index.json` GUID catalog |
 | `assets/wood-container.jpg` | 64x64 procedural JPEG (1.4 KB) re-used from the learn-render-1.4-textures pinned-asset carve-out. D-5 SSOT: the same GUID `019e2cc6-0c86-79da-aa76-b0984c86d45c` resolves the sprite texture under both the demo-local path and the `forgeax-engine-assets/learn-opengl/` submodule path |
@@ -133,7 +133,7 @@ The two scenes share the same texture + the same 3 `colorTint` slots (warm red /
 ## What this demo proves
 
 - **sprite uses the unified pass-based `MaterialAsset` surface.** Same `MeshFilter + MeshRenderer` ECS entry as PBR / unlit — there is no `SpriteRenderer` / `SpriteBundle` and no sprite-only sibling asset type (charter P4 consistent abstraction; Bevy 0.19 retracement avoided). The shader id `'forgeax::sprite'` in `passes[0].shader` selects the sprite branch in the runtime extract / record stages.
-- **`HANDLE_QUAD` lives alongside `HANDLE_CUBE` / `HANDLE_TRIANGLE`.** Same 12-float vertex layout, same `assetHandle: HANDLE_QUAD` spawn pattern.
+- **Geometry produces the primitive; the asset owner supplies its identity.** Use `const quad = assets.create(createPrimitiveMesh('quad').unwrap()).unwrap()` and bind `MeshFilter { assetHandle: quad }`. Nine-slice uses `createPrimitiveMesh('nine-slice-quad')` through the same admission path.
 - **`Layer` is a generic render component, not a 2D-only one.** A 3D PBR mesh can carry `Layer` for the same sort-key purpose; the demo just exercises 2D first.
 - **`TransparentSortConfig` is the single switch.** Five common 2D camera idioms (horizontal / top-down / Don't Starve / isometric / JRPG) reduce to two fields (`mode` + `yzAlpha`) on a world-level KV resource; the switch system in `src/main.ts` calls `setTransparentSortConfig(world, { mode, yzAlpha: 1.0 })` and the rest of the world stays unchanged.
 - **AC-18 path (4) sprite-bucket missing-texture warn-once.** If the wood-container handle fails to resolve, the render-system fires `console.warn('[forgeax] sprite texture ...')` once per handle and surfaces a structured `RhiError(asset-not-registered)` to listeners; the AI user reads `.code` / `.hint` / `.detail.assetHandle` properties.

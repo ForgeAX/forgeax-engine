@@ -46,7 +46,7 @@ import type { MeshMaterialOverrideConflict } from './mesh-contracts.js';
  * render-time registry lookup miss, 18-member closed union in
  * `@forgeax/engine-rhi/src/errors.ts`). The two unions cover disjoint
  * lifecycle phases — AI users face only these 22 alternatives on the
- * `engine.assets.loadByGuid(guid)` / `engine.assets.get(handle)` /
+ * `engine.assets.load(guid, kind)` / `engine.assets.read(handle)` /
  * `engine.assets.register(payload).unwrap()` surface.
  *
  * | code | trigger |
@@ -58,16 +58,21 @@ import type { MeshMaterialOverrideConflict } from './mesh-contracts.js';
  * | `'asset-invalid-value'` | `register<MaterialAsset>(payload)` value validation fails the 3-tier validator (type-mismatch / extra-key / missing-required) — fail-fast at register entry. |
  * | `'cubemap-handle-missing'` | internal equirect-to-cubemap projection has no live cubemap for a `Skylight.equirect` handle; `.hint` points to loading an EquirectAsset + caps.rgba16floatRenderable. |
  * | `'invalid-source-format'` | image importer path when `.hdr` decode needs rgba16float / rgba32float. |
- * | `'load-failed'` | `loadByGuid` when guid entry exists in catalog but file is inaccessible. |
+ * | `'load-failed'` | `load` when guid entry exists in catalog but file is inaccessible. |
  * | `'device-unsupported'` | GPU capability gate: `device.caps.rgba16floatRenderable` missing. |
  * | `'ibl-precompute-not-dispatched'` | `IblPipelineCache` when counter increments but `queue.submit` hasn't been called. |
  * | `'mesh-vertex-stride-mismatch'` | `register({ kind: 'mesh', ... })` vertices buffer is not evenly divisible by 12 floats per vertex (position vec3 + normal vec3 + uv vec2 + tangent vec4) or `maxIndex+1 !== vertexCount` — fail-fast at register entry (charter P3 structured failure; `.detail` carries `vertexCount` / `floatsPerVertex`). |
 | `'material-circular-inheritance'` | material resolve detected a cycle in the parent chain; `.hint` carries the full cycle path (e.g. "A -> B -> A") via `err.detail.cycle`. |
- * | `'loader-not-registered'` | `loadByGuid` dispatched on `asset.kind` but the injected `LoaderRegistry` has no loader for that kind; `.detail.kind` is the missing kind and `.detail.registeredKinds` lists the kinds currently wired (feat-20260603-asset-import-loader-injection M1; charter P3 — AI users read `.detail.registeredKinds` to know what to inject). |
- * | `'asset-not-imported'` | `loadByGuid` found the GUID in the catalog but its DDC is absent and no `ImportTransport` is wired (shipped form); `.hint` points back to build-time pre-import rather than a runtime workaround (feat-20260603-asset-import-loader-injection M4; logic wired in M4 w31). |
+ * | `'loader-not-registered'` | `load` dispatched on `asset.kind` but the injected `LoaderRegistry` has no loader for that kind; `.detail.kind` is the missing kind and `.detail.registeredKinds` lists the kinds currently wired (feat-20260603-asset-import-loader-injection M1; charter P3 — AI users read `.detail.registeredKinds` to know what to inject). |
+ * | `'asset-not-imported'` | `load` found the GUID in the catalog but its DDC is absent and no `ImportTransport` is wired (shipped form); `.hint` points back to build-time pre-import rather than a runtime workaround (feat-20260603-asset-import-loader-injection M4; logic wired in M4 w31). |
  * | `'texture-source-not-imported'` | `loadTextureAsset` received an uncooked source locator instead of a Pack v2 artifact; the runtime carries no source decoder. |
  */
 export type AssetErrorCode =
+  | 'asset-reference-invalid'
+  | 'asset-owner-closed'
+  | 'asset-write-conflict'
+  | 'asset-budget-exceeded'
+  | 'asset-not-ready'
   | 'asset-not-found'
   | 'asset-parse-failed'
   | 'asset-format-unsupported'
@@ -198,6 +203,15 @@ export class AssetError extends Error {
  * charter proposition 4 explicit failure).
  */
 export const ASSET_ERROR_HINTS: Readonly<Record<AssetErrorCode, string>> = {
+  'asset-not-ready': 'wait for the requested asset preparation and retry on the next frame',
+  'asset-reference-invalid':
+    'use a live reference created by this asset owner; explicitly copy content between scopes',
+  'asset-owner-closed':
+    'create or restore a new asset owner; references from the retired scope are invalid',
+  'asset-write-conflict':
+    'prepare the operation against the current content and dependency versions, then retry',
+  'asset-budget-exceeded':
+    'release unused assets or snapshots, or let consumers accept pending changes before retrying',
   'asset-fetch-failed':
     'check url path; verify dev server is running; in tests use data: URL fixture (data:image/png;base64,...)',
   'catalog-source-unconfigured':
@@ -258,7 +272,7 @@ export const ASSET_ERROR_HINTS: Readonly<Record<AssetErrorCode, string>> = {
     'a TilesetTileEntry optional field is out of range (widthCells / heightCells in (0, 64], pivotX / pivotY in [0, 1], collider rect/polygon in normalized [0,1]^2 with rect.length === 4 and polygon.points.length >= 3) OR a top-level field is out of range (atlases.length >= 1, region.atlasIndex in [0, atlases.length)); engine fail-fast at register-time. read err.detail.field (closed enum) + err.detail.scope (tile-entry | tileset-asset) + err.detail.tileEntryIndex to locate the offending entry; switch (err.detail.field) covers the 7 variants exhaustively without default',
   // === 1 new hint (feat-20260621-asset-registry-robustness-invalidate-inflight-cach M2 / w4) ===
   'asset-invalidated':
-    'The asset was invalidated during load; call loadByGuid(guid) again to retry with a fresh fetch',
+    'The asset was invalidated during load; call load(guid, kind) again to retry with a fresh fetch',
   // === 1 new hint (feat-20260629-multi-uv-set-support M2 / m2-w5) ===
   'mesh-bin-contract-violation':
     're-cook the asset via importer; the .bin sidecar v4 contract is violated — inspect err.detail.reason and its expected/actual projection, stride, cardinality, and byte-length facts',
@@ -267,23 +281,7 @@ export const ASSET_ERROR_HINTS: Readonly<Record<AssetErrorCode, string>> = {
     'compressed-texture mips must be baked offline (the GPU cannot generate mips for a non-render-target block format); re-cook with an offline mip chain, or set the sidecar .meta.json compressionMode:"none" (or mipmap:false) to keep runtime mip generation on an uncompressed texture',
 };
 
-// === Font error model SSOT (feat-20260531-world-space-msdf-text-rendering M2 / w6) ===
-//
-// Decision anchors:
-//   - plan-strategy D-11 (two closed unions: FontErrorCode = build/load phase,
-//     TextErrorCode = runtime layout phase; structured .code/.expected/.hint/.detail;
-//     TOFU is rendering behaviour not an error — AC-14)
-//   - requirements AC-15 (non-TTF -> FontErrorCode 'unsupported-font-format')
-//   - requirements AC-16 (both unions in types/src/index.ts; exhaustive
-//     switch(err.code) without default compiles)
-//   - requirements AC-20 (font concurrency > 8 -> TextErrorCode
-//     'font-concurrency-exceeded')
-//   - charter P3 (explicit failure: structured error > silent behaviour,
-//     D-8 rejects silent LRU eviction for concurrency violation)
-//
-// Domain separation: FontErrorCode covers build-time bake failures and
-// load-time atlas/sampler resolution; TextErrorCode covers runtime glyph
-// layout and text rendering failures.
+// Font errors cover source bake/load; Text errors cover native runtime layout.
 
 /**
  * Closed `FontErrorCode` union — build-time bake + load-time resolution
@@ -292,7 +290,7 @@ export const ASSET_ERROR_HINTS: Readonly<Record<AssetErrorCode, string>> = {
  * | code | trigger |
  * |:--|:--|
  * | `'unsupported-font-format'` | bake receives non-TTF input (OTF / WOFF2); `.expected: 'ttf'` (AC-15) |
- * | `'font-atlas-missing'` | loadByGuid font handle has missing/empty atlas texture GUID |
+ * | `'font-atlas-missing'` | Font source has missing/empty atlas texture GUID |
  * | `'font-atlas-corrupted'` | sidecar JSON parse failed or glyph metrics shape invalid |
  * | `'bake-failed'` | @zappar/msdf-generator call threw (wasm unavailable / internal error) |
  */
@@ -308,8 +306,8 @@ export type FontErrorCode =
  *
  * | code | trigger |
  * |:--|:--|
- * | `'font-concurrency-exceeded'` | > 8 distinct FontAsset handles active in one frame; `.expected: 8` (AC-20) |
- * | `'font-atlas-missing'` | glyph layout system resolved fontHandle but atlas texture is not yet uploaded |
+ * | `'font-concurrency-exceeded'` | Reserved published code; the runtime has no Font-count limit |
+ * | `'font-atlas-missing'` | managed Font closure has no atlas or sampler |
  * | `'glyph-layout-failed'` | layout computation encountered unexpected state (empty common block, etc.) |
  */
 export type TextErrorCode =
@@ -353,7 +351,7 @@ export class FontError extends Error {
  * `.hint` / `.message`) in the style of {@link AssetError}.
  *
  * AI users consume via property access:
- * `switch (err.code) { case 'font-concurrency-exceeded': ... err.hint ... }`
+ * `switch (err.code) { case 'glyph-layout-failed': ... err.hint ... }`
  * — never by parsing `.message`.
  */
 export class TextError extends Error {

@@ -81,7 +81,7 @@ describe('VFX Data Interface contract', () => {
       ],
       7,
     );
-    expect(result).toMatchObject({ ok: true, value: { generation: 7, readiness: 'ready' } });
+    expect(result).toMatchObject({ ok: true, value: { generation: 7 } });
   });
 
   it('rejects an opaque resource whose kind cannot satisfy the reflected binding', () => {

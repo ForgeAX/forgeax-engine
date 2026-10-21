@@ -32,7 +32,7 @@ async function sample(length: number, scenario: Scenario, translation: number) {
   const world = new World({ time: { fixedDeltaSeconds: 1 / 60, maxStepsPerUpdate: 4 } });
   const context = await createWorldContext(world, [
     scenePlugin(),
-    animationPlugin(undefined, { cadence: 'fixed' }),
+    animationPlugin({ cadence: 'fixed' }),
     skeletalMotionPlugin({ physics: false }),
   ]);
   let binding: SkeletalMotionBinding | undefined;

@@ -6,7 +6,7 @@
 // as a World Resource so the engine's per-frame record stage can sample
 // frames each draw (plan-strategy D-1).
 //
-// AI-user side: declares a VideoAsset { url } -> loadByGuid -> spawn a
+// AI-user side: creates or loads a managed VideoAsset handle -> spawns a
 // quad entity with MeshFilter + MeshRenderer + MaterialAsset.values
 // referencing the video GUID + VideoPlayer { clip, playing:true, loop:true }.
 // The material reuses the same texture2d slot a static texture would (D-5),
@@ -25,9 +25,9 @@
 
 import { World } from '@forgeax/engine-ecs';
 import type { EntityHandle } from '@forgeax/engine-ecs';
-import type { VideoAsset } from '@forgeax/engine-types';
+
 import { AssetGuid } from '@forgeax/engine-pack/guid';
-import { HANDLE_QUAD } from '@forgeax/engine-assets-runtime';
+
 import { VideoPlayer, VIDEO_SOURCE_PROVIDER_KEY } from '@forgeax/engine-graphics-extras';
 import type { VideoSourceProvider } from '@forgeax/engine-graphics-extras';
 import { Transform } from '@forgeax/engine-scene';
@@ -37,6 +37,10 @@ import { perspective } from '@forgeax/engine-render';
 import { constructRuntimeRendererHost } from '@forgeax/engine-runtime/internal/renderer-host';
 
 import { forgeaxBundlerAdapter } from 'virtual:forgeax/bundler';
+import { AssetRegistry } from '@forgeax/engine-assets-runtime';
+
+import { createPrimitiveMesh } from '@forgeax/engine-geometry';
+
 
 // GUIDs: stable per-run (not persisted across builds).
 const VIDEO_GUID_STRING = 'f1b3d000-1111-4aaa-9eee-aa1111112222';
@@ -166,13 +170,9 @@ export async function bootstrap(target: HTMLCanvasElement): Promise<void> {
       return;
     }
     const videoGuid = videoGuidResult.value;
-    if (!packRetryMode) {
-      assets.catalog<VideoAsset>(videoGuid, {
-        kind: 'video',
-        url: '/cutscene.webm',
-      });
-    }
-    let videoHandleRes = await assets.loadByGuid<VideoAsset>(videoGuid);
+    let videoHandleRes = packRetryMode
+      ? await assets.load(videoGuid, 'video')
+      : assets.create({ kind: 'video', url: '/cutscene.webm' });
     if (!videoHandleRes.ok) {
       if (packRetryMode && videoHandleRes.error.code === 'asset-parse-failed') {
         packFirstErrorCode = videoHandleRes.error.code;
@@ -181,7 +181,7 @@ export async function bootstrap(target: HTMLCanvasElement): Promise<void> {
         const repair = await fetch('/__forgeax-video-pack-repair', { method: 'POST' });
         if (!repair.ok) throw new Error('video-texture: Pack retry fixture repair failed');
         assets.invalidate(VIDEO_GUID_STRING);
-        videoHandleRes = await assets.loadByGuid<VideoAsset>(videoGuid);
+        videoHandleRes = await assets.load(videoGuid, 'video');
         if (videoHandleRes.ok) {
           packRetrySucceeded = true;
           packCurrentErrorCode = undefined;
@@ -189,41 +189,36 @@ export async function bootstrap(target: HTMLCanvasElement): Promise<void> {
       }
     }
     if (!videoHandleRes.ok) {
-      console.error('[video-texture] loadByGuid video failed:', videoHandleRes.error);
+      console.error('[video-texture] create/load video failed:', videoHandleRes.error);
       return;
     }
     if (packRetryMode && !packRetrySucceeded) {
       console.error('[video-texture] Pack retry unexpectedly bypassed the first failure');
       return;
     }
-    const videoAsset = videoHandleRes.value;
+    const videoAsset = assets.read(videoHandleRes.value).unwrap();
     console.log('[video-texture] VideoAsset registered');
 
-    // Step 2: register unlit MaterialAsset with values.baseColorTexture=videoGuid.
-    // The video GUID occupies the same texture2d slot a static texture would (D-5).
+    // Step 2: create an unlit material whose texture slot references the video handle.
     const matGuidResult = AssetGuid.parse(MATERIAL_GUID_STRING);
     if (!matGuidResult.ok) {
       console.error('[video-texture] material GUID parse failed:', matGuidResult.error);
       return;
     }
-    assets.catalog(matGuidResult.value, {
+
+    const matHandleRes = assets.create({
       kind: 'material',
       passes: [
         { name: 'Forward', program: { module: 'forgeax::default-unlit' }, renderState: { tags: { LightMode: 'Forward' }, queue: 2000 } },
       ],
       values: {
         baseColor: [0.9, 0.9, 0.9],
-        // values texture fields are dash-form GUID strings (D-19): the
-        // extract stage resolves the string against the catalogue and routes a
-        // video-kind payload to the transient DynamicTextureStore. Passing the
-        // raw AssetGuid (Uint8Array) here would match neither the string nor the
-        // minted-handle (number) arm, silently dropping the slot to default white.
-        baseColorTexture: VIDEO_GUID_STRING,
+        // The video handle uses the same material slot as a static texture.
+        baseColorTexture: videoHandleRes.value,
       },
     });
-    const matHandleRes = await assets.loadByGuid(matGuidResult.value);
     if (!matHandleRes.ok) {
-      console.error('[video-texture] loadByGuid material failed:', matHandleRes.error);
+      console.error('[video-texture] create material failed:', matHandleRes.error);
       return;
     }
     console.log('[video-texture] video-textured material registered');
@@ -233,7 +228,8 @@ export async function bootstrap(target: HTMLCanvasElement): Promise<void> {
       console.error('[video-texture] static material GUID parse failed:', staticMatGuidResult.error);
       return;
     }
-    assets.catalog(staticMatGuidResult.value, {
+
+    const staticMatHandleRes = assets.create({
       kind: 'material',
       passes: [
         {
@@ -244,7 +240,6 @@ export async function bootstrap(target: HTMLCanvasElement): Promise<void> {
       ],
       values: { baseColor: [0.12, 0.78, 0.24] },
     });
-    const staticMatHandleRes = await assets.loadByGuid(staticMatGuidResult.value);
     if (!staticMatHandleRes.ok) {
       console.error('[video-texture] static material load failed:', staticMatHandleRes.error);
       return;
@@ -252,7 +247,12 @@ export async function bootstrap(target: HTMLCanvasElement): Promise<void> {
     console.log('[video-texture] static sibling material registered');
 
     // Step 3: build world
-    const world = new World();
+    const world = new World({ assets: assets });
+const sceneAssets = world.assets;
+if (!(sceneAssets instanceof AssetRegistry)) throw new Error('Scene requires its runtime asset owner');
+
+const primitiveQuad = sceneAssets.create(createPrimitiveMesh('quad').unwrap()).unwrap();
+
     const worldAttachment1 = renderer.attach(world);
     if (!worldAttachment1.ok) throw worldAttachment1.error;
 
@@ -307,15 +307,13 @@ export async function bootstrap(target: HTMLCanvasElement): Promise<void> {
       { component: Transform, data: { pos: [1, 2, 1]} },
     );
 
-    // Mint handles from the payloads returned by loadByGuid (D-17:
-    // loadByGuid returns the payload — allocSharedRef maps it to a
-    // per-world column handle for spawn).
-    const videoClipHandle = world.allocSharedRef('VideoAsset', videoHandleRes.value);
-    const matHandle = world.allocSharedRef('MaterialAsset', matHandleRes.value);
-    const staticMatHandle = world.allocSharedRef('MaterialAsset', staticMatHandleRes.value);
+    // Bind the managed video and material handles directly.
+    const videoClipHandle = videoHandleRes.value;
+    const matHandle = matHandleRes.value;
+    const staticMatHandle = staticMatHandleRes.value;
 
     const staticEnt = world.spawn(
-      { component: MeshFilter, data: { assetHandle: HANDLE_QUAD } },
+      { component: MeshFilter, data: { assetHandle: primitiveQuad } },
       { component: MeshRenderer, data: { materials: [staticMatHandle] } },
       { component: Transform, data: { pos: [-2.1, 0, -1], scale: [1.2, 1.2, 1] } },
     );
@@ -324,7 +322,7 @@ export async function bootstrap(target: HTMLCanvasElement): Promise<void> {
     // Spawn the video-textured quad entity beside the static sibling, scaled 2x on X/Y,
     // positioned slightly behind the camera at Z=-1.
     const videoEnt = world.spawn(
-      { component: MeshFilter, data: { assetHandle: HANDLE_QUAD } },
+      { component: MeshFilter, data: { assetHandle: primitiveQuad } },
       { component: MeshRenderer, data: { materials: [matHandle] } },
       {
         component: VideoPlayer,

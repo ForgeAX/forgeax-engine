@@ -28,7 +28,7 @@ describe('replica atomic validation', () => {
     expect(applyReplicationPacket(replica, packet).ok).toBe(true);
     const duplicate = applyReplicationPacket(replica, packet);
     expect(duplicate.ok).toBe(true);
-    expect(replica.lastPacketOutcome).toBe('duplicate');
+    expect(duplicate.unwrap()).toBe('duplicate');
     expect(replica.snapshot()).toEqual([]);
   });
 

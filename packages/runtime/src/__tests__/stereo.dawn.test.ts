@@ -55,6 +55,7 @@ it.each([
   try {
     const summary = await verifyStereo(
       host.renderer,
+      host.assets,
       recorder,
       (name, bytes) => writeFileSync(`${directory}/${name}`, bytes),
       size,

@@ -222,72 +222,10 @@ export type {
   QueryRow,
   QuerySpan,
 } from './query/query';
-/**
- * ECS-aware refcount-tracked handle store (M3). Owns the lifecycle of every
- * `Handle<T, 'shared'>` derived from `shared<T>` schema fields. The producer
- * (typically AssetRegistry) calls `alloc` once (alloc-grant rc=1); each
- * additional holder retains; release decrements; rc 1 -> 0 drops the slot
- * and publishes structured release evidence. Payload disposal belongs to the
- * renderer/assets/plugin owner; ECS invokes no user callback.
- *
- * D-15: the store manages ONLY user-tier slots (`>= BUILTIN_BASE`); builtin
- * asset payloads are process-static in their authoring package
- * (@forgeax/engine-runtime) and never reference-counted. Passing a builtin
- * slot fails fast with `BuiltinSlotNotOwnedError`.
- *
- * `World` owns one `SharedRefStore` per instance, exposed as
- * `world.sharedRefs`. The schema-field write barrier (retain on spawn / set,
- * release on despawn / removeComponent) short-circuits on builtin slots.
- *
- * @example
- * ```ts
- * const world = new World();
- * const handle = world.allocSharedRef('MaterialAsset', payload);
- * const M = defineComponent('M', { asset: 'shared<MaterialAsset>' });
- * world.spawn({ component: M, data: { asset: handle } });
- * // the SharedRefStore publishes release evidence at rc=0.
- * ```
+/** Non-asset shared ECS values use generation-checked, reference-counted storage.
+ * Asset component fields retain the injected asset owner instead.
  */
-export type { SharedRefReleaseEvidence } from './shared-ref-store.js';
-
-/**
- * ECS-managed handle store (M1). Owns the lifecycle of every
- * `Handle<T, 'unique'>` derived from `ref<T>` schema fields - World hooks
- * `despawn` / `removeComponent` / `set` into `release(handle)`.
- *
- * `World` owns one `UniqueRefStore` per instance, constructed eagerly in the
- * `World` constructor (always-on since feat-20260515-string-managed-collapse).
- * Production code rarely touches the store directly - schema-vocab `ref<T>`
- * fields make `world.get(e, C).<refField>` the canonical access path.
- *
- * @example
- * ```ts
- * const Material = defineComponent('Material', { handle: 'unique<MaterialPayload>' });
- * const world = new World();
- * // World owns the UniqueRefStore internally; AI users do not wire it.
- * ```
- */
-
-/**
- * Component data bundle for spawn/addComponent: pairs a component token with initial values.
- *
- * @example
- * ```ts
- * const data: ComponentData = { component: Position, data: { x: 1, y: 2 } };
- * ```
- */
-export type { ComponentData } from './world.js';
-/**
- * Top-level ECS container. Owns entities, archetypes, systems, and resources.
- *
- * @example
- * ```ts
- * const world = new World();
- * const e = world.spawn({ component: Position, data: { x: 0, y: 0 } });
- * world.update();
- * ```
- */
-export { World } from './world.js';
+export { type ComponentData, World } from './world.js';
 
 // ────────────────────────────────────────────────────────────────────────────
 // Advanced API — system scheduling, commands, resources, inspection

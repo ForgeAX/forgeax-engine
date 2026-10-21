@@ -7,7 +7,7 @@ import {
   createShaderProgramCompiler,
   getShaderCompilerFingerprint,
 } from '@forgeax/engine-shader-compiler';
-import type { MaterialParticleInput, ParticleEffectProgramV3, Result } from '@forgeax/engine-types';
+import type { MaterialParticleInput, ParticleEffectAssetV3, Result } from '@forgeax/engine-types';
 import { err, ok, stripWgslComments, WGSL_NUMERIC_LAYOUT } from '@forgeax/engine-types';
 import type { ParticleEmitterSourceV3 } from '@forgeax/engine-vfx';
 import {
@@ -37,7 +37,7 @@ import {
 import {
   canonical,
   materialInputSourceExpression,
-  reflectVfxLayoutV3,
+  reflectVfxLayout,
   reflectVfxRendererV3,
   type VfxReflectionError,
 } from './reflection.js';
@@ -1262,13 +1262,7 @@ export interface ParticleCodeProgramArtifact {
   readonly program: ParticleCodeProgram;
 }
 
-export interface ParticleCodeEffectPayload {
-  readonly kind: 'particle-effect';
-  readonly schemaVersion: 3;
-  readonly programFingerprint: string;
-  readonly emitters: readonly { readonly id: string; readonly capacity: number }[];
-  readonly program: ParticleEffectProgramV3;
-}
+export interface ParticleCodeEffectPayload extends ParticleEffectAssetV3 {}
 
 export interface ParticleCodeCookProduct {
   readonly asset: ParticleCodeEffectPayload;
@@ -1447,7 +1441,7 @@ async function compileEmitterV3(
   }
   const stagePlan = buildParticleStagePlan(authoredEntryCode);
   if (!stagePlan.ok) return stagePlan;
-  const layout = reflectVfxLayoutV3(
+  const layout = reflectVfxLayout(
     module.imports === undefined
       ? { root: authoredEntryCode }
       : { root: authoredEntryCode, imports: module.imports },
@@ -1689,9 +1683,9 @@ export async function cookParticleCodeEffect(
   const refs = new Set<string>();
   for (const emitter of artifact.value.program.emitters) {
     for (const field of emitter.forceFields ?? [])
-      if (field.kind === 'vector') refs.add(field.texture);
+      if (field.kind === 'vector' && typeof field.texture === 'string') refs.add(field.texture);
     for (const renderer of emitter.renderers) {
-      refs.add(renderer.material);
+      if (typeof renderer.material === 'string') refs.add(renderer.material);
       if (renderer.kind === 'mesh' && typeof renderer.mesh === 'string') refs.add(renderer.mesh);
     }
   }

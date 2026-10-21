@@ -1,5 +1,8 @@
 #!/usr/bin/env node
 import { encodePng } from '@forgeax/engine-image/png';
+import { createPrimitiveMesh } from '@forgeax/engine-geometry';
+import { constructRuntimeRendererHost } from '@forgeax/engine-runtime/internal/renderer-host';
+let smokeAssets;
 import testQuality from '../../../../scripts/test/render-quality.json' with { type: 'json' };
 import { createSmokeRenderer, drawSmokeFrame, rendererBackend, subscribeSmokeErrors } from "../../scripts/renderer-smoke.mjs";
 // bevy-lighting headless dawn smoke — proves Bevy lighting behavior:
@@ -100,7 +103,7 @@ const { createRenderer } = await import('@forgeax/engine-runtime');
 const { Materials, Skylight } = await import('@forgeax/engine-render');
 const { perspective } = await import('@forgeax/engine-render');
 const { Transform } = await import('@forgeax/engine-scene');
-const { HANDLE_CUBE, HANDLE_QUAD, HANDLE_SPHERE } = await import('@forgeax/engine-assets-runtime');
+
 const { quat } = await import('@forgeax/engine-math');
 
 const here = dirname(fileURLToPath(import.meta.url));
@@ -109,7 +112,9 @@ const MANIFEST_URL = `data:application/json,${encodeURIComponent(readFileSync(MA
 
 let renderer;
 try {
-  renderer = await createSmokeRenderer(createRenderer, mockCanvas, {}, { shaderManifestUrl: MANIFEST_URL });
+  const hostResult = await constructRuntimeRendererHost(mockCanvas, {}, { shaderManifestUrl: MANIFEST_URL });
+if (!hostResult.ok) throw hostResult.error;
+({ renderer, assets: smokeAssets } = hostResult.value);
 } catch (err) {
   console.error(`[smoke] FAIL - createRenderer threw: ${err instanceof Error ? err.message : String(err)}`);
   process.exit(1);
@@ -119,7 +124,7 @@ try {
 console.log(`[bevy-lighting] backend=${rendererBackend(renderer)}`);
 
 const errors = [];
-subscribeSmokeErrors(renderer, (err) => errors.push({ code: err.code, hint: err.hint }));
+subscribeSmokeErrors(renderer, (err) => errors.push({ code: err.code, hint: err.hint, detail: err.detail }));
 
 
 const RED = [1, 0, 0];
@@ -129,25 +134,28 @@ const RED4 = [1, 0, 0, 1];
 const LIME4 = [0, 1, 0, 1];
 const BLUE4 = [0, 0, 1, 1];
 
-const world = new World();
+const world = new World({ assets: smokeAssets });
+const primitiveCube = world.assets.create(createPrimitiveMesh('cube').unwrap()).unwrap();
+const primitiveQuad = world.assets.create(createPrimitiveMesh('quad').unwrap()).unwrap();
+const primitiveSphere = world.assets.create(createPrimitiveMesh('sphere').unwrap()).unwrap();
 const worldAttachment1 = renderer.attach(world);
 if (!worldAttachment1.ok) throw worldAttachment1.error;
 
 // ── Ground plane (flat cube), white PBR ─────────────────────────────────
-const whiteMat = world.allocSharedRef('MaterialAsset', Materials.standard({ baseColor: [1, 1, 1, 1] }));
+const whiteMat = world.assets.create(Materials.standard({ baseColor: [1, 1, 1, 1] })).unwrap();
 world.spawn(
   { component: Transform, data: { pos: [0, 0, 0], quat: [0, 0, 0, 1], scale: [10, 0.02, 10] } },
-  { component: MeshFilter, data: { assetHandle: HANDLE_CUBE } },
+  { component: MeshFilter, data: { assetHandle: primitiveCube } },
   { component: MeshRenderer, data: { materials: [whiteMat] } },
 );
 
 // ── Left wall ───────────────────────────────────────────────────────────
-const indigoMat = world.allocSharedRef('MaterialAsset', Materials.standard({ baseColor: [75 / 255, 0, 130 / 255, 1] }));
+const indigoMat = world.assets.create(Materials.standard({ baseColor: [75 / 255, 0, 130 / 255, 1] })).unwrap();
 const leftWallQuat = quat.create();
 quat.fromAxisAngle(leftWallQuat, [0, 0, 1], Math.PI / 2);
 world.spawn(
   { component: Transform, data: { pos: [2.5, 2.5, 0], quat: leftWallQuat, scale: [5, 0.15, 5] } },
-  { component: MeshFilter, data: { assetHandle: HANDLE_CUBE } },
+  { component: MeshFilter, data: { assetHandle: primitiveCube } },
   { component: MeshRenderer, data: { materials: [indigoMat] } },
 );
 
@@ -156,50 +164,50 @@ const backWallQuat = quat.create();
 quat.fromAxisAngle(backWallQuat, [1, 0, 0], Math.PI / 2);
 world.spawn(
   { component: Transform, data: { pos: [0, 2.5, -2.5], quat: backWallQuat, scale: [5, 0.15, 5] } },
-  { component: MeshFilter, data: { assetHandle: HANDLE_CUBE } },
+  { component: MeshFilter, data: { assetHandle: primitiveCube } },
   { component: MeshRenderer, data: { materials: [indigoMat] } },
 );
 
 // ── Logo quad ───────────────────────────────────────────────────────────
-const logoMat = world.allocSharedRef('MaterialAsset', Materials.unlit([1, 1, 1, 1]));
+const logoMat = world.assets.create(Materials.unlit([1, 1, 1, 1])).unwrap();
 const logoQuat = quat.create();
 quat.fromAxisAngle(logoQuat, [0, 1, 0], Math.PI / 8);
 world.spawn(
   { component: Transform, data: { pos: [-2.2, 0.5, 1], quat: logoQuat, scale: [2, 0.5, 1] } },
-  { component: MeshFilter, data: { assetHandle: HANDLE_QUAD } },
+  { component: MeshFilter, data: { assetHandle: primitiveQuad } },
   { component: MeshRenderer, data: { materials: [logoMat] } },
 );
 
 // ── Pink cube ───────────────────────────────────────────────────────────
-const pinkMat = world.allocSharedRef('MaterialAsset', Materials.standard({ baseColor: [1, 20 / 255, 147 / 255, 1] }));
+const pinkMat = world.assets.create(Materials.standard({ baseColor: [1, 20 / 255, 147 / 255, 1] })).unwrap();
 world.spawn(
   { component: Transform, data: { pos: [0, 0.5, 0], quat: [0, 0, 0, 1], scale: [1, 1, 1] } },
-  { component: MeshFilter, data: { assetHandle: HANDLE_CUBE } },
+  { component: MeshFilter, data: { assetHandle: primitiveCube } },
   { component: MeshRenderer, data: { materials: [pinkMat] } },
 );
 
 // ── Green sphere ────────────────────────────────────────────────────────
-const greenMat = world.allocSharedRef('MaterialAsset', Materials.standard({ baseColor: [50 / 255, 205 / 255, 50 / 255, 1] }));
+const greenMat = world.assets.create(Materials.standard({ baseColor: [50 / 255, 205 / 255, 50 / 255, 1] })).unwrap();
 world.spawn(
   { component: Transform, data: { pos: [1.5, 1, 1.5], quat: [0, 0, 0, 1], scale: [0.5, 0.5, 0.5] } },
-  { component: MeshFilter, data: { assetHandle: HANDLE_SPHERE } },
+  { component: MeshFilter, data: { assetHandle: primitiveSphere } },
   { component: MeshRenderer, data: { materials: [greenMat] } },
 );
 
 // ── Red PointLight with emissive sphere child ───────────────────────────
-const redEmissiveMat = world.allocSharedRef('MaterialAsset', Materials.standard({ baseColor: RED4, emissive: [4, 0, 0] }));
+const redEmissiveMat = world.assets.create(Materials.standard({ baseColor: RED4, emissive: [4, 0, 0] })).unwrap();
 world.spawn(
   { component: Transform, data: { pos: [1, 2, 0], quat: [0, 0, 0, 1], scale: [1, 1, 1] } },
   { component: PointLight, data: { color: RED, intensity: 400, range: 20, castShadow: true } },
 );
 world.spawn(
   { component: Transform, data: { pos: [1, 2, 0], quat: [0, 0, 0, 1], scale: [0.1, 0.1, 0.1] } },
-  { component: MeshFilter, data: { assetHandle: HANDLE_SPHERE } },
+  { component: MeshFilter, data: { assetHandle: primitiveSphere } },
   { component: MeshRenderer, data: { materials: [redEmissiveMat] } },
 );
 
 // ── Green SpotLight with emissive sphere child ──────────────────────────
-const greenEmissiveMat = world.allocSharedRef('MaterialAsset', Materials.standard({ baseColor: LIME4, emissive: [0, 4, 0] }));
+const greenEmissiveMat = world.assets.create(Materials.standard({ baseColor: LIME4, emissive: [0, 4, 0] })).unwrap();
 world.spawn(
   {
     component: Transform,
@@ -219,19 +227,19 @@ world.spawn(
 );
 world.spawn(
   { component: Transform, data: { pos: [-1, 2, 0], quat: [0, 0, 0, 1], scale: [0.1, 0.1, 0.1] } },
-  { component: MeshFilter, data: { assetHandle: HANDLE_SPHERE } },
+  { component: MeshFilter, data: { assetHandle: primitiveSphere } },
   { component: MeshRenderer, data: { materials: [greenEmissiveMat] } },
 );
 
 // ── Blue PointLight with emissive sphere child ──────────────────────────
-const blueEmissiveMat = world.allocSharedRef('MaterialAsset', Materials.standard({ baseColor: BLUE4, emissive: [0, 0, 4] }));
+const blueEmissiveMat = world.assets.create(Materials.standard({ baseColor: BLUE4, emissive: [0, 0, 4] })).unwrap();
 world.spawn(
   { component: Transform, data: { pos: [0, 4, 0], quat: [0, 0, 0, 1], scale: [1, 1, 1] } },
   { component: PointLight, data: { color: BLUE, intensity: 400, range: 20, castShadow: true } },
 );
 world.spawn(
   { component: Transform, data: { pos: [0, 4, 0], quat: [0, 0, 0, 1], scale: [0.1, 0.1, 0.1] } },
-  { component: MeshFilter, data: { assetHandle: HANDLE_SPHERE } },
+  { component: MeshFilter, data: { assetHandle: primitiveSphere } },
   { component: MeshRenderer, data: { materials: [blueEmissiveMat] } },
 );
 
@@ -380,7 +388,7 @@ if (dist <= SMOKE_PIXEL_THRESHOLD) {
 if (earlyMaxBright <= 0.03) {
   failures.push(`(d) earlyMaxBright=${earlyMaxBright.toFixed(4)} <= 0.03 — lights not producing visible illumination`);
 }
-if (errors.length > 0) failures.push(`(e) Renderer.onError fired ${errors.length}x: [${errors.map((e) => e.code).join(', ')}]`);
+if (errors.length > 0) failures.push(`(e) Renderer.onError fired ${errors.length}x: ${JSON.stringify(errors)}`);
 
 if (failures.length > 0) {
   console.error(`[smoke] FAIL - ${failures.length} criteria failed:`);

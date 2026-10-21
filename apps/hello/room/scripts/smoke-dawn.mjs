@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+import { useBuiltAssetSource } from '../../../shared/scripts/source-publication.mjs';
 // hello-room headless smoke (feat-20260511-asset-system-v1 / M7 / w21).
 //
 // End-to-end convergence proof: dawn-node drive the same ECS path hello-
@@ -179,135 +180,9 @@ try {
 
 console.log('[hello-room] pipeline=Standard');
 
-// The cube mesh GUID (cbe42beb-...) in room.pack.json refs is a builtin:
-// the AssetRegistry constructor pre-registers HANDLE_CUBE under it
-// (feat-20260603 Tier 0), so `resolveSceneGuids` resolves it natively at
-// instantiate time. Only the scene's non-builtin materials need explicit
-// registration below. (Previously this block manually registered
-// createBoxGeometry(1,1,1) under the same GUID -- now redundant and a
-// collision, since the builtin already owns it.)
+useBuiltAssetSource(assets, resolve(here, '..', 'dist'));
 
-// host initialization must complete before material registration — shader
-// manifest loading (Step 1b) registers materialShaders which
-// validateMaterialPasses requires.
-
-const stdMatGuidResult = AssetGuid.parse('f6af7007-158f-4d92-9e47-93bf2f213e1f');
-if (!stdMatGuidResult.ok) {
-  console.error(`[smoke] FAIL - standard material GUID parse: ${stdMatGuidResult.error.code}`);
-  process.exit(1);
-}
-assets.catalog(stdMatGuidResult.value, {
-  kind: 'material',
-  passes: [
-    {
-      name: 'Forward',
-      program: { module: 'forgeax::default-standard-pbr' },
-      renderState: { tags: { LightMode: 'Forward' }, queue: 2000 },
-    },
-  ],
-  values: {
-    baseColor: [0.8, 0.4, 0.2],
-    metallic: 0,
-    roughness: 0.5,
-  },
-});
-
-const unlitMatGuidResult = AssetGuid.parse('008e4f75-e7a3-4715-b05b-b93a9ec12074');
-if (!unlitMatGuidResult.ok) {
-  console.error(`[smoke] FAIL - unlit material GUID parse: ${unlitMatGuidResult.error.code}`);
-  process.exit(1);
-}
-// Pass-based unlit MaterialAsset via the Materials.unlit factory (mirrors
-// apps/hello/room/src/index.ts). The legacy hand-written unlit-discriminant
-// shape carried no `passes` array and resolved to empty passes at draw time,
-// firing `material-resolved-empty-passes` through the Renderer error event stream.
-const unlitCatalogResult = assets.catalog(
-  unlitMatGuidResult.value,
-  Materials.unlit([0.2, 0.3, 0.9, 1]),
-);
-if (!unlitCatalogResult.ok) {
-  console.error(`[smoke] FAIL - unlit catalog: ${JSON.stringify(unlitCatalogResult.error)}`);
-  process.exit(1);
-}
-
-// feat-20260528-scene-asset-guid-refs-and-post-instantiate M4 / w11:
-// construct the SceneAsset POD from the pack JSON with GUID strings in
-// handle fields (post-parseScenePayload intermediate state). The refs
-// array maps index->GUID; each handle field value N becomes refs[N].
-// resolveSceneGuids (called inside instantiate) resolves GUID strings
-// to Handle numbers via the guidToHandle index populated by
-// catalog calls above.
-const roomPack = JSON.parse(readFileSyncFs(ROOM_PACK_PATH, 'utf8'));
-if (
-  roomPack.schemaVersion !== '2.0.0' ||
-  roomPack.kind !== 'internal-text-package' ||
-  roomPack.assets.some((asset) => asset.artifacts === undefined)
-) {
-  console.error('[smoke] FAIL - room.pack.json is not a Pack v2 package with asset-local artifacts');
-  process.exit(1);
-}
-const sceneEntry = roomPack.assets.find((a) => a.kind === 'scene');
-if (!sceneEntry) {
-  console.error('[smoke] FAIL - room.pack.json has no scene entry');
-  process.exit(1);
-}
-const refs = roomPack.assets[0]?.refs ?? [];
-// Handle-typed component fields whose payload value is a refs[] index that
-// must be rewritten to the GUID string `resolveSceneGuids` resolves back to
-// a Handle. Restricted to the known handle fields per component: a blanket
-// "any small integer is a refs index" heuristic mis-rewrites Transform
-// fields whose literal value happens to be 0/1/2 (e.g. a zero pos lane -> refs[0]
-// GUID -> NaN position), pushing geometry out of frustum so the frame
-// renders empty (the F-8 false-green masked this for the demo's lifetime).
-const HANDLE_FIELDS = {
-  MeshFilter: new Set(['assetHandle']),
-  // feat-20260608 M5 amend: MeshRenderer.material -> materials (array of
-  // handles). Resolver below now handles both scalar handle fields and
-  // array-of-handle fields (each element resolved through refs[] the
-  // same way).
-  MeshRenderer: new Set(['materials']),
-};
-const sceneAsset = {
-  kind: 'scene',
-  entities: Object.fromEntries(Object.entries(sceneEntry.payload.entities).map(([key, n]) => {
-    const components = {};
-    for (const [name, data] of Object.entries(n.components)) {
-      // Replace refs index numbers with GUID strings for handle-type
-      // fields only. Non-handle fields pass through unchanged. feat-20260608
-      // M5 amend: handle-type fields may also be number[] (refs indices
-      // array) -- map each element through refs[] same way.
-      const handleFields = HANDLE_FIELDS[name];
-      const resolved = {};
-      const isRefIndex = (v) =>
-        typeof v === 'number' && Number.isInteger(v) && v >= 0 && v < refs.length;
-      for (const [field, value] of Object.entries(data)) {
-        if (handleFields?.has(field)) {
-          if (isRefIndex(value)) {
-            resolved[field] = refs[value];
-          } else if (Array.isArray(value)) {
-            resolved[field] = value.map((el) => (isRefIndex(el) ? refs[el] : el));
-          } else {
-            resolved[field] = value;
-          }
-        } else {
-          resolved[field] = value;
-        }
-      }
-      if (name === 'DirectionalLight') {
-        components[name] = {
-          direction: [-0.3, -1.0, -0.5],
-          color: [1.0, 0.95, 0.9],
-          intensity: 1.0,
-        };
-        continue;
-      }
-      components[name] = resolved;
-    }
-    return [key, { components }];
-  })),
-};
-
-const world = new World();
+const world = new World({ assets });
 const worldContext = await createWorldContext(world, [
   renderComponentsPlugin(),
   scenePlugin(),
@@ -325,10 +200,9 @@ if (!sceneGuid.ok) {
   console.error(`[smoke] FAIL - scene GUID parse: ${sceneGuid.error.code}`);
   process.exit(1);
 }
-assets.catalog(sceneGuid.value, sceneAsset);
-const sceneHandleRes = await assets.loadByGuid(sceneGuid.value);
+const sceneHandleRes = await assets.load(sceneGuid.value, 'scene');
 if (!sceneHandleRes.ok) {
-  console.error(`[smoke] FAIL - loadByGuid: ${sceneHandleRes.error.code}`);
+  console.error(`[smoke] FAIL - scene load: ${sceneHandleRes.error.code}`);
   process.exit(1);
 }
 const errors = [];
@@ -336,9 +210,10 @@ renderer.subscribe((event) => {
   if (event.kind === 'error') errors.push({ code: event.error.code, hint: event.error.hint });
 });
 
-// loadByGuid returns the payload (D-17); mint a user-tier column handle.
-const sceneHandle = world.allocSharedRef('SceneAsset', sceneHandleRes.value);
+// Instantiation retains the loaded runtime scene identity.
+const sceneHandle = sceneHandleRes.value;
 const instanceRes = assets.instantiate(sceneHandle, world);
+assets.release(sceneHandle).unwrap();
 if (!instanceRes.ok) {
   console.error(`[smoke] FAIL - instantiate: ${instanceRes.error.code}`);
   process.exit(1);

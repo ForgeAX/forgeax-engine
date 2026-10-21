@@ -1,3 +1,4 @@
+import type { AssetHandle } from '@forgeax/engine-types';
 import {
   FixedUpdate,
   defineComponent,
@@ -16,7 +17,6 @@ import {
 import { MeshFilter, MeshRenderer } from '@forgeax/engine-render';
 import { ChildOf, GlobalTransform, Name, Transform } from '@forgeax/engine-scene';
 import { inState } from '@forgeax/engine-state';
-import type { Handle } from '@forgeax/engine-types';
 import { PlayerHealth } from './counterattack';
 import { GameState } from './gameplay-state';
 
@@ -88,8 +88,8 @@ type PickupRecipe = {
   readonly quat: [number, number, number, number];
   readonly scale: [number, number, number];
   readonly parent: EntityHandle | undefined;
-  readonly mesh: Handle<'MeshAsset', 'shared'>;
-  readonly materials: Handle<'MaterialAsset', 'shared'>[];
+  readonly mesh: AssetHandle<'mesh'>;
+  readonly materials: AssetHandle<'material'>[];
 };
 
 type PickupState = {
@@ -110,9 +110,11 @@ export function createHealthPickups(
   player: EntityHandle,
   authored: readonly AuthoredHealthPickupIdentity[],
 ): HealthPickupHandle | undefined {
+  const assets = world.assets;
+  if (assets === undefined) return undefined;
   const states: PickupState[] = [];
-  const retainedMeshes: Handle<'MeshAsset', 'shared'>[] = [];
-  const retainedMaterials: Handle<'MaterialAsset', 'shared'>[] = [];
+  const retainedMeshes: AssetHandle<'mesh'>[] = [];
+  const retainedMaterials: AssetHandle<'material'>[] = [];
 
   for (const identity of authored) {
     const transform = world.get(identity.entity, Transform);
@@ -121,11 +123,11 @@ export function createHealthPickups(
     const name = world.get(identity.entity, Name);
     if (!transform.ok || !mesh.ok || !renderer.ok || !name.ok) continue;
     const child = world.get(identity.entity, ChildOf);
-    const meshHandle = mesh.value.assetHandle as Handle<'MeshAsset', 'shared'>;
-    const materials = [...renderer.value.materials] as Handle<'MaterialAsset', 'shared'>[];
-    if (world.sharedRefs.retain(meshHandle).ok) retainedMeshes.push(meshHandle);
+    const meshHandle = mesh.value.assetHandle as AssetHandle<'mesh'>;
+    const materials = [...renderer.value.materials] as AssetHandle<'material'>[];
+    if (assets.retain(meshHandle).ok) retainedMeshes.push(meshHandle);
     for (const material of materials) {
-      if (world.sharedRefs.retain(material).ok) retainedMaterials.push(material);
+      if (assets.retain(material).ok) retainedMaterials.push(material);
     }
     states.push({
       recipe: {
@@ -146,8 +148,8 @@ export function createHealthPickups(
     });
   }
   if (states.length !== authored.length) {
-    for (const handle of retainedMeshes) world.sharedRefs.release(handle);
-    for (const handle of retainedMaterials) world.sharedRefs.release(handle);
+    for (const handle of retainedMeshes) assets.release(handle);
+    for (const handle of retainedMaterials) assets.release(handle);
     return undefined;
   }
 
@@ -310,8 +312,8 @@ export function createHealthPickups(
     dispose: () => {
       if (disposed) return;
       disposed = true;
-      for (const handle of retainedMeshes) world.sharedRefs.release(handle);
-      for (const handle of retainedMaterials) world.sharedRefs.release(handle);
+      for (const handle of retainedMeshes) assets.release(handle);
+      for (const handle of retainedMaterials) assets.release(handle);
     },
   };
 }

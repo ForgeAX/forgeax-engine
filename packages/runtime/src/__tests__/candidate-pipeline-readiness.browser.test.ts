@@ -1,3 +1,4 @@
+import { AssetRegistry } from '@forgeax/engine-assets-runtime';
 import { createWorldContext, FixedTime, World } from '@forgeax/engine-ecs';
 import { createBoxGeometry, createMeshBuilder } from '@forgeax/engine-geometry';
 import {
@@ -64,10 +65,14 @@ it.each([
       },
     )
   ).unwrap();
-  renderer
-    .setProfile({ ...renderer.inspect().profile, renderPath: 'deferred', ssao: false })
-    .unwrap();
-  const world = new World();
+  const profile = renderer.setProfile({
+    ...renderer.inspect().profile,
+    renderPath: 'deferred',
+    ssao: false,
+  });
+  if (!profile.ok) throw profile.error;
+  const assets = new AssetRegistry();
+  const world = new World({ assets });
   const scene = await createWorldContext(world, [scenePlugin()]);
   const errors: string[] = [];
   const unsubscribe = renderer.subscribe((event) => {
@@ -76,7 +81,10 @@ it.each([
   try {
     const original = createBoxGeometry(1, 1, 1).unwrap();
     const enlarged = createBoxGeometry(2, 2, 1).unwrap();
-    const count = (enlarged.attributes.position?.length ?? 0) / 3;
+    const positions = enlarged.attributes.position;
+    if (!(positions instanceof Float32Array) || enlarged.indices === undefined)
+      throw new Error('Missing indexed enlarged box fixture');
+    const count = positions.length / 3;
     const color = new Float32Array(count * 4);
     for (let vertex = 0; vertex < count; vertex++) color.set([0.1, 0.55, 0.9, 1], vertex * 4);
     const replacement = createMeshBuilder({
@@ -87,16 +95,17 @@ it.each([
     })
       .build()
       .unwrap();
-    const previous = world.allocSharedRef('MeshAsset', original);
-    const next = world.allocSharedRef('MeshAsset', replacement);
-    const material = world.allocSharedRef(
-      'MaterialAsset',
-      Materials.standard({
-        baseColor: [1, 1, 1, 1],
-        roughness: 0.65,
-        metallic: 0.1,
-      }),
-    );
+    const previous = assets.create(original).unwrap();
+    const next = assets.create(replacement).unwrap();
+    const material = assets
+      .create(
+        Materials.standard({
+          baseColor: [1, 1, 1, 1],
+          roughness: 0.65,
+          metallic: 0.1,
+        }),
+      )
+      .unwrap();
     const entity = world
       .spawn(
         { component: Transform, data: {} },
@@ -110,7 +119,7 @@ it.each([
         {
           component: MeshFilter,
           data: {
-            assetHandle: world.allocSharedRef('MeshAsset', createBoxGeometry(7, 0.2, 7).unwrap()),
+            assetHandle: assets.create(createBoxGeometry(7, 0.2, 7).unwrap()).unwrap(),
           },
         },
         { component: MeshRenderer, data: { materials: [material] } },
@@ -144,18 +153,21 @@ it.each([
         },
       )
       .unwrap();
-    const lease = renderer.attach(world).unwrap();
+    const attached = renderer.attach(world);
+    if (!attached.ok) throw attached.error;
+    const lease = attached.value;
     const draw = async () => {
       world.update(1 / 60).unwrap();
       propagateTransforms(world).unwrap();
-      const receipt = renderer
-        .draw({
-          leases: [lease],
-          camera: { lease },
-          environment: { lease },
-        })
-        .unwrap();
-      (await receipt.completed).unwrap();
+      const drawn = renderer.draw({
+        leases: [lease],
+        camera: { lease },
+        environment: { lease },
+      });
+      if (!drawn.ok) throw drawn.error;
+      const receipt = drawn.value;
+      const completed = await receipt.completed;
+      if (!completed.ok) throw completed.error;
       await new Promise<void>((resolve) => requestAnimationFrame(() => resolve()));
       return receipt;
     };
@@ -189,7 +201,6 @@ it.each([
       .prepareDynamicGeometry({
         world,
         entity,
-        mesh: replacement,
         meshHandle: next,
         revision: 1,
       })
@@ -250,6 +261,7 @@ it.each([
     unsubscribe();
     await renderer.dispose();
     await scene.fiber.dispose();
+    assets.dispose();
     canvas.remove();
     pipelines.mockRestore();
   }

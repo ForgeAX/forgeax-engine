@@ -45,6 +45,13 @@ const iblSpecularBrowserFile =
   'apps/learn-render/6.pbr/3.ibl-specular/src/__tests__/onerror-gate.browser.test.ts';
 const transmissionBrowserFile =
   'apps/learn-render/6.pbr/4.transmission-refraction/src/__tests__/onerror-gate.browser.test.ts';
+const threeShadowBrowserFiles = new Set(
+  ['directional', 'point', 'spot'].map(
+    (kind) => `packages/three/src/__tests__/shadow-${kind}.browser.test.ts`,
+  ),
+);
+const threeMaterialOutputBrowserFile =
+  'packages/three/src/__tests__/material-output.browser.test.ts';
 const topologyBrowserFile = 'apps/hello/topology/src/__tests__/topology.browser.test.ts';
 const directLightBrowserFile =
   'apps/parity/color-lighting/cases/direct-light/__tests__/direct-light.browser.test.ts';
@@ -85,6 +92,7 @@ const shortRendererBootstrapBrowserFiles = new Set([
   // Run38101911822: the unchanged 30 s textures bootstrap took 38.5 s
   // beside instancing. Preserve the case in one existing exclusive slot.
   'apps/learn-render/1.getting-started/4.textures/src/__tests__/onerror-gate.browser.test.ts',
+  'packages/render/src/__tests__/managed-material-runtime.browser.test.ts',
   'packages/runtime/src/__tests__/barrel-distortion-zero-size.browser.test.ts',
   'packages/runtime/src/__tests__/clamp-to-last.e2e.browser.test.ts',
   'packages/runtime/src/__tests__/composite-skybox-cross-world.browser.test.ts',
@@ -92,6 +100,9 @@ const shortRendererBootstrapBrowserFiles = new Set([
 const renderWorkerPreloadBrowserFile =
   'packages/app/src/__tests__/render-worker-preload-errors.browser.test.ts';
 const exclusiveRunnerBrowserFiles = new Set([
+  // Run 39457755532 exceeded 300 s beside a 237 s GPU neighbor. The complete
+  // 24-case owner passed in 208.516 s in run 39450499871; keep its deadlines.
+  threeMaterialOutputBrowserFile,
   'packages/runtime/src/__tests__/vfx-mesh-lighting.browser.test.ts',
   'packages/runtime/src/__tests__/image-environment-presentation.browser.test.ts',
   ...solarAtmosphereBrowserFiles,
@@ -111,6 +122,8 @@ const exclusiveRunnerBrowserFiles = new Set([
   'packages/runtime/src/__tests__/light-casters-9-light.browser.test.ts',
 ]);
 const browserProcessIsolatedFiles = new Set([
+  ...threeShadowBrowserFiles,
+  threeMaterialOutputBrowserFile,
   'packages/audio-webaudio/src/__tests__/pcm-stream.browser.test.ts',
   ...advancedLightingBrowserFiles,
   iblIrradianceBrowserFile,
@@ -153,6 +166,7 @@ const browserProcessIsolatedFiles = new Set([
   'packages/app/__tests__/render-worker-contract.browser.test.ts',
   'packages/app/__tests__/render-worker-multi-camera.browser.test.ts',
   'packages/app/__tests__/worker-policy.browser.test.ts',
+  'packages/app/__tests__/engine-worker-asset-loss.browser.test.ts',
   'packages/app/__tests__/render-worker-deformation.browser.test.ts',
   'packages/app/__tests__/render-worker-geometry.browser.test.ts',
   'packages/app/__tests__/render-worker-media.browser.test.ts',
@@ -271,8 +285,21 @@ const measuredBrowserSeconds = JSON.parse(
 );
 const measuredBrowserFileSeconds = new Map(Object.entries(measuredBrowserSeconds.files));
 const renderWorkerBrowserFile =
-  /^packages\/app\/__tests__\/(?:render-worker[a-z-]*|worker-policy)\.browser\.test\.ts$/;
+  /^packages\/app\/__tests__\/(?:render-worker[a-z-]*|worker-policy|engine-worker-asset-loss)\.browser\.test\.ts$/;
 function estimatedBrowserFileSeconds(file) {
+  // Full native/reference/replay journeys. These are scheduling estimates;
+  // unknown-file weights grouped them into a 300 s timeout in run 39384469626.
+  if (file === 'packages/three/src/__tests__/output.browser.test.ts') return 100;
+  if (file === 'packages/three/src/__tests__/render.browser.test.ts') return 90;
+  // r184 comparisons include authored/filter mutations and retained-map replay.
+  // Run 39435724371 exhausted 300 s when all shadow journeys shared one group.
+  if (threeShadowBrowserFiles.has(file)) return 100;
+  if (file === 'packages/three/src/__tests__/shadow-updates.browser.test.ts') return 240;
+  if (file === 'packages/three/src/__tests__/shadow-alpha.browser.test.ts') return 100;
+  if (file === 'packages/three/src/__tests__/variance-shadow.browser.test.ts') return 100;
+  if (file === 'packages/three/src/__tests__/loading.browser.test.ts') return 60;
+  if (file === 'packages/three/src/__tests__/environment.browser.test.ts') return 90;
+  if (file === 'packages/three/src/__tests__/transmission-output.browser.test.ts') return 90;
   if (lightingChannelReplayFiles.has(file)) return 240;
   if (lightingChannelBrowserFiles.has(file)) return 100;
   if (file === 'packages/runtime/src/__tests__/volumetric-fog-world-time.browser.test.ts')
@@ -525,8 +552,10 @@ export async function runGroup({ cliPath, group, groupIndex, groupCount, maxWork
   const environment = withBrowserHeapLimit({
     ...process.env,
     FORGEAX_BROWSER_ENTITY_VISIBILITY: '0',
-    FORGEAX_BROWSER_CROSS_ORIGIN_ISOLATED: group.includes(
-      'packages/app/__tests__/worker-policy.browser.test.ts',
+    FORGEAX_BROWSER_CROSS_ORIGIN_ISOLATED: group.some(
+      (file) =>
+        file === 'packages/app/__tests__/worker-policy.browser.test.ts' ||
+        file === 'packages/app/__tests__/engine-worker-asset-loss.browser.test.ts',
     )
       ? '1'
       : '0',

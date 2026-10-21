@@ -31,7 +31,7 @@ this example. This is not a performance benchmark or complete parity claim.
 | Concern | Three.js r184 | ForgeaX | Meaning |
 |:--|:--|:--|:--|
 | Bootstrap | renderer, `init`, Scene | `createApp`, World, bundler adapter, Result | App assembles more services; shader publication is an extra author concept. The RHI import explicitly pins WebGPU for this comparison. |
-| Renderable | `Mesh(geometry, material)`, position, `scene.add` | Transform, MeshFilter, MeshRenderer, two shared references, `world.spawn` | ECS/resource ownership is exposed at the smallest rendering operation. |
+| Renderable | `Mesh(geometry, material)`, position, `scene.add` | Transform, MeshFilter, MeshRenderer, two asset handles, `world.spawn` | App's AssetRegistry owns geometry/material content; ECS binds its handles. |
 | Material | `color`, `metalness`, `roughness` | `baseColor`, `metallic`, `roughness` | Similar operation with different vocabulary; both accept sRGB hex. Neither needs manual shader/pass authoring. |
 | Camera aim | `camera.lookAt(target)` | `quat.fromLookAt(out, eye, target, up)` + Transform write | ForgeaX exposes quaternion allocation and repeats the camera position. |
 | Directional light | position + target | outgoing direction | ForgeaX needs no positional entity, but copying the light position as its direction reverses illumination. |
@@ -41,7 +41,8 @@ this example. This is not a performance benchmark or complete parity claim.
 | Resize | observer, DPR, extent, aspect/projection, CSM frustums | App + camera auto-aspect | These savings belong to ForgeaX, not to the shared comparison page. |
 | Lifetime/errors | dispose meshes, effects, renderer and observer; promises/exceptions | App disposal; Results at construction/mutation | Extra unwrap calls buy structured failure; App removes most normal cleanup wiring. Failure-path equivalence is not established. |
 
-For example, these excerpts really come from the runnable programs:
+The ForgeaX program takes `assets` from its App and keeps these scene assets
+until App disposal. These excerpts come from the runnable programs:
 
 ```js
 // Three.js
@@ -56,9 +57,9 @@ scene.add(mesh);
 // ForgeaX
 world.spawn(
   { component: Transform, data: { pos: position } },
-  { component: MeshFilter, data: { assetHandle: world.allocSharedRef('MeshAsset', geometry) } },
+  { component: MeshFilter, data: { assetHandle: assets.create(geometry).unwrap() } },
   { component: MeshRenderer, data: {
-    materials: [world.allocSharedRef('MaterialAsset', Materials.standard(parameters))],
+    materials: [assets.create(Materials.standard(parameters)).unwrap()],
   } },
   { component: ShadowParticipation, data: {} },
 ).unwrap();
@@ -73,8 +74,8 @@ page, Vite config and verification code are excluded and disclosed above.
 | Metric | Three.js | ForgeaX |
 |:--|--:|--:|
 | Imported modules | 5 | 7 |
-| Lines containing code tokens | 132 | 160 |
-| JavaScript lexical tokens | 995 | 923 |
+| Lines containing code tokens | 132 | 164 |
+| JavaScript lexical tokens | 995 | 957 |
 
 Lexical tokens come from TypeScript's scanner without whitespace/comments;
 they are not LLM tokens or an implementation similarity score. ForgeaX has more
@@ -87,8 +88,10 @@ to make decisions; neither figure establishes that one API is universally simple
 The optional diagnostic sets AmbientLight and Skylight intensity to 0.3.
 AmbientLight adds diffuse irradiance and a Lambert response. Solid Skylight
 adds a flat diffuse and specular environment. Matching numbers is insufficient.
-A real RHI frame confirmed the Standard draw reads white irradiance/prefilter
-cubes, a BRDF LUT `[1, 0]`, and intensity `0.3000000119`.
+The original RHI capture read white irradiance/prefilter cubes and a constant
+BRDF LUT `[1, 0]`. That LUT is historical: #4126 replaced it with the shared
+r184 DFG data; see [environment response](ENVIRONMENT_RESPONSE.md). The
+AmbientLight/Skylight semantic difference remains intentional.
 
 See `packages/render/src/ibl/skylight-bind-group.ts` and
 `packages/shader/src/standard-lighting.wgsl`, versus Three's AmbientLightNode
@@ -99,7 +102,7 @@ can conceal concentrated shadow/edge errors.
 
 ## Questions worth resolving
 
-1. Can the existing authoring boundary derive World-owned references from
+1. Can the existing authoring boundary derive registry-owned asset handles from
    geometry/material values, without adding a second registry or scene graph?
 2. Can author-facing camera settings use semantic values such as `fxaa` and
    `acesFilmic`, while retaining one numeric ECS representation?

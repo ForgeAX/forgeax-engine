@@ -1,8 +1,10 @@
+import type { RuntimePackContent } from '@forgeax/engine-import';
 import {
   attachBrowserInputBackend,
   type CanvasInputBoundary,
   createCanvasInputBoundary,
 } from '@forgeax/engine-input';
+import { decodePackData } from '@forgeax/engine-pack/runtime';
 import { type Context, type Fiber, joinPluginFiber, type Plugin } from '@forgeax/engine-plugin';
 import {
   type BrowserFrameCompleted,
@@ -20,12 +22,14 @@ import {
   type EngineWorkspaceCameraInput,
   EngineWorkspaceError,
   type EngineWorkspacePreview,
+  type EngineWorkspacePreviewDisplayOptions,
   type EngineWorkspaceProject,
   type EngineWorkspaceTarget,
   engineWorkspaceResultService,
   inspectEngineWorkspaceAsset,
   projectEngineWorkspaceAssets,
 } from './workspace';
+import type { WorkspaceAssetFieldWrite } from './workspace-asset-authoring';
 import { bindWorkspaceCameraEvents } from './workspace-camera-events';
 import {
   disposeWorkspacePluginFiber,
@@ -58,10 +62,14 @@ export interface EngineWorkspaceBrowserOptions {
     input: Parameters<
       NonNullable<Parameters<typeof createEngineWorkspaceAppPreview>[0]['openResourcePreview']>
     >[0] & { canvas: HTMLCanvasElement },
-  ) => Promise<{ close: () => Promise<void> | void }>;
+  ) => Promise<import('./workspace').EngineWorkspaceResourcePreviewOwner>;
 }
 
 type CommandInput = EngineWorkspaceCameraInput & {
+  readonly preparation?: number;
+  readonly fields?: readonly WorkspaceAssetFieldWrite[];
+  readonly fieldWrite?: WorkspaceAssetFieldWrite;
+  readonly content?: RuntimePackContent;
   readonly guid?: string;
   readonly worldId?: string;
   readonly request?: EngineWorkspaceRuntimePackRequest;
@@ -78,6 +86,7 @@ type CommandInput = EngineWorkspaceCameraInput & {
   readonly offset?: number;
   readonly limit?: number;
   readonly revision?: number;
+  readonly display?: EngineWorkspacePreviewDisplayOptions;
 };
 interface Command {
   readonly kind: 'command' | 'cancel';
@@ -236,9 +245,11 @@ const workspaceBrowserCommandsPlugin: Plugin.Object<EngineWorkspaceBrowserOption
     const closePreview = async () => {
       if (started) app.pause().unwrap();
       const old = preview;
-      preview = undefined;
-      previewOwner = undefined;
       await old?.close?.({ targetId: target.targetId });
+      if (preview === old) {
+        preview = undefined;
+        previewOwner = undefined;
+      }
     };
     const send = async (payload: unknown) => {
       if (!disposed)
@@ -474,6 +485,36 @@ const workspaceBrowserCommandsPlugin: Plugin.Object<EngineWorkspaceBrowserOption
       signal.throwIfAborted();
       const input = { ...command.input, signal };
       switch (command.operation) {
+        case 'authoring.write': {
+          const owner = active(input);
+          if (!owner.writeAssetField || !input.fieldWrite)
+            throw new TypeError('This target has no asset authoring capability');
+          await owner.writeAssetField(input.fieldWrite);
+          return { applied: true };
+        }
+        case 'authoring.prepare': {
+          const owner = active(input);
+          if (!owner.prepareAssetContent || !input.content)
+            throw new TypeError('This target has no author generation capability');
+          return await owner.prepareAssetContent(
+            decodePackData(input.content) as RuntimePackContent,
+            signal,
+          );
+        }
+        case 'authoring.commit': {
+          const owner = active(input);
+          if (
+            !owner.commitAssetContent ||
+            typeof input.preparation !== 'number' ||
+            !Array.isArray(input.fields)
+          )
+            throw new TypeError('This target has no prepared author content');
+          await owner.commitAssetContent(
+            input.preparation,
+            input.fields as WorkspaceAssetFieldWrite[],
+          );
+          return null;
+        }
         case 'runtimePack': {
           if (input.targetId !== target.targetId || input.worldId !== app.world.identity)
             throw new EngineWorkspaceError(
@@ -622,7 +663,6 @@ const workspaceBrowserCommandsPlugin: Plugin.Object<EngineWorkspaceBrowserOption
               'pluginPrograms',
               'runtimePacks',
               'input',
-              'animationPayloads',
               'renderFeatureHost',
               'audio',
               'physics',
@@ -698,8 +738,8 @@ const workspaceBrowserCommandsPlugin: Plugin.Object<EngineWorkspaceBrowserOption
         case 'closePreview': {
           const child = input.targetId ? children.get(input.targetId) : undefined;
           if (child && input.targetId) {
-            children.delete(input.targetId);
             await child.dispose();
+            if (children.get(input.targetId) === child) children.delete(input.targetId);
             return { closed: true, targetId: input.targetId };
           }
           if (input.previewOwner !== previewOwner) return { closed: false, stale: true };
@@ -740,6 +780,26 @@ const workspaceBrowserCommandsPlugin: Plugin.Object<EngineWorkspaceBrowserOption
         }
         case 'camera.get':
           return active(input).getCamera(input);
+        case 'preview.display.get': {
+          const display = active(input).display;
+          if (!display)
+            throw new EngineWorkspaceError(
+              'engine-workspace-capability-unavailable',
+              'A resource preview display plugin',
+            );
+          return display.get();
+        }
+        case 'preview.display.set': {
+          const display = active(input).display;
+          if (!display)
+            throw new EngineWorkspaceError(
+              'engine-workspace-capability-unavailable',
+              'A resource preview display plugin',
+            );
+          const result = await display.set(input.display ?? {});
+          frameFloor = submittedFrame;
+          return result;
+        }
         case 'camera.begin':
           return active(input).beginCameraInteraction?.(input);
         case 'camera.update': {
@@ -853,6 +913,7 @@ const workspaceBrowserCommandsPlugin: Plugin.Object<EngineWorkspaceBrowserOption
         command.operation === 'entity.inspect' ||
         command.operation === 'preview.texture.get' ||
         command.operation === 'camera.get' ||
+        command.operation === 'preview.display.get' ||
         command.operation === 'target.pick';
       const completion = (readOnly ? Promise.resolve() : queue).then(run, run);
       pending.set(command.id, { controller, completion });

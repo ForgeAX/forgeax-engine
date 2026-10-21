@@ -1,5 +1,7 @@
 {
   "view": {
+    "resourceOpening": "Opening asset…",
+    "resourceFailed": "Asset preview unavailable",
     "appTitle": "ForgeaX View",
     "language": "Language",
     "theme": "Theme",
@@ -102,6 +104,7 @@
       "material": "Material",
       "materialPreview": "Material preview",
       "materialProperties": "Material properties",
+      "materialStats": "Material Stats",
       "meshPreview": "Mesh preview",
       "meshProperties": "Mesh properties",
       "texturePreview": "Texture preview",

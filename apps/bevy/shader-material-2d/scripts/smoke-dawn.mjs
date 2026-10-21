@@ -1,5 +1,7 @@
 #!/usr/bin/env node
 import { encodePng } from '@forgeax/engine-image/png';
+import { constructRuntimeRendererHost } from '@forgeax/engine-runtime/internal/renderer-host';
+let smokeAssets;
 import testQuality from '../../../../scripts/test/render-quality.json' with { type: 'json' };
 import { createSmokeRenderer, drawSmokeFrame, rendererBackend, subscribeSmokeErrors } from "../../scripts/renderer-smoke.mjs";
 
@@ -58,14 +60,15 @@ gpu.requestAdapter = async (options) => {
 
 const { World } = await import('@forgeax/engine-ecs');
 const { createRenderer } = await import('@forgeax/engine-runtime');
-const { unwrapHandle } = await import('@forgeax/engine-types');
 const { buildShaderMaterial2dWorld, makeTextureAsset, makeTexturePixels, TEXTURE_SIZE } = await import(resolve(root, 'src', 'scene.ts'));
 const manifest = JSON.parse(readFileSync(resolve(root, 'dist', 'shaders', 'manifest.json'), 'utf8'));
 const manifestUrl = `data:application/json,${encodeURIComponent(JSON.stringify(manifest))}`;
 
 let renderer;
 try {
-  renderer = await createSmokeRenderer(createRenderer, canvas, {}, { shaderManifestUrl: manifestUrl });
+  const hostResult = await constructRuntimeRendererHost(canvas, {}, { shaderManifestUrl: manifestUrl });
+if (!hostResult.ok) throw hostResult.error;
+({ renderer, assets: smokeAssets } = hostResult.value);
 } finally {
   gpu.requestAdapter = originalRequestAdapter;
 }
@@ -77,11 +80,11 @@ if (shaderEntry === undefined) throw new Error('shader_material_2d manifest entr
 
 const pixels = makeTexturePixels();
 const texture = makeTextureAsset(pixels);
-const world = new World();
+const world = new World({ assets: smokeAssets });
 const worldAttachment1 = renderer.attach(world);
 if (!worldAttachment1.ok) throw worldAttachment1.error;
-const textureHandle = world.allocSharedRef('TextureAsset', texture);
-buildShaderMaterial2dWorld(world, unwrapHandle(textureHandle), WIDTH / HEIGHT);
+const textureHandle = world.assets.create(texture).unwrap();
+buildShaderMaterial2dWorld(world, textureHandle, WIDTH / HEIGHT);
 
 for (let frame = 0; frame < FRAMES; frame += 1) {
   world.update().unwrap();

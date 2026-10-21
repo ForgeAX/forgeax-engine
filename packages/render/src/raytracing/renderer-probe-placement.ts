@@ -9,6 +9,7 @@ import { packGlobalSdfQuerySettings } from './global-sdf-query';
 import { PROBE_CARD_SUPPORT_STRIDE } from './probe-card-support';
 import { PROBE_ORIGIN_SUPPORT_STRIDE } from './probe-origin-support';
 import { createRasterProbePlacement } from './probe-placement';
+import { findPublishedKernel } from './published-kernel';
 import {
   type PreparedProbeGlobal,
   type ProbeGlobalRegion,
@@ -186,10 +187,10 @@ export class RendererProbePlacement {
       profile.maxFieldBytes,
       profile.cards,
     ]);
-    const refs = probeGlobalSourceReferences(source, runtime);
+    const refs = probeGlobalSourceReferences(source);
     if (
       key !== this.#regionKey ||
-      (this.#region !== undefined && !probeGlobalRegionCurrent(this.#region, source, runtime)) ||
+      (this.#region !== undefined && !probeGlobalRegionCurrent(this.#region, source)) ||
       refs.length !== this.#regionSource.length ||
       refs.some((value, index) => value !== this.#regionSource[index])
     ) {
@@ -311,7 +312,7 @@ export class RendererProbePlacement {
         (region === undefined ||
           (input.globalSource !== undefined &&
             sourceCurrent?.() === true &&
-            probeGlobalRegionCurrent(region, input.globalSource, runtime))) &&
+            probeGlobalRegionCurrent(region, input.globalSource))) &&
         JSON.stringify([
           runtime.deviceScope.generation,
           input.camera,
@@ -323,19 +324,19 @@ export class RendererProbePlacement {
     };
     if (this.#kernel === undefined) {
       if (!this.#pending && this.#error === undefined) {
-        const entries = [...(runtime.shaderRegistry?.entries() ?? [])].filter((entry) =>
-          entry.wgsl.includes('fn placeRasterProbes('),
+        const source = findPublishedKernel(
+          runtime.shaderRegistry?.entries() ?? [],
+          'placeRasterProbes',
         );
-        const source = entries[0];
         const compile = runtime.createShaderModule;
-        if (entries.length !== 1 || source === undefined || compile === undefined)
+        if (source === undefined || compile === undefined)
           throw new RhiError({
             code: 'rhi-not-available',
             expected: 'one published raster placement kernel',
             hint: 'publish the ordinary Standard shader closure before enabling placement',
           });
         this.#pending = true;
-        void compile(device, { label: 'probe-placement.kernel', code: source.wgsl })
+        void compile(device, { label: 'probe-placement.kernel', code: source })
           .then((module) => {
             if (this.#disposed || this.#generation !== generation) return;
             this.#kernel = createRasterProbePlacement(device, module.unwrap()).unwrap();

@@ -1,21 +1,23 @@
 import { AssetRegistry, type CatalogSource } from '@forgeax/engine-assets-runtime';
+import { runtimeAssetRegistry, runtimeAssets } from '@forgeax/engine-assets-runtime/internal';
 import { World } from '@forgeax/engine-ecs';
+import { textureContribution } from '@forgeax/engine-image';
 import { createRuntimePackPublication } from '@forgeax/engine-pack/runtime';
 import {
   type CatalogDelta,
   type CatalogEntry,
   ok,
   type ParticleEffectAsset,
-  type TextureAsset,
 } from '@forgeax/engine-types';
 import { ParticleEffectPlayer } from '@forgeax/engine-vfx';
 import { cookParticleCodeProgram, createVfxVectorFieldTexture } from '@forgeax/engine-vfx-compiler';
 import { expect, it } from 'vitest';
 import { normaliseForPack } from '../../../import/src/import-runner.js';
 import { textureAssetOutputProducer } from '../../../import/src/scriptable-pack-output-producers.js';
+import { runtimeEffectFixture } from '../../../vfx/src/__tests__/runtime-effect-fixture';
 import { createVfxRuntimeHost } from '../host/vfx-runtime-host.js';
 
-it('keeps the accepted field during ordinary GUID reload, adopts new bytes and revokes removed assets', async () => {
+it('keeps the accepted field during explicit source reload and retains runtime ownership after source removal', async () => {
   const guid = '01a11250-0000-7000-8000-000000000001';
   const matrix = [1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1];
   const cooked = (
@@ -83,7 +85,8 @@ fn vfx_update(ctx:VfxUpdateContext,p:ptr<function,VfxParticle>){vfx_apply_force_
       );
     },
   };
-  const registry = new AssetRegistry({} as never);
+  const registry = new AssetRegistry({ scopeId: 'runtime-fields' });
+  registry.installDecoder(textureContribution.kind, textureContribution.decoder);
   registry.setCatalogSource(source);
   const publish = async (value: number, revision: number) => {
     const texture = createVfxVectorFieldTexture({
@@ -98,7 +101,7 @@ fn vfx_update(ctx:VfxUpdateContext,p:ptr<function,VfxParticle>){vfx_apply_force_
     const hash = new Uint8Array(await crypto.subtle.digest('SHA-256', new Uint8Array(body.bytes)));
     const digest = `sha256:${Array.from(hash, (byte) => byte.toString(16).padStart(2, '0')).join('')}`;
     const packageUrl = `https://runtime.invalid/fields/${revision}/pack.json`;
-    const { pack } = createRuntimePackPublication({
+    const { pack, publication } = createRuntimePackPublication({
       scopeId: 'runtime-fields',
       sourcePath: 'fields',
       sourceRevision: String(revision),
@@ -114,6 +117,7 @@ fn vfx_update(ctx:VfxUpdateContext,p:ptr<function,VfxParticle>){vfx_apply_force_
               body: {
                 path: 'field.bin',
                 mediaType: body.mediaType,
+                contentEncoding: 'identity',
                 assetCodec: body.assetCodec,
                 byteLength: body.bytes.byteLength,
                 integrity: { algorithm: 'sha256', digest },
@@ -131,6 +135,8 @@ fn vfx_update(ctx:VfxUpdateContext,p:ptr<function,VfxParticle>){vfx_apply_force_
       packageUrl,
       sourcePath: 'fields',
       sourceKey: 'field',
+      publication,
+      lifecycle: 'current',
     };
     const previous = rows.splice(0, rows.length, row);
     for (const listener of listeners)
@@ -141,13 +147,16 @@ fn vfx_update(ctx:VfxUpdateContext,p:ptr<function,VfxParticle>){vfx_apply_force_
       });
   };
   await publish(0.5, 1);
-  const firstTexture = (await registry.loadByGuid<TextureAsset>(registry.parseGuid(guid))).unwrap();
-  const world = new World();
-  const player = world
+  const texture = (await registry.load(guid, 'texture')).unwrap();
+  const firstTexture = registry.read(texture).unwrap();
+  const world = new World({ assets: registry });
+  world
     .spawn({
       component: ParticleEffectPlayer,
       data: {
-        effect: world.allocSharedRef('ParticleEffectAsset', { ...asset, guid: 'effect' }),
+        effect: runtimeAssetRegistry(world.assets)
+          .create(runtimeEffectFixture(world, { ...asset, guid: 'effect' }))
+          .unwrap(),
         playing: true,
         seed: 21,
         timeScale: 1,
@@ -172,7 +181,7 @@ fn vfx_update(ctx:VfxUpdateContext,p:ptr<function,VfxParticle>){vfx_apply_force_
         frameNumber: ++frameNumber,
       })
       .unwrap()
-      .worlds[0]?.forceFields.get(`${Number(player)}:fields`);
+      .worlds[0]?.intents.at(-1)?.forceFields;
   try {
     world.update(1 / 60).unwrap();
     const first = fields();
@@ -186,29 +195,46 @@ fn vfx_update(ctx:VfxUpdateContext,p:ptr<function,VfxParticle>){vfx_apply_force_
     // A source replacement does not tear down an admitted field while its
     // normal binary artifact is still arriving.
     expect(pending).toEqual(first);
-    const loading = registry.loadByGuid<TextureAsset>(registry.parseGuid(guid));
+    const loading = registry.reload(texture, { conflict: 'reject' });
     release();
-    const secondTexture = (await loading).unwrap();
+    (await loading).unwrap();
+    const secondTexture = registry.read(texture).unwrap();
     expect(secondTexture).not.toBe(firstTexture);
+    expect(fields()).toEqual(first);
+    world.update(1 / 60).unwrap();
     const second = fields();
     expect(second?.ok).toBe(true);
     if (first?.ok && second?.ok) {
-      expect(second.value.revision).not.toBe(first.value.revision);
-      expect(second.value.data[44]).toBe(2);
-      expect(first.value.data[44]).toBe(0.5);
+      expect(second.value[0]?.revision).not.toBe(first.value[0]?.revision);
+      const read = (reference: { handle: number; revision: number } | undefined) => {
+        if (reference === undefined) throw new Error('Missing fixed Texture input');
+        const texture = runtimeAssets(world.assets)
+          .resolveAsset<import('@forgeax/engine-types').TextureAsset>(
+            reference.handle,
+            reference.revision,
+          )
+          .unwrap();
+        return new DataView(
+          texture.data.buffer,
+          texture.data.byteOffset,
+          texture.data.byteLength,
+        ).getFloat32(0, true);
+      };
+      expect(read(second.value[0])).toBe(2);
+      expect(read(first.value[0])).toBe(0.5);
     }
     rows.length = 0;
     for (const listener of listeners) listener({ added: [], changed: [], removed: [guid] });
     // Let the Catalog owner finish its current reconciliation and accept the
     // buffered removal before asserting the consumer's revocation.
     await new Promise<void>((resolve) => setTimeout(resolve, 0));
-    expect(registry.lookup(guid)).toBeUndefined();
+    expect(registry.source(texture).unwrap()?.guid).toBe(guid);
     fields();
-    expect((await registry.loadByGuid(registry.parseGuid(guid))).ok).toBe(false);
+    expect((await registry.reload(texture, { conflict: 'reject' })).ok).toBe(false);
     await new Promise<void>((resolve) => setTimeout(resolve, 0));
-    expect(fields()).toMatchObject({ ok: false, error: { code: 'vfx-field-asset-missing' } });
+    expect(fields()).toEqual(second);
   } finally {
     await host.detachWorld({ world });
-    registry.clearCatalogSource();
+    registry.dispose();
   }
 });

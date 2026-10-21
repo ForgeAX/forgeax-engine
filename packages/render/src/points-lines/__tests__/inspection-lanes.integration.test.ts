@@ -5,7 +5,7 @@ import { PointsLinesExpansionCache } from '../expansion-cache';
 import { inspectPointsLines } from '../inspection';
 import { type PointsLinesGpuResourceAdapter, PointsLinesPreparation } from '../prepare';
 import { createPointsLinesLaneContract, createPointsLinesRecordPlan } from '../record';
-import { createPointsLinesSnapshot } from '../snapshot';
+import { createPreparedPointsLinesSnapshot as createPointsLinesSnapshot } from './snapshot-fixture';
 
 function mesh(): MeshAsset {
   const positions = new Float32Array([0, 0, 0, 1, 0, 0, 0, 1, 0, 1, 1, 0]);
@@ -92,9 +92,10 @@ describe('Points/Lines inspection and recovery integration', () => {
       cache: new PointsLinesExpansionCache(),
       adapter,
     });
-    const first = preparation.prepare(snapshot(), mesh()).unwrap();
+    const source = mesh();
+    const first = preparation.prepare(snapshot(), source).unwrap();
     const resized = preparation
-      .prepare(snapshot({ width: 640, height: 360, dpr: 2 }), mesh())
+      .prepare(snapshot({ width: 640, height: 360, dpr: 2 }), source)
       .unwrap();
 
     expect(resized.geometry).toBe(first.geometry);
@@ -105,7 +106,7 @@ describe('Points/Lines inspection and recovery integration', () => {
     });
     preparation.resetForDeviceLoss();
     expect(preparation.inspect()).toMatchObject({ status: 'rebuild-pending', liveBytes: 0 });
-    preparation.prepare(snapshot({ width: 640, height: 360, dpr: 2 }), mesh()).unwrap();
+    preparation.prepare(snapshot({ width: 640, height: 360, dpr: 2 }), source).unwrap();
     expect(preparation.inspect()).toMatchObject({
       status: 'resident',
       lastKnownGood: true,

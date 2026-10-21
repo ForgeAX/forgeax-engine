@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+import { constructRuntimeRendererHost } from '@forgeax/engine-runtime/internal/renderer-host';
 import { createSmokeRenderer, drawSmokeFrame, rendererBackend, subscribeSmokeErrors } from "../../scripts/renderer-smoke.mjs";
 
 import { readFileSync } from 'node:fs';
@@ -65,11 +66,13 @@ const { createRenderer } = await import('@forgeax/engine-runtime');
 const { buildPhysicsFixedWorld, installPhysicsFixedSystems, readPhysicsFixedState } = await import(resolve(here, '..', 'src', 'physics-fixed-loop.ts'));
 const manifestPath = resolve(here, '..', 'dist', 'shaders', 'manifest.json');
 const manifestUrl = `data:application/json,${encodeURIComponent(readFileSync(manifestPath, 'utf8'))}`;
-const renderer = await createSmokeRenderer(createRenderer, mockCanvas, {}, { shaderManifestUrl: manifestUrl });
+const hostResult = await constructRuntimeRendererHost(mockCanvas, {}, { shaderManifestUrl: manifestUrl });
+if (!hostResult.ok) throw hostResult.error;
+const { renderer, assets: smokeAssets } = hostResult.value;
 const errors = [];
 subscribeSmokeErrors(renderer, (error) => errors.push(error.code));
 
-const world = new World({ time: { fixedDeltaSeconds: 1 / 30, maxStepsPerUpdate: 4, maxDeltaSeconds: 0.25 } });
+const world = new World({ assets: smokeAssets, time: { fixedDeltaSeconds: 1 / 30, maxStepsPerUpdate: 4, maxDeltaSeconds: 0.25 } });
 const worldAttachment1 = renderer.attach(world);
 if (!worldAttachment1.ok) throw worldAttachment1.error;
 buildPhysicsFixedWorld(world);

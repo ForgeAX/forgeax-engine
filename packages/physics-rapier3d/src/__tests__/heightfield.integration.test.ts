@@ -1,9 +1,11 @@
+import { AssetRegistry } from '@forgeax/engine-assets-runtime';
 import { Disabled, World } from '@forgeax/engine-ecs';
 import { vec3 } from '@forgeax/engine-math';
 import { RigidBody, RigidBodyTypeValue, registerPhysicsComponents } from '@forgeax/engine-physics';
 import { GlobalTransform, Transform } from '@forgeax/engine-scene';
 import { Terrain, terrainHeight, terrainHeightfield } from '@forgeax/engine-terrain';
 import { describe, expect, it } from 'vitest';
+import { samplerContribution } from '../../../render/src/assets/asset-decoders';
 import { createRapier3DPhysicsWorld } from '../rapier-physics-world-3d.js';
 import { loadRapier3D } from '../wasm-loader.js';
 
@@ -141,7 +143,16 @@ describe('real Rapier heightfield admission', () => {
   });
 });
 it('withdraws Terrain colliders through the fixed-step owner while preserving the ordinary body', async () => {
-  const world = new World();
+  const assets = new AssetRegistry();
+  assets.installDecoder(samplerContribution.kind, samplerContribution.decoder);
+  const world = new World({ assets });
+  const material = assets
+    .create({
+      kind: 'material',
+      values: {},
+      passes: [{ name: 'forward', program: { module: 'forgeax_material::standard' } }],
+    })
+    .unwrap();
   world.components.register(Transform).unwrap();
   world.components.register(GlobalTransform).unwrap();
   world.components.register(Terrain).unwrap();
@@ -155,15 +166,14 @@ it('withdraws Terrain colliders through the fixed-step owner while preserving th
     subsectionVertices: 2,
     heights: new Float32Array([0, 0, 0, 1]),
     weights: new Float32Array(4).fill(1),
-    layers: [{ material: 'm', blend: 'weight' as const }],
+    layers: [{ material, blend: 'weight' as const }],
     heightRange: [0, 1] as const,
-    sections: [],
-    grids: [],
   };
+  const terrain = assets.create(asset).unwrap();
   const entity = world
     .spawn(
       { component: Transform, data: {} },
-      { component: Terrain, data: { asset: world.internSharedRef('TerrainAsset', asset) } },
+      { component: Terrain, data: { asset: terrain } },
       { component: RigidBody, data: { type: RigidBodyTypeValue.static } },
     )
     .unwrap();
@@ -182,18 +192,18 @@ it('withdraws Terrain colliders through the fixed-step owner while preserving th
   try {
     step();
     expect(ray()?.point[1]).toBeCloseTo(0, 5);
-    const revision = defined(physics.getDerivedPublication(entity)).revision;
+    const count = physics.raw.colliders.len();
     step();
-    expect(defined(physics.getDerivedPublication(entity)).revision).toBe(revision);
+    expect(physics.raw.colliders.len()).toBe(count);
     world.removeComponent(entity, Terrain).unwrap();
     step();
     expect(ray()).toBeUndefined();
     expect(world.hasComponent(entity, RigidBody)).toBe(true);
-    expect(physics.getDerivedPublication(entity)?.shapeIds).toEqual([]);
+    expect(physics.raw.colliders.len()).toBe(0);
     world
       .addComponent(entity, {
         component: Terrain,
-        data: { asset: world.internSharedRef('TerrainAsset', asset) },
+        data: { asset: terrain },
       })
       .unwrap();
     step();
@@ -202,7 +212,7 @@ it('withdraws Terrain colliders through the fixed-step owner while preserving th
     world.removeComponent(entity, GlobalTransform).unwrap();
     step();
     expect(ray()).toBeUndefined();
-    expect(physics.getDerivedPublication(entity)?.shapeIds).toEqual([]);
+    expect(physics.raw.colliders.len()).toBe(0);
     expect(world.hasComponent(entity, RigidBody)).toBe(true);
     world.addComponent(entity, { component: GlobalTransform, data: pose }).unwrap();
     step();
@@ -210,7 +220,7 @@ it('withdraws Terrain colliders through the fixed-step owner while preserving th
     world.removeComponent(entity, Transform).unwrap();
     step();
     expect(ray()).toBeUndefined();
-    expect(physics.getDerivedPublication(entity)?.shapeIds).toEqual([]);
+    expect(physics.raw.colliders.len()).toBe(0);
     world.addComponent(entity, { component: Transform, data: {} }).unwrap();
     step();
     expect(ray()?.point[1]).toBeCloseTo(0, 5);
@@ -231,7 +241,16 @@ it.each([
   'tiny-scale',
   'world-overflow',
 ] as const)('rejects %s through real Physics Terrain admission', async (mode) => {
-  const world = new World();
+  const assets = new AssetRegistry();
+  assets.installDecoder(samplerContribution.kind, samplerContribution.decoder);
+  const world = new World({ assets });
+  const material = assets
+    .create({
+      kind: 'material',
+      values: {},
+      passes: [{ name: 'forward', program: { module: 'forgeax_material::standard' } }],
+    })
+    .unwrap();
   for (const component of [Transform, GlobalTransform, Terrain])
     world.components.register(component).unwrap();
   registerPhysicsComponents(world);
@@ -246,15 +265,14 @@ it.each([
       mode === 'world-overflow' ? [-1e38, 1e38, -1e38, 1e38] : [0, 0, 0, 1],
     ),
     weights: new Float32Array(4).fill(1),
-    layers: [{ material: 'm', blend: 'weight' as const }],
+    layers: [{ material, blend: 'weight' as const }],
     heightRange: (mode === 'world-overflow' ? [-1e38, 1e38] : [0, 1]) as [number, number],
-    sections: [],
-    grids: [],
   };
+  const terrain = assets.create(asset).unwrap();
   const entity = world
     .spawn(
       { component: Transform, data: {} },
-      { component: Terrain, data: { asset: world.internSharedRef('TerrainAsset', asset) } },
+      { component: Terrain, data: { asset: terrain } },
       { component: RigidBody, data: { type: RigidBodyTypeValue.static } },
     )
     .unwrap();

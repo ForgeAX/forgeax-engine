@@ -19,7 +19,9 @@ const executorEntry = `executor.${language}`;
 const sharedEntry = `shared.${language}`;
 const world = new World();
 const context = await createWorldContext(world, []);
-const assets = new AssetRegistry(new ShaderRegistry({ manifestUrl: undefined }));
+const assets = new AssetRegistry({
+  shaderRegistry: new ShaderRegistry({ manifestUrl: undefined }),
+});
 const assembly = createAssetRuntimeAssembly(assets, {
   catalogSource: createCatalogSource({ entries: [] }),
 }).unwrap();

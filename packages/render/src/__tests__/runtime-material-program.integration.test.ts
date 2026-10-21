@@ -1,5 +1,7 @@
-import { AssetRegistry, HANDLE_CUBE, RuntimeMaterialValue } from '@forgeax/engine-assets-runtime';
+import { AssetRegistry } from '@forgeax/engine-assets-runtime';
+import { runtimeAssets } from '@forgeax/engine-assets-runtime/internal';
 import { World } from '@forgeax/engine-ecs';
+import { createPrimitiveMesh } from '@forgeax/engine-geometry';
 import {
   createMaterialArtifactDigest,
   createMaterialProgramSetDigest,
@@ -14,19 +16,25 @@ import {
   MATERIAL_CONTEXT,
   materialRecordFixture,
 } from '../../../assets-runtime/src/__tests__/fixtures/material-publication';
+import { publishRuntimeAssets } from '../../../assets-runtime/src/__tests__/fixtures/runtime-publication';
 import { MeshFilter, MeshRenderer } from '../components';
 import { renderMaterialContext } from '../extract/material-context';
 import { createRenderPublisher } from '../publication/publisher';
 import { RenderPublicationReceiver } from '../publication/receiver';
+import { worldRenderResources } from '../publication/resource-scope';
 import {
   materialSurfaceProgramsForMaterial,
   resolveMaterialSnapshot,
 } from '../render-system-extract';
 import { extractFrames } from '../render-system-extract-tail';
 
-it('keeps cooked Forward and ShadowCaster programs when World values change or a catalogue entry is replaced', () => {
-  const assets = new AssetRegistry(new ShaderRegistry({ manifestUrl: undefined }));
-  const world = new World();
+const BUILTIN_CUBE = createPrimitiveMesh('cube').unwrap();
+
+it('keeps cooked Forward and ShadowCaster programs when owned values change or a catalogue entry is replaced', async () => {
+  const assets = new AssetRegistry({
+    shaderRegistry: new ShaderRegistry({ manifestUrl: undefined }),
+  });
+  const world = new World({ assets });
   const record = materialRecordFixture({
     parameters: [{ name: 'roughness', type: 'f32' }],
     values: { roughness: 0.8 },
@@ -47,33 +55,14 @@ it('keeps cooked Forward and ShadowCaster programs when World values change or a
       ),
     ),
   };
-  assets.catalog(record.guid, base).unwrap();
-  if (
-    !record.sourceClosure ||
-    !record.parameterContract ||
-    record.publicationGeneration === undefined ||
-    record.specializationKey === undefined ||
-    record.artifactDigest === undefined
-  )
-    throw new Error('Missing cooked metadata');
-  assets.recordMaterialReadiness(record.guid, {
-    status: 'Ready',
-    record: {
-      ...record,
-      materialGuid: record.guid,
-      publicationGeneration: record.publicationGeneration,
-      specializationKey: record.specializationKey,
-      artifactDigest: record.artifactDigest,
-      sourceClosure: record.sourceClosure,
-      parameterContract: record.parameterContract,
-      programs: record.programs,
-    },
-  });
-  const handle = world.internSharedRef('MaterialAsset', base);
+  publishRuntimeAssets(assets, [
+    { guid: record.guid, asset: { ...base, cooked: record } as MaterialAsset },
+  ]);
+  const handle = (await assets.load(record.guid, 'material')).unwrap();
   world
     .spawn(
       { component: Transform, data: {} },
-      { component: MeshFilter, data: { assetHandle: HANDLE_CUBE } },
+      { component: MeshFilter, data: { assetHandle: assets.create(BUILTIN_CUBE).unwrap() } },
       { component: MeshRenderer, data: { materials: [handle] } },
     )
     .unwrap();
@@ -82,9 +71,16 @@ it('keeps cooked Forward and ShadowCaster programs when World values change or a
     extractFrames([world], 0, assets, undefined, undefined, {
       materialContext: MATERIAL_CONTEXT,
       cull: 'none',
-    }).renderables[0]?.materials[0];
+    }).renderables.at(0)?.materials[0]?.snapshot;
   const read = () =>
-    resolveMaterialSnapshot(handle, world, assets, undefined, undefined, MATERIAL_CONTEXT);
+    resolveMaterialSnapshot(
+      handle,
+      worldRenderResources(world),
+      assets,
+      undefined,
+      undefined,
+      MATERIAL_CONTEXT,
+    );
   const before = read();
   expect(frameRead()?.materialPublication).toEqual(before.materialPublication);
   expect(before.materialPublication?.identity).toMatchObject({
@@ -101,36 +97,32 @@ it('keeps cooked Forward and ShadowCaster programs when World values change or a
   expect(frameRead()?.materialParamSchema).toBe(shader.paramSchema);
   expect(frameRead()?.materialProgramKeys).toEqual(before.materialProgramKeys);
   expect(Object.keys(before.materialProgramKeys ?? {})).toEqual(['Forward', 'ShadowCaster']);
-  const content = world
-    .spawn({
-      component: RuntimeMaterialValue,
-      data: {
-        asset: handle,
-        parameter: 'roughness',
-        kind: 0,
-        value: [0.25],
-      },
-    })
-    .unwrap();
+  assets.update(handle, { values: { roughness: 0.25 } }).unwrap();
   expect(read().roughness).toBe(0.25);
   expect(read().materialParamSchema).toBe(shader.paramSchema);
   expect(frameRead()?.materialParamSchema).toBe(shader.paramSchema);
   expect(frameRead()?.materialProgramKeys).toEqual(before.materialProgramKeys);
   expect(read().materialProgramKeys).toEqual(before.materialProgramKeys);
-  assets.catalog(record.guid, { ...base, values: { roughness: 0.6 } }).unwrap();
+  publishRuntimeAssets(assets, [
+    { guid: record.guid, asset: { ...base, values: { roughness: 0.6 } } },
+  ]);
   // A latest GUID/catalogue entry must not relabel an existing World payload.
   expect(read().materialPublication).toEqual(before.materialPublication);
   expect(frameRead()?.materialPublication).toEqual(before.materialPublication);
   expect(read().materialProgramKeys).toEqual(before.materialProgramKeys);
-  world.despawn(content).unwrap();
+  assets.update(handle, { values: { roughness: 0.8 } }).unwrap();
   expect(read().roughness).toBeCloseTo(0.8);
   expect(read().materialProgramKeys).toEqual(before.materialProgramKeys);
 });
 
 it('carries both accepted Surface programs through value edits and detached publication', async () => {
-  const assets = new AssetRegistry(new ShaderRegistry({ manifestUrl: undefined }));
-  const receiverAssets = new AssetRegistry(new ShaderRegistry({ manifestUrl: undefined }));
-  const world = new World();
+  const assets = new AssetRegistry({
+    shaderRegistry: new ShaderRegistry({ manifestUrl: undefined }),
+  });
+  const receiverAssets = new AssetRegistry({
+    shaderRegistry: new ShaderRegistry({ manifestUrl: undefined }),
+  });
+  const world = new World({ assets });
   const context: MaterialCookRayContext = {
     backend: 'webgpu',
     capability: 'storage-buffer',
@@ -141,7 +133,7 @@ it('carries both accepted Surface programs through value edits and detached publ
     toolchain: 'naga-oil',
     instrumentation: 'none',
   };
-  const publishMaterial = (generation: number) => {
+  const publishMaterial = async (generation: number) => {
     const record = materialRecordFixture({
       generation,
       parameters: [
@@ -198,29 +190,20 @@ it('carries both accepted Surface programs through value edits and detached publ
       passes: [first, ...rest],
       values: {},
     };
-    assets.catalog(cooked.guid, material).unwrap();
-    assets.recordMaterialReadiness(cooked.guid, {
-      status: 'Ready',
-      record: {
-        ...cooked,
-        materialGuid: cooked.guid,
-        publicationGeneration: generation,
-        specializationKey: cooked.specializationKey,
-        artifactDigest: cooked.artifactDigest,
-        sourceClosure: cooked.sourceClosure,
-        parameterContract: cooked.parameterContract,
-        programs: cooked.programs,
-      },
-    });
+    publishRuntimeAssets(assets, [
+      { guid: cooked.guid, asset: { ...material, cooked } as MaterialAsset },
+    ]);
+    const loaded = (await assets.load(cooked.guid, 'material')).unwrap();
     return {
-      material,
+      guid: cooked.guid,
+      material: runtimeAssets(assets).resolveAsset<MaterialAsset>(loaded).unwrap(),
       key: ray.specializationKey,
       bytes,
       cardKey: card.specializationKey,
       cardBytes,
     };
   };
-  const first = publishMaterial(1);
+  const first = await publishMaterial(1);
   for (const context of [
     { ...MATERIAL_CONTEXT, backend: 'webgl2' as const },
     { ...MATERIAL_CONTEXT, capability: 'uniform-fallback' as const },
@@ -230,22 +213,29 @@ it('carries both accepted Surface programs through value edits and detached publ
     expect(
       materialSurfaceProgramsForMaterial(first.material, assets, context, first.material),
     ).toBeUndefined();
-  const handle = world.internSharedRef('MaterialAsset', first.material);
+  const handle = (await assets.load(first.guid, 'material')).unwrap();
   world
     .spawn(
       { component: Transform, data: {} },
-      { component: MeshFilter, data: { assetHandle: HANDLE_CUBE } },
+      { component: MeshFilter, data: { assetHandle: assets.create(BUILTIN_CUBE).unwrap() } },
       { component: MeshRenderer, data: { materials: [handle] } },
     )
     .unwrap();
   world.update(0).unwrap();
   const read = () =>
-    resolveMaterialSnapshot(handle, world, assets, undefined, undefined, MATERIAL_CONTEXT);
+    resolveMaterialSnapshot(
+      handle,
+      worldRenderResources(world),
+      assets,
+      undefined,
+      undefined,
+      MATERIAL_CONTEXT,
+    );
   const frameRead = () =>
     extractFrames([world], 0, assets, undefined, undefined, {
       materialContext: MATERIAL_CONTEXT,
       cull: 'none',
-    }).renderables[0]?.material;
+    }).renderables.at(0)?.material.snapshot;
   expect(read().materialSurfacePrograms?.['ray-hit']?.programKey).toBe(first.key);
   expect(
     materialSurfaceProgramsForMaterial(
@@ -259,17 +249,7 @@ it('carries both accepted Surface programs through value edits and detached publ
   expect(read().materialSurfacePrograms?.['card-capture']?.programKey).toBe(first.cardKey);
   expect(frameRead()?.materialSurfacePrograms?.['card-capture']?.programKey).toBe(first.cardKey);
   expect(read().materialSurfacePrograms?.['ray-hit']?.evaluateCoverage).toBe(false);
-  const coverage = world
-    .spawn({
-      component: RuntimeMaterialValue,
-      data: {
-        asset: handle,
-        parameter: 'alphaCutoff',
-        kind: 0,
-        value: [0.5],
-      },
-    })
-    .unwrap();
+  assets.update(handle, { values: { alphaCutoff: 0.5 } }).unwrap();
   expect(read().materialSurfacePrograms?.['ray-hit']).toEqual({
     programKey: first.key,
     evaluateCoverage: true,
@@ -277,7 +257,7 @@ it('carries both accepted Surface programs through value edits and detached publ
   expect(frameRead()?.materialSurfacePrograms?.['ray-hit']).toEqual(
     read().materialSurfacePrograms?.['ray-hit'],
   );
-  world.despawn(coverage).unwrap();
+  assets.update(handle, { values: { alphaCutoff: 0 } }).unwrap();
   expect(read().materialSurfacePrograms?.['ray-hit']?.evaluateCoverage).toBe(false);
   // An arbitrary Surface can cut holes even with zero Standard alphaCutoff.
   expect(
@@ -287,20 +267,10 @@ it('carries both accepted Surface programs through value edits and detached publ
     })?.['ray-hit']?.evaluateCoverage,
   ).toBe(true);
 
-  const source = world
-    .spawn({
-      component: RuntimeMaterialValue,
-      data: {
-        asset: handle,
-        parameter: 'roughness',
-        kind: 0,
-        value: [0.25],
-      },
-    })
-    .unwrap();
+  assets.update(handle, { values: { roughness: 0.25 } }).unwrap();
   expect(read().roughness).toBe(0.25);
   expect(read().materialSurfacePrograms?.['ray-hit']?.programKey).toBe(first.key);
-  const latest = publishMaterial(2);
+  const latest = await publishMaterial(2);
   expect(latest.key).not.toBe(first.key);
   expect(read().materialSurfacePrograms?.['ray-hit']?.programKey).toBe(first.key);
   expect(frameRead()?.materialSurfacePrograms?.['ray-hit']?.programKey).toBe(first.key);
@@ -323,21 +293,23 @@ it('carries both accepted Surface programs through value edits and detached publ
     const accepted = new RenderPublicationReceiver(identity)
       .accept(packet, receiverAssets)
       .unwrap();
-    const material = accepted.frame.renderables[0]?.material;
+    const material = accepted.frame.renderables.at(0)?.material.snapshot;
     expect(material?.materialParamSchema).toBe(
       receiverAssets.shaderRegistry.findMaterialArtifact(material?.materialShaderId ?? '').unwrap()
         .paramSchema,
     );
     expect(
-      accepted.frame.renderables[0]?.material.materialSurfacePrograms?.['ray-hit']?.programKey,
+      accepted.frame.renderables.at(0)?.material.snapshot.materialSurfacePrograms?.['ray-hit']
+        ?.programKey,
     ).toBe(first.key);
     expect(receiverAssets.getMaterialArtifact(first.key)?.bytes).toEqual(first.bytes);
     expect(
-      accepted.frame.renderables[0]?.material.materialSurfacePrograms?.['card-capture']?.programKey,
+      accepted.frame.renderables.at(0)?.material.snapshot.materialSurfacePrograms?.['card-capture']
+        ?.programKey,
     ).toBe(first.cardKey);
     expect(receiverAssets.getMaterialArtifact(first.cardKey)?.bytes).toEqual(first.cardBytes);
     expect(receiverAssets.getMaterialArtifact(latest.key)).toBeUndefined();
-    world.despawn(source).unwrap();
+    assets.update(handle, { values: { roughness: 0.8 } }).unwrap();
     expect(read().roughness).toBeCloseTo(0.8);
     expect(read().materialSurfacePrograms?.['ray-hit']?.programKey).toBe(first.key);
   } finally {
@@ -350,23 +322,34 @@ it.each([
   [20, 'storage-buffer-minimum'],
   [21, 'storage-buffer-projector'],
   [23, 'storage-buffer-projector'],
-  [24, 'storage-buffer'],
+  [24, 'storage-buffer-projector'],
+  [25, 'storage-buffer'],
   [30, 'storage-buffer'],
-  [31, 'storage-buffer-atmosphere'],
-] as const)('selects the published texture topology at device limit %s', (limit, capability) => {
+  [31, 'storage-buffer'],
+  [32, 'storage-buffer-atmosphere'],
+] as const)('selects the published texture topology at device limit %s', async (limit, capability) => {
   const context = renderMaterialContext(
     { backendKind: 'webgpu', storageBuffer: true },
     { maxSampledTexturesPerShaderStage: limit },
   ).materialContext;
   expect(context?.capability).toBe(capability);
   const record = materialRecordFixture({ contexts: [{ ...MATERIAL_CONTEXT, capability }] });
-  const assets = new AssetRegistry(new ShaderRegistry({ manifestUrl: undefined }));
+  const assets = new AssetRegistry({
+    shaderRegistry: new ShaderRegistry({ manifestUrl: undefined }),
+  });
   const material = { kind: 'material', ...record.resolved } as MaterialAsset;
-  assets.catalog(record.guid, material).unwrap();
-  assets.recordMaterialReadiness(record.guid, { status: 'Ready', record });
-  const world = new World();
-  const handle = world.internSharedRef('MaterialAsset', material);
-  const snapshot = resolveMaterialSnapshot(handle, world, assets, undefined, undefined, context);
+  const payload = { ...material, cooked: record };
+  publishRuntimeAssets(assets, [{ guid: record.guid, asset: payload }]);
+  const world = new World({ assets });
+  const handle = (await assets.load(record.guid, 'material')).unwrap();
+  const snapshot = resolveMaterialSnapshot(
+    handle,
+    worldRenderResources(world),
+    assets,
+    undefined,
+    undefined,
+    context,
+  );
   expect(Object.values(snapshot.materialProgramKeys ?? {})).toEqual([
     record.programs[0]?.specializationKey,
   ]);

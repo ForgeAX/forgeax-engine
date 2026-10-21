@@ -4,7 +4,7 @@ import {
   describeVfxGpuEffect,
   isVfxGpuEffectAsset,
   loadVfxGpuEffect,
-  vfxGpuEffectPackLoader,
+  particleEffectContribution,
 } from '@forgeax/engine/vfx';
 import { cookParticleCodeEffect } from '@forgeax/engine/vfx-compiler';
 import {
@@ -50,7 +50,7 @@ export default defineFeature({
   catalog: 'Particle-effect asset',
   kind: 'headless',
   summary:
-    'A code-first particle source is cooked into a Pack v2 particle-effect row plus program artifact, then AssetRegistry loadByGuid (through the registered VFX pack loader) returns the payload for the consumer to wrap in a shared handle.',
+    'A code-first particle source is cooked into a Pack v2 particle-effect row plus program artifact, then AssetRegistry returns its managed handle through the installed VFX decoder. Reads expose the admitted program.',
   expect:
     'Cook succeeds, the row references its billboard material, loadVfxGpuEffect returns a VfxGpuEffect with one 32-capacity emitter after fetching the Pack and program artifact, and an unknown GUID fails with a structured code.',
   async run(checks) {
@@ -79,9 +79,9 @@ export default defineFeature({
       JSON.stringify(refs),
     );
 
-    const registry = new AssetRegistry({} as never);
-    registry.loaders.registerPackLoader(vfxGpuEffectPackLoader);
-    const { fetched } = installMemoryPack(registry, [
+    const registry = new AssetRegistry({ shaderRegistry: {} as never });
+    registry.installDecoder(particleEffectContribution.kind, particleEffectContribution.decoder);
+    const { fetched } = await installMemoryPack(registry, [
       { guid: MATERIAL, kind: 'material', payload: Materials.unlit([1, 0.5, 0.1, 1]) },
       {
         guid: EFFECT,
@@ -97,7 +97,8 @@ export default defineFeature({
         },
       },
     ]);
-    const loaded = await loadVfxGpuEffect(registry, EFFECT as never);
+    const handle = await loadVfxGpuEffect(registry, EFFECT);
+    const loaded = handle.ok ? registry.read(handle.value) : handle;
     checks.ok('loadVfxGpuEffect ok', loaded.ok, loaded.ok ? undefined : errorCode(loaded.error));
     if (loaded.ok) {
       checks.ok('payload is a VfxGpuEffect', isVfxGpuEffectAsset(loaded.value));

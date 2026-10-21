@@ -15,12 +15,7 @@ import {
 } from '@forgeax/engine-render';
 import type { Buffer, RhiDevice, RhiRenderCommands } from '@forgeax/engine-rhi';
 import { propagateTransforms, scenePlugin } from '@forgeax/engine-scene';
-import {
-  createStandaloneRuntimeAssetBinding,
-  type Handle,
-  type MeshAsset,
-  type TextureAsset,
-} from '@forgeax/engine-types';
+import type { AssetHandle, MeshAsset, TextureAsset } from '@forgeax/engine-types';
 import { expect, it } from 'vitest';
 import { page } from 'vitest/browser';
 import {
@@ -30,6 +25,7 @@ import {
 import { drawReadyFrame } from '../../../../scripts/test/ready-render-frame.mjs';
 import type { RhiBackendInstrumentation } from '../../../render/src/assembly/backend-contract';
 import { constructRuntimeRendererHost } from '../renderer-host';
+import { testAssets } from './helpers/runtime-assets';
 
 interface ScreenshotPixels {
   readonly width: number;
@@ -361,11 +357,10 @@ function prepareDynamic(
   renderer: Renderer,
   world: World,
   entity: EntityHandle,
-  mesh: MeshAsset,
-  meshHandle: Handle<'MeshAsset', 'shared'>,
+  meshHandle: AssetHandle<'mesh'>,
   revision: number,
 ): DynamicGeometryCandidate {
-  const prepared = renderer.prepareDynamicGeometry({ world, entity, mesh, meshHandle, revision });
+  const prepared = renderer.prepareDynamicGeometry({ world, entity, meshHandle, revision });
   if (!prepared.ok) throw prepared.error;
   const accepted = renderer.acceptDynamicGeometry(prepared.value, {
     world,
@@ -413,33 +408,14 @@ it('recovers the same Renderer, World, and lease through two host loss cycles', 
     { shaderManifestUrl: '/shaders/manifest.json' },
   );
   if (!rendererResult.ok) throw rendererResult.error;
-  const { renderer, assets } = rendererResult.value;
+  const { renderer } = rendererResult.value;
   const world = new World();
   const scene = await createWorldContext(world, [scenePlugin()]);
-  const recipe = createWave1RenderingRecipe(world, { aspect: 1, includeAtmosphere: true });
-  // A tiny identity LUT exercises ordinary asset residency on every device.
-  const lutGuid = 'dab53d78-d233-4c79-8cb3-c03f33130001';
-  const lutSourceKey = 'test://wave1-output-recovery/identity-lut';
-  const binding = createStandaloneRuntimeAssetBinding('wave1-output-recovery');
-  const catalog = {
-    schemaVersion: 'runtime-catalog-snapshot-v1',
-    scopeId: binding.scopeId,
-    generation: binding.generation,
-    authority: 'authoritative',
-    entries: [
-      {
-        guid: lutGuid,
-        kind: 'texture',
-        packageUrl: 'data:application/json,{}',
-        sourceKey: lutSourceKey,
-      },
-    ],
-  };
-  assets.configureRuntimeBinding({
-    ...binding,
-    catalogUrl: `data:application/json,${encodeURIComponent(JSON.stringify(catalog))}`,
+  const recipe = createWave1RenderingRecipe(world, testAssets(world), {
+    aspect: 1,
+    includeAtmosphere: true,
   });
-  expect(await assets.refreshCatalog()).toBe(true);
+  // A tiny identity LUT exercises ordinary asset residency on every device.
   const lutBytes = new Uint16Array(2 * 2 * 2 * 4);
   for (let index = 0; index < 8; index += 1) {
     lutBytes.set(
@@ -455,8 +431,7 @@ it('recovers the same Renderer, World, and lease through two host loss cycles', 
     mips: { kind: 'none' },
     data: new Uint8Array(lutBytes.buffer),
   };
-  assets.catalog(lutGuid, lut).unwrap();
-  const lutHandle = world.allocSharedRef('TextureAsset', lut);
+  const lutHandle = testAssets(world).create(lut).unwrap();
   const attached = renderer.attach(world);
   if (!attached.ok) throw attached.error;
   const lease = attached.value;
@@ -536,7 +511,8 @@ it('recovers the same Renderer, World, and lease through two host loss cycles', 
     expect(baseline.inspection.state).toBe('alive');
     expect(baseline.inspection.temporal.mode).toBe('taa');
     expect(baseline.inspection.output.autoExposure?.receipt.committed).toBe(true);
-    expect(baseline.inspection.output.standardLut?.sourceKey).toBe(lutSourceKey);
+    const lutSourceKey = baseline.inspection.output.standardLut?.sourceKey;
+    expect(lutSourceKey).toBeTruthy();
     expect(pixelStats(baseline.pixels).nonBlackPixels).toBeGreaterThan(0);
     const baselineResources = resourceSample(baseline.inspection);
     const baselineMeshIndexBuffers = hostLoss.signals[0]?.meshIndexBuffers.size ?? 0;
@@ -547,7 +523,6 @@ it('recovers the same Renderer, World, and lease through two host loss cycles', 
       renderer,
       world,
       recipe.entities.wall,
-      recipe.assets.wallAperture,
       recipe.assets.wallApertureHandle,
       1,
     );
@@ -770,7 +745,6 @@ it('recovers the same Renderer, World, and lease through two host loss cycles', 
         renderer,
         world,
         recipe.entities.wall,
-        recipe.assets.wallClosed,
         recipe.assets.wallClosedHandle,
         cycle + 1,
       );
@@ -881,7 +855,7 @@ it('recovers the same Renderer, World, and lease through two host loss cycles', 
     removeAtmosphere();
     for (const entity of extraAtmospheres) world.despawn(entity).unwrap();
     recipe.dispose();
-    world.sharedRefs.release(lutHandle).unwrap();
+    testAssets(world).release(lutHandle).unwrap();
     await scene.fiber.dispose();
     canvas.remove();
   }

@@ -72,7 +72,7 @@ export interface GpuVertexBufferLayoutEntry {
 
 const isAttributeKey = (key: string): key is AttributeKey => key in ATTRIBUTE_FORMAT_MAP;
 
-const CANONICAL_KEYS: readonly AttributeKey[] =
+export const CANONICAL_KEYS: readonly AttributeKey[] =
   Object.keys(ATTRIBUTE_FORMAT_MAP).filter(isAttributeKey);
 const UV_KEYS: readonly AttributeKey[] = CANONICAL_KEYS.filter(
   (key) => key === 'uv' || key.startsWith('uv'),
@@ -281,7 +281,7 @@ function storageOf(value: unknown): VertexAttributeStorage {
   return 'other';
 }
 
-function elementView(
+export function elementView(
   value: VertexAttributeMap[AttributeKey],
   format: string,
 ): Float32Array | Uint16Array | undefined {

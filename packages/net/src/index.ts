@@ -59,6 +59,7 @@ export {
   createReplicaCoordinator,
   decodeAndApplyReplicationPacket,
   ReplicaCoordinator,
+  type ReplicaPacketOutcome,
 } from './replication/replica';
 export type {
   NetSessionConfig,
@@ -83,7 +84,6 @@ export {
   DEFAULT_NET_RECOVERY_POLICY,
   isLegalNetSessionTransition,
   isTerminalNetSessionState,
-  RECOVERY_ERROR_CODES,
   resolveNetRecoveryPolicy,
   transitionNetSessionState,
   validateNetRecoveryPolicy,

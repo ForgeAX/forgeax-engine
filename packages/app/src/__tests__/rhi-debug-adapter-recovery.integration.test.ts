@@ -33,7 +33,7 @@ afterEach(() => {
   vi.unstubAllEnvs();
 });
 
-it('consumes the debug startup adapter once and requests each recovery adapter from the backend', async () => {
+it('keeps debug capture private during construction and consumes the startup adapter only once', async () => {
   vi.stubGlobal('navigator', { gpu: {} });
   vi.stubEnv('FORGEAX_ENGINE_RHI_DEBUG', '1');
   const initial = new RhiNullAdapter();
@@ -46,11 +46,13 @@ it('consumes the debug startup adapter once and requests each recovery adapter f
   probeAdapter.mockResolvedValue(ok(initial));
   requestAdapter.mockResolvedValueOnce(ok(replacement)).mockResolvedValueOnce(err(unavailable));
   const observed: Result<RhiAdapter, RhiError>[] = [];
+  let captureDuringConstruction: unknown;
   const canvas = { tagName: 'canvas', isConnected: true } as HTMLCanvasElement;
   const options = { powerPreference: 'low-power' } as const;
   const stopped = new EngineEnvironmentError('adapter assembly inspection complete');
   constructRuntimeRendererHost.mockImplementation(
     async (_canvas, rendererOptions: { rhi: RhiInstance }) => {
+      captureDuringConstruction = (globalThis as { __forgeax?: unknown }).__forgeax;
       observed.push(await rendererOptions.rhi.requestAdapter());
       observed.push(await rendererOptions.rhi.requestAdapter(options, canvas));
       observed.push(await rendererOptions.rhi.requestAdapter(options, canvas));
@@ -61,6 +63,8 @@ it('consumes the debug startup adapter once and requests each recovery adapter f
   const result = await createApp(canvas);
 
   expect(result).toEqual(err(stopped));
+  expect(captureDuringConstruction).toBeUndefined();
+  expect((globalThis as { __forgeax?: unknown }).__forgeax).toBeUndefined();
   expect(probeAdapter).toHaveBeenCalledTimes(1);
   expect(requestAdapter).toHaveBeenCalledTimes(2);
   expect(requestAdapter).toHaveBeenNthCalledWith(1, options, canvas);

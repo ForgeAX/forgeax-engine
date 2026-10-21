@@ -64,15 +64,17 @@ export interface ServiceAdmissionRef {
   readonly evictionPassed: boolean;
 }
 
-export interface ServiceAdmissionExpectation {
-  readonly toolId: string;
-  readonly descriptorDigest: string;
-  readonly recipeDigest: string;
-  readonly workloadClass: string;
-  readonly codeDigest: string;
-  readonly browserVersion: string;
-  readonly backend: 'webgpu';
-}
+export interface ServiceAdmissionExpectation
+  extends Pick<
+    ServiceAdmissionRef,
+    | 'toolId'
+    | 'descriptorDigest'
+    | 'recipeDigest'
+    | 'workloadClass'
+    | 'codeDigest'
+    | 'browserVersion'
+    | 'backend'
+  > {}
 
 export type ServiceCapability =
   | { readonly available: true; readonly reportDigest?: string }

@@ -1,9 +1,10 @@
 import type { Buffer } from '@forgeax/engine-rhi';
-import { err, RhiError } from '@forgeax/engine-rhi';
+import { RhiError } from '@forgeax/engine-rhi';
 import { rhi } from '@forgeax/engine-rhi-webgpu';
-import { expect, it, vi } from 'vitest';
-import { GPU_DRIVEN_VIEW_WGSL } from '../gpu-driven/view-gpu';
+import { expect, it } from 'vitest';
+import { GPU_DRIVEN_BATCH_STRIDE, GPU_DRIVEN_VIEW_WGSL } from '../gpu-driven/view-gpu';
 import { uploadFixture } from './gpu-driven-topology-upload-fixture';
+import { observeGpuInputBytes } from './helpers/gpu-input-bytes';
 import { nativeDeviceFixture } from './native-device-fixture';
 
 async function bytes(
@@ -29,47 +30,59 @@ async function bytes(
 }
 
 it.each([
-  2, 3,
-])('restores actual native candidate bytes when update write %i fails after accepted topology mutation', async (failureAt) => {
+  2, 4,
+])('preserves held native member bytes and restores task headers after write %i fails', async (failureAt) => {
   const { device, native } = await nativeDeviceFixture();
   const shader = (await rhi.createShaderModule(device, { code: GPU_DRIVEN_VIEW_WGSL })).unwrap();
   const f = uploadFixture(device, shader);
-  const originalWrite = device.queue.writeBuffer.bind(device.queue);
-  let failing = false,
-    attempt = 0;
+  const observed = observeGpuInputBytes(device);
   const failure = new RhiError({
     code: 'rhi-descriptor-invalid',
     expected: 'injected update-stage failure',
-    hint: 'Native partial upload restoration',
-  });
-  const writes = vi.spyOn(device.queue, 'writeBuffer').mockImplementation((...args) => {
-    if (failing && ++attempt === failureAt) return err(failure);
-    return originalWrite(...args);
+    hint: 'Native partial task upload restoration',
   });
   native.pushErrorScope('validation');
   try {
     f.update().unwrap();
-    const first = writes.mock.calls[0];
-    if (first === undefined) throw Error('Missing candidate write');
-    const buffer = first[0],
-      length = first[2].byteLength;
-    const before = await bytes(device, buffer, length);
-    failing = true;
+    const original = observed.buffers();
+    const extent = observed.bytes.get(original.arena)?.byteLength;
+    if (extent === undefined) throw Error('Missing actual arena upload');
+    const before = await bytes(device, original.arena, extent);
+    const tasks = await bytes(device, original.tasks, GPU_DRIVEN_BATCH_STRIDE);
+    const words = new Uint32Array(before.buffer, before.byteOffset, before.byteLength / 4);
+    const reachable = new Set<number>();
+    const pending = [new DataView(tasks.buffer, tasks.byteOffset).getUint32(48, true)];
+    while (pending.length > 0) {
+      const address = pending.pop();
+      if (address === undefined || address === 0) continue;
+      if (reachable.has(address) || address + 8 > words.length || reachable.size >= 6)
+        throw Error('Malformed held member tree');
+      reachable.add(address);
+      pending.push(words[address] as number, words[address + 1] as number);
+    }
+    expect(reachable.size).toBeGreaterThan(0);
+    const members = observed.members();
+    observed.injectFailure(failureAt, false, failure);
     const rejected = f.update(f.changed);
     expect(rejected.ok).toBe(false);
     if (rejected.ok) throw Error('Expected failed update');
     expect(rejected.error).toBe(failure);
-    expect(await bytes(device, buffer, length)).not.toEqual(before);
-    failing = false;
+    // Free arena capacity may receive provisional nodes; held nodes must survive.
+    const after = await bytes(device, original.arena, extent);
+    for (const address of reachable)
+      expect(after.subarray(address * 4, (address + 8) * 4)).toEqual(
+        before.subarray(address * 4, (address + 8) * 4),
+      );
+    observed.clearFailure();
     f.update(f.original).unwrap();
-    expect(await bytes(device, buffer, length)).toEqual(before);
-    expect(f.view.inspect().candidateUploadBytes).toBeGreaterThan(0);
-    expect(f.view.inspect().batchUploadBytes).toBeGreaterThan(0);
+    expect(await bytes(device, observed.buffers().tasks, GPU_DRIVEN_BATCH_STRIDE)).toEqual(tasks);
+    expect(observed.members()).toEqual(members);
     f.update(f.original).unwrap();
-    expect(f.view.inspect().candidateUploadBytes).toBe(0);
-    expect(await native.popErrorScope()).toBeNull();
+    expect(f.view.inspect().sharedInputUploadBytes).toBe(0);
+    const validation = await native.popErrorScope();
+    expect(validation, validation?.message).toBeNull();
   } finally {
-    writes.mockRestore();
+    observed.close();
     f.close();
     native.destroy();
   }

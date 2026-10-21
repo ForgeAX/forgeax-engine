@@ -1,10 +1,17 @@
 import type { RenderReadLease } from '@forgeax/engine-ecs/projection';
 import type { DirectionalShadowQuality } from '../components/directional-shadow-filter';
+import { type MeshChange, type MeshChanges, ShadowMeshReads } from '../device/mesh-changes';
 import type { ShadowViewInvalidationReason } from '../inspection-types';
 import type { RenderResourceScope } from '../publication/resource-scope';
 import type { ExtractedLights, RenderableSnapshot } from '../render-system-extract';
 import { renderableDrawKey } from '../scene/draw-key';
+import type { FrameList } from '../scene/frame-list';
+import {
+  type ShadowMaterialContent,
+  sameShadowMaterialFrames,
+} from '../scene/material-shadow-content';
 import type { PersistentShadowCasterProjection } from '../scene/render-scene';
+import { terrainDrawSection } from '../terrain/source';
 import {
   currentDirectionalShadowPublication,
   directionalShadowSourceChanged,
@@ -13,10 +20,43 @@ import type {
   DirectionalShadowCache,
   DirectionalShadowWorldState,
   RenderFrameState,
-  ValidatedRenderable,
 } from './frame-snapshot';
 import type { RenderSystemInternals } from './render-context';
 import { getRenderFeatureGraphState } from './typed-frame-graph';
+
+export interface ShadowMeshInput {
+  readonly reads: ShadowMeshReads;
+  readonly epoch: number;
+  readonly change: MeshChange;
+}
+
+export function shadowMeshInputCurrent(input: ShadowMeshInput): boolean {
+  return input.reads.fixed && input.reads.changes.epoch === input.epoch;
+}
+
+/** One result of the real shadow query; quiet frames borrow its leases as a root. */
+export function shadowMeshReadsForQuery(
+  cached: DirectionalShadowCache | null,
+  worlds: readonly RenderResourceScope[],
+  casters: PersistentShadowCasterProjection,
+  changes: MeshChanges,
+): ShadowMeshInput {
+  const old = cached?.meshReads;
+  if (
+    old?.fixed &&
+    old.changes === changes &&
+    cached?.casterContent?.owner === casters.content.owner &&
+    cached.casterContent.dispatchRevision === casters.content.dispatchRevision &&
+    cached.casterContent.publicationSource?.resources ===
+      casters.content.publicationSource?.resources &&
+    cached.worlds.length === worlds.length &&
+    cached.worlds.every((world, i) => world === worlds[i])
+  ) {
+    const change = changes.query(cached.meshEpoch, old.generation, old.tokens);
+    if (change !== 'invalidated') return { reads: old.retain(), epoch: changes.epoch, change };
+  }
+  return { reads: new ShadowMeshReads(changes), epoch: changes.epoch, change: 'invalidated' };
+}
 
 interface DirectionalShadowCacheDecision {
   /** Why the retained directional layers cannot be reused; undefined on reuse. */
@@ -65,11 +105,11 @@ function sameWorldState(
   return true;
 }
 
-const deformingCasterMemo = new WeakMap<readonly RenderableSnapshot[], boolean>();
+const deformingCasterMemo = new WeakMap<FrameList<RenderableSnapshot>, boolean>();
 
 // Receiver-resolved skin poses read joint Transforms that no renderable
 // snapshot carries, so the scene revision cannot prove their depth unchanged.
-function hasDeformingCaster(renderables: readonly RenderableSnapshot[]): boolean {
+function hasDeformingCaster(renderables: FrameList<RenderableSnapshot>): boolean {
   let deforming = deformingCasterMemo.get(renderables);
   if (deforming === undefined) {
     deforming = renderables.some(
@@ -102,6 +142,7 @@ function sameCasterContent(
     previous.owner !== casters.content.owner ||
     previous.sceneRevision !== casters.content.sceneRevision ||
     previous.dispatchRevision !== casters.content.dispatchRevision ||
+    !sameShadowMaterialFrames(previous.materials, casters.content.materials) ||
     cached.worlds.length !== worlds.length
   ) {
     return false;
@@ -126,8 +167,8 @@ function sameTerrainShadowContent(
   previous: PersistentShadowCasterProjection['content'] | undefined,
   current: PersistentShadowCasterProjection['content'] | undefined,
 ): boolean {
-  const a = previous?.terrainSections ?? [],
-    b = current?.terrainSections ?? [];
+  const a = previous?.viewDraws?.filter((source) => source.terrainSection !== undefined) ?? [],
+    b = current?.viewDraws?.filter((source) => source.terrainSection !== undefined) ?? [];
   if (a.length !== b.length) return false;
   return a.every((source, index) => {
     const next = b[index],
@@ -139,7 +180,12 @@ function sameTerrainShadowContent(
       nextSection !== undefined &&
       renderableDrawKey(source) === renderableDrawKey(next) &&
       source.assetHandle === next.assetHandle &&
-      source.terrain?.asset === next.terrain?.asset &&
+      section.source.asset.columns === nextSection.source.asset.columns &&
+      section.source.asset.rows === nextSection.source.asset.rows &&
+      section.source.asset.spacing === nextSection.source.asset.spacing &&
+      section.source.asset.subsectionVertices === nextSection.source.asset.subsectionVertices &&
+      terrainDrawSection(section.source, section.index).heights ===
+        terrainDrawSection(nextSection.source, nextSection.index).heights &&
       section.lod === nextSection.lod &&
       section.neighbors.every((lod, edge) => lod === nextSection.neighbors[edge]) &&
       [12, 13, 14].every((axis) => source.transform.world[axis] === next.transform.world[axis])
@@ -170,7 +216,8 @@ function sameDirectionalShadowQuality(
   next: DirectionalShadowQuality,
 ): boolean {
   if (previous.kind !== next.kind) return false;
-  if (previous.kind === 'pcf-vogel') return true;
+  if (previous.kind === 'pcf-vogel' || previous.kind === 'pcf-soft' || previous.kind === 'variance')
+    return true;
   if (previous.kind === 'pcf' && next.kind === 'pcf') return previous.kernel === next.kernel;
   if (previous.kind !== 'pcss' || next.kind !== 'pcss') return false;
   return (
@@ -187,8 +234,10 @@ export function prepareDirectionalShadowCache(
   leases: readonly RenderReadLease[] | undefined,
   lights: ExtractedLights,
   shadowMapSize: number | undefined,
-  validatedCasters: readonly ValidatedRenderable[],
+  mesh: ShadowMeshInput | undefined,
   casters: PersistentShadowCasterProjection | undefined,
+  shadowMaterials?: readonly ShadowMaterialContent[],
+  lodSelection?: object,
 ): DirectionalShadowCacheDecision {
   const cascadeCount = lights.cascadeCount;
   const lightViewProj = lights.lightViewProj;
@@ -209,13 +258,15 @@ export function prepareDirectionalShadowCache(
     cascadeCount <= 0 ||
     lightViewProj === undefined ||
     lights.directionalShadowQuality === undefined ||
-    validatedCasters.length === 0
+    mesh === undefined ||
+    !shadowMeshInputCurrent(mesh) ||
+    mesh.reads.tokens.size === 0
   ) {
     return { miss: 'uncached', next: null };
   }
 
   const cached = frameState.directionalShadowCache;
-  const assetCatalogEpoch = internals.assets.catalogEpoch;
+
   const hasReadLeases = leases !== undefined && leases.length === worlds.length;
   const publicationSource =
     lights.directionalCsmConfig?.staggerCascades === true
@@ -225,34 +276,24 @@ export function prepareDirectionalShadowCache(
     // No current source witness: avoid preparing a token that cannot be retained.
     return { miss: 'uncached', next: null };
   }
-  // Reuse validation's complete caster set, including off-camera and GPU-owned
-  // rows. A resident mesh may be written in place, so retain its content epoch
-  // by value; an unrelated upload has no bearing on this depth atlas.
-  const meshContent =
-    cached !== null &&
-    cached.meshContent.length === validatedCasters.length &&
-    validatedCasters.every(
-      ({ mesh }, index) =>
-        cached.meshContent[index]?.mesh === mesh &&
-        cached.meshContent[index]?.contentEpoch === mesh.contentEpoch,
-    )
-      ? cached.meshContent
-      : validatedCasters.map(({ mesh }) => ({ mesh, contentEpoch: mesh.contentEpoch }));
+  const meshReads = mesh.reads;
   const cadenceSource =
     lights.directionalCsmConfig?.staggerCascades === true &&
     (hasReadLeases || publicationSource !== undefined)
       ? {
           worlds,
           worldStateTokens: hasReadLeases ? leases.map(readWorldState) : [],
-          assetCatalogEpoch,
-          meshContent,
+          shadowMaterials,
+          meshReads,
+          lodSelection,
           casterContent: casters?.content,
         }
       : undefined;
   const sourceChanged =
     cached !== null &&
     cadenceSource !== undefined &&
-    (directionalShadowSourceChanged(cached, cadenceSource) ||
+    (mesh.change !== 'quiet' ||
+      directionalShadowSourceChanged(cached, cadenceSource) ||
       !sameTerrainShadowContent(cached.casterContent, casters?.content));
   const miss: ShadowViewInvalidationReason | undefined =
     cached === null
@@ -268,8 +309,19 @@ export function prepareDirectionalShadowCache(
         ? 'configuration-changed'
         : sourceChanged
           ? 'source-changed'
-          : cached.assetCatalogEpoch !== assetCatalogEpoch ||
-              cached.meshContent !== meshContent ||
+          : !sameShadowMaterialFrames(
+                cached.casterContent?.materials,
+                casters?.content.materials,
+              ) ||
+              !(shadowMaterials === undefined
+                ? cached.shadowMaterials === undefined
+                : shadowMaterials.length === cached.shadowMaterials?.length &&
+                  shadowMaterials.every((content, index) =>
+                    content.same(cached.shadowMaterials?.[index]),
+                  )) ||
+              mesh.change !== 'quiet' ||
+              cached.meshReads !== meshReads ||
+              cached.lodSelection !== lodSelection ||
               !sameTerrainShadowContent(cached.casterContent, casters?.content) ||
               !(
                 sameWorldState(cached, worlds, leases) ||
@@ -279,7 +331,15 @@ export function prepareDirectionalShadowCache(
             : !sameLightViewProj(cached, lightViewProj)
               ? 'view-changed'
               : undefined;
-  if (miss === undefined) return { miss: undefined, next: null };
+  if (miss === undefined)
+    return {
+      miss: undefined,
+      // Unrelated publications advance only after this hit actually submits.
+      next:
+        cached !== null && cached.meshEpoch !== mesh.epoch
+          ? { ...cached, meshEpoch: mesh.epoch }
+          : null,
+    };
 
   const worldStateTokens = cadenceSource?.worldStateTokens ?? leases?.map(readWorldState) ?? [];
 
@@ -288,14 +348,16 @@ export function prepareDirectionalShadowCache(
     next: {
       worlds: worlds.slice(),
       worldStateTokens: worldStateTokens as DirectionalShadowWorldState[],
-      assetCatalogEpoch,
+      shadowMaterials,
       pipelineHandle: frameState.installedPipelineHandle,
       graphTopologyKey: frameState.compiledFrameGraph.topologyKey,
       shadowMapSize,
       cascadeCount,
       directionalShadowQuality: lights.directionalShadowQuality,
       lightViewProj: lightViewProj.map((matrix) => new Float32Array(matrix)),
-      meshContent,
+      meshReads,
+      meshEpoch: mesh.epoch,
+      lodSelection,
       casterContent: casters?.content,
     },
   };

@@ -1,3 +1,4 @@
+import { packInterleavedVertexAttributes } from '@forgeax/engine-geometry';
 import { MeshFilter, MeshRenderer } from '@forgeax/engine-render';
 import { GlobalTransform, propagateTransforms, Transform } from '@forgeax/engine-scene';
 import { Skin } from '@forgeax/engine-skinning';
@@ -64,9 +65,24 @@ describe('posed skin geometry', () => {
     if (kind === 'positions') (scene.mesh.attributes.position as Float32Array)[0] = Infinity;
     if (kind === 'matrix') scene.world.get(scene.upper, GlobalTransform).unwrap().world.fill(NaN);
     expect(posed(scene)).toBeUndefined();
+    if (kind === 'weights' || kind === 'positions') {
+      expect(scene.assets.create(scene.mesh)).toMatchObject({
+        ok: false,
+        error: { code: 'asset-invalid-value' },
+      });
+      expect(pickTriangle(scene.world, scene.camera, 64, 64, 128, 128).status).toBe('hit');
+      return;
+    }
+    const mesh = {
+      ...scene.mesh,
+      vertices: packInterleavedVertexAttributes(
+        scene.mesh.attributes,
+        (scene.mesh.attributes.position as Float32Array).length / 3,
+      ).unwrap().vertices,
+    };
     scene.world
       .set(scene.entity, MeshFilter, {
-        assetHandle: scene.world.allocSharedRef('MeshAsset', scene.mesh),
+        assetHandle: scene.assets.create(mesh).unwrap(),
       })
       .unwrap();
     const result = pickTriangle(scene.world, scene.camera, 64, 64, 128, 128);
@@ -78,6 +94,7 @@ describe('posed skin geometry', () => {
     const staticMesh = {
       ...scene.mesh,
       attributes: { position: new Float32Array([-1, -1, 0, 1, -1, 0, 0, 1, 0]) },
+      vertices: new Float32Array([-1, -1, 0, 1, -1, 0, 0, 1, 0]),
       indices: new Uint16Array([0, 1, 2]),
       submeshes: [
         {
@@ -94,7 +111,7 @@ describe('posed skin geometry', () => {
         { component: Transform, data: {} },
         {
           component: MeshFilter,
-          data: { assetHandle: scene.world.allocSharedRef('MeshAsset', staticMesh) },
+          data: { assetHandle: scene.assets.create(staticMesh).unwrap() },
         },
         { component: MeshRenderer, data: {} },
       )
@@ -135,16 +152,20 @@ it('tests non-indexed and strip skinned triangles through the same public query'
     const submeshes = [
       {
         indexOffset: 0,
-        indexCount: 0,
+        indexCount: topology === 'triangle-strip' ? 4 : 0,
         vertexCount: topology === 'triangle-list' ? 3 : 4,
         topology,
         materialSlot: 0,
       },
     ];
     const { indices: _indices, ...source } = scene.mesh;
-    const mesh = { ...source, submeshes };
+    const mesh = {
+      ...source,
+      submeshes,
+      ...(topology === 'triangle-strip' ? { indices: new Uint16Array([0, 1, 2, 3]) } : {}),
+    };
     scene.world
-      .set(scene.entity, MeshFilter, { assetHandle: scene.world.allocSharedRef('MeshAsset', mesh) })
+      .set(scene.entity, MeshFilter, { assetHandle: scene.assets.create(mesh).unwrap() })
       .unwrap();
     scene.pose(0, 0.3);
     expect(pickTriangle(scene.world, scene.camera, 60, 64, 128, 128).status).toBe('hit');

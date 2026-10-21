@@ -292,6 +292,37 @@ fn vs_main(@builtin(vertex_index) vertexIndex : u32) -> FullscreenOutput {
   return fullscreen_triangle(vertexIndex);
 }
 
+// Repeated bilinear reprojection broadens moving subpixel surfaces each frame.
+// Catmull-Rom reconstructs the retained output lattice with nine bilinear taps;
+// the current neighborhood still bounds accepted history below.
+fn sampleTaaHistory(uv : vec2<f32>) -> vec4<f32> {
+  let size = vec2<f32>(textureDimensions(historyColor));
+  let position = uv * size - 0.5;
+  let base = floor(position);
+  let f = position - base;
+  let f2 = f * f;
+  let f3 = f2 * f;
+  let w0 = -0.5 * f + f2 - 0.5 * f3;
+  let w1 = vec2<f32>(1.0) - 2.5 * f2 + 1.5 * f3;
+  let w2 = 0.5 * f + 2.0 * f2 - 1.5 * f3;
+  let w3 = -0.5 * f2 + 0.5 * f3;
+  let middle = w1 + w2;
+  let positions = array<vec2<f32>, 3>(
+    (base - 0.5) / size,
+    (base + 0.5 + w2 / middle) / size,
+    (base + 2.5) / size,
+  );
+  let weights = array<vec2<f32>, 3>(w0, middle, w3);
+  var color = vec4<f32>(0.0);
+  for (var y = 0u; y < 3u; y++) {
+    for (var x = 0u; x < 3u; x++) {
+      color += textureSampleLevel(historyColor, historySampler,
+        vec2<f32>(positions[x].x, positions[y].y), 0.0) * weights[x].x * weights[y].y;
+    }
+  }
+  return max(color, vec4<f32>(0.0));
+}
+
 fn fs_taa_resolve(in : FullscreenOutput) -> TaaResolveOutput {
   let dimensions = vec2<i32>(textureDimensions(currentColor, 0));
   let currentUv = in.uv + params.currentJitterUv;
@@ -328,7 +359,7 @@ fn fs_taa_resolve(in : FullscreenOutput) -> TaaResolveOutput {
       0.0,
     );
   }
-  let history = textureSampleLevel(historyColor, historySampler, historyUv, 0.0);
+  let history = sampleTaaHistory(historyUv);
   let historyDimensions = vec2<i32>(textureDimensions(historyStability));
   let historyPixel = clamp(vec2<i32>(historyUv * vec2<f32>(historyDimensions)), vec2<i32>(0), historyDimensions - vec2<i32>(1));
   let priorStability = textureLoad(historyStability, historyPixel, 0).r;
@@ -344,7 +375,7 @@ fn fs_taa_resolve(in : FullscreenOutput) -> TaaResolveOutput {
   // Any rejection, receiver motion, or secondary reactivity resets this age.
   let steadyWeight = mix(select(0.95, 0.975, upscale), 0.99, smoothstep(64.0, TAA_HISTORY_SETTLE_FRAMES, stableAge));
   var progressiveWeight = taaAccumulationWeight(params.temporalFrameIndex, steadyWeight);
-  if (params.hasOutputTemporal != 0u && length(temporal.xy) < 1e-5 && temporal.w == 0.0 && stableAge < TAA_STABILITY_FRAMES) {
+  if (length(temporal.xy) < 1e-5 && temporal.w == 0.0 && stableAge < TAA_STABILITY_FRAMES) {
     // A late stop has an old global frame index but a fresh local lattice.
     // Retain one accepted prior sample at the first stop, then rebuild its
     // first jitter cycle from local stationary samples rather

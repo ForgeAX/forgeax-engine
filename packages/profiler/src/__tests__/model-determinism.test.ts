@@ -64,7 +64,7 @@ describe('buildProfileModel determinism contract', () => {
     expect(model.summary.frameCount).toBe(0);
     expect(model.summary.frameRange).toBeNull();
     expect(model.summary.p95DurationMicros).toBeNull();
-    expect(model.completeness.incompleteReason).toBe('stopped-before-frame');
-    expect(model.completeness.droppedEventCount).toBe(0);
+    expect(model.summary.completeness.incompleteReason).toBe('stopped-before-frame');
+    expect(model.summary.completeness.droppedEventCount).toBe(0);
   });
 });

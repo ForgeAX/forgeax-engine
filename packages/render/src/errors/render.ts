@@ -261,23 +261,7 @@ export class ShadowInvalidConfigError extends Error {
   readonly hint: string;
   readonly detail: ShadowInvalidConfigDetail;
 
-  constructor(
-    field: string,
-    actual: number,
-    minOrBound: number | ShadowInvalidConfigBound,
-    maxOrComparator?: number | '>' | '>=',
-    reason?: string,
-  ) {
-    const bound: ShadowInvalidConfigBound =
-      typeof minOrBound === 'number'
-        ? typeof maxOrComparator === 'number'
-          ? { kind: 'range', min: minOrBound, max: maxOrComparator }
-          : {
-              kind: 'lower-bound',
-              operator: maxOrComparator === '>' ? '>' : '>=',
-              value: minOrBound,
-            }
-        : minOrBound;
+  constructor(field: string, actual: number, bound: ShadowInvalidConfigBound, reason?: string) {
     const resolvedReason = reason ?? shadowBoundReason(bound);
     const expected = shadowBoundExpected(field, bound);
     const hint = `set ${field} to ${resolvedReason}; got ${actual}`;

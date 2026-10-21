@@ -13,7 +13,7 @@
 | Immutable request | `forgeax-format-classification.csv` | Which rows are in tier one; source SHA-256 is `a87159400f5de776ce46304540999c2e7f84cec07defceaa661d0a0926a9c2d5`. |
 | Support-matrix schema | [`format-support-matrix.schema.json`](evidence/format-support-matrix.schema.json) | Contract for locally generated support records. |
 | Judgment input | `judgment-input.md` | Release decision, acceptance mapping, and remaining blockers. |
-| Browser dogfood producer | [`apps/hello/format-tier1`](.) | Vite page at `http://127.0.0.1:5173/`; the glTF fixture is built by `gltfImporter` into Pack/Catalog and loaded through the renderer-owned `loadByGuid` route. |
+| Browser dogfood producer | [`apps/hello/format-tier1`](.) | Vite page at `http://127.0.0.1:5173/`; the glTF fixture is built by `gltfImporter` into Pack/Catalog and loaded through the asset owner’s `assets.load` route. |
 | Recovery evidence | [`run-format-tier1-recovery.mjs`](../../../scripts/forgeax/run-format-tier1-recovery.mjs) | Inspect, producer failure, rebuild/cold-cook, same-identity verify for all three formats. |
 | AI index | `ai-discovery.md` | Short route from a format, error, GUID, or evidence cell to its owner. |
 
@@ -36,7 +36,7 @@ flowchart TD
     lkg --> rebuild
     rebuild --> verify["verify receipt, payload, GUID, and sourceKey"]
     verify --> current["promote only the validated current entry"]
-    verify --> retry["retry loadByGuid with the same identity"]
+    verify --> retry["retry assets.load with the same identity"]
     current --> retry
 ```
 
@@ -51,7 +51,7 @@ The recovery runner is deliberately producer-shaped. It never mints a new GUID, 
 | `format-tier1-morph-source-invalid` | glTF/FBX Morph importer | Repair target/weight cardinality, then rebuild/cold-cook. |
 | `ddc-entry-invalid` | DDC entry store | Follow `.expected` and `.hint`; do not publish the unreadable entry. |
 
-Every failure is machine-readable as `.code`, `.expected`, `.hint`, and `.detail`. The canonical runtime asset route remains `loadByGuid`; handles are projections and do not replace GUID identity.
+Every failure is machine-readable as `.code`, `.expected`, `.hint`, and `.detail`. The canonical runtime asset route remains `assets.load`; source GUIDs identify imported content; managed handles identify the owner’s runtime content.
 
 ## Local gates
 
@@ -80,7 +80,7 @@ pnpm --filter @forgeax/engine-render build
 node apps/hello/format-tier1/scripts/smoke-dawn.mjs
 ```
 
-The Dawn runner writes its imported `loadByGuid`, standard-lane, and receipt-bound report to `artifacts/format-tier1/morph-visual-evidence.json`. Headed browser captures and other run records also stay under the ignored root `artifacts/` directory.
+The Dawn runner writes its imported `assets.load`, standard-lane, and receipt-bound report to `artifacts/format-tier1/morph-visual-evidence.json`. Headed browser captures and other run records also stay under the ignored root `artifacts/` directory.
 
 </details>
 

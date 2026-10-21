@@ -1,7 +1,7 @@
-import { AssetRegistry, resolveAssetHandle } from '@forgeax/engine-assets-runtime';
+import { AssetRegistry } from '@forgeax/engine-assets-runtime';
 import { World } from '@forgeax/engine-ecs';
+import { packInterleavedVertexAttributes } from '@forgeax/engine-geometry';
 import { mat4 } from '@forgeax/engine-math';
-import { AssetGuid } from '@forgeax/engine-pack/guid';
 import {
   CAMERA_PROJECTION_PERSPECTIVE,
   Camera,
@@ -11,22 +11,21 @@ import {
 } from '@forgeax/engine-render';
 import { propagateTransforms, Transform } from '@forgeax/engine-scene';
 import { Skin } from '@forgeax/engine-skinning';
-import type { Handle, MeshAsset } from '@forgeax/engine-types';
+import type { AssetHandle, MeshAsset } from '@forgeax/engine-types';
 import { describe, expect, it } from 'vitest';
-import { pickTriangle, type TrianglePickOptions, type TrianglePickResult } from '../pick-triangle';
+import { pickTriangle, type TrianglePickResult } from '../pick-triangle';
 import { makeMockShaderRegistry } from './helpers/mock-shader-registry';
 
 const VP = 600;
 
 function registerMesh(
-  world: World,
   assets: AssetRegistry,
   positions: readonly number[],
   indices?: readonly number[],
   topology: 'triangle-list' | 'triangle-strip' = 'triangle-list',
 ) {
   const position = new Float32Array(positions);
-  const result = assets.catalog<MeshAsset>(AssetGuid.format(AssetGuid.random()), {
+  const result = assets.create({
     kind: 'mesh',
     vertices: position,
     ...(indices === undefined ? {} : { indices: new Uint16Array(indices) }),
@@ -43,13 +42,13 @@ function registerMesh(
     materialSlots: [{ slotName: 'Default' }],
   });
   if (!result.ok) throw result.error;
-  return world.allocSharedRef('MeshAsset', result.value) as Handle<'MeshAsset', 'shared'>;
+  return result.value as AssetHandle<'mesh'>;
 }
 
 function makeScene() {
-  const world = new World();
-  const assets = new AssetRegistry(makeMockShaderRegistry());
-  const material = assets.catalog(AssetGuid.format(AssetGuid.random()), {
+  const assets = new AssetRegistry({ shaderRegistry: makeMockShaderRegistry() });
+  const world = new World({ assets });
+  const material = assets.create({
     kind: 'material',
     passes: [
       {
@@ -61,7 +60,7 @@ function makeScene() {
     values: { baseColor: [1, 1, 1] },
   });
   if (!material.ok) throw material.error;
-  const materialHandle = world.allocSharedRef('MaterialAsset', material.value);
+  const materialHandle = material.value;
   const camera = world
     .spawn(
       { component: Transform, data: { pos: [0, 0, 5], quat: [0, 0, 0, 1], scale: [1, 1, 1] } },
@@ -86,7 +85,7 @@ function makeScene() {
 
 function spawnMesh(
   scene: ReturnType<typeof makeScene>,
-  mesh: Handle<'MeshAsset', 'shared'>,
+  mesh: AssetHandle<'mesh'>,
   transform: { pos?: [number, number, number]; scale?: [number, number, number] } = {},
 ) {
   return scene.world
@@ -107,7 +106,7 @@ function spawnMesh(
 
 function spawnInstancedMesh(
   scene: ReturnType<typeof makeScene>,
-  mesh: Handle<'MeshAsset', 'shared'>,
+  mesh: AssetHandle<'mesh'>,
   translations: readonly number[],
 ) {
   const transforms = new Float32Array(translations.length * 16);
@@ -147,29 +146,24 @@ function unsupportedSkinnedMesh(scene: ReturnType<typeof makeScene>) {
     ],
     materialSlots: [{ slotName: 'Default' }],
   };
-  return scene.world.allocSharedRef('MeshAsset', mesh) as Handle<'MeshAsset', 'shared'>;
+  return scene.assets
+    .create({
+      ...mesh,
+      vertices: packInterleavedVertexAttributes(mesh.attributes, 3).unwrap().vertices,
+    })
+    .unwrap();
 }
 
-function query(
-  scene: ReturnType<typeof makeScene>,
-  x = VP / 2,
-  y = VP / 2,
-  options: TrianglePickOptions = {},
-): TrianglePickResult {
+function query(scene: ReturnType<typeof makeScene>, x = VP / 2, y = VP / 2): TrianglePickResult {
   propagateTransforms(scene.world);
-  return pickTriangle(scene.world, scene.camera, x, y, VP, VP, options);
+  return pickTriangle(scene.world, scene.camera, x, y, VP, VP);
 }
 
 describe('pickTriangle', () => {
   it('returns the nearest exact hit and barycentric point', () => {
     const scene = makeScene();
-    const near = registerMesh(scene.world, scene.assets, [-1, -1, 0, 1, -1, 0, 0, 1, 0], [0, 1, 2]);
-    const far = registerMesh(
-      scene.world,
-      scene.assets,
-      [-1, -1, -2, 1, -1, -2, 0, 1, -2],
-      [0, 1, 2],
-    );
+    const near = registerMesh(scene.assets, [-1, -1, 0, 1, -1, 0, 0, 1, 0], [0, 1, 2]);
+    const far = registerMesh(scene.assets, [-1, -1, -2, 1, -1, -2, 0, 1, -2], [0, 1, 2]);
     const nearEntity = spawnMesh(scene, near);
     spawnMesh(scene, far);
 
@@ -193,9 +187,8 @@ describe('pickTriangle', () => {
       -0.5, 0.5, 0, -1, 0.5, 0, 0.5, -0.5, 0, 1, -0.5, 0, 1, 0.5, 0, 0.5, -0.5, 0, 1, 0.5, 0, 0.5,
       0.5, 0,
     ];
-    const wall = registerMesh(scene.world, scene.assets, wallPositions);
+    const wall = registerMesh(scene.assets, wallPositions);
     const sign = registerMesh(
-      scene.world,
       scene.assets,
       [-0.5, -0.5, -2, 0.5, -0.5, -2, 0.5, 0.5, -2, -0.5, 0.5, -2],
     );
@@ -211,12 +204,7 @@ describe('pickTriangle', () => {
 
   it('handles non-uniform transformed instances and reports unavailable CPU/skinned data', () => {
     const scene = makeScene();
-    const mesh = registerMesh(
-      scene.world,
-      scene.assets,
-      [-0.5, -0.5, 0, 0.5, -0.5, 0, 0, 0.5, 0],
-      [0, 1, 2],
-    );
+    const mesh = registerMesh(scene.assets, [-0.5, -0.5, 0, 0.5, -0.5, 0, 0, 0.5, 0], [0, 1, 2]);
     const entity = spawnMesh(scene, mesh, { pos: [0, 0, 0], scale: [2, 3, 1] });
     const transformed = query(scene);
     expect(transformed.status).toBe('hit');
@@ -230,12 +218,7 @@ describe('pickTriangle', () => {
 
   it('resolves explicit Instances matrices and identifies the hit ordinal', () => {
     const scene = makeScene();
-    const mesh = registerMesh(
-      scene.world,
-      scene.assets,
-      [-0.5, -0.5, 0, 0.5, -0.5, 0, 0, 0.5, 0],
-      [0, 1, 2],
-    );
+    const mesh = registerMesh(scene.assets, [-0.5, -0.5, 0, 0.5, -0.5, 0, 0, 0.5, 0], [0, 1, 2]);
     const entity = spawnInstancedMesh(scene, mesh, [5, 0]);
 
     const result = query(scene, VP / 2, VP / 2);
@@ -247,12 +230,7 @@ describe('pickTriangle', () => {
 
   it('fails closed when authored Instances contain an incomplete matrix', () => {
     const scene = makeScene();
-    const mesh = registerMesh(
-      scene.world,
-      scene.assets,
-      [-0.5, -0.5, 0, 0.5, -0.5, 0, 0, 0.5, 0],
-      [0, 1, 2],
-    );
+    const mesh = registerMesh(scene.assets, [-0.5, -0.5, 0, 0.5, -0.5, 0, 0, 0.5, 0], [0, 1, 2]);
     const entity = spawnInstancedMesh(scene, mesh, [0]);
     scene.world.set(entity, Instances, { transforms: new Float32Array(15) }).unwrap();
 
@@ -265,7 +243,7 @@ describe('pickTriangle', () => {
 
   it('returns a miss for an indexed/non-indexed mesh outside the ray', () => {
     const scene = makeScene();
-    const mesh = registerMesh(scene.world, scene.assets, [-1, -1, 0, 1, -1, 0, 0, 1, 0]);
+    const mesh = registerMesh(scene.assets, [-1, -1, 0, 1, -1, 0, 0, 1, 0]);
     spawnMesh(scene, mesh, { pos: [10, 0, 0] });
     expect(query(scene).status).toBe('miss');
   });
@@ -273,13 +251,7 @@ describe('pickTriangle', () => {
   it('intersects indexed triangle strips with alternating winding', () => {
     const scene = makeScene();
     const positions = [-1, -1, 0, 1, -1, 0, -1, 1, 0, 1, 1, 0];
-    const indexed = registerMesh(
-      scene.world,
-      scene.assets,
-      positions,
-      [0, 1, 2, 3],
-      'triangle-strip',
-    );
+    const indexed = registerMesh(scene.assets, positions, [0, 1, 2, 3], 'triangle-strip');
     const indexedEntity = spawnMesh(scene, indexed);
 
     const result = query(scene);
@@ -294,18 +266,25 @@ describe('current skin triangle pose', () => {
   it('hits a posed triangle outside its rest bounds and ignores the mesh node transform', () => {
     const scene = makeScene();
     const source = unsupportedSkinnedMesh(scene);
-    const resolved = resolveAssetHandle<MeshAsset>(scene.world, source).unwrap() as MeshAsset;
+    const resolved = scene.assets.read(source).unwrap();
     (resolved.attributes.position as Float32Array).set([-5, -1, 0, -3, -1, 0, -4, 1, 0]);
     (resolved.attributes.skinWeight as Float32Array).set([1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0, 0]);
     resolved.aabb?.set([-5, -1, 0, -3, 1, 0]);
-    const mesh = scene.world.allocSharedRef('MeshAsset', resolved);
+    const mesh = scene.assets
+      .create({
+        ...resolved,
+        vertices: packInterleavedVertexAttributes(resolved.attributes, 3).unwrap().vertices,
+      })
+      .unwrap();
     const joint = scene.world.spawn({ component: Transform, data: { pos: [4, 0, 0] } }).unwrap();
-    const skeleton = scene.world.allocSharedRef('SkeletonAsset', {
-      kind: 'skeleton',
-      jointCount: 1,
-      inverseBindMatrices: mat4.identity(mat4.create()),
-      jointPaths: ['root'],
-    });
+    const skeleton = scene.assets
+      .create({
+        kind: 'skeleton',
+        jointCount: 1,
+        inverseBindMatrices: mat4.identity(mat4.create()),
+        jointPaths: ['root'],
+      })
+      .unwrap();
     const entity = spawnMesh(scene, mesh, { pos: [100, 20, 30], scale: [2, 3, 4] });
     scene.world
       .addComponent(entity, {

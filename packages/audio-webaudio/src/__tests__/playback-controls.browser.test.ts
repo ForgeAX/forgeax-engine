@@ -151,6 +151,7 @@ it('retains the latest rate and pause while native decoding is pending, then sto
   const consumer = createHostAudioConsumer(new WebAudioEngine({ context }));
   try {
     consumer.consume({
+      asset: { owner: 'pending-controls', handle: 1, revision: 1 },
       kind: 'play',
       entityId: 7,
       sourceKey: 'pending-controls',

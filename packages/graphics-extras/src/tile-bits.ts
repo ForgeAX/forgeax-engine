@@ -31,7 +31,7 @@ const FLIP_HEX120_BIT = 1 << 28;
  * Pack a Tiled .tmj cell into its u32 wire form.
  *
  * @param tileId 1-indexed tile id in [0, 0x0FFFFFFF]; `0` is the empty-cell
- *   sentinel that `TileLayer.tiles` carries downstream. `1` is the first real
+ *   sentinel that `Tilemap.tiles` carries downstream. `1` is the first real
  *   tile entry index into `TilesetAsset.tiles[0]`.
  * @throws RangeError when `tileId` is non-integer, negative, or > 0x0FFFFFFF.
  */

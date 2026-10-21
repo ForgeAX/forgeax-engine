@@ -21,6 +21,7 @@ import { buildEngineShaderManifest } from '@forgeax/engine-vite-plugin-shader';
 import { expect, it } from 'vitest';
 import { drawReadyFrame } from '../../../../scripts/test/ready-render-frame.mjs';
 import { constructRuntimeRendererHost } from '../renderer-host';
+import { testAssets } from './helpers/runtime-assets';
 import { LOD_SIZE, value } from './lod-transition.fixture';
 import { shaderManifestUrl } from './shader-manifest-url.fixture';
 
@@ -56,22 +57,22 @@ it('draws TAAU output coverage for GPU-claimed LOD meshes through indirect rows'
     ),
   );
   const { renderer, assets } = host;
-  const world = new World();
+  const world = new World({ assets });
   const lease = value(renderer.attach(world));
   value(renderer.setProfile({ ...renderer.inspect().profile, renderPath: 'forward', ssao: false }));
   try {
     const plane = createPlaneGeometry(2, 2, 1, 1).unwrap();
-    const lowerGuid = assets.parseGuid('019a0000-0000-7000-8000-000000000322');
-    assets.catalog(lowerGuid, plane).unwrap();
-    const mesh = world.allocSharedRef('MeshAsset', {
-      ...plane,
-      lods: [{ mesh: lowerGuid, screenCoverage: 0.01 }],
-      lodHysteresis: 0,
-    });
-    const material = world.allocSharedRef(
-      'MaterialAsset',
-      Materials.standard({ baseColor: [1, 1, 1, 1], renderState: { cullMode: 'none' } }),
-    );
+    const lowerGuid = assets.create(plane).unwrap();
+    const mesh = testAssets(world)
+      .create({
+        ...plane,
+        lods: [{ mesh: lowerGuid, screenCoverage: 0.01 }],
+        lodHysteresis: 0,
+      })
+      .unwrap();
+    const material = testAssets(world)
+      .create(Materials.standard({ baseColor: [1, 1, 1, 1], renderState: { cullMode: 'none' } }))
+      .unwrap();
     world
       .spawn(
         { component: Transform, data: {} },

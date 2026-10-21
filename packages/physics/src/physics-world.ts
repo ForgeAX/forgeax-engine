@@ -5,7 +5,7 @@
 // AI users obtain it via `world.getResource<PhysicsWorld>('PhysicsWorld')`.
 
 import type { Vec2, Vec3 } from '@forgeax/engine-math';
-import type { Result } from '@forgeax/engine-types';
+import type { Result, RigidBodyType } from '@forgeax/engine-types';
 import type {
   PhysicsContactNeighborsSnapshot,
   PhysicsContactNormalFilter,
@@ -13,6 +13,7 @@ import type {
 } from './contact-query.js';
 import type {
   DerivedBodyTypeCandidateInput,
+  DerivedPhysicsAdmissionGuard,
   DerivedPhysicsCandidate,
   DerivedPhysicsCandidateInput,
   DerivedPhysicsError,
@@ -81,8 +82,15 @@ export interface PhysicsWorld {
     filterMask?: number,
     normalFilter?: PhysicsContactNormalFilter,
   ) => Result<PhysicsContactNeighborsSnapshot, ManagedPhysicsFailure>;
+  /** Read current Native impulse and multibody joints attached to this live entity.
+   * No handles escape; unavailable during execution/admission or after retirement. */
+  getBodyConstraintCount?: (entity: number) => Result<number, ManagedPhysicsFailure>;
   /** Request native wake without changing pose or velocity; contacts require the next step. */
   wakeBody?: (entity: number) => Result<void, ManagedPhysicsFailure>;
+  /** Request native sleep, retaining body type, colliders and automatic collision/force wake.
+   * Native sleep stops current motion; callers own eligibility. Refused during native execution/admission.
+   * Does not publish derived geometry or replace the derived body's producer ownership. */
+  sleepBody?: (entity: number) => Result<void, ManagedPhysicsFailure>;
   /** Explicit pose/velocity handoff. Call after synchronization and before step, never for visual blend. */
   setBodyMotion?: (
     entity: number,
@@ -239,6 +247,15 @@ export interface PhysicsWorld {
     candidates: readonly DerivedPhysicsCandidate[],
     commitGeometry?: () => Result<void, Error>,
   ) => Result<readonly DerivedPhysicsCandidate[], DerivedPhysicsError>;
+  /** Optional discoverable pre-Native veto. Preparation budgets, atomic rollback
+   * and the later geometry commit are identical to admitDerivedShapeCandidates.
+   * The guard observes a frozen detached complete roster before Native mutation;
+   * false/throw/async rejects the whole group while retaining its old state. */
+  admitDerivedShapeCandidatesGuarded?: (
+    candidates: readonly DerivedPhysicsCandidate[],
+    guard: DerivedPhysicsAdmissionGuard,
+    commitGeometry?: () => Result<void, Error>,
+  ) => Result<readonly DerivedPhysicsCandidate[], DerivedPhysicsError>;
   /** Borrowed ordering proof, present only inside the paired geometry commit. */
   getDerivedAdmission?: (
     entity?: number,
@@ -251,12 +268,16 @@ export interface PhysicsWorld {
   ) => Result<void, DerivedPhysicsError>;
   /** Invalidate pending candidates without touching the last committed state. */
   invalidateDerivedShapeCandidates?: (reason?: string) => void;
+  /** Actual Terrain collider asset and successfully adopted source version, after fixed-step sync. */
+  getTerrainAssetVersion?: (
+    entity: number,
+  ) => { readonly asset: number; readonly version: number } | undefined;
   /** Read the most recent fixed-step publication for one body. */
   getDerivedPublication?: (entity: number) => DerivedPhysicsPublication | undefined;
   /** Read the structured failure from the latest rejected admission, if any. */
   getDerivedFailure?: (entity: number) => DerivedPhysicsFailure | undefined;
   /** Read the committed body type without exposing a native Rapier body. */
-  getDerivedBodyType?: (entity: number) => 'static' | 'dynamic' | 'kinematic' | undefined;
+  getDerivedBodyType?: (entity: number) => RigidBodyType | undefined;
   /** Read whether a native admission failure requires a full World rebuild. */
   getDerivedRecoveryState?: () => 'ready' | 'rebuild-required';
   /** Read detached mass evidence without exposing a native body handle. */

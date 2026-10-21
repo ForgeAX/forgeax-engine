@@ -450,6 +450,7 @@ export class SourceRenderWorker {
           kind: 'init',
           worldIdentity: this.world.identity,
           ...(this.init.diagnostics?.rhiCapture === true ? { rhiCapture: true } : {}),
+          ...(this.init.diagnostics?.shadowWorkload === true ? { shadowWorkload: true } : {}),
           ...(this.init.diagnostics?.gpuPassTiming === undefined
             ? {}
             : { gpuPassTiming: this.init.diagnostics.gpuPassTiming }),
@@ -513,15 +514,35 @@ export class SourceRenderWorker {
     const geometryFault = this.dynamicGeometry.dynamicGeometryFault(this.world);
     if (geometryFault !== undefined) throw geometryFault;
     const wasIdle = !publisher.inspect().inFlight;
-    const candidate = publisher.prepare(sampleTimeSeconds, frame.temporalReset === true).unwrap();
+    const candidate = publisher
+      .prepare(sampleTimeSeconds, frame.temporalReset === true, frame)
+      .unwrap();
     const sourceFixedStep = this.world.getResource(FixedTime).tick;
     this.publishedFrames.set(candidate.packet.revision, {
       frameId: frame.frameId,
       fixedStep: sourceFixedStep,
     });
     try {
-      worker.postMessage(
-        {
+      if (candidate.observation === undefined) {
+        worker.postMessage(
+          {
+            kind: 'draw',
+            worldIdentity: this.world.identity,
+            frameId: frame.frameId,
+            width: frame.canvasWidth,
+            height: frame.canvasHeight,
+            publication: candidate.packet,
+            sourceFixedStep,
+          } satisfies RenderWorkerInput,
+          [
+            ...renderPublicationTransfers(candidate.packet),
+            ...renderPublicationAssetTransfers(candidate.packet),
+          ],
+        );
+      } else {
+        // Keep the original callee -> message -> transfers evaluation order.
+        const postMessage = worker.postMessage;
+        const message = {
           kind: 'draw',
           worldIdentity: this.world.identity,
           frameId: frame.frameId,
@@ -529,16 +550,22 @@ export class SourceRenderWorker {
           height: frame.canvasHeight,
           publication: candidate.packet,
           sourceFixedStep,
-        } satisfies RenderWorkerInput,
-        [
+        } satisfies RenderWorkerInput;
+        candidate.observation.phase('transfer-list');
+        const transfers = [
           ...renderPublicationTransfers(candidate.packet),
           ...renderPublicationAssetTransfers(candidate.packet),
-        ],
-      );
+        ];
+        candidate.observation.phase('send');
+        Reflect.apply(postMessage, worker, [message, transfers]);
+        candidate.observation.count('send-returned');
+      }
       candidate.accept();
       if (wasIdle) this.armFrameDeadline();
     } catch (cause) {
       this.publishedFrames.delete(candidate.packet.revision);
+      candidate.observation?.count('send-or-accept-error');
+      candidate.observation?.finish('discarded');
       candidate.discard();
       throw cause;
     }

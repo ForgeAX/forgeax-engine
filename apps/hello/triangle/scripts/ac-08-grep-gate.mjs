@@ -443,8 +443,27 @@ const G_GET_RAW_DEVICE_WHITELIST = new Set([
     // Texture/sampler residency fixtures observe native validation and destroy
     // test-owned devices. Upload, Graph work, readback and replay stay on RHI.
     'packages/render/src/__tests__/graph-texture-residency.gpu-fixture.ts',
+    'packages/render/src/__tests__/white-balance.gpu-fixture.ts',
     'packages/render/src/__tests__/sampler-residency.gpu-fixture.ts',
     'packages/render/src/__tests__/texture-generations.gpu-fixture.ts',
+    // Managed asset admission, version, layout, range and mip fixtures use the
+    // native device only for validation, completion waits and test-device cleanup.
+    // Uploads, GPU work and readback remain on RHI.
+    'packages/runtime/src/__tests__/asset-registry-mesh-pack-payload.dawn.test.ts',
+    'packages/runtime/src/__tests__/dawn/mesh-update.dawn.test.ts',
+    'packages/runtime/src/__tests__/dawn/upload-texture.dawn.test.ts',
+    'packages/render/src/__tests__/managed-basis-versions.dawn.test.ts',
+    'packages/render/src/__tests__/managed-material-layout.dawn.test.ts',
+    'packages/render/src/__tests__/managed-material-versions.browser.test.ts',
+    'packages/render/src/__tests__/managed-material-versions.dawn.test.ts',
+    'packages/render/src/__tests__/managed-mesh-range.gpu-fixture.ts',
+    'packages/render/src/__tests__/managed-mesh-structure.gpu-fixture.ts',
+    'packages/render/src/__tests__/managed-texture-range.gpu-fixture.ts',
+    'packages/render/src/__tests__/mipmap-srgb-linear.dawn.test.ts',
+    'packages/render/src/__tests__/terrain-layers.gpu-fixture.ts',
+    // This opt-in terrain microbenchmark constructs paired native workloads,
+    // timestamp queries and pixel readback; production terrain preparation uses RHI.
+    'packages/render/benchmarks/terrain-layer-cost.ts',
     // Array/cube mip Dawn evidence observes native validation and destroys
     // fresh test devices; texture production, capture and readback stay on RHI.
     'packages/render/src/__tests__/texture-array-mips.dawn.test.ts',

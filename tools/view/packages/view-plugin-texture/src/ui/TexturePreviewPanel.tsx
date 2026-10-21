@@ -1,3 +1,4 @@
+import { resourcePreviewRequestId } from '@forgeax/view-workspace-core/resource-open';
 import type { PreviewOwner, ViewPresentation as PreviewPresentation } from '@forgeax/view-workspace-core/engine-presentation';
 import { EmptyState } from '@forgeax/view-components';
 import { useEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react';
@@ -63,6 +64,7 @@ function LivePreview({
     const container = containerRef.current;
     if (!container || !preview?.target) return undefined;
     const bound = bindWorkspacePreviewSurface({
+      requestId: resourcePreviewRequestId(workspace, preview.target.targetId),
       presentation,
       target: preview.target,
       container,
@@ -75,7 +77,11 @@ function LivePreview({
       return undefined;
     }
     setFailure(undefined);
-    return () => { void bound.dispose?.(); };
+    let cancelled = false;
+    void bound.ready?.catch(error => {
+      if (!cancelled) setFailure({ hint: error instanceof Error ? error.message : String(error) });
+    });
+    return () => { cancelled = true; void bound.dispose?.(); };
   }, [
     presentation,
     owner,

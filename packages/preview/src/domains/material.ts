@@ -2,10 +2,10 @@ import { evaluateMaterialOracle, type MaterialOracleInput } from '../evidence/or
 import { canonicalPresentation, createCanonicalPreviewRecipe } from '../kit/canonical.js';
 import { isRecord } from '../request-schema.js';
 import {
-  loadResourceSubject,
   type ResourcePreviewArgs,
   type ResourcePreviewInput,
   type ResourceSubject,
+  readResourceSubject,
   subjectFailure,
 } from './subject.js';
 
@@ -141,7 +141,7 @@ export async function executeMaterialPreview(
   args: ResourcePreviewArgs,
   input: ResourcePreviewInput,
 ) {
-  const loaded = await loadResourceSubject(args.guid, input, 'material');
+  const loaded = readResourceSubject(args.guid, input, 'material');
   if (!loaded.ok) return loaded;
   const inspected = inspectMaterialSubject(loaded.value);
   if (!inspected.ok) return inspected;

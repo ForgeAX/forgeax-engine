@@ -15,7 +15,7 @@ import {
 } from '@forgeax/engine-types';
 import { admitsMeshCardLayout, validateMeshCardLayout } from './mesh-card-artifact';
 import { validateMeshCollisionAttachment } from './mesh-collision';
-import { deriveVertexLayoutProjection } from './vertex-attribute-layout.js';
+import { deriveVertexLayoutProjection, elementView } from './vertex-attribute-layout.js';
 
 const nativeLittleEndian = new Uint8Array(new Uint16Array([1]).buffer)[0] === 1;
 
@@ -60,11 +60,7 @@ function jsonValue(value: unknown): unknown {
   return value;
 }
 
-function refsMeta(
-  payload: MeshPayloadIn,
-  refs: readonly string[],
-  morphTargetMasks?: readonly number[],
-): Record<string, unknown> {
+function validateMeshMetadata(payload: MeshPayloadIn): void {
   if (payload.submeshes?.some((submesh) => 'cardLayout' in submesh))
     throw new Error('section-owned card layouts are obsolete; recook the whole mesh');
   if (payload.cardLayout !== undefined) {
@@ -84,11 +80,53 @@ function refsMeta(
     const valid = validateMeshCollisionAttachment(payload as MeshAsset, payload.collision);
     if (!valid.ok) throw valid.error;
   }
+
+  if ((payload.lods?.length ?? 0) > 7)
+    throw new TypeError('MeshAsset LOD chain supports at most seven lower-detail levels');
+  let previous = 1;
+  const seen = new Set<string | number>();
+  for (const lod of payload.lods ?? []) {
+    if (
+      typeof lod.mesh === 'number'
+        ? !Number.isSafeInteger(lod.mesh) || lod.mesh <= 0 || lod.mesh > 0xffff_ffff
+        : !(lod.mesh instanceof Uint8Array) || lod.mesh.byteLength !== 16
+    )
+      throw new TypeError('MeshAsset LOD references require a runtime handle or a source GUID');
+    const identity =
+      typeof lod.mesh === 'number' ? lod.mesh : AssetGuid.format(lod.mesh).toLowerCase();
+    if (seen.has(identity)) throw new TypeError('MeshAsset LOD references must be unique');
+    seen.add(identity);
+    if (
+      !Number.isFinite(lod.screenCoverage) ||
+      lod.screenCoverage <= 0 ||
+      lod.screenCoverage >= previous
+    )
+      throw new TypeError(
+        'LOD screenCoverage must be finite, positive and strictly decreasing below one',
+      );
+    previous = lod.screenCoverage;
+  }
+  if (
+    payload.lodHysteresis !== undefined &&
+    (!Number.isFinite(payload.lodHysteresis) ||
+      payload.lodHysteresis < 0 ||
+      payload.lodHysteresis >= 1)
+  )
+    throw new TypeError('lodHysteresis must be finite and in [0, 1)');
+}
+
+function refsMeta(
+  payload: MeshPayloadIn,
+  refs: readonly string[],
+  morphTargetMasks?: readonly number[],
+): Record<string, unknown> {
   const materialSlots = (payload.materialSlots ?? [{ slotName: 'Default' }]).map(
     (slot, slotIndex) => {
       const defaultMaterial = slot.defaultMaterial;
       let defaultMaterialRef: number | undefined;
       if (defaultMaterial !== undefined) {
+        if (typeof defaultMaterial === 'number')
+          throw new TypeError('Pack Mesh material references require source GUIDs');
         const guid = AssetGuid.format(defaultMaterial);
         defaultMaterialRef = refs.findIndex((candidate) => candidate.toLowerCase() === guid);
         if (defaultMaterialRef < 0) {
@@ -104,42 +142,14 @@ function refsMeta(
       };
     },
   );
-  if (payload.lods !== undefined && payload.lods.length > 7) {
-    throw new Error('MeshAsset LOD chain supports at most seven lower-detail levels');
-  }
-  let previousCoverage = 1;
-  const seenLodGuids = new Set<string>();
   const lods = payload.lods?.map((lod, lodIndex) => {
+    if (typeof lod.mesh === 'number')
+      throw new TypeError('Pack Mesh LOD references require source GUIDs');
     const guid = AssetGuid.format(lod.mesh).toLowerCase();
     const meshRef = refs.findIndex((candidate) => candidate.toLowerCase() === guid);
-    if (meshRef < 0) {
-      throw new Error(`LOD ${lodIndex} mesh ${guid} is absent from refs`);
-    }
-    if (seenLodGuids.has(guid)) {
-      throw new Error(`LOD ${lodIndex} mesh ${guid} is duplicated`);
-    }
-    if (
-      !Number.isFinite(lod.screenCoverage) ||
-      lod.screenCoverage <= 0 ||
-      lod.screenCoverage > 1 ||
-      lod.screenCoverage >= previousCoverage
-    ) {
-      throw new Error(
-        `LOD ${lodIndex} screenCoverage must be finite, in (0, 1], and strictly decreasing`,
-      );
-    }
-    seenLodGuids.add(guid);
-    previousCoverage = lod.screenCoverage;
+    if (meshRef < 0) throw new Error(`LOD ${lodIndex} mesh ${guid} is absent from refs`);
     return { meshRef, screenCoverage: lod.screenCoverage };
   });
-  if (
-    payload.lodHysteresis !== undefined &&
-    (!Number.isFinite(payload.lodHysteresis) ||
-      payload.lodHysteresis < 0 ||
-      payload.lodHysteresis >= 1)
-  ) {
-    throw new Error('lodHysteresis must be finite and in [0, 1)');
-  }
   return {
     submeshes:
       payload.submeshes === undefined || payload.submeshes.length === 0
@@ -176,7 +186,7 @@ interface PreparedMeshData {
   readonly indices: MeshAsset['indices'] | undefined;
   readonly streams: readonly Float32Array[];
   readonly morphBytes: number;
-  readonly metadata: Record<string, unknown>;
+  readonly morphTargetMasks: readonly number[] | undefined;
 }
 
 /** Canonical fields are finite and agree bit-for-bit with their interleaved projection. */
@@ -188,7 +198,8 @@ function validateMeshInterleaving(
   const floats = new Uint32Array(vertices.buffer, vertices.byteOffset, vertices.length);
   const shorts = new Uint16Array(vertices.buffer, vertices.byteOffset, vertices.byteLength / 2);
   for (const attribute of projection.attributes) {
-    const value = attributes[attribute.key] as Float32Array | Uint16Array;
+    const value = elementView(attributes[attribute.key], attribute.format);
+    if (value === undefined) throw new TypeError(`invalid ${attribute.key} storage`);
     const short = attribute.format === 'uint16x4';
     const width = short ? 2 : 4;
     const source = short
@@ -212,7 +223,6 @@ function validateMeshInterleaving(
 export function prepareMeshData(
   payload: MeshPayloadIn,
   sourceKey: string,
-  refs: readonly string[] = [],
 ): Result<PreparedMeshData, MeshBinEncodeError> {
   try {
     const vertices = payload.vertices;
@@ -257,7 +267,7 @@ export function prepareMeshData(
       );
     }
     for (const attribute of projection.attributes) {
-      const value = attributes[attribute.key];
+      const value = elementView(attributes[attribute.key], attribute.format);
       const components = attribute.byteLength / (attribute.format === 'uint16x4' ? 2 : 4);
       if (
         value === undefined ||
@@ -325,7 +335,7 @@ export function prepareMeshData(
         !weights.every(Number.isFinite))
     )
       throw new TypeError('invalid morph weights');
-    const metadata = refsMeta(payload, refs, morphTargetMasks);
+    validateMeshMetadata(payload);
     return ok({
       projection,
       attributes,
@@ -337,7 +347,7 @@ export function prepareMeshData(
       indices,
       streams,
       morphBytes,
-      metadata,
+      morphTargetMasks,
     });
   } catch (error) {
     return err(
@@ -365,7 +375,7 @@ export function packMeshBin(
       ),
     );
   try {
-    const prepared = prepareMeshData(payload, sourceKey, refs);
+    const prepared = prepareMeshData(payload, sourceKey);
     if (!prepared.ok) return prepared;
     const {
       projection,
@@ -378,8 +388,9 @@ export function packMeshBin(
       indices,
       streams,
       morphBytes,
-      metadata,
+      morphTargetMasks,
     } = prepared.value;
+    const metadata = refsMeta(payload, refs, morphTargetMasks);
     const meta = new TextEncoder().encode(JSON.stringify(metadata));
     const header: MeshBinHeader = {
       version: 5,
@@ -410,7 +421,8 @@ export function packMeshBin(
     } else {
       const view = new DataView(interleaved.buffer, interleaved.byteOffset, vertexBytes);
       for (const attribute of projection.attributes) {
-        const value = attributes[attribute.key] as Float32Array | Uint16Array;
+        const value = elementView(attributes[attribute.key], attribute.format);
+        if (value === undefined) throw new TypeError(`invalid ${attribute.key} storage`);
         const short = attribute.format === 'uint16x4';
         const width = short ? 2 : 4;
         const components = attribute.byteLength / width;

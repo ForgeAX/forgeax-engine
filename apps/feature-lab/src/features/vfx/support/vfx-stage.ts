@@ -1,15 +1,16 @@
 import type { App, CreateAppOptions } from '@forgeax/engine/app';
+import { AssetRegistry } from '@forgeax/engine/assets-runtime';
 import type { EntityHandle, World } from '@forgeax/engine/ecs';
 import { createBoxGeometry } from '@forgeax/engine/geometry';
 import { mat4, vec3 } from '@forgeax/engine/math';
 import { Camera, Materials } from '@forgeax/engine/render';
 import { GlobalTransform, Transform } from '@forgeax/engine/scene';
-import type { MaterialAsset, MeshAsset } from '@forgeax/engine/types';
+import type { MaterialAsset, MaterialPass, MeshAsset } from '@forgeax/engine/types';
 import {
   ParticleEffectPlayer,
+  prepareVfxGpuEffect,
   type VfxGpuAssetError,
   type VfxGpuEffectAssetAny,
-  vfxGpuEffectPackLoader,
 } from '@forgeax/engine/vfx';
 import {
   createVfxRuntimeHost,
@@ -17,6 +18,7 @@ import {
   type VfxRuntimeHostControl,
 } from '@forgeax/engine/vfx-render';
 import { spawnCamera, type Vec3 } from '../../../lab/stage';
+import { installMemoryPack } from '../../asset-formats/fixtures/memory-pack';
 import {
   LAB_CUBE_MESH_GUID,
   LAB_EFFECT_GUID,
@@ -26,8 +28,7 @@ import {
 } from './lab-effect';
 import fixture from './lab-effect.cooked.json';
 
-type LoaderInput = Parameters<typeof vfxGpuEffectPackLoader.load>[0];
-type LoaderContext = Parameters<typeof vfxGpuEffectPackLoader.load>[1];
+type LoaderInput = Parameters<typeof prepareVfxGpuEffect>[0];
 
 export const LAB_EYE: Vec3 = [0, 1.2, 7.2];
 export const LAB_TARGET: Vec3 = [0, 1, 0];
@@ -82,21 +83,22 @@ function readCamera(world: World, entity: EntityHandle | undefined) {
 
 function particleMaterial(rgba: readonly [number, number, number, number]): MaterialAsset {
   const base = Materials.unlit(rgba);
-  return {
-    ...base,
-    passes: (base.passes ?? []).map((pass) => ({
-      ...pass,
-      renderState: {
-        ...pass.renderState,
-        queue: 3000,
-        depthWriteEnabled: false,
-        blend: {
-          color: { srcFactor: 'one', dstFactor: 'one', operation: 'add' },
-          alpha: { srcFactor: 'one', dstFactor: 'one-minus-src-alpha', operation: 'add' },
-        },
+  const mapPass = (pass: MaterialPass): MaterialPass => ({
+    ...pass,
+    renderState: {
+      ...pass.renderState,
+      queue: 3000,
+      depthWriteEnabled: false,
+      blend: {
+        color: { srcFactor: 'one', dstFactor: 'one', operation: 'add' },
+        alpha: { srcFactor: 'one', dstFactor: 'one-minus-src-alpha', operation: 'add' },
       },
-    })),
-  } as MaterialAsset;
+    },
+  });
+  if (base.passes === undefined)
+    throw new Error('Unlit material must declare its rendering passes');
+  const [first, ...rest] = base.passes;
+  return { ...base, passes: [mapPass(first), ...rest.map(mapPass)] };
 }
 
 function labRenderAssets(): Map<string, MaterialAsset | MeshAsset> {
@@ -137,7 +139,7 @@ export function loadLabEffect(
       },
     },
   } as LoaderInput;
-  return vfxGpuEffectPackLoader.load(input, {} as LoaderContext);
+  return prepareVfxGpuEffect(input);
 }
 
 export interface LabVfx {
@@ -164,24 +166,11 @@ export const LAB_DEFAULT_KINDS: readonly LabEmitterKind[] = [
   'beam',
 ];
 
-/**
- * Prepared material and mesh bindings resolve through the World's AssetRegistry, so the
- * in-memory lab assets are catalogued there under their GUIDs before the World attaches.
- */
-function catalogRenderAssets(
-  app: App,
-  renderAssets: ReadonlyMap<string, MaterialAsset | MeshAsset>,
-): string | undefined {
-  const registry = app.assets;
-  if (registry === undefined) return 'app.assets is unavailable';
-  for (const [guid, asset] of renderAssets) {
-    const result = registry.catalog(guid, asset);
-    if (!result.ok) return `${result.error.code}: catalog ${guid}`;
-  }
-  return undefined;
-}
-
 export async function setupLabVfx(lab: LabHost, app: App, world: World): Promise<LabSetupResult> {
+  const sceneAssets = world.assets;
+  if (!(sceneAssets instanceof AssetRegistry))
+    throw new Error('Scene requires its runtime asset owner');
+
   let lastFailure: string | undefined;
   app.onError((error) => {
     type Cause = { code?: string; detail?: { reason?: string } };
@@ -200,30 +189,19 @@ export async function setupLabVfx(lab: LabHost, app: App, world: World): Promise
   lab.camera = camera;
   const host = lab.host();
   const renderAssets = labRenderAssets();
-  const catalogued = catalogRenderAssets(app, renderAssets);
-  if (catalogued !== undefined) return { ok: false, error: catalogued };
-  const engineAssets = app.assets as unknown as
-    | {
-        lookup?: (guid: string) => unknown;
-        getMaterialProjectionForPayload?: (material: MaterialAsset) => unknown;
-      }
-    | undefined;
-  const assets = {
-    loaders: { registerPackLoader: (_loader: unknown) => undefined },
-    lookup: <T>(guid: string): T | undefined =>
-      (renderAssets.get(guid) ?? engineAssets?.lookup?.call(engineAssets, guid)) as T | undefined,
-    ...(engineAssets?.getMaterialProjectionForPayload === undefined
-      ? {}
-      : {
-          getMaterialProjectionForPayload: (material: MaterialAsset) =>
-            engineAssets.getMaterialProjectionForPayload?.call(engineAssets, material),
-        }),
-  };
-  const attached = await host.attachWorld({ world, assets: assets as never });
+  await installMemoryPack(
+    sceneAssets,
+    [...renderAssets].map(([guid, asset]) => ({ guid, kind: asset.kind, payload: asset })),
+  );
+  for (const [guid, asset] of renderAssets) {
+    const loaded = await sceneAssets.load(guid, asset.kind);
+    if (!loaded.ok) return { ok: false, error: `${loaded.error.code}: ${loaded.error.hint}` };
+  }
+  const attached = await host.attachWorld({ world, assets: sceneAssets });
   if (!attached.ok) return { ok: false, error: `${attached.error.code}: ${attached.error.hint}` };
   const loaded = await loadLabEffect();
   if (!loaded.ok) return { ok: false, error: `${loaded.error.code}: ${loaded.error.hint}` };
-  const effect = world.allocSharedRef('ParticleEffectAsset', loaded.value);
+  const effect = sceneAssets.create(loaded.value).unwrap();
   const player = world
     .spawn(
       { component: Transform, data: { pos: [0, 0, 0] } },

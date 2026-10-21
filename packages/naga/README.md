@@ -18,6 +18,13 @@
 | `validate(parsed)` | `(ParsedModule) => Promise<Result<ValidatedModule, ShaderError>>` | naga `Validator::validate` 透传；ownership 转移（消费 parsed handle） |
 | `emit_reflection(validated, optionsJson)` | `(ValidatedModule, string) => Promise<Result<string, ShaderError>>` | reflection JSON 字符串 emit；ModuleInfo 已嵌入 ValidatedModule 句柄；上层 `@forgeax/engine-shader-compiler.parseReflectionJson` 派生 `BindGroupLayoutDescriptor[]` |
 
+Reflection also carries `entryPoints`: the binding and top-level struct-field
+reads of each actual entry and its reachable helper calls. The native Naga IR
+owns this analysis. Helper arguments/returns preserve source fields; dynamic
+aggregate access and partial aggregate stores conservatively retain their source
+structure. Other entries and unreachable helpers do not contribute reads. Missing
+metadata means unknown, never an empty dependency set.
+
 Opaque module handles expose `free()` for deterministic native IR release.
 `validate` consumes its parsed handle even on failure; do not free that handle
 again. A successful syntax probe that stops before validation frees its parsed

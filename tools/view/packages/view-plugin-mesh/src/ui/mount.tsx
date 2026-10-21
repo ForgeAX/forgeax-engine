@@ -1,6 +1,6 @@
 import type { ComponentProps } from 'react';
 import '@forgeax/view-components/styles.css';
-import { OverlayRootProvider } from '@forgeax/view-components';
+import { OverlayRootProvider, PanelVisibilityProvider } from '@forgeax/view-components';
 import '../i18n/index.ts';
 import { createRoot } from 'react-dom/client';
 import { MeshPreviewPanel } from './MeshPreviewPanel';
@@ -14,7 +14,7 @@ function mountPanel(node: Parameters<ReturnType<typeof createRoot>['render']>[0]
   const root = createRoot(props.mountElement);
   root.render(
     <OverlayRootProvider root={props.overlayRoot ?? props.mountElement}>
-      {node}
+      <PanelVisibilityProvider element={props.mountElement}>{node}</PanelVisibilityProvider>
     </OverlayRootProvider>,
   );
   return async () => root.unmount();

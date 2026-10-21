@@ -2,7 +2,7 @@ import { createHash } from 'node:crypto';
 import { createRuntimePackPublication } from '@forgeax/engine-pack/build';
 import { ok } from '@forgeax/engine-types';
 import { expect, it, vi } from 'vitest';
-import { createAssetRegistry, createCatalogSource, defineAssetKind } from '../index.js';
+import { AssetRegistry, createCatalogSource, defineAssetKind } from '../index.js';
 import { ArtifactCache } from '../internal/artifact-cache.js';
 
 it('Registry.dispose aborts artifact I/O and rejects late cache refill from an ignoring transport', async () => {
@@ -51,7 +51,7 @@ it('Registry.dispose aborts artifact I/O and rejects late cache refill from an i
   const finished = new Promise<void>((resolve) => {
     decoded = resolve;
   });
-  const registry = createAssetRegistry({
+  const registry = new AssetRegistry({
     scopeId: 'test',
     catalog: createCatalogSource({
       entries: [
@@ -88,7 +88,7 @@ it('Registry.dispose aborts artifact I/O and rejects late cache refill from an i
     finishBody(new Response(bytes));
     await finished;
     expect(cache?.snapshot()).toMatchObject({ entries: 0, pending: 0 });
-    expect(registry.snapshot()).toMatchObject({ ready: [], pending: 0, resources: 0 });
+    expect(registry.inspectSource()).toBeUndefined();
   } finally {
     registry.dispose();
     spy.mockRestore();
@@ -105,14 +105,15 @@ it('observes cancellation before and during a shared cold Catalog read', async (
     await gate;
     return ok([]);
   });
-  const registry = createAssetRegistry({ catalog: { enumerate, subscribe: () => () => {} } });
+  const registry = new AssetRegistry({ catalog: { enumerate, subscribe: () => () => {} } });
   const aborted = new AbortController();
   aborted.abort();
   expect(await registry.load(guid, 'mesh', { signal: aborted.signal })).toMatchObject({
     ok: false,
     error: { code: 'asset-load-cancelled' },
   });
-  expect(enumerate).not.toHaveBeenCalled();
+  // Source selection starts Catalog metadata once; an aborted asset request adds no read.
+  expect(enumerate).toHaveBeenCalledTimes(1);
   const controller = new AbortController();
   const cancelled = registry.load(guid, 'mesh', { signal: controller.signal });
   const live = registry.load(guid, 'mesh');

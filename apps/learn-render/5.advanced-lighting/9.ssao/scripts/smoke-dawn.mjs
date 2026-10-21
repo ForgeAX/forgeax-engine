@@ -233,9 +233,7 @@ if (DISCRIMINATION) {
       perspective: perspectiveLocal,
       DEFAULT_STANDARD_PROFILE,
     } = await import('@forgeax/engine-render');
-    const { HANDLE_CUBE: HANDLE_CUBE_LOCAL, HANDLE_SPHERE: HANDLE_SPHERE_LOCAL } = await import(
-      '@forgeax/engine-assets-runtime'
-    );
+
 
     const appResult = await createAppLocal(
       canvas,
@@ -450,7 +448,6 @@ const { Camera, DirectionalLight, MeshFilter, MeshRenderer, perspective } = awai
   '@forgeax/engine-render'
 );
 const { Transform } = await import('@forgeax/engine-scene');
-const { HANDLE_CUBE, HANDLE_SPHERE } = await import('@forgeax/engine-assets-runtime');
 
 const ssaoEnabled = FALSIFY !== 'ssao-off';
 const appResult = await createApp(

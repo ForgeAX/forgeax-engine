@@ -8,7 +8,10 @@ import {
   TRANSPARENCY_WEIGHTED_BLENDED,
   transparencyFromF32,
 } from '../../components/camera';
+import { MaterialResource } from '../../material-resource';
 import type { DispatchEntry } from '../../render-system-extract';
+import { defaultMaterialSnapshot } from '../../render-system-extract';
+import { MaterialFrame } from '../../scene/material-dispatch';
 import {
   classifyOitDraw,
   OIT_ACCUMULATE_BLEND,
@@ -170,12 +173,16 @@ describe('classifyOitDraw', () => {
 
 describe('resolveTransparencyView', () => {
   const transparent = { blend: STRAIGHT_OVER } as const;
-  const material = (handle: number) =>
-    ({ materialHandle: handle, transparent: true, passes: [], renderState: transparent }) as never;
-  const rows = [0, 1, 2].map((index) => ({
-    renderableIndex: index,
-    source: { materials: [material(index + 1)], material: material(index + 1) },
-  }));
+  let materialFrame = new MaterialFrame(undefined);
+  const renderables = [0, 1, 2].map((index) => {
+    const material = new MaterialResource({
+      ...defaultMaterialSnapshot(index + 1),
+      transparent: true,
+      renderState: transparent,
+    });
+    materialFrame = materialFrame.with(material);
+    return { materials: [material], material };
+  });
   const entry = (index: number, renderState: MaterialRenderState): DispatchEntry =>
     ({
       renderableIndex: index,
@@ -190,7 +197,8 @@ describe('resolveTransparencyView', () => {
     const resolution = resolveTransparencyView({
       requested: 'weighted-blended',
       rgba16floatRenderable: false,
-      rows,
+      renderables,
+      materialFrame,
       dispatch: [entry(0, transparent)],
     });
     expect(resolution.inspection).toEqual({
@@ -214,7 +222,8 @@ describe('resolveTransparencyView', () => {
       const resolution = resolveTransparencyView({
         requested,
         rgba16floatRenderable: true,
-        rows,
+        renderables,
+        materialFrame,
         dispatch: [],
       });
       expect(resolution.inspection.reason).toBeUndefined();
@@ -225,14 +234,21 @@ describe('resolveTransparencyView', () => {
   });
 
   it('classifies sparse ordered validation rows with reversed, repeated and missing dispatch', () => {
-    const sparse = [2, 7, 40].map((index) => ({
-      renderableIndex: index,
-      source: { materials: [material(index + 1)], material: material(index + 1) },
-    }));
+    const sparse: typeof renderables = [];
+    for (const index of [2, 7, 40]) {
+      const resource = new MaterialResource({
+        ...defaultMaterialSnapshot(index + 1),
+        transparent: true,
+        renderState: transparent,
+      });
+      materialFrame = materialFrame.with(resource);
+      sparse[index] = { materials: [resource], material: resource };
+    }
     const resolution = resolveTransparencyView({
       requested: 'weighted-blended',
       rgba16floatRenderable: true,
-      rows: sparse,
+      renderables: sparse,
+      materialFrame,
       dispatch: [
         entry(40, transparent),
         entry(41, transparent),

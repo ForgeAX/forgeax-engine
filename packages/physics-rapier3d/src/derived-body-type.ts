@@ -16,6 +16,7 @@ import type {
   DerivedCandidateRecord,
   DerivedShapeRecord,
 } from './derived-candidate-records';
+import { derivedShapeHandles } from './derived-candidate-records.js';
 
 interface PreparationOwner {
   readonly identity: object;
@@ -175,8 +176,13 @@ export function retainedDerivedGeometryCurrent(
     retained === undefined ||
     (retained === active &&
       bodyHandle !== undefined &&
-      retained.shapes.every(
-        (shape) => world.getCollider(shape.colliderHandle)?.parent()?.handle === bodyHandle,
+      retained.shapes.every((shape) =>
+        derivedShapeHandles(shape).every(
+          (handle) =>
+            world.colliders.contains(handle) &&
+            world.getCollider(handle)?.handle === handle &&
+            world.getCollider(handle)?.parent()?.handle === bodyHandle,
+        ),
       ))
   );
 }
@@ -185,9 +191,9 @@ export function candidateNativeColliders(
   record: DerivedCandidateRecord,
 ): readonly { readonly handle: number }[] {
   return (
-    (record.retainedGeometry?.shapes ?? record.sharedGeometry?.shapes)?.map((shape) => ({
-      handle: shape.colliderHandle,
-    })) ?? record.nativeColliders
+    (record.retainedGeometry?.shapes ?? record.sharedGeometry?.shapes)?.flatMap((shape) =>
+      derivedShapeHandles(shape).map((handle) => ({ handle })),
+    ) ?? record.nativeColliders
   );
 }
 
@@ -197,6 +203,7 @@ export function candidateShapeRecords(
   return (
     record.retainedGeometry?.shapes ??
     record.sharedGeometry?.shapes ??
+    record.stagedShapes ??
     record.input.shapes.map((input, index) => ({
       input: input as DerivedShapeRecord['input'],
       colliderHandle: record.nativeColliders[index]?.handle as number,

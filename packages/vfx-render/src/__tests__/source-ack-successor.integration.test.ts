@@ -1,3 +1,4 @@
+import { AssetRegistry } from '@forgeax/engine-assets-runtime';
 import { createWorldContext, World } from '@forgeax/engine-ecs';
 import type { ParticleEffectAsset } from '@forgeax/engine-types';
 import {
@@ -8,6 +9,7 @@ import {
 } from '@forgeax/engine-vfx';
 import { cookParticleCodeProgram } from '@forgeax/engine-vfx-compiler';
 import { expect, it } from 'vitest';
+import { runtimeEffectFixture } from '../../../vfx/src/__tests__/runtime-effect-fixture';
 import { gpuParticleRenderFeature } from '../feature/gpu-particle-feature';
 
 it.each(
@@ -62,8 +64,9 @@ fn vfx_update(ctx: VfxUpdateContext, particle: ptr<function, VfxParticle>) { (*p
     emitters: [{ id: 'persistent', capacity: 4 }],
     program: { ...result.value.program, fingerprint: result.value.fingerprint },
   };
-  const world = new World();
-  const handle = world.allocSharedRef('ParticleEffectAsset', { ...asset, guid: 'effect' });
+  const assets = new AssetRegistry();
+  const world = new World({ assets });
+  const handle = assets.create(runtimeEffectFixture(world, { ...asset, guid: 'effect' })).unwrap();
   const player = world
     .spawn({
       component: ParticleEffectPlayer,
@@ -125,5 +128,6 @@ fn vfx_update(ctx: VfxUpdateContext, particle: ptr<function, VfxParticle>) { (*p
     expect(runtime.lastCommittedEmitter(player, 'persistent')?.sequence).toBe(published.at(-1));
   } finally {
     await context.fiber.dispose();
+    assets.dispose();
   }
 });

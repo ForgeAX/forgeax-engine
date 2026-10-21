@@ -1,6 +1,6 @@
+import type { AssetHandle } from '@forgeax/engine-types';
 import type { EntityHandle, World } from '@forgeax/engine-ecs';
 import type { InputSnapshot } from '@forgeax/engine-input';
-import type { Handle } from '@forgeax/engine-runtime';
 import type { PhysicsWorld } from '@forgeax/engine-physics';
 import { Transform } from '@forgeax/engine-scene';
 import type { HudHandle, ViewMode } from '../hud';
@@ -99,9 +99,9 @@ export type GameplaySystemsContext = {
   readonly changeDetection: GameplayChangeDetectionHandle;
   readonly chromaticAberration: ChromaticAberrationHandle;
   readonly physics: PhysicsWorld | undefined;
-  readonly projectileMesh: Handle<'MeshAsset', 'shared'>;
-  readonly projectileMaterial: Handle<'MaterialAsset', 'shared'>;
-  readonly handleQuad: Handle<'MeshAsset', 'shared'>;
+  readonly projectileMesh: AssetHandle<'mesh'>;
+  readonly projectileMaterial: AssetHandle<'material'>;
+  readonly handleQuad: AssetHandle<'mesh'>;
   readonly setPerspectiveFov: (fov: number) => void;
   readonly applyPanCamera: () => void;
   readonly hitStreak: HitStreakHandle | undefined;

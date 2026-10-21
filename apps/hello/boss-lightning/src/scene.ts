@@ -1,3 +1,4 @@
+import type { AssetHandle } from '@forgeax/engine-types';
 import type { EntityHandle, World } from '@forgeax/engine-ecs';
 import {
   Camera,
@@ -8,17 +9,21 @@ import {
   Skylight,
   perspective,
 } from '@forgeax/engine-render';
-import { HANDLE_CUBE, HANDLE_CYLINDER, HANDLE_SPHERE } from '@forgeax/engine-assets-runtime';
+
 import { quat } from '@forgeax/engine-math';
 import { ChildOf, Transform } from '@forgeax/engine-scene';
-import type { Handle } from '@forgeax/engine-types';
+
+import { AssetRegistry } from '@forgeax/engine-assets-runtime';
+
+import { createPrimitiveMesh } from '@forgeax/engine-geometry';
+
 
 export interface BossSceneMaterials {
-  readonly body: Handle<'MaterialAsset', 'shared'>;
-  readonly accent: Handle<'MaterialAsset', 'shared'>;
-  readonly mouth: Handle<'MaterialAsset', 'shared'>;
-  readonly groundWarning: Handle<'MaterialAsset', 'shared'>;
-  readonly strike: Handle<'MaterialAsset', 'shared'>;
+  readonly body: AssetHandle<'material'>;
+  readonly accent: AssetHandle<'material'>;
+  readonly mouth: AssetHandle<'material'>;
+  readonly groundWarning: AssetHandle<'material'>;
+  readonly strike: AssetHandle<'material'>;
 }
 
 export interface BossScene {
@@ -40,8 +45,8 @@ export const BOSS_ATTACK_TARGET = [1.3, -0.76, 0.95] as const;
 
 function spawnMesh(
   world: World,
-  mesh: Handle<'MeshAsset', 'shared'>,
-  material: Handle<'MaterialAsset', 'shared'>,
+  mesh: AssetHandle<'mesh'>,
+  material: AssetHandle<'material'>,
   pos: Position,
   scale: Scale,
   parent?: EntityHandle,
@@ -61,6 +66,15 @@ export function createBossScene(
   world: World,
   materials: BossSceneMaterials,
 ): BossScene {
+const sceneAssets = world.assets;
+if (!(sceneAssets instanceof AssetRegistry)) throw new Error('Scene requires its runtime asset owner');
+
+const primitiveCube = sceneAssets.create(createPrimitiveMesh('cube').unwrap()).unwrap();
+
+const primitiveCylinder = sceneAssets.create(createPrimitiveMesh('cylinder').unwrap()).unwrap();
+
+const primitiveSphere = sceneAssets.create(createPrimitiveMesh('sphere').unwrap()).unwrap();
+
   // Keep the boss and its mouth-to-ground attack in one readable frame. The
   // previous long lens left a large empty field around a small subject and
   // made the warning/strike look detached from the actor.
@@ -72,18 +86,18 @@ export function createBossScene(
       { component: Transform, data: { pos: [-0.85, -0.3, 0] } },
     )
     .unwrap();
-  const body = spawnMesh(world, HANDLE_CUBE, materials.body, [0, 0.78, 0], [1.15, 1.4, 0.8], player);
+  const body = spawnMesh(world, primitiveCube, materials.body, [0, 0.78, 0], [1.15, 1.4, 0.8], player);
   for (const side of [-1, 1]) {
-    spawnMesh(world, HANDLE_CUBE, materials.accent, [side * 0.7, 1.12, 0], [0.5, 0.55, 0.65], player);
-    spawnMesh(world, HANDLE_CUBE, materials.body, [side * 0.85, 0.58, 0.08], [0.36, 0.7, 0.42], player);
-    spawnMesh(world, HANDLE_CUBE, materials.accent, [side * 0.35, -0.12, 0.15], [0.46, 0.65, 0.65], player);
+    spawnMesh(world, primitiveCube, materials.accent, [side * 0.7, 1.12, 0], [0.5, 0.55, 0.65], player);
+    spawnMesh(world, primitiveCube, materials.body, [side * 0.85, 0.58, 0.08], [0.36, 0.7, 0.42], player);
+    spawnMesh(world, primitiveCube, materials.accent, [side * 0.35, -0.12, 0.15], [0.46, 0.65, 0.65], player);
   }
   // A small collar hides the sphere intersection and gives the two body
   // masses a deliberate silhouette instead of a single egg-shaped blob.
-  spawnMesh(world, HANDLE_CYLINDER, materials.accent, [0, 1.36, 0.04], [0.82, 0.12, 0.64], player);
-  const head = spawnMesh(world, HANDLE_CUBE, materials.accent, [0, 1.72, 0.04], [0.75, 0.6, 0.64], player);
-  spawnMesh(world, HANDLE_CYLINDER, materials.accent, [-0.3, 2.13, 0], [0.12, 0.36, 0.12], player);
-  spawnMesh(world, HANDLE_CYLINDER, materials.accent, [0.3, 2.13, 0], [0.12, 0.36, 0.12], player);
+  spawnMesh(world, primitiveCylinder, materials.accent, [0, 1.36, 0.04], [0.82, 0.12, 0.64], player);
+  const head = spawnMesh(world, primitiveCube, materials.accent, [0, 1.72, 0.04], [0.75, 0.6, 0.64], player);
+  spawnMesh(world, primitiveCylinder, materials.accent, [-0.3, 2.13, 0], [0.12, 0.36, 0.12], player);
+  spawnMesh(world, primitiveCylinder, materials.accent, [0.3, 2.13, 0], [0.12, 0.36, 0.12], player);
   const mouthJoint = world
     .spawn(
       { component: Transform, data: { pos: [0, 1.3, 0.9] } },
@@ -92,7 +106,7 @@ export function createBossScene(
     .unwrap();
   const mouthGlow = spawnMesh(
     world,
-    HANDLE_SPHERE,
+    primitiveSphere,
     materials.mouth,
     [0, 1.3, 0.9],
     [0.12, 0.12, 0.1],
@@ -135,10 +149,10 @@ export function createBossScene(
   // A low-contrast floor gives the warning/strike a real world anchor. The
   // previous isolated cube floated against the clear color and made the
   // attack look disconnected even when its endpoint was correct.
-  spawnMesh(world, HANDLE_CUBE, materials.body, [0, -0.85, 0], [12, 0.05, 10]);
+  spawnMesh(world, primitiveCube, materials.body, [0, -0.85, 0], [12, 0.05, 10]);
   const groundWarning = spawnMesh(
     world,
-    HANDLE_CYLINDER,
+    primitiveCylinder,
     materials.groundWarning,
     [BOSS_ATTACK_TARGET[0], BOSS_ATTACK_TARGET[1], BOSS_ATTACK_TARGET[2]],
     [1.0, 0.025, 0.46],
@@ -147,7 +161,7 @@ export function createBossScene(
   // not as a second floating object between the boss and the floor.
   const strike = spawnMesh(
     world,
-    HANDLE_CUBE,
+    primitiveCube,
     materials.strike,
     [BOSS_ATTACK_TARGET[0], BOSS_ATTACK_TARGET[1] + 0.12, BOSS_ATTACK_TARGET[2]],
     [0.035, 0.04, 0.035],

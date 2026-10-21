@@ -438,7 +438,7 @@
           "sources": ["packages/types/src/navigation.ts", "packages/import/src/navigation-bake.ts"]
         },
         "runtimeSource": [
-          "packages/assets-runtime/src/loaders/navigation-mesh.ts",
+          "packages/navigation/src/asset-decoder.ts",
           "packages/navigation/src/navmesh.ts"
         ],
         "lifecycle": "source-and-settings-fingerprint-to-cooked-polygon-catalog",

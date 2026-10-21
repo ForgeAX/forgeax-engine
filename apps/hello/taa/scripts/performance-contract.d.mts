@@ -56,7 +56,7 @@ export interface TemporalTargetObservation {
 export interface DawnTemporalState {
   readonly status: 'stable' | 'off' | 'first-frame' | 'reset' | 'aborted';
   readonly historyValid: boolean;
-  readonly historyAttempt: 'none' | 'begun' | 'committed' | 'aborted';
+  readonly historyAttempt: 'none' | 'active' | 'committed' | 'aborted';
   readonly epoch: number;
 }
 export interface DawnCreationObservation {

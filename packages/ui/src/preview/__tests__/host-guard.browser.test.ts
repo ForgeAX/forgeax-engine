@@ -3,14 +3,14 @@ import type { UiAsset } from '../../asset.js';
 import { createUiPreviewSession } from '../session.js';
 
 const asset: UiAsset = { guid: 'host-guard-guid', html: '<span>host</span>', css: '' };
-const source = { invalidate() {}, loadByGuid: async () => ({ ok: true as const, value: asset }) };
+const source = async () => ({ ok: true as const, value: asset });
 
 describe('preview host boundary', () => {
   it('mounts once into the caller-owned root and applies the requested rectangle', async () => {
     const root = document.createElement('div');
     const session = createUiPreviewSession({
       guid: asset.guid,
-      assets: source,
+      readAsset: source,
       root,
       rect: { x: 4, y: 8, width: 240, height: 120 },
     });
@@ -30,7 +30,7 @@ describe('preview host boundary', () => {
   it('fails before creating a host for invalid root or rectangle', async () => {
     const invalidRoot = createUiPreviewSession({
       guid: asset.guid,
-      assets: source,
+      readAsset: source,
       root: {} as HTMLElement,
       rect: { width: 240, height: 120 },
     });
@@ -41,7 +41,7 @@ describe('preview host boundary', () => {
     const invalidRectRoot = document.createElement('div');
     const invalidRect = createUiPreviewSession({
       guid: asset.guid,
-      assets: source,
+      readAsset: source,
       root: invalidRectRoot,
       rect: { width: 0, height: -1 },
     });
@@ -54,7 +54,7 @@ describe('preview host boundary', () => {
   it('fails explicitly for an invalid host and never falls back to document.body', async () => {
     const result = await createUiPreviewSession({
       guid: asset.guid,
-      assets: source,
+      readAsset: source,
       root: {} as HTMLElement,
       rect: { width: 240, height: 120 },
     }).open();

@@ -132,6 +132,7 @@ it('uses the latest moved pose when native decode finishes, and fences stop/disp
   };
   const consumer = createHostAudioConsumer(engine);
   consumer.consume({
+    asset: { owner: 'pending', handle: 1, revision: 1 },
     kind: 'play',
     entityId: 1,
     sourceKey: 'pending',

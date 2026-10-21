@@ -6,15 +6,63 @@
     "declarationMap": true,
     "outDir": "./dist",
     "rootDir": "./src",
-    "tsBuildInfoFile": "./dist/.tsbuildinfo"
+    "tsBuildInfoFile": "./dist/.tsbuildinfo",
+    "types": [
+      "@webgpu/types",
+      "node"
+    ]
   },
-  "include": ["src/**/*"],
-  "exclude": ["src/__tests__/**"],
+  "include": [
+    "src/**/*"
+  ],
+  "exclude": [
+    "src/__tests__/**"
+  ],
   "references": [
-    { "path": "../app" }, { "path": "../assets-runtime" }, { "path": "../codec" },
-    { "path": "../ecs" }, { "path": "../geometry" }, { "path": "../math" },
-    { "path": "../pack" }, { "path": "../render" }, { "path": "../rhi-debug" },
-    { "path": "../rhi-webgpu" }, { "path": "../runtime" }, { "path": "../scene" },
-    { "path": "../types" }
+    {
+      "path": "../app"
+    },
+    {
+      "path": "../assets-runtime"
+    },
+    {
+      "path": "../ecs"
+    },
+    {
+      "path": "../geometry"
+    },
+    {
+      "path": "../math"
+    },
+    {
+      "path": "../render"
+    },
+    {
+      "path": "../rhi-debug"
+    },
+    {
+      "path": "../rhi-webgpu"
+    },
+    {
+      "path": "../runtime"
+    },
+    {
+      "path": "../scene"
+    },
+    {
+      "path": "../types"
+    },
+    {
+      "path": "../skinning"
+    },
+    {
+      "path": "../codec"
+    },
+    {
+      "path": "../pack"
+    },
+    {
+      "path": "../shader-compiler"
+    }
   ]
 }

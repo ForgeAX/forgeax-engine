@@ -76,7 +76,7 @@ Dawn PASS does not prove browser Pack transport, typed-array survival, BGL shape
 **Signal**: after pnpm -F @forgeax/hello-skin dev, browser console reports:
 
 ```
-[skin] loadByGuid<SceneAsset> failed: AssetError code=asset-not-imported
+[skin] load(sceneGuid, 'scene') failed: AssetError code=asset-not-imported
   expected="import transport to fetch pack for GUID 019eb2ce-..."
 ```
 

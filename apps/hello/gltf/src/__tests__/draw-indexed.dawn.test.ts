@@ -1,3 +1,5 @@
+import { publishGltfFixture } from './source-fixture';
+import { Materials } from '@forgeax/engine-render';
 // w28 - dawn (real GPU) drawIndexed test for hello-gltf Tier-B fork.
 //
 // Spec anchors: AC-15 (real-GPU drawIndexed exercise via the @forgeax/
@@ -32,18 +34,11 @@ import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import { World } from '@forgeax/engine-ecs';
-import { parseGltf } from '@forgeax/engine-gltf';
+import { meshIrToMeshAsset, parseGltf } from '@forgeax/engine-gltf';
 import { AssetGuid } from '@forgeax/engine-pack/guid';
-import type { MeshAsset } from '@forgeax/engine-assets-runtime';
-import {
-  Camera,
-  MeshFilter,
-  MeshRenderer,
-  SceneInstance,
-} from '@forgeax/engine-render';
+import { Camera, MeshFilter, MeshRenderer, SceneInstance } from '@forgeax/engine-render';
 import { ChildOf, Children, Transform } from '@forgeax/engine-scene';
 import { constructRuntimeRendererHost } from '@forgeax/engine-runtime/internal/renderer-host';
-import type { Handle, MaterialAsset } from '@forgeax/engine-types';
 import type { SceneAsset } from '@forgeax/engine-types';
 import { afterAll, describe, expect, it } from 'vitest';
 
@@ -86,34 +81,17 @@ function distance(
 }
 
 function registerSceneComponents(world: World): void {
-  for (const component of [Camera, ChildOf, Children, MeshFilter, MeshRenderer, SceneInstance, Transform]) {
+  for (const component of [
+    Camera,
+    ChildOf,
+    Children,
+    MeshFilter,
+    MeshRenderer,
+    SceneInstance,
+    Transform,
+  ]) {
     world.components.register(component).unwrap();
   }
-}
-
-// Expand positions-only meshIr to canonical 12F interleaved layout
-// (position vec3 + normal vec3 + uv vec2 + tangent vec4).
-// GLTF Tier-B defaults: normal=(0,1,0), uv=(0,0), tangent=(1,0,0,1).
-function meshIrToPod12F(meshIr: { positions: Float32Array }): Float32Array {
-  const vertexCount = meshIr.positions.length / 3;
-  const out = new Float32Array(vertexCount * 12);
-  for (let i = 0; i < vertexCount; i++) {
-    const src = i * 3;
-    const dst = i * 12;
-    out[dst] = meshIr.positions[src]!;         // px
-    out[dst + 1] = meshIr.positions[src + 1]!; // py
-    out[dst + 2] = meshIr.positions[src + 2]!; // pz
-    out[dst + 3] = 0;  // nx (default)
-    out[dst + 4] = 1;  // ny (default)
-    out[dst + 5] = 0;  // nz (default)
-    out[dst + 6] = 0;  // u  (default)
-    out[dst + 7] = 0;  // v  (default)
-    out[dst + 8] = 1;  // tx (default)
-    out[dst + 9] = 0;  // ty (default)
-    out[dst + 10] = 0; // tz (default)
-    out[dst + 11] = 1; // tw (default)
-  }
-  return out;
 }
 
 describe('hello-gltf w28 - dawn drawIndexed real GPU spine (AC-15)', () => {
@@ -182,7 +160,11 @@ describe('hello-gltf w28 - dawn drawIndexed real GPU spine (AC-15)', () => {
 
     let host: Awaited<ReturnType<typeof constructRuntimeRendererHost>>;
     try {
-      host = await constructRuntimeRendererHost(mockCanvas, {}, { shaderManifestUrl: ENGINE_MANIFEST_URL });
+      host = await constructRuntimeRendererHost(
+        mockCanvas,
+        {},
+        { shaderManifestUrl: ENGINE_MANIFEST_URL },
+      );
     } finally {
       globalThis.navigator.gpu.requestAdapter = originalRequestAdapter;
     }
@@ -211,32 +193,9 @@ describe('hello-gltf w28 - dawn drawIndexed real GPU spine (AC-15)', () => {
     if (meshIr === undefined || matIr === undefined) return;
 
     if (meshIr.indices === undefined) throw new Error('box.gltf fixture must be indexed');
-    const meshAsset: MeshAsset = {
-      kind: 'mesh',
-      // bug-20260523 M3 / t9: canonical 12F interleaved layout (position vec3
-      // + normal vec3 + uv vec2 + tangent vec4). The registerWithGuid gate
-      // now enforces this; Tier-B box.gltf provides positions-only (3F per
-      // vertex), so fill missing attributes with GLTF defaults.
-      vertices: meshIrToPod12F(meshIr),
-      indices: meshIr.indices,
-      attributes: { position: meshIr.positions },
-      submeshes: [
-        {
-          indexOffset: 0,
-          indexCount: meshIr.indices.length,
-          vertexCount: meshIr.positions.length,
-          topology: 'triangle-list',
-          materialSlot: 0,
-        },
-      ],
-      materialSlots: [{ slotName: 'Default' }],
-    };
-    const materialAsset: MaterialAsset = {
-      kind: 'material',
-      passes: [{ name: 'Forward', program: { module: 'forgeax::default-unlit' }, renderState: { tags: { LightMode: 'Forward' }, queue: 2000 } }],
-      values: { baseColor: matIr.baseColorFactor },
-    };
-    const world = new World();
+    const meshAsset = meshIrToMeshAsset([meshIr]).unwrap();
+    const materialAsset = Materials.unlit(matIr.baseColorFactor);
+    const world = new World({ assets: assets });
     const worldAttachment1 = renderer.attach(world);
     if (!worldAttachment1.ok) throw worldAttachment1.error;
     const frameRequest = {
@@ -247,12 +206,7 @@ describe('hello-gltf w28 - dawn drawIndexed real GPU spine (AC-15)', () => {
 
     // feat-20260614 M8: registerWithGuid deleted. catalog(guid, payload) feeds
     // loadByGuid; world.allocSharedRef mints the column handle the bridge needs.
-    assets.catalog<MeshAsset>(meshGuid, meshAsset);
-    assets.catalog<MaterialAsset>(matGuid, materialAsset);
-    const matHandle: Handle<'MaterialAsset', 'shared'> = world.allocSharedRef<
-      'MaterialAsset',
-      MaterialAsset
-    >('MaterialAsset', materialAsset);
+
     registerSceneComponents(world);
 
     const meshNode = doc.nodes[0];
@@ -280,8 +234,8 @@ describe('hello-gltf w28 - dawn drawIndexed real GPU spine (AC-15)', () => {
           // MeshFilter.assetHandle pinned to HANDLE_CUBE = 1 (the engine
           // pre-uploads only HANDLE_CUBE / HANDLE_TRIANGLE GPU buffers in
           // v1; per-asset GPU upload is feat-future-asset-system-v2).
-          MeshFilter: { assetHandle: 1 },
-          MeshRenderer: { materials: [matHandle] },
+          MeshFilter: { assetHandle: AssetGuid.format(meshGuid) },
+          MeshRenderer: { materials: [AssetGuid.format(matGuid)] },
         },
       },
       'node-1': {
@@ -297,14 +251,21 @@ describe('hello-gltf w28 - dawn drawIndexed real GPU spine (AC-15)', () => {
       },
     };
     const sceneAsset: SceneAsset = { kind: 'scene', entities: sceneEntities };
-    assets.catalog<SceneAsset>(sceneGuid, sceneAsset);
+    publishGltfFixture(assets, {
+      mesh: meshAsset,
+      material: materialAsset,
+      scene: sceneAsset,
+      meshGuid: AssetGuid.format(meshGuid),
+      materialGuid: AssetGuid.format(matGuid),
+      sceneGuid: AssetGuid.format(sceneGuid),
+    });
 
-    const sceneRes = await assets.loadByGuid<SceneAsset>(sceneGuid);
+    const sceneRes = await assets.load(sceneGuid, 'scene');
     expect(sceneRes.ok).toBe(true);
     if (!sceneRes.ok) return;
     // loadByGuid returns the payload (D-17); mint a user-tier column handle.
-    const sceneHandle = world.allocSharedRef('SceneAsset', sceneRes.value);
-    const instRes = assets.instantiate<SceneAsset>(sceneHandle, world);
+    const sceneHandle = sceneRes.value;
+    const instRes = assets.instantiate(sceneHandle, world);
     expect(instRes.ok).toBe(true);
     if (!instRes.ok) return;
 

@@ -1,4 +1,4 @@
-import { unpackMeshBin } from '@forgeax/engine-assets-runtime';
+import { unpackMeshBin } from '@forgeax/engine-geometry';
 import { describe, expect, it } from 'vitest';
 
 describe('mesh-bin v4 closed error contract', () => {

@@ -4,7 +4,7 @@ import { readFile } from 'node:fs/promises';
 import { createRequire } from 'node:module';
 import { dirname, join } from 'node:path';
 import {
-  createAssetRegistry,
+  AssetRegistry,
   createCatalogSource,
   defineAssetKind,
 } from '@forgeax/engine-assets-runtime';
@@ -305,7 +305,7 @@ it.each([
       if (corrupt) bytes[0] = (bytes[0] ?? 0) ^ 1;
       return new Response(bytes);
     };
-    const registry = createAssetRegistry({
+    const registry = new AssetRegistry({
       scopeId: 'ui-closure-test',
       catalog: createCatalogSource({
         entries: [
@@ -329,8 +329,9 @@ it.each([
         continue;
       }
       if (!loaded.ok) throw loaded.error;
-      expect(loaded.value.html).toBe(html);
-      expect(loaded.value.css).toBe(css);
+      const asset = registry.read(loaded.value).unwrap();
+      expect(asset.html).toBe(html);
+      expect(asset.css).toBe(css);
       if (delivery === 'stream') expect(requested).toEqual(['https://ui.test/hud.pack.json']);
       const ui = await createBlitzUi({
         ...defaults,
@@ -341,7 +342,7 @@ it.each([
         },
       });
       live.push(ui);
-      const mounted = mountUi(loaded.value, { root: ui.document.body, layer: 1 });
+      const mounted = mountUi(asset, { root: ui.document.body, layer: 1 });
       if (!mounted.ok) throw mounted.error;
       await ui.loadResources();
       expect(requested).toContain('https://ui.test/images/red.png');

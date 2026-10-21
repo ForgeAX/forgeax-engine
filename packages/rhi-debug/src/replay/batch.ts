@@ -1,6 +1,7 @@
 import { err, ok, type Result } from '@forgeax/engine-types';
 import { createRhiDebugError, type RhiDebugError } from '../errors';
 import type { WorkEntry } from '../frame-model';
+import { handleAccess } from '../protocol/event-semantics';
 import type { TapeIndex, TapeWorkEntry } from '../protocol/tape-index';
 import type { RhiCallEvent } from '../protocol/types';
 import { eventFailure, executeEvent, type ReplayExecutionContext } from './execute';
@@ -228,8 +229,8 @@ function splitPoint(
     const event = events[index];
     if (event === undefined || !isCommandClosureEvent(event)) continue;
     if (event.cmdHandleId !== begin.cmdHandleId) continue;
-    const destination = closureDestination(event);
-    if (destination !== undefined && watched.has(destination)) return undefined;
+    if (handleAccess(event).written.some((destination) => watched.has(destination)))
+      return undefined;
   }
   return { work, pass, begin, submitEventIndex: submitEventIndex as number };
 }
@@ -445,35 +446,6 @@ function viewSource(host: BatchHost, id: string): string | undefined {
       return event.sourceHandleId;
   }
   return undefined;
-}
-
-/** The resource a closure command writes; its sources are only read. */
-function closureDestination(
-  event: Extract<
-    RhiCallEvent,
-    {
-      kind:
-        | 'resolveQuerySet'
-        | 'copyBufferToBuffer'
-        | 'copyBufferToTexture'
-        | 'copyTextureToBuffer'
-        | 'copyTextureToTexture'
-        | 'clearBuffer';
-    }
-  >,
-): string | undefined {
-  switch (event.kind) {
-    case 'copyBufferToBuffer':
-    case 'resolveQuerySet':
-      return event.destinationHandleId;
-    case 'copyBufferToTexture':
-    case 'copyTextureToTexture':
-      return event.destination.textureHandleId;
-    case 'copyTextureToBuffer':
-      return event.destination.bufferHandleId;
-    case 'clearBuffer':
-      return event.handleId;
-  }
 }
 
 function aborted(): Result<never, RhiDebugError> {

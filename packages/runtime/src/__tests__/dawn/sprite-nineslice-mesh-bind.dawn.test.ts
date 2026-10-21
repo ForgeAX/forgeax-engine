@@ -1,3 +1,5 @@
+import { createPrimitiveMesh } from '@forgeax/engine-geometry';
+import { testAssets } from '../helpers/runtime-assets';
 import { shaderManifestUrl } from '../shader-manifest-url.fixture';
 // sprite-nineslice-mesh-bind.dawn.test.ts -- feat-20260527-sprite-nineslice
 // M2 / w13. dawn-node smoke that the HANDLE_NINESLICE_QUAD GPU buffers are
@@ -13,12 +15,12 @@ import { shaderManifestUrl } from '../shader-manifest-url.fixture';
 // It does NOT assert pixel content -- M3 / w15 (hello-sprite-nineslice-section
 // dawn fixture) covers stretch + tile pixel parity.
 
-import { AssetRegistry, HANDLE_QUAD } from '@forgeax/engine-assets-runtime';
+import { AssetRegistry } from '@forgeax/engine-assets-runtime';
 import { World } from '@forgeax/engine-ecs';
 import { Camera, MeshFilter, MeshRenderer } from '@forgeax/engine-render';
 import { SPRITE_PREMULTIPLIED_ALPHA_BLEND } from '@forgeax/engine-render/authoring';
 import { Transform } from '@forgeax/engine-scene';
-import type { MaterialAsset, SamplerAsset, TextureAsset } from '@forgeax/engine-types';
+import type { SamplerAsset, TextureAsset } from '@forgeax/engine-types';
 import { describe, expect, it } from 'vitest';
 import { constructRuntimeRendererHost } from '../../renderer-host';
 import { drawPublished } from '../draw-published';
@@ -131,7 +133,7 @@ describe('feat-20260527-sprite-nineslice w13 dawn smoke (HANDLE_NINESLICE_QUAD b
       mips: { kind: 'none' },
       data: pixels,
     };
-    const texHandle = world.allocSharedRef<'TextureAsset', TextureAsset>('TextureAsset', texAsset);
+    const texHandle = testAssets(world).create(texAsset).unwrap();
     const samplerAsset: SamplerAsset = {
       kind: 'sampler',
       addressModeU: 'repeat',
@@ -140,10 +142,7 @@ describe('feat-20260527-sprite-nineslice w13 dawn smoke (HANDLE_NINESLICE_QUAD b
       minFilter: 'linear',
       mipmapFilter: 'nearest',
     };
-    const samplerHandle = world.allocSharedRef<'SamplerAsset', SamplerAsset>(
-      'SamplerAsset',
-      samplerAsset,
-    );
+    const samplerHandle = testAssets(world).create(samplerAsset).unwrap();
 
     // Sprite material with non-zero slices -- this triggers the w11 mesh
     // routing override to HANDLE_NINESLICE_QUAD. values includes
@@ -165,25 +164,26 @@ describe('feat-20260527-sprite-nineslice w13 dawn smoke (HANDLE_NINESLICE_QUAD b
     // HANDLE_QUAD -> HANDLE_NINESLICE_QUAD when slices != [0,0,0,0]) is
     // unchanged; the record stage reads it via the materialShaderId ===
     // 'forgeax::sprite' + non-zero `slicesAndMode.xyz` predicate.
-    const matHandle = world.allocSharedRef<'MaterialAsset', MaterialAsset>('MaterialAsset', {
-      kind: 'material',
-      passes: [
-        {
-          name: 'Sprite',
-          program: { module: 'forgeax::sprite' },
-          renderState: {
-            ...{ blend: SPRITE_PREMULTIPLIED_ALPHA_BLEND },
-            queue: 3000,
-            tags: { LightMode: 'Forward' },
+    const matHandle = testAssets(world)
+      .create({
+        kind: 'material',
+        passes: [
+          {
+            name: 'Sprite',
+            program: { module: 'forgeax::sprite' },
+            renderState: {
+              ...{ blend: SPRITE_PREMULTIPLIED_ALPHA_BLEND },
+              queue: 3000,
+              tags: { LightMode: 'Forward' },
+            },
           },
+        ],
+        values: {
+          baseColorTexture: { texture: texHandle, sampler: samplerHandle },
+          slicesAndMode: [0.25, 0.25, 0.25, 0.25],
         },
-      ],
-      values: {
-        baseColorTexture: { texture: texHandle as unknown as never },
-        sampler: { texture: samplerHandle as unknown as never },
-        slicesAndMode: [0.25, 0.25, 0.25, 0.25],
-      },
-    });
+      })
+      .unwrap();
 
     const errors: unknown[] = [];
     renderer.subscribe((event) => {
@@ -200,7 +200,12 @@ describe('feat-20260527-sprite-nineslice w13 dawn smoke (HANDLE_NINESLICE_QUAD b
           scale: [1, 1, 1],
         },
       },
-      { component: MeshFilter, data: { assetHandle: HANDLE_QUAD } },
+      {
+        component: MeshFilter,
+        data: {
+          assetHandle: testAssets(world).create(createPrimitiveMesh('quad').unwrap()).unwrap(),
+        },
+      },
       { component: MeshRenderer, data: { materials: [matHandle] } },
     );
     world.spawn(

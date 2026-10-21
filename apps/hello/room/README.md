@@ -13,11 +13,11 @@ pnpm --filter @forgeax/hello-room smoke  # dawn-node 60 frame + multi-mesh readb
 
 ## Scene
 
-Three meshed entities sharing the builtin `HANDLE_CUBE` mesh asset (M2 GPU upload only pre-populates `HANDLE_CUBE` + `HANDLE_TRIANGLE`; custom procedural upload is deferred to `feat-future-asset-system-v2`):
+The app loads the authored room Scene through `assets.load(sceneGuid, 'scene')`, then calls `assets.instantiate(scene, world)`. The scene closure supplies shared mesh and material identities:
 
-- Root Cube — `Transform` + `MeshFilter(HANDLE_CUBE)` + `MeshRenderer { material: <standard handle> }` (PBR orange)
+- Root Cube — `Transform` + `MeshFilter { assetHandle: cube }` + `MeshRenderer { materials: [material] }` (PBR orange)
 - Sphere child — same + `ChildOf -> root` + `MeshRenderer { material: <unlit handle> }` (flat blue)
-- Plane child — same + `ChildOf -> root` + `MeshRenderer { material: <standard handle> }` (PBR green)
+- Plane child — same + `ChildOf -> root` + `MeshRenderer { materials: [material] }` (PBR green)
 
 Plus one `Camera` + one `DirectionalLight`. Visual distinction between the three meshed entities is carried by `Transform` (scale + translation) + the bound `MaterialAsset.baseColor` (resolved through the `MeshRenderer.material` handle) — the shape is cube in all three cases for v1 convergence (requirements AC-05 permissive gate; AC-25 human-locked tolerance).
 

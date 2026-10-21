@@ -9,21 +9,19 @@ import {
   parseGltf,
   toMaterialAsset,
 } from '@forgeax/engine-gltf';
-import { AssetGuid } from '@forgeax/engine-pack/guid';
+
 import { Camera, DirectionalLight, perspective } from '@forgeax/engine-render';
 import { EngineEnvironmentError } from '@forgeax/engine-runtime';
 import { Transform } from '@forgeax/engine-scene';
-import { type MaterialAsset, type MeshAsset, type SceneAsset } from '@forgeax/engine-types';
+
 import { quat } from '@forgeax/engine-math';
 import { forgeaxBundlerAdapter } from 'virtual:forgeax/bundler';
 import boxGltfUrl from '../../../hello/gltf/assets/box.gltf?url';
-import metaJson from '../../../hello/gltf/assets/box.gltf.meta.json' with { type: 'json' };
 import { MovedScene, stepUpdateGltfScene } from './update-gltf-scene';
 
 const canvas = document.querySelector<HTMLCanvasElement>('#app');
 if (canvas === null) throw new Error('bevy-update-gltf-scene: missing canvas');
 
-type SubAsset = { readonly guid: string; readonly kind: string };
 type WindowEvidence = Window & {
   __bevyUpdateGltfSceneReady?: boolean;
   __prepareUpdateGltfSceneCapture?: () => Promise<void>;
@@ -47,6 +45,7 @@ async function bootstrap(target: HTMLCanvasElement): Promise<void> {
 
   const app = appResult.value;
   const assets = app.assets;
+  if (assets === undefined) throw new Error('App asset service is unavailable');
   if (assets === undefined) {
     console.error('[bevy-update-gltf-scene] assets unavailable');
     return;
@@ -65,15 +64,6 @@ async function bootstrap(target: HTMLCanvasElement): Promise<void> {
     return;
   }
   const doc = docResult.value;
-  const subAssets = metaJson.subAssets as readonly SubAsset[];
-  const meshGuid = readGuid(subAssets, 'mesh');
-  const materialGuid = readGuid(subAssets, 'material');
-  const sceneGuid = readGuid(subAssets, 'scene');
-  if (meshGuid === null || materialGuid === null || sceneGuid === null) {
-    console.error('[bevy-update-gltf-scene] glTF sidecar is missing mesh/material/scene GUIDs');
-    return;
-  }
-
   const meshResult = meshIrToMeshAsset(doc.meshes);
   if (!meshResult.ok) {
     console.error(`[bevy-update-gltf-scene] mesh bridge failed: ${meshResult.error.code}`);
@@ -86,10 +76,8 @@ async function bootstrap(target: HTMLCanvasElement): Promise<void> {
     return;
   }
   const material = toMaterialAsset(materialIr);
-  assets.catalog<MeshAsset>(meshGuid, mesh);
-  assets.catalog<MaterialAsset>(materialGuid, material);
-  const meshHandle = world.allocSharedRef('MeshAsset', mesh);
-  const materialHandle = world.allocSharedRef('MaterialAsset', material);
+  const meshHandle = assets.create(mesh).unwrap();
+  const materialHandle = assets.create(material).unwrap();
   const meshNode = doc.nodes[0];
   const sceneDoc = meshNode === undefined
     ? doc
@@ -103,15 +91,9 @@ async function bootstrap(target: HTMLCanvasElement): Promise<void> {
     meshHandles: new Map([[0, meshHandle]]),
     materialHandles: new Map([[0, materialHandle]]),
   });
-  assets.catalog<SceneAsset>(sceneGuid, scene);
 
-  const sceneResult = await assets.loadByGuid<SceneAsset>(sceneGuid);
-  if (!sceneResult.ok) {
-    console.error(`[bevy-update-gltf-scene] loadByGuid<SceneAsset> failed: ${sceneResult.error.code}`);
-    return;
-  }
-  const sceneHandle = world.allocSharedRef('SceneAsset', sceneResult.value);
-  const instanceResult = assets.instantiate<SceneAsset>(sceneHandle, world);
+  const sceneHandle = assets.create(scene).unwrap();
+  const instanceResult = assets.instantiate(sceneHandle, world);
   if (!instanceResult.ok) {
     console.error(`[bevy-update-gltf-scene] instantiate failed: ${instanceResult.error.code}`);
     return;
@@ -150,11 +132,4 @@ async function bootstrap(target: HTMLCanvasElement): Promise<void> {
   };
   evidenceWindow.__bevyUpdateGltfSceneReady = true;
   console.warn('[bevy-update-gltf-scene] instantiated SceneAsset descendants are moving');
-}
-
-function readGuid(subAssets: readonly SubAsset[], kind: string): AssetGuid | null {
-  const entry = subAssets.find((candidate) => candidate.kind === kind);
-  if (entry === undefined) return null;
-  const result = AssetGuid.parse(entry.guid);
-  return result.ok ? result.value : null;
 }

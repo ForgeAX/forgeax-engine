@@ -1,110 +1,188 @@
-import type { Buffer } from '@forgeax/engine-rhi';
-import { err, RhiError } from '@forgeax/engine-rhi';
+import { RhiError } from '@forgeax/engine-rhi';
 import { rhi } from '@forgeax/engine-rhi-null';
 import { expect, it, vi } from 'vitest';
-import { GPU_DRIVEN_VIEW_WGSL } from '../gpu-driven/view-gpu';
+import type { GpuDrivenCandidate } from '../gpu-driven/batch-topology';
+import { GPU_DRIVEN_BATCH_STRIDE, GPU_DRIVEN_VIEW_WGSL } from '../gpu-driven/view-gpu';
+import { FrameListBase } from '../scene/frame-list';
 import { uploadFixture } from './gpu-driven-topology-upload-fixture';
+import { observeGpuInputBytes } from './helpers/gpu-input-bytes';
 
 it.each([
   { at: 2, thrown: false },
-  { at: 3, thrown: false },
+  { at: 7, thrown: false },
+  { at: 8, thrown: false },
   { at: 2, thrown: true },
-])('restores the exact previous plan after write $at fails (thrown=$thrown)', async ({
-  at: failureAt,
+])('preserves held member roots and restores task bindings after write $at fails (thrown=$thrown)', async ({
+  at,
   thrown,
 }) => {
   const device = (await (await rhi.requestAdapter()).unwrap().requestDevice()).unwrap();
   const shader = (await rhi.createShaderModule(device, { code: GPU_DRIVEN_VIEW_WGSL })).unwrap();
   const f = uploadFixture(device, shader);
-  const accepted = new Map<Buffer, Uint8Array>();
-  const originalWrite = device.queue.writeBuffer.bind(device.queue);
-  let attempt = 0,
-    failing = false;
+  const observed = observeGpuInputBytes(device);
   const failure = new RhiError({
     code: 'rhi-descriptor-invalid',
     expected: 'injected write failure',
-    hint: 'test partial topology mutation',
+    hint: 'exercise shared-input and task partial writes',
   });
-  const writes = vi
-    .spyOn(device.queue, 'writeBuffer')
-    .mockImplementation((buffer, offset, data, dataOffset, size) => {
-      if (failing && ++attempt === failureAt) {
-        if (thrown) throw failure;
-        return err(failure);
-      }
-      const result = originalWrite(buffer, offset, data, dataOffset, size);
-      if (result.ok) {
-        const bytes = ArrayBuffer.isView(data)
-          ? new Uint8Array(data.buffer, data.byteOffset, data.byteLength)
-          : new Uint8Array(data);
-        const begin = dataOffset ?? 0;
-        const patch = bytes.subarray(begin, begin + (size ?? bytes.byteLength));
-        const previous = accepted.get(buffer);
-        const contents = new Uint8Array(Math.max(previous?.byteLength ?? 0, offset + patch.length));
-        if (previous !== undefined) contents.set(previous);
-        contents.set(patch, offset);
-        accepted.set(buffer, contents);
-      }
-      return result;
-    });
   try {
     f.update().unwrap();
-    const candidateBuffer = writes.mock.calls[0]?.[0];
-    if (candidateBuffer === undefined) throw Error('Missing candidate buffer');
-    const baseline = accepted.get(candidateBuffer)?.slice();
-    failing = true;
-    if (thrown) {
-      let caught: unknown;
-      try {
-        f.update(f.changed);
-      } catch (error) {
-        caught = error;
-      }
-      expect(caught).toBe(failure);
-    } else {
-      const rejected = f.update(f.changed);
-      expect(rejected.ok).toBe(false);
-      if (rejected.ok) throw Error('Expected failed update');
-      expect(rejected.error).toBe(failure);
-    }
-    expect(accepted.get(candidateBuffer)).not.toEqual(baseline);
-    failing = false;
-    writes.mockClear();
+    const root = observed.header().getUint32(48, true);
+    const arena = observed.buffers().arena;
+    const count = observed.header().getUint32(4, true);
+    const before = observed.readMembers(root, arena, count);
+    observed.injectFailure(at, thrown, failure);
+    const result = f.update(f.changed);
+    expect(result.ok).toBe(false);
+    if (result.ok) throw new Error('Expected the injected failure');
+    expect(result.error).toBe(failure);
+    expect(observed.readMembers(root, arena, count)).toEqual(before);
+    observed.clearFailure();
     f.update(f.original).unwrap();
-    expect(accepted.get(candidateBuffer)).toEqual(baseline);
-    expect(f.view.inspect().candidateUploadBytes).toBeGreaterThan(0);
-    expect(f.view.inspect().batchUploadBytes).toBeGreaterThan(0);
+    expect(observed.members()).toEqual(before);
+    expect(observed.header().getUint32(8, true)).toBe(f.original.batches.at(0)?.key.count);
     f.update(f.original).unwrap();
-    expect(f.view.inspect().candidateUploadBytes).toBe(0);
+    expect(f.view.inspect().sharedInputUploadBytes).toBe(0);
   } finally {
-    writes.mockRestore();
+    observed.close();
     f.close();
   }
 });
 
-it('uploads one changed candidate word and retains identical batch bytes', async () => {
+it.each([
+  'unchanged',
+  'first',
+  'middle',
+  'last',
+] as const)('bounds task-word comparisons and preserves actual member values for a %s raw edit', async (edit) => {
   const device = (await (await rhi.requestAdapter()).unwrap().requestDevice()).unwrap();
   const shader = (await rhi.createShaderModule(device, { code: GPU_DRIVEN_VIEW_WGSL })).unwrap();
   const f = uploadFixture(device, shader);
+  const observed = observeGpuInputBytes(device);
+  const words = (f.original.batches.length * GPU_DRIVEN_BATCH_STRIDE) / 4;
+  let reads = 0;
   try {
     f.update().unwrap();
-    const full = f.view.inspect().candidateUploadBytes;
-    expect(full).toBeGreaterThan(4);
-    const candidateOnly = {
-      ...f.changed,
-      batches: f.changed.batches.map((batch, index) => ({
+    vi.stubGlobal(
+      'Uint32Array',
+      new Proxy(Uint32Array, {
+        construct(target, args, newTarget) {
+          const array = Reflect.construct(target, args, newTarget) as Uint32Array;
+          if (args.length !== 3 || array.length !== words) return array;
+          return new Proxy(array, {
+            get(target, key) {
+              if (typeof key === 'string' && /^\d+$/.test(key)) {
+                reads++;
+                if (Number(key) >= target.length)
+                  throw new Error('Task comparison exceeds its word extent');
+              }
+              return Reflect.get(target, key, target);
+            },
+          });
+        },
+      }),
+    );
+    const changed = {
+      ...f.original,
+      batches: f.original.batches.map((batch) => ({
         ...batch,
-        key: f.original.batches[index]?.key ?? batch.key,
+        candidates: batch.candidates.map((candidate, index) => {
+          const selected =
+            edit === 'first'
+              ? 0
+              : edit === 'middle'
+                ? Math.floor(batch.candidates.length / 2)
+                : edit === 'last'
+                  ? batch.candidates.length - 1
+                  : -1;
+          return {
+            ...candidate,
+            instanceOrdinal:
+              index === selected ? 1 - candidate.instanceOrdinal : candidate.instanceOrdinal,
+          };
+        }),
       })),
     };
-    f.update(candidateOnly).unwrap();
-    expect(f.view.inspect().candidateUploadBytes).toBe(4);
-    expect(f.view.inspect().batchUploadBytes).toBe(0);
+    f.update(changed).unwrap();
+    expect(reads).toBeGreaterThan(0);
+    expect(reads).toBeLessThanOrEqual(words * 4);
+    vi.unstubAllGlobals();
+    expect(observed.members().map((value) => value.instanceOrdinal)).toEqual(
+      changed.batches[0]?.candidates.map((value) => value.instanceOrdinal),
+    );
     f.update(f.original).unwrap();
-    expect(f.view.inspect().candidateUploadBytes).toBe(4);
-    f.update({ ...f.original, revision: f.original.revision + 2 }).unwrap();
-    expect(f.view.inspect().candidateUploadBytes).toBe(0);
-    expect(f.view.inspect().batchUploadBytes).toBe(0);
+    expect(observed.members().map((value) => value.instanceOrdinal)).toEqual(
+      f.original.batches.at(0)?.candidates.map((value) => value.instanceOrdinal),
+    );
+    expect(f.view.inspect().sharedInputUploadBytes).toBe(0);
+  } finally {
+    vi.unstubAllGlobals();
+    observed.close();
+    f.close();
+  }
+});
+
+it('consumes native candidate numeric facts even when a frozen array has a custom iterator', async () => {
+  const device = (await (await rhi.requestAdapter()).unwrap().requestDevice()).unwrap();
+  const shader = (await rhi.createShaderModule(device, { code: GPU_DRIVEN_VIEW_WGSL })).unwrap();
+  const f = uploadFixture(device, shader);
+  const first = f.original.batches.at(0);
+  if (first === undefined) throw Error('Missing source batch');
+  const candidates = first.candidates.map((candidate) => Object.freeze({ ...candidate }));
+  Object.defineProperty(candidates, Symbol.iterator, {
+    value: function* () {
+      for (let index = 0; index < candidates.length; index++) {
+        const candidate = candidates[index];
+        if (candidate === undefined) throw Error('Missing numeric candidate');
+        yield Object.freeze({ ...candidate, instanceOrdinal: 1 - candidate.instanceOrdinal });
+      }
+    },
+  });
+  Object.freeze(candidates);
+  const plan = {
+    ...f.original,
+    revision: f.original.revision + 1,
+    batches: f.original.batches.map((batch, index) =>
+      index === 0 ? { ...batch, candidates } : batch,
+    ),
+  };
+  const observed = observeGpuInputBytes(device);
+  try {
+    f.update(plan).unwrap();
+    expect(observed.members().map((value) => value.instanceOrdinal)).toEqual(
+      candidates.map((value) => value.instanceOrdinal),
+    );
+  } finally {
+    observed.close();
+    f.close();
+  }
+});
+
+it('rejects a candidate stream ending before its declared candidate length', async () => {
+  const device = (await (await rhi.requestAdapter()).unwrap().requestDevice()).unwrap();
+  const shader = (await rhi.createShaderModule(device, { code: GPU_DRIVEN_VIEW_WGSL })).unwrap();
+  const f = uploadFixture(device, shader);
+  const first = f.original.batches.at(0);
+  if (first === undefined) throw Error('Missing source batch');
+  const rows = [...first.candidates];
+  const candidates = new (class extends FrameListBase<GpuDrivenCandidate> {
+    readonly length = rows.length;
+    at(index: number): GpuDrivenCandidate | undefined {
+      return rows.at(index);
+    }
+    *[Symbol.iterator](): Generator<GpuDrivenCandidate> {
+      if (rows[0] !== undefined) yield rows[0];
+    }
+  })();
+  const plan = {
+    ...f.original,
+    revision: f.original.revision + 1,
+    batches: f.original.batches.map((batch, index) =>
+      index === 0 ? { ...batch, candidates } : batch,
+    ),
+  };
+  try {
+    expect(() => f.update(plan).unwrap()).toThrowError(/complete candidate stream/);
   } finally {
     f.close();
   }

@@ -19,6 +19,10 @@ import { drawReadyFrame } from '../../../../../scripts/test/ready-render-frame.m
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { existsSync, readFileSync } from 'node:fs';
+import { AssetRegistry } from '@forgeax/engine/assets-runtime';
+
+import { createPrimitiveMesh } from '@forgeax/engine/geometry';
+
 
 const SMOKE_MIN_FRAMES = Math.max(60, Number.parseInt(process.env.SMOKE_MIN_FRAMES ?? '60', 10));
 const WIDTH = 512;
@@ -188,9 +192,7 @@ const { constructRuntimeRendererHost } = await import('@forgeax/engine-runtime/i
 const { Materials } = await import('@forgeax/engine/render');
 const { BLOOM_ENABLED, Camera, MeshFilter, MeshRenderer, PointLight, TONEMAP_REINHARD_EXTENDED } = await import('@forgeax/engine/render');
 const { Transform } = await import('@forgeax/engine-scene');
-const {
-  HANDLE_CUBE,
-} = await import('@forgeax/engine-assets-runtime');
+
 const { unwrapHandle } = await import('@forgeax/engine-types');
 const { AssetGuid } = await import('@forgeax/engine-pack/guid');
 const { quat } = await import('@forgeax/engine-math');
@@ -274,38 +276,35 @@ function makeTexAsset(decoded) {
   };
 }
 
-const world = new World();
+const world = new World({ assets: assets });
+const sceneAssets = world.assets;
+if (!(sceneAssets instanceof AssetRegistry)) throw new Error('Scene requires its runtime asset owner');
+
+const primitiveCube = sceneAssets.create(createPrimitiveMesh('cube').unwrap()).unwrap();
+
 const worldAttachment1 = renderer.attach(world);
 if (!worldAttachment1.ok) throw worldAttachment1.error;
 const lease = worldAttachment1.value;
 
-// Catalogue the textures under their GUIDs, then mint shared-ref column handles.
+// Create managed handles from the decoded texture values.
 const woodTexAsset = makeTexAsset(woodDecoded);
 const container2TexAsset = makeTexAsset(container2Decoded);
-assets.catalog(woodGuidRes.value, woodTexAsset);
-assets.catalog(container2GuidRes.value, container2TexAsset);
-const woodHandle = world.allocSharedRef('TextureAsset', woodTexAsset);
-const container2Handle = world.allocSharedRef('TextureAsset', container2TexAsset);
+const woodHandle = world.assets.create(woodTexAsset).unwrap();
+const container2Handle = world.assets.create(container2TexAsset).unwrap();
 console.log(`[learn-render-7-bloom] registered wood handle id=${woodHandle}`);
 console.log(`[learn-render-7-bloom] registered container2 handle id=${container2Handle}`);
 
 // Register materials: wood floor + container crates (standard PBR).
-const floorMatHandle = world.allocSharedRef(
-  'MaterialAsset',
-  Materials.standard({
+const floorMatHandle = world.assets.create(Materials.standard({
     baseColor: [1.0, 1.0, 1.0, 1.0],
     roughness: 0.9,
     baseColorTexture: unwrapHandle(woodHandle),
-  }),
-);
-const containerMatHandle = world.allocSharedRef(
-  'MaterialAsset',
-  Materials.standard({
+  })).unwrap();
+const containerMatHandle = world.assets.create(Materials.standard({
     baseColor: [1.0, 1.0, 1.0, 1.0],
     roughness: 0.8,
     baseColorTexture: unwrapHandle(container2Handle),
-  }),
-);
+  })).unwrap();
 
 // Spawn wood floor (bloom.cpp: translate (0,-1,0), scale (12.5,0.5,12.5)).
 world
@@ -315,7 +314,7 @@ world
       data: {
         pos: [0, -1.0, 0], quat: [0, 0, 0, 1], scale: [12.5, 0.5, 12.5],},
     },
-    { component: MeshFilter, data: { assetHandle: HANDLE_CUBE } },
+    { component: MeshFilter, data: { assetHandle: primitiveCube } },
     { component: MeshRenderer, data: { materials: [floorMatHandle] } },
   )
   .unwrap();
@@ -331,7 +330,7 @@ for (const box of CONTAINER_BOXES) {
         data: {
           pos: [box.pos[0], box.pos[1], box.pos[2]], quat: [rot[0], rot[1], rot[2], rot[3]], scale: [box.scale, box.scale, box.scale],},
       },
-      { component: MeshFilter, data: { assetHandle: HANDLE_CUBE } },
+      { component: MeshFilter, data: { assetHandle: primitiveCube } },
       { component: MeshRenderer, data: { materials: [containerMatHandle] } },
     )
     .unwrap();
@@ -352,10 +351,7 @@ for (let i = 0; i < LIGHT_POSITIONS.length; i++) {
       data: { color: [color[0], color[1], color[2]], intensity: 1.0, range: 30.0 },
     },
   );
-  const lightBoxMat = world.allocSharedRef(
-    'MaterialAsset',
-    Materials.unlit([color[0], color[1], color[2], 1.0]),
-  );
+  const lightBoxMat = world.assets.create(Materials.unlit([color[0], color[1], color[2], 1.0])).unwrap();
   world
     .spawn(
       {
@@ -363,7 +359,7 @@ for (let i = 0; i < LIGHT_POSITIONS.length; i++) {
         data: {
           pos: [pos[0], pos[1], pos[2]], quat: [0, 0, 0, 1], scale: [0.25, 0.25, 0.25],},
       },
-      { component: MeshFilter, data: { assetHandle: HANDLE_CUBE } },
+      { component: MeshFilter, data: { assetHandle: primitiveCube } },
       { component: MeshRenderer, data: { materials: [lightBoxMat] } },
     )
     .unwrap();

@@ -8,6 +8,7 @@ import { finalizePackageTransportSource } from '@forgeax/engine-pack/build';
 import { AssetGuid } from '@forgeax/engine-pack/guid';
 import { parseShadowCapsuleSet } from '@forgeax/engine-types';
 import { beforeAll, describe, expect, it } from 'vitest';
+import { importedMesh } from '../../../import/src/__tests__/fixtures/runtime-import';
 import { fbxImporter, sourceKeyForFbxOutput } from '../fbx-importer.js';
 import { initFbxWasm, parseFbxToObject } from '../index.js';
 import { parseFbxLodGroup } from '../lod/parse-lod-group.js';
@@ -201,11 +202,8 @@ describe('real FBX LodGroup importer closure', () => {
     const meshes = result.value.pack.assets.filter((asset) => asset.kind === 'mesh');
     expect(meshes).toHaveLength(2);
     const root = meshes.find((asset) => asset.guid.endsWith('000000000001'));
-    const rootLod = (
-      root?.payload as {
-        readonly lods?: readonly { readonly mesh: Uint8Array; readonly screenCoverage: number }[];
-      }
-    ).lods?.[0];
+    if (!root) throw new Error('missing root Mesh');
+    const rootLod = importedMesh(root).lods?.[0];
     expect(rootLod?.screenCoverage).toBe(0.5);
     expect(rootLod === undefined ? undefined : AssetGuid.format(rootLod.mesh as never)).toBe(
       '00000000-0000-7000-8000-000000000002',

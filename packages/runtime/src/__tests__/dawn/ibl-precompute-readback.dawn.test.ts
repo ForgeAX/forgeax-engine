@@ -1,3 +1,5 @@
+import { worldRenderResources } from '../../../../render/src/publication/resource-scope';
+import { testAssets } from '../helpers/runtime-assets';
 // t51 (M3.5) -- dawn 4-pass IBL precompute readback (red-phase).
 //
 // Real GPU (dawn-node / webgpu native binding) test: feeds a 4x2 rgba16float
@@ -16,7 +18,7 @@
 
 import { World } from '@forgeax/engine-ecs';
 import { composeShader } from '@forgeax/engine-naga';
-import { ok, type RhiDevice, type Texture } from '@forgeax/engine-rhi';
+import type { RhiDevice, Texture } from '@forgeax/engine-rhi';
 import { _internal_getRawDevice, createShaderModule, rhi } from '@forgeax/engine-rhi-webgpu';
 import type { EquirectAsset, TextureFormat } from '@forgeax/engine-types';
 import { describe, expect, it } from 'vitest';
@@ -50,10 +52,9 @@ const mockCaps = {
 
 // feat-20260601-device/gpu-residency-extraction M1 (D-3 falsifiable anchor): a
 // single store._uploadCubemapFromEquirect(world, srcHandle, srcPod) returns the
-// cube handle, and store.getCubemapGpuTexture(cubeHandle, world) reads it back -- the
-// single-call contract is preserved. The cube POD register-relay is injected
-// at configureGpuDevice and mints via world.allocSharedRef (the store holds no
-// registry reference, D-3).
+// cube handle, and store.getCubemapGpuTexture(cubeHandle, worldRenderResources(world)) reads it back -- the
+// projection preserves the managed source identity; its device products live
+// under the same resource scope.
 
 // Load + compose the 6 ibl-* WGSL modules into the 4 composed entry shaders
 // that createIblPipelines consumes. Mirrors what vite-plugin-shader does at
@@ -84,7 +85,11 @@ async function composeIblShadersForDawn(): Promise<void> {
   const prefilterSrc = read('ibl-prefilter.wgsl');
   const brdfLutSrc = read('ibl-brdf-lut.wgsl');
   // The per-pass modules import ibl-shared, which derives F90 through brdf.
-  const imports = { 'forgeax_pbr::ibl_shared': sharedSrc, 'forgeax_pbr::brdf': read('brdf.wgsl') };
+  const imports = {
+    'forgeax_pbr::pmrem': read('ibl-pmrem.wgsl'),
+    'forgeax_pbr::ibl_shared': sharedSrc,
+    'forgeax_pbr::brdf': read('brdf.wgsl'),
+  };
   const [equirectToCube, irradiance, prefilter, brdfLut] = await Promise.all([
     composeShader(equirectSrc, imports, {}),
     composeShader(irradianceSrc, imports, {}),
@@ -305,28 +310,27 @@ describe('t51 (M3.5) -- dawn IBL 4-pass non-zero readback', () => {
         process.env.FORGEAX_IBL_REAL_SOURCE === '1'
           ? await loadPhysicalGuidEquirect()
           : makeWhiteEquirect();
-      const equirectHandle = world.allocSharedRef('EquirectAsset', equirect);
+      const equirectHandle = testAssets(world).create(equirect).unwrap();
 
       // The production path receives the opaque RhiDevice and the same
       // Result-returning shader factory used by the WebGPU backend. Raw GPU
       // access remains confined to readback below.
-      store.configureGpuDevice(
-        rhiDevice,
-        undefined,
-        (w: World, pod: EquirectAsset) => ok(w.allocSharedRef('EquirectAsset', pod)),
-        mockCaps,
-      );
+      store.configureGpuDevice(rhiDevice, undefined, mockCaps);
       store.configureIblDevice(rhiDevice, createShaderModule);
 
       // Single call returns the cube handle (D-3 single-call contract). The
       // projection method is @internal (private) after feat-20260630 M2 / w11;
       // the dawn test reaches it through the store internals.
-      const result = await store._uploadCubemapFromEquirect(world, equirectHandle, equirect);
+      const result = await store._uploadCubemapFromEquirect(
+        worldRenderResources(world),
+        equirectHandle,
+        equirect,
+      );
       expect(result.ok).toBe(true);
       if (!result.ok) return;
 
       const cubeHandle = result.value;
-      const cubeTexture = store.getCubemapGpuTexture(cubeHandle, world);
+      const cubeTexture = store.getCubemapGpuTexture(cubeHandle, worldRenderResources(world));
       expect(cubeTexture).toBeDefined();
       if (cubeTexture === undefined) return;
 
@@ -354,7 +358,7 @@ describe('t51 (M3.5) -- dawn IBL 4-pass non-zero readback', () => {
       // (b) irradiance, (c) prefilter, (d) brdfLut: the textures live on
       // IblPipelineCache after t52/t53. Read opaque cache slots through the
       // test-only raw texture boundary.
-      const cache = store.getCubemapIbl(Number(cubeHandle), world);
+      const cache = store.getCubemapIbl(Number(cubeHandle), worldRenderResources(world));
       if (cache === undefined) throw new Error('missing source IBL output');
       const {
         irradianceTexture: irrTex,
@@ -364,12 +368,12 @@ describe('t51 (M3.5) -- dawn IBL 4-pass non-zero readback', () => {
       expect(irrTex).toBeDefined();
       expect(prefTex).toBeDefined();
       expect(brdfTex).toBeDefined();
-      expect(cache.prefilterFaceViewsByMip).toBeDefined();
+      expect(cache.prefilterLevelCount).toBeDefined();
       if (
         irrTex === undefined ||
         prefTex === undefined ||
         brdfTex === undefined ||
-        cache.prefilterFaceViewsByMip === undefined
+        cache.prefilterLevelCount === undefined
       )
         return;
 
@@ -392,11 +396,11 @@ describe('t51 (M3.5) -- dawn IBL 4-pass non-zero readback', () => {
       await assertFiniteTextureRgba16f(rawDevice, {
         label: 'prefilter',
         texture: prefRaw,
-        width: 128,
-        height: 128,
-        faces: 6,
-        mipLevels: cache.prefilterFaceViewsByMip.length,
-        identity: 'ibl-prefilter-cube',
+        width: 384,
+        height: 512,
+        faces: 1,
+        mipLevels: 1,
+        identity: 'ibl-prefilter-atlas',
       });
 
       const brdfRaw = rawTexture(brdfTex);

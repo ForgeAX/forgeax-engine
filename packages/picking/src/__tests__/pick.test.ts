@@ -8,7 +8,7 @@
 
 import { AssetRegistry } from '@forgeax/engine-assets-runtime';
 import { type EntityHandle, World } from '@forgeax/engine-ecs';
-import { AssetGuid } from '@forgeax/engine-pack/guid';
+import { createBoxGeometry } from '@forgeax/engine-geometry';
 import {
   CAMERA_PROJECTION_ORTHOGRAPHIC,
   CAMERA_PROJECTION_PERSPECTIVE,
@@ -17,28 +17,13 @@ import {
   MeshRenderer,
 } from '@forgeax/engine-render';
 import { ChildOf, propagateTransforms, Transform } from '@forgeax/engine-scene';
-import type { Handle, MaterialAsset, MeshAsset } from '@forgeax/engine-types';
+import type { AssetHandle } from '@forgeax/engine-types';
 import { describe, expect, it } from 'vitest';
 import { type PickHit, pick } from '../pick';
 import { PickError } from '../pick-errors';
 import { pickVertex, pickVertexOnEntity } from '../pick-vertex';
 import { viewportToWorld } from '../viewport-to-world';
 import { makeMockShaderRegistry } from './helpers/mock-shader-registry';
-
-const EMPTY_ATTRIBUTE = new Float32Array(0);
-function interleavedAttributes(position: Float32Array): {
-  position: Float32Array;
-  normal: Float32Array;
-  uv: Float32Array;
-  tangent: Float32Array;
-} {
-  return {
-    position,
-    normal: EMPTY_ATTRIBUTE,
-    uv: EMPTY_ATTRIBUTE,
-    tangent: EMPTY_ATTRIBUTE,
-  };
-}
 
 // --- from pick.test.ts ---
 // pick.test.ts — feat-20260529-picking-raycasting-screen-to-entity M3 / w12 (TDD red).
@@ -110,49 +95,13 @@ function translateTransform(
   };
 }
 
-/**
- * Register a mesh whose computed AABB spans [-0.5, 0.5]^3.
- *
- * The registry computes the AABB from `attributes.position` (an explicit `aabb` is
- * overwritten by `withMeshAabb`), so the position attribute carries the 8 cube corners.
- * `vertices` must be a multiple of the 12-float interleaved stride; a single 3-vertex
- * triangle (36 floats) satisfies the gate while the position attribute drives the AABB.
- */
-function registerBox(world: World, assets: AssetRegistry): Handle<'MeshAsset', 'shared'> {
-  const vertices = new Float32Array([
-    0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 1, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 1, 0, 1,
-    0, 0, 0, 0,
-  ]);
-  // 8 cube corners spanning [-0.5, 0.5] on every axis -> computeAABB = [-0.5,-0.5,-0.5, 0.5,0.5,0.5]
-  const positions = new Float32Array([
-    -0.5, -0.5, -0.5, 0.5, -0.5, -0.5, 0.5, 0.5, -0.5, -0.5, 0.5, -0.5, -0.5, -0.5, 0.5, 0.5, -0.5,
-    0.5, 0.5, 0.5, 0.5, -0.5, 0.5, 0.5,
-  ]);
-  // catalog computes the local-space AABB (withMeshAabb); mint the augmented
-  // payload on the world so resolveAssetHandle (used by pick) reads .aabb.
-  const result = assets.catalog<MeshAsset>(AssetGuid.format(AssetGuid.random()), {
-    kind: 'mesh',
-    vertices,
-    indices: new Uint16Array([0, 1, 2]),
-    attributes: interleavedAttributes(positions),
-    submeshes: [
-      {
-        indexOffset: 0,
-        indexCount: 3,
-        vertexCount: vertices.length,
-        topology: 'triangle-list',
-        materialSlot: 0,
-      },
-    ],
-
-    materialSlots: [{ slotName: 'Default' }],
-  });
-  if (!result.ok) throw new Error('mesh catalog failed');
-  return world.allocSharedRef('MeshAsset', result.value);
+/** Create a canonical unit cube through the runtime asset owner. */
+function registerBox(assets: AssetRegistry): AssetHandle<'mesh'> {
+  return assets.create(createBoxGeometry(1, 1, 1).unwrap()).unwrap();
 }
 
-function registerMaterial(world: World, assets: AssetRegistry): Handle<'MaterialAsset', 'shared'> {
-  const result = assets.catalog<MaterialAsset>(AssetGuid.format(AssetGuid.random()), {
+function registerMaterial(assets: AssetRegistry): AssetHandle<'material'> {
+  const result = assets.create({
     kind: 'material',
     passes: [
       {
@@ -164,21 +113,21 @@ function registerMaterial(world: World, assets: AssetRegistry): Handle<'Material
     values: { baseColor: [1, 1, 1] },
   });
   if (!result.ok) throw new Error('material catalog failed');
-  return world.allocSharedRef('MaterialAsset', result.value);
+  return result.value;
 }
 
 interface Scene {
   world: World;
   assets: AssetRegistry;
-  mesh: Handle<'MeshAsset', 'shared'>;
-  material: Handle<'MaterialAsset', 'shared'>;
+  mesh: AssetHandle<'mesh'>;
+  material: AssetHandle<'material'>;
 }
 
 function makeScene(): Scene {
-  const world = new World();
-  const assets = new AssetRegistry(makeMockShaderRegistry());
-  const mesh = registerBox(world, assets);
-  const material = registerMaterial(world, assets);
+  const assets = new AssetRegistry({ shaderRegistry: makeMockShaderRegistry() });
+  const world = new World({ assets });
+  const mesh = registerBox(assets);
+  const material = registerMaterial(assets);
   return { world, assets, mesh, material };
 }
 

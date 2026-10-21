@@ -1,17 +1,7 @@
 // @forgeax/engine-import - ImporterRegistry (feat-20260603-asset-import-loader-injection M2 / w14).
 //
-// The build-time twin of the runtime LoaderRegistry
-// (packages/runtime/src/loader-registry.ts): an injectable table that maps a
-// `meta.importer` string key -> an `Importer` (the contract SSOT lives in
-// `@forgeax/engine-types`). The import runner holds one of these and dispatches
-// on `meta.importer` through `get(key)` instead of a hardcoded
-// `if (importer === ...)` chain (plan-strategy D-1).
-//
-// Shape mirrors the runtime LoaderRegistry + Console `Registry`
-// (packages/console/src/registry.ts) register/lookup pattern (research
-// Finding 8). The injected unit is an **object** `{ key, import }`, not a bare
-// function, so a "one importer key -> one Importer" dispatch table is the
-// natural shape.
+// Maps the source's meta.importer key to its injected build-time producer.
+// Runtime source decoding belongs to AssetRegistry's domain contributions.
 //
 // Fail-fast semantics (charter P3): `register` throws on a malformed importer
 // (empty key or non-function `import`) at wire time, so a misconfigured host

@@ -92,7 +92,7 @@ export default defineFeature({
         'failed candidate recovers last-known-good',
         second.ok &&
           second.value.status === 'recovered' &&
-          (second.value.lastKnownGood.payload as { source?: unknown }).source === 'v1',
+          (second.value.draft.payload as { source?: unknown }).source === 'v1',
       );
     }
 

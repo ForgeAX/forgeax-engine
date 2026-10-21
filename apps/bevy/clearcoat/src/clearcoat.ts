@@ -1,8 +1,9 @@
-import { HANDLE_CUBE, type AssetRegistry } from '@forgeax/engine-assets-runtime';
+import type { AssetHandle } from '@forgeax/engine-types';
+import { AssetRegistry } from '@forgeax/engine-assets-runtime';
 import type { World } from '@forgeax/engine-ecs';
 import { createSphereGeometry } from '@forgeax/engine-geometry';
 import { quat } from '@forgeax/engine-math';
-import type { Handle, MaterialAsset } from '@forgeax/engine-types';
+
 import {
   Camera,
   DirectionalLight,
@@ -17,23 +18,28 @@ import {
 } from '@forgeax/engine-render';
 import { Transform } from '@forgeax/engine-scene';
 import { CLEARCOAT_MATERIAL_GUID } from './material-identity.ts';
+import { createPrimitiveMesh } from '@forgeax/engine-geometry';
+
 
 export async function buildClearcoatWorld(
   world: World,
   assets: AssetRegistry,
-  equirect: Handle<'EquirectAsset', 'shared'>,
+  equirect: AssetHandle<'equirect'>,
   aspect: number,
 ): Promise<void> {
-  const loadedClearcoat = await assets.loadByGuid<MaterialAsset>(CLEARCOAT_MATERIAL_GUID);
+const sceneAssets = world.assets;
+if (!(sceneAssets instanceof AssetRegistry)) throw new Error('Scene requires its runtime asset owner');
+
+const primitiveCube = sceneAssets.create(createPrimitiveMesh('cube').unwrap()).unwrap();
+
+  const loadedClearcoat = await assets.load(CLEARCOAT_MATERIAL_GUID, 'material');
   if (!loadedClearcoat.ok) throw new Error(`clearcoat material failed: ${loadedClearcoat.error.code}`);
   const sphereGeometry = createSphereGeometry(1.1, 48, 32);
   if (!sphereGeometry.ok) throw new Error(`clearcoat sphere failed: ${sphereGeometry.error.code}`);
-  const sphere = world.allocSharedRef('MeshAsset', sphereGeometry.value);
+  const sphere = sceneAssets.create(sphereGeometry.value).unwrap();
   const base = { baseColor: [0.62, 0.045, 0.018, 1] as const, metallic: 0.15, roughness: 0.4 };
-  const noCoat = world.allocSharedRef<'MaterialAsset', MaterialAsset>('MaterialAsset', Materials.standard(base));
-  const clearcoat = world.allocSharedRef<'MaterialAsset', MaterialAsset>(
-    'MaterialAsset', loadedClearcoat.value,
-  );
+  const noCoat = sceneAssets.create(Materials.standard(base)).unwrap();
+  const clearcoat = loadedClearcoat.value;
   for (const [x, material] of [[-1.35, noCoat], [1.35, clearcoat]] as const) {
     world.spawn(
       { component: Transform, data: { pos: [x, 0, 0], quat: [0, 0, 0, 1], scale: [1, 1, 1] } },
@@ -41,12 +47,10 @@ export async function buildClearcoatWorld(
       { component: MeshRenderer, data: { materials: [material] } },
     );
   }
-  const floor = world.allocSharedRef<'MaterialAsset', MaterialAsset>(
-    'MaterialAsset', Materials.standard({ baseColor: [0.06, 0.07, 0.09, 1], metallic: 0.1, roughness: 0.28 }),
-  );
+  const floor = sceneAssets.create(Materials.standard({ baseColor: [0.06, 0.07, 0.09, 1], metallic: 0.1, roughness: 0.28 })).unwrap();
   world.spawn(
     { component: Transform, data: { pos: [0, -1.25, 0], quat: [0, 0, 0, 1], scale: [7, 0.05, 5] } },
-    { component: MeshFilter, data: { assetHandle: HANDLE_CUBE } },
+    { component: MeshFilter, data: { assetHandle: primitiveCube } },
     { component: MeshRenderer, data: { materials: [floor] } },
   );
   world.spawn({ component: PointLight, data: { color: [1, 0.72, 0.55], intensity: 20_000, range: 20 } });

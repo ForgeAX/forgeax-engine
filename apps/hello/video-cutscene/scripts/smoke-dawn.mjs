@@ -28,6 +28,8 @@ import { dirname, resolve } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
 import { fileURLToPath } from 'node:url';
 import { readFileSync } from 'node:fs';
+import { createPrimitiveMesh } from '@forgeax/engine-geometry';
+
 
 const RERUN_CMD = 'pnpm --filter @forgeax/hello-video-cutscene smoke';
 const WIDTH = 200;
@@ -141,7 +143,7 @@ const runtime = await import('@forgeax/engine-runtime');
 const { Materials } = await import('@forgeax/engine-render');
 const { Camera, DirectionalLight, MeshFilter, MeshRenderer, perspective } = await import('@forgeax/engine-render');
 const { Transform } = await import('@forgeax/engine-scene');
-const { HANDLE_CUBE } = await import('@forgeax/engine-assets-runtime');
+
 const { quat } = await import('@forgeax/engine-math');
 const { Time, Update } = await import('@forgeax/engine-ecs');
 
@@ -165,11 +167,13 @@ const app = appResult.value;
 console.log(`[hello-video-cutscene] backend=${app.renderer.inspect().capabilities.backendKind}`);
 
 const world = app.world;
-const cubeMatHandle = world.allocSharedRef('MaterialAsset', Materials.unlit([0.9, 0.3, 0.25, 1]));
+const primitiveCube = app.assets.create(createPrimitiveMesh('cube').unwrap()).unwrap();
+
+const cubeMatHandle = world.assets.create(Materials.unlit([0.9, 0.3, 0.25, 1])).unwrap();
 const cube = world
   .spawn(
     { component: Transform, data: { pos: [0, 0, 0], quat: [0, 0, 0, 1], scale: [1, 1, 1]} },
-    { component: MeshFilter, data: { assetHandle: HANDLE_CUBE } },
+    { component: MeshFilter, data: { assetHandle: primitiveCube } },
     { component: MeshRenderer, data: { materials: [cubeMatHandle] } },
   )
   .unwrap();

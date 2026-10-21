@@ -1,8 +1,12 @@
+import type { AssetRegistry } from '@forgeax/engine-assets-runtime';
 import type { EntityHandle, World } from '@forgeax/engine-ecs';
-import { HANDLE_CUBE } from '@forgeax/engine-assets-runtime';
+
 import { ANTIALIAS_NONE, ANTIALIAS_TAA, Atmosphere, Camera, CameraView, DynamicResolution, CloudLayer, DirectionalLight, Fog, Materials, MeshFilter, MeshRenderer, VolumetricFog } from '@forgeax/engine-render';
 import { Transform } from '@forgeax/engine-scene';
 import type { MaterialAsset, TextureAsset } from '@forgeax/engine-types';
+import { createPrimitiveMesh } from '@forgeax/engine-geometry';
+const BUILTIN_CUBE = createPrimitiveMesh('cube').unwrap();
+
 
 export interface AtmosphereEvidenceSettings {
   enabled?: boolean;
@@ -15,9 +19,10 @@ export interface AtmosphereEvidenceSettings {
   alpha?: number; transmission?: number; panelDistance?: number;
 }
 /** Bounded controls for the physical-scale acceptance fixture. */
-export function atmosphereEvidenceControls(world: World, scene: {
+export function atmosphereEvidenceControls(world: World, assets: AssetRegistry, scene: {
   atmosphere?: EntityHandle; sun?: EntityHandle; camera?: EntityHandle;
 }) {
+  const cubeHandle = assets.create(BUILTIN_CUBE).unwrap();
   let secondCamera: EntityHandle | undefined;
   let panel: EntityHandle | undefined;
   let volume: EntityHandle | undefined;
@@ -81,14 +86,14 @@ export function atmosphereEvidenceControls(world: World, scene: {
         const material:MaterialAsset=settings.panel==='glass'
           ? Materials.standard({ baseColor:[1,1,1,1],metallic:0,roughness:0,ior:1,transmission:settings.transmission ?? 1,thickness:0})
           : Materials.unlit([(premultiplied||additive?alpha:1)*1000,0,0,alpha],{renderState:{depthWriteEnabled:false,blend:{color:{srcFactor:premultiplied||additive?'one':'src-alpha',dstFactor:additive?'one':'one-minus-src-alpha',operation:'add'},alpha:{srcFactor:'one',dstFactor:'one-minus-src-alpha',operation:'add'}}}});
-        panel=world.spawn({component:Transform,data:{pos:[distance*.15,distance*.12,-distance],scale:[distance*.55,distance*.32,.1]}},{component:MeshFilter,data:{assetHandle:HANDLE_CUBE}},{component:MeshRenderer,data:{materials:[world.allocSharedRef('MaterialAsset',material)]}}).unwrap();
+        panel=world.spawn({component:Transform,data:{pos:[distance*.15,distance*.12,-distance],scale:[distance*.55,distance*.32,.1]}},{component:MeshFilter,data:{assetHandle:cubeHandle}},{component:MeshRenderer,data:{materials:[assets.create(material).unwrap()]}}).unwrap();
       }
     }
     if (settings.volume!==undefined) {
       if (volume!==undefined) {world.despawn(volume).unwrap();volume=undefined;}
       if (settings.volume) {
         const texture:TextureAsset={kind:'texture',shape:{viewDimension:'3d',extent:{width:2,height:2,depth:2}},format:'r8unorm',data:new Uint8Array(8).fill(255),colorSpace:'linear',mips:{kind:'none'}};
-        volume=world.spawn({component:VolumetricFog,data:{light:sun,density:world.allocSharedRef('TextureAsset',texture),boundsMin:[-25,0,-100],boundsMax:[25,30,-40],extinction:[.02,.02,.02],albedo:[1,1,1],emission:[0,0,0],anisotropy:.2,maxDistance:150,sampling:1}}).unwrap();
+        volume=world.spawn({component:VolumetricFog,data:{light:sun,density:assets.create(texture).unwrap(),boundsMin:[-25,0,-100],boundsMax:[25,30,-40],extinction:[.02,.02,.02],albedo:[1,1,1],emission:[0,0,0],anisotropy:.2,maxDistance:150,sampling:1}}).unwrap();
       }
     }
   };

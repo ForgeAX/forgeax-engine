@@ -4,10 +4,12 @@ import {
   bindObjectProperty,
   deriveAnimationTargetId,
 } from '@forgeax/engine/animation';
+import { AssetRegistry } from '@forgeax/engine/assets-runtime';
+import { createPrimitiveMesh } from '@forgeax/engine/geometry';
 import { DirectionalLight } from '@forgeax/engine/render';
 import type { AnimationClip } from '@forgeax/engine/types';
 import { CheckList, defineFeature } from '../../lab/feature';
-import { MESH, spawnMesh, spawnStage, standard } from '../../lab/stage';
+import { spawnMesh, spawnStage, standard } from '../../lab/stage';
 
 export default defineFeature({
   title: 'Object property animation',
@@ -18,10 +20,20 @@ export default defineFeature({
   expect:
     'ON samples t=1 s at light intensity 5. OFF samples t=0 s at intensity 1, keeping the orange sphere and floor visible. Both are paused samples of the same animation, not enabled/disabled playback. Native opacity and STEP text/boolean values appear in the checks; they do not control the sphere material.',
   setup({ world, hud }) {
+    const primitiveAssets = world.assets;
+    if (!(primitiveAssets instanceof AssetRegistry))
+      throw new Error('Scene requires its runtime asset owner');
+
+    const stageSphere = primitiveAssets.create(createPrimitiveMesh('sphere').unwrap()).unwrap();
+
+    const sceneAssets = world.assets;
+    if (!(sceneAssets instanceof AssetRegistry))
+      throw new Error('Scene requires its runtime asset owner');
+
     const { sun } = spawnStage(world, { eye: [0, 1.5, 5], target: [0, 0.8, 0] });
     spawnMesh(
       world,
-      MESH.sphere,
+      stageSphere,
       standard(world, { baseColor: [1, 0.3, 0.05, 1], roughness: 0.45 }),
       { pos: [0, 0.9, 0], scale: [0.8, 0.8, 0.8] },
     );
@@ -76,7 +88,7 @@ export default defineFeature({
       .spawn({
         component: AnimationPlayer,
         data: {
-          clips: [world.allocSharedRef('AnimationClip', clip)],
+          clips: [sceneAssets.create(clip).unwrap()],
           times: [1],
           weights: [1],
           speeds: [0],

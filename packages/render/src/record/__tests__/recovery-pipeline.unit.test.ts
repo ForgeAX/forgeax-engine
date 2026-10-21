@@ -1,17 +1,19 @@
 import { deriveVertexLayoutProjection } from '@forgeax/engine-geometry';
 import { standardTextureMask } from '@forgeax/engine-shader';
 import { describe, expect, it } from 'vitest';
+import { MaterialResource } from '../../material-resource';
 import { makeZeroCameraFallbackSnapshot, type ValidatedRenderable } from '../frame-snapshot';
 import { prepareRecoveryPipelineReadiness } from '../recovery-pipeline';
 import type { PipelineState, RenderSystemInternals } from '../render-context';
 
 function probeRenderable(probe: boolean): ValidatedRenderable {
-  const material = {
+  const material = new MaterialResource({
     baseColor: [1, 1, 1],
     metallic: 0,
     roughness: 1,
     materialShaderId: 'forgeax::default-standard-pbr',
-  } as never;
+    passes: [],
+  } as never);
   return {
     source: {
       material,
@@ -85,13 +87,13 @@ describe('recovery prepared pipeline cache', () => {
     admitted,
   }) => {
     const renderable = probeRenderable(false);
-    const material = {
-      ...renderable.source.material,
+    const material = new MaterialResource({
+      ...renderable.source.material.snapshot,
       paramSnapshot: transmission === undefined ? {} : { transmission },
       standardTextureMask: standardTextureMask(
         conflict ? [{ name: 'metallicTexture', type: 'texture2d' }] : [],
       ),
-    };
+    });
     const readiness = recoveryReadinessFor(
       { ...renderable, source: { ...renderable.source, material, materials: [material] } },
       false,

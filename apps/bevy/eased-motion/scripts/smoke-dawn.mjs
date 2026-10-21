@@ -69,33 +69,33 @@ async function capture() {
 const { World } = await import('@forgeax/engine-ecs');
 const { animationPlugin } = await import('@forgeax/engine-animation');
 const { scenePlugin } = await import('@forgeax/engine-scene');
-const { createRenderer } = await import('@forgeax/engine-runtime');
+const { constructRuntimeRendererHost } = await import('@forgeax/engine-runtime/internal/renderer-host');
 const {
   buildEasedMotionWorld,
   createEasedMotionClip,
-  EASED_MOTION_CLIP_GUID,
   readEasedMotionState,
 } = await import(resolve(here, '..', 'src', 'eased-motion.ts'));
 const manifestUrl = `data:application/json,${encodeURIComponent(readFileSync(resolve(here, '..', 'dist', 'shaders', 'manifest.json'), 'utf8'))}`;
-const renderer = await createSmokeRenderer(createRenderer, canvas, {}, { shaderManifestUrl: manifestUrl });
+const hostResult = await constructRuntimeRendererHost(canvas, {}, { shaderManifestUrl: manifestUrl });
+if (!hostResult.ok) throw hostResult.error;
+const { renderer, assets } = hostResult.value;
 const errors = [];
 subscribeSmokeErrors(renderer, (error) => errors.push({ code: error.code, hint: error.hint }));
 
 const { createWorldContext } = await import('@forgeax/engine-ecs');
-const world = new World();
+const world = new World({ assets });
 const worldAttachment1 = renderer.attach(world);
 if (!worldAttachment1.ok) throw worldAttachment1.error;
 const clip = createEasedMotionClip();
-const clips = new Map([[EASED_MOTION_CLIP_GUID, clip]]);
-await createWorldContext(world, [scenePlugin(), animationPlugin((guid) => clips.get(guid))]);
+await createWorldContext(world, [scenePlugin(), animationPlugin()]);
 const state = buildEasedMotionWorld(world, clip);
-world.update(0);
+world.update(0).unwrap();
 await drawSmokeFrame(renderer, world);
 await delay(30);
 const earlyFrame = await capture();
 const earlyState = readEasedMotionState(world, state);
 for (let frame = 1; frame < frames; frame++) {
-  world.update(1 / 60);
+  world.update(1 / 60).unwrap();
   await drawSmokeFrame(renderer, world);
 }
 await delay(30);
@@ -129,3 +129,5 @@ for (const [name, ok] of checks) { console.log(`${ok ? '✓' : '✗'} ${name}`);
 console.log(`[smoke] frames observed=${frames} motionMeanDelta=${motion.mean.toFixed(4)}`);
 if (!all) { console.error(`[smoke] FAIL - motionPixels=${motion.pixels} errors=${errors.length}`); process.exit(1); }
 console.log('[smoke] PASS');
+await renderer.dispose();
+assets.dispose();

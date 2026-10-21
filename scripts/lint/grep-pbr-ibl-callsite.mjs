@@ -37,8 +37,16 @@ function countCallSites(source, fnName) {
 if (countCallSites(lighting, 'sampleIblDiffuse') < 1) {
   failures.push('standard-lighting.wgsl has no non-import non-comment sampleIblDiffuse( call');
 }
-if (countCallSites(lighting, 'sampleIblSpecular') < 1) {
-  failures.push('standard-lighting.wgsl has no non-import non-comment sampleIblSpecular( call');
+for (const helper of ['sampleIblRadiance', 'sampleReflectionProbeRadiance']) {
+  if (countCallSites(lighting, helper) !== 1)
+    failures.push(`standard-lighting.wgsl must sample shared ${helper} exactly once`);
+}
+// Nonlinear dielectric/metal scattering is evaluated before metalness mixing;
+// radiance selection must not reintroduce a material response inside sampling.
+if (countCallSites(lighting, 'environmentScatteringFromDfg') !== 2) {
+  failures.push(
+    'standard-lighting.wgsl must evaluate dielectric and metallic scattering separately',
+  );
 }
 
 for (const entry of [

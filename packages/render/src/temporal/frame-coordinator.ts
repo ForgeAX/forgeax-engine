@@ -3,7 +3,11 @@ import type { Antialias } from '../components/camera';
 import { motionBlurTemporalDemand } from '../features/motion-blur/motion-blur-params';
 import type { CameraSnapshot } from '../render-contract';
 import { classifySceneDataCoverage, type SceneDataContributor } from './coverage';
-import { type TaaHistoryAttempt, TaaHistoryStore } from './taa-history-store';
+import {
+  type TaaHistoryAttempt,
+  TaaHistoryStore,
+  type TemporalAttemptState,
+} from './taa-history-store';
 import {
   projectTemporalView,
   type SubmittedTemporalView,
@@ -13,6 +17,16 @@ import {
 
 /** The only stages that may publish a temporal frame. */
 export type TemporalFrameStage = 'build' | 'encode' | 'finish' | 'submit';
+
+/** Read a thrown phase's `stage`; anything else failed at submission. */
+export function temporalFrameStageFromError(cause: unknown): TemporalFrameStage {
+  if (typeof cause === 'object' && cause !== null && 'stage' in cause) {
+    const stage = (cause as { readonly stage?: unknown }).stage;
+    if (stage === 'build' || stage === 'encode' || stage === 'finish' || stage === 'submit')
+      return stage;
+  }
+  return 'submit';
+}
 
 /** Closed list of consumers that share the renderer temporal transaction. */
 export type TemporalFrameConsumerId = 'taa' | 'motion-blur' | 'ssr';
@@ -30,8 +44,8 @@ export interface TemporalFrameSnapshot<T = unknown> {
   readonly epoch: number;
   readonly previous: T | undefined;
   readonly consumerIds: readonly TemporalFrameConsumerId[];
-  readonly historyAttempt: 'none' | 'active' | 'committed' | 'aborted';
-  readonly attempt: 'none' | 'active' | 'committed' | 'aborted';
+  readonly historyAttempt: TemporalAttemptState;
+  readonly attempt: TemporalAttemptState;
   readonly lastFailure: TemporalFrameStage | undefined;
   readonly coverage: {
     readonly exactContributorIds: readonly string[];
@@ -241,7 +255,7 @@ export class TemporalFrameCoordinator<T = unknown> {
       phases.finish();
       phases.submit();
     } catch (cause) {
-      const stage = this.stageFromError(cause);
+      const stage = temporalFrameStageFromError(cause);
       this.abort(candidate, stage);
       return err({
         code: 'temporal-not-active',
@@ -330,14 +344,5 @@ export class TemporalFrameCoordinator<T = unknown> {
       omittedMissingContributorCount: 0,
     };
     this.consumerIds = [];
-  }
-
-  private stageFromError(cause: unknown): TemporalFrameStage {
-    if (typeof cause === 'object' && cause !== null && 'stage' in cause) {
-      const stage = (cause as { stage?: unknown }).stage;
-      if (stage === 'build' || stage === 'encode' || stage === 'finish' || stage === 'submit')
-        return stage;
-    }
-    return 'submit';
   }
 }

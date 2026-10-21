@@ -1,7 +1,6 @@
 import { createApp } from '@forgeax/engine/app/browser';
 import {
   createCatalogSource,
-  resolveAssetHandle,
   scenePublicationFenceFromCatalog,
 } from '@forgeax/engine/assets-runtime';
 import { preparePackProgram } from '@forgeax/engine/pack/runtime';
@@ -26,8 +25,9 @@ const instanceId = '01900000-0000-7000-8000-000000000982';
 const guid = (key) => AssetGuid.format(AssetGuid.derive(definePackageId(instanceId), key));
 const manifest = `data:application/json,${encodeURIComponent(
   JSON.stringify({
-    schemaVersion: '4.0.0',
+    schemaVersion: '5.0.0',
     receipts: [],
+    entryPoints: [],
     fragments: [],
     sources: {},
     entries: [],
@@ -186,13 +186,13 @@ export async function replace() {
   const assets = app.assets;
   const rows = (await assets.enumerateCatalog()).unwrap();
   const fence = scenePublicationFenceFromCatalog(rows, guid('scene')).unwrap();
-  const scene = (await assets.loadByGuid(assets.parseGuid(guid('scene')))).unwrap();
-  const grant = app.world.allocSharedRef('SceneAsset', scene);
+  const grant = (await assets.load(guid('scene'), 'scene')).unwrap();
+  (await assets.reload(grant, { conflict: 'overwrite' })).unwrap();
   let next;
   try {
     next = assets.instantiateWithPublicationFence(grant, app.world, undefined, fence).unwrap();
   } finally {
-    app.world.sharedRefs.release(grant).unwrap();
+    assets.release(grant).unwrap();
   }
   if (root !== undefined) worldDespawnScene(app.world, root).unwrap();
   root = next;
@@ -204,10 +204,7 @@ export function inspect() {
   const member = [...world.iterDescendants(root)].find((entity) =>
     world.hasComponent(entity, MeshFilter),
   );
-  const mesh = resolveAssetHandle(
-    world,
-    world.get(member, MeshFilter).unwrap().assetHandle,
-  ).unwrap();
+  const mesh = app.assets.read(world.get(member, MeshFilter).unwrap().assetHandle).unwrap();
   const xs = Array.from(mesh.attributes.position).filter((_, index) => index % 3 === 0);
   return {
     width: Math.max(...xs) - Math.min(...xs),
@@ -215,7 +212,7 @@ export function inspect() {
     positions: Array.from(mesh.attributes.position),
     indices: Array.from(mesh.indices),
     typed: mesh.attributes.position instanceof Float32Array && ArrayBuffer.isView(mesh.indices),
-    refs: world.sharedRefs._liveCount(),
+    assets: app.assets.inspect().assets.length,
     rows: runtime.producer.rows(),
   };
 }
@@ -275,7 +272,7 @@ export async function close() {
   return {
     effectRemoved: !world.hasResource('generated-app-plugin'),
     markerRemoved: marker === undefined || !world.hasComponent(marker, Transform),
-    refs: world.sharedRefs._liveCount(),
+    assets: app.assets.inspect().assets.length,
     catalogDetached: !app.assets.hasCatalogSource,
     programs: app.pluginContext.pluginPrograms?.programs.size ?? 0,
     renderer: app.renderer.state(),

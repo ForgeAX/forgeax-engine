@@ -11,6 +11,7 @@ import { createRayDiffuseComposite } from './diffuse-composite';
 import { prepareSurfaceMaterialTextures } from './material-residency';
 import { packLights } from './path-input';
 import { createSubmittedRayPathTracer, RAY_PATH_STRIDE, type RayPathTracer } from './path-tracer';
+import { requirePublishedKernel } from './published-kernel';
 import { createRasterRayGenerator } from './raster-source';
 import { type PreparedRayReflections, prepareRayReflections } from './reflections-prepare';
 import {
@@ -119,9 +120,7 @@ export class RendererRayDiffuse {
     const lights = packLights(input.lights);
     return JSON.stringify([
       input.runtime.deviceScope.generation,
-      input.scene.scene.contentRevision,
-      input.runtime.assets.catalogEpoch,
-      input.runtime.gpuStore.materialResourceEpoch,
+      input.scene.retained?.revision,
       input.worlds.map((world) => world.identity),
       input.width,
       input.height,
@@ -212,21 +211,19 @@ export class RendererRayDiffuse {
     const pixelCount = width * height;
     if (!Number.isInteger(pixelCount) || pixelCount < 1 || pixelCount > 262144)
       throw new Error('reference diffuse GI requires 1..262144 internal texels');
+    const retained = input.scene.retained;
+    if (retained === undefined)
+      throw new Error('reference diffuse GI requires the complete retained scene');
     const projected = projectRayScene(
-      input.scene.slots,
+      retained.slots,
       input.worlds,
       Math.min(1_048_576, Math.floor(device.limits.maxStorageBufferBindingSize / 64)),
+      retained,
     );
     if (projected.surfaces.records.byteLength === 0)
       throw new Error('no admitted receiver records');
     const entries = [...shaders.entries()];
-    const source = (entryPoint: string): string => {
-      const matched = entries.filter((entry) => entry.wgsl.includes(`fn ${entryPoint}(`));
-      const entry = matched[0];
-      if (matched.length !== 1 || entry === undefined)
-        throw new Error(`expected one published ${entryPoint} kernel`);
-      return entry.wgsl;
-    };
+
     const transportPublication = [...shaders.materialShaderManifestEntries()].find(
       (entry) => entry.identifier === 'forgeax::engine-ray-path-tracer',
     );
@@ -238,8 +235,8 @@ export class RendererRayDiffuse {
     const transportLutSource = transportPublication?.variants.find(
       (variant) => variant.defines.DIRECT_DFG_LUT_AVAILABLE === true,
     )?.composedWgsl;
-    const rasterSource = source('generateRasterRays');
-    const compositeSource = source('fs_ray_diffuse');
+    const rasterSource = requirePublishedKernel(entries, 'generateRasterRays');
+    const compositeSource = requirePublishedKernel(entries, 'fs_ray_diffuse');
     const owned: Buffer[] = [];
     const textures: TexturePreparation[] = [];
     let transport: RayPathTracer | undefined;
@@ -327,7 +324,7 @@ export class RendererRayDiffuse {
               (
                 await compile(device, {
                   label: 'ray-diffuse.reconstruct',
-                  code: source('reconstructDiffuse'),
+                  code: requirePublishedKernel(entries, 'reconstructDiffuse'),
                 })
               ).unwrap(),
               pixelCount,
@@ -344,7 +341,12 @@ export class RendererRayDiffuse {
               profile: { ...profile, reflections: reflectionProfile },
               pixelCount,
               compile: async (label, entryPoint) =>
-                (await compile(device, { label, code: source(entryPoint) })).unwrap(),
+                (
+                  await compile(device, {
+                    label,
+                    code: requirePublishedKernel(entries, entryPoint),
+                  })
+                ).unwrap(),
               allocate: buffer,
               transport: async (rayBuffer, seed) => {
                 reflectionTransport = await transportFor(rayBuffer, seed);

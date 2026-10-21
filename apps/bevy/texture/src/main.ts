@@ -5,7 +5,6 @@
 
 import { createApp } from '@forgeax/engine-app/browser';
 import { EngineEnvironmentError } from '@forgeax/engine-runtime';
-import { unwrapHandle } from '@forgeax/engine-types';
 import { forgeaxBundlerAdapter } from 'virtual:forgeax/bundler';
 import { buildTextureWorld, CHECKER_SIZE, makeCheckerboardPixels } from './texture';
 
@@ -27,20 +26,21 @@ async function bootstrap(target: HTMLCanvasElement): Promise<void> {
     return;
   }
   const app = appResult.value;
+  const assets = app.assets;
+  if (assets === undefined) throw new Error('App asset service is unavailable');
   console.warn(`[bevy-texture] state=${app.renderer.inspect().state}`);
 
   const checkerPixels = makeCheckerboardPixels();
   const texPod = {
     kind: 'texture' as const,
-    width: CHECKER_SIZE,
-    height: CHECKER_SIZE,
+    shape: { viewDimension: '2d' as const, extent: { width: CHECKER_SIZE, height: CHECKER_SIZE } },
     format: 'rgba8unorm-srgb' as const,
     data: checkerPixels,
     colorSpace: 'srgb' as const,
-    mipmap: false,
+    mips: { kind: 'none' as const },
   };
-  const texHandle = app.world.allocSharedRef('TextureAsset', texPod);
-  const texId = unwrapHandle(texHandle);
+  const texHandle = assets.create(texPod).unwrap();
+  const texId = texHandle;
 
 
   buildTextureWorld(app.world, texId);

@@ -33,12 +33,13 @@ import {
   type BrowserCaptureOpenOptions,
   browserLaunchArgs,
   captureBrowserExecutionSurface,
+  classifyCaptureAdapter,
   resolveBrowserExecutable,
 } from '../browser-capture.js';
 import type { BootstrapRoot } from '../host/base-host.js';
 import { createViteConfig } from '../host.js';
 import { readProjectFacts } from '../project.js';
-import type { CaptureBackend } from '../types.js';
+import type { CaptureBackend, CaptureBackendObserved } from '../types.js';
 import {
   acquireBrowserCarrierPage,
   type BrowserCarrierAttachment,
@@ -130,33 +131,17 @@ export interface BrowserHostOptions
   readonly publish?: boolean;
 }
 
-type BrowserBackendObserved = 'software' | 'hardware' | 'unknown';
-
-function classifyBrowserAdapter(adapter: Record<string, unknown> | null): BrowserBackendObserved {
-  if (adapter === null) return 'unknown';
-  const witness = Object.values(adapter)
-    .map((value) => String(value).toLowerCase())
-    .join(' ');
-  return ['swiftshader', 'llvmpipe', 'lavapipe', 'software'].some((token) =>
-    witness.includes(token),
-  )
-    ? 'software'
-    : 'hardware';
-}
-
 async function observeBrowserAdapter(realm: Page | Frame): Promise<{
-  readonly observed: BrowserBackendObserved;
+  readonly observed: CaptureBackendObserved;
   readonly adapter: Record<string, unknown> | null;
 }> {
   return realm
     .evaluate(async () => {
       try {
         const gpuAdapter = await navigator.gpu?.requestAdapter();
-        if (gpuAdapter === null || gpuAdapter === undefined)
-          return { observed: 'unknown', adapter: null };
+        if (gpuAdapter === null || gpuAdapter === undefined) return { adapter: null };
         const info = gpuAdapter.info;
         return {
-          observed: 'unknown',
           adapter: {
             vendor: info.vendor,
             architecture: info.architecture,
@@ -165,7 +150,7 @@ async function observeBrowserAdapter(realm: Page | Frame): Promise<{
           },
         };
       } catch {
-        return { observed: 'unknown', adapter: null };
+        return { adapter: null };
       }
     })
     .then((result) => {
@@ -175,7 +160,7 @@ async function observeBrowserAdapter(realm: Page | Frame): Promise<{
         !Array.isArray(result.adapter)
           ? result.adapter
           : null;
-      return { observed: classifyBrowserAdapter(adapter), adapter };
+      return { observed: classifyCaptureAdapter(adapter), adapter };
     });
 }
 

@@ -3,7 +3,7 @@
 > [!NOTE]
 > **LO original chapters**: [LearnOpenGL 2.1 basic_lighting_diffuse](https://learnopengl.com/Lighting/Basic-Lighting) and [2.2 basic_lighting_specular](https://learnopengl.com/Lighting/Basic-Lighting)
 >
-> **Engine surface**: `createApp` + ECS components (`Transform`, `Camera`, `MeshFilter`, `MeshRenderer`, `PointLight`) + `MaterialAsset` (`shadingModel: 'standard'` / `'unlit'`) + builtin `HANDLE_CUBE` mesh.
+> **Engine surface**: `createApp` + ECS components (`Transform`, `Camera`, `MeshFilter`, `MeshRenderer`, `PointLight`) + `Materials.standard(...)` / `Materials.unlit(...)` + `assets.create(createPrimitiveMesh('cube').unwrap())` geometry.
 
 ## What this example shows
 
@@ -80,7 +80,7 @@ RHI error.
 | Lamp cube | Separate shader that outputs `lightColor` | `UnlitMaterialAsset` (`shadingModel: 'unlit'`) -- ignores lighting, always renders as given baseColor |
 | Camera | `Camera` class + WASD movement (LO section 1.7) | `Transform` + `Camera` ECS components + `addFirstPersonSystem` from `apps/shared` (mirrors LO WASD/mouse/scroll controls) |
 | Window + render loop | `glfwCreateWindow` + `while(!glfwWindowShouldClose)` | `createApp(canvas, opts)` from `@forgeax/engine-app` |
-| Vertex data | Manual `float vertices[]` array + VBO/VAO setup | Built-in `HANDLE_CUBE` procedural geometry from `@forgeax/engine-runtime` |
+| Vertex data | Manual `float vertices[]` array + VBO/VAO setup | `createPrimitiveMesh('cube')` from `@forgeax/engine-geometry`, admitted with `assets.create` |
 
 ## Differences from the LearnOpenGL original
 

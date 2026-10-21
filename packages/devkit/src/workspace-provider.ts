@@ -12,8 +12,13 @@ import {
   type EngineWorkspaceTarget,
   engineWorkspaceResultService,
 } from '@forgeax/engine-app';
+import { createCatalogSource } from '@forgeax/engine-assets-runtime';
 import { type BackendHost, createBackendHost } from '@forgeax/engine-host/backend';
 import type { HostCallerIdentity } from '@forgeax/engine-host/transport';
+import { encodePackData } from '@forgeax/engine-pack/runtime';
+import { PACK_DRAFT_CHANGED_TOPIC } from '@forgeax/engine-pack/source';
+import { createDevImportTransport } from '@forgeax/engine-runtime';
+import type { RuntimeAssetBinding } from '@forgeax/engine-types';
 import { createServer as createViteServer, type InlineConfig, type ViteDevServer } from 'vite';
 import { assetInspectCommand } from './assets.js';
 import { prepareRuntimePackProgram } from './build/pack-program.js';
@@ -21,6 +26,7 @@ import { createViteConfig, materializeViteDevPort } from './host.js';
 import type { DevKitHostBinding } from './host-binding.js';
 import { readProjectFacts } from './project.js';
 import type { ProjectFacts } from './types.js';
+import { createWorkspacePackAuthoring } from './workspace-pack-authoring.js';
 
 const DEFAULT_WIDTH = 1280;
 const DEFAULT_HEIGHT = 720;
@@ -649,6 +655,7 @@ export function createDevKitWorkspaceProvider(
       );
     }
     timing('backend-bound');
+    let authoring: ReturnType<typeof createWorkspacePackAuthoring> | undefined;
     const binding = {
       ...(parent ? { backend } : (options.hostBinding ?? { backend })),
       // A child keeps its own execution root while retaining realm preparation.
@@ -656,6 +663,9 @@ export function createDevKitWorkspaceProvider(
         ? { frontendModule: options.hostBinding.frontendModule }
         : {}),
       workspace: { sessionId, targetId, admissionToken, execution: parent ? 'game' : 'preview' },
+      ...(parent
+        ? {}
+        : { authoringSourceChanged: (path: string) => authoring?.sourceChanged(path) ?? false }),
     } satisfies DevKitHostBinding;
     const pending = new Map<string, PendingResult>();
     let ready: WorkspaceReadyResult | undefined;
@@ -700,6 +710,40 @@ export function createDevKitWorkspaceProvider(
     let sessionClosed = false;
     let sessionClosePromise: Promise<void> | undefined;
     const previews = new Map<string, EngineWorkspacePreview & { failure?: DevKitWorkspaceError }>();
+    if (!parent)
+      authoring = createWorkspacePackAuthoring({
+        root: facts.value.root,
+        sourceRoots: facts.value.assetRoots,
+        publishSource: async (sourcePath) => {
+          const pack = server?.config.plugins.find((entry) => entry.name === 'forgeax:pack') as
+            | import('@forgeax/engine-vite-plugin-pack').PluginPack
+            | undefined;
+          if (!pack) throw new Error('The project asset producer is unavailable');
+          if (await pack.rebuildCatalogInPlace([sourcePath]))
+            backend.context.get('engineWorkspaceCatalog')?.notePublished();
+        },
+        catalog: () => {
+          if (!server) return undefined;
+          const plugin = server.config.plugins.find((entry) => entry.name === 'forgeax:pack') as
+            | { runtimeBinding?: () => RuntimeAssetBinding | undefined }
+            | undefined;
+          const binding = plugin?.runtimeBinding?.();
+          if (!binding) return undefined;
+          const base = localServerUrl(server);
+          return createCatalogSource({
+            url: new URL(binding.catalogUrl, base).href,
+            expectedScope: binding,
+            importTransport: createDevImportTransport({
+              ...binding,
+              importUrlBase: new URL(binding.importUrlBase, base).href,
+            }),
+          });
+        },
+        preview: (id) => previews.get(id),
+        changed: (reply) => {
+          backend.transport.publish(PACK_DRAFT_CHANGED_TOPIC, { sessionId, reply });
+        },
+      });
     let play: EngineWorkspacePlay | undefined;
     let currentTarget: EngineWorkspaceTarget = {
       targetId,
@@ -1124,6 +1168,7 @@ export function createDevKitWorkspaceProvider(
       );
     };
     const closeResources = async (): Promise<void> => {
+      authoring?.dispose();
       if (sessionClosePromise !== undefined) {
         return sessionClosePromise.catch((error) => {
           if (
@@ -1346,11 +1391,55 @@ export function createDevKitWorkspaceProvider(
         };
         const preview: EngineWorkspacePreview & { failure?: DevKitWorkspaceError } = {
           handle: previewOwner,
+          async writeAssetField(fieldWrite) {
+            assertPreviewOpen();
+            await command('authoring.write', {
+              targetId: previewTargetId,
+              previewOwner,
+              fieldWrite,
+            });
+          },
+          async prepareAssetContent(content, signal) {
+            assertPreviewOpen();
+            return await command<number>(
+              'authoring.prepare',
+              { targetId: previewTargetId, previewOwner, content: encodePackData(content) },
+              signal,
+            );
+          },
+          async commitAssetContent(preparation, fields) {
+            assertPreviewOpen();
+            await command('authoring.commit', {
+              targetId: previewTargetId,
+              previewOwner,
+              preparation,
+              fields,
+            });
+          },
+
           get target() {
             return parent ? currentTarget : previewTarget;
           },
           ...(previewAsset ? { asset: previewAsset } : {}),
           ...(value.assetBinding === undefined ? {} : { assetBinding: value.assetBinding }),
+          display: {
+            get(options) {
+              assertPreviewOpen();
+              return command(
+                'preview.display.get',
+                { targetId: previewTargetId, previewOwner },
+                options?.signal,
+              ) as Promise<import('@forgeax/engine-app').EngineWorkspacePreviewDisplay>;
+            },
+            set(display, options) {
+              assertPreviewOpen();
+              return command(
+                'preview.display.set',
+                { targetId: previewTargetId, previewOwner, display },
+                options?.signal,
+              ) as Promise<import('@forgeax/engine-app').EngineWorkspacePreviewDisplay>;
+            },
+          },
           setControl: (input) => {
             assertPreviewOpen();
             return command('target.control', previewInput(input), input.signal);
@@ -1477,6 +1566,7 @@ export function createDevKitWorkspaceProvider(
         return preview;
       };
       const session: BrowserSession = {
+        ...(authoring ? { authorPack: authoring.execute } : {}),
         get failure() {
           return readyFailure;
         },

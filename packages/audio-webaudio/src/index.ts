@@ -21,7 +21,6 @@ export {
   audioListenerSyncSystem,
   syncListenerFromWorldMatrix,
 } from './audio-listener-sync-system';
-export { audioLoader } from './audio-loader';
 export {
   createHostAudioConsumer,
   createWebAudioBackend,

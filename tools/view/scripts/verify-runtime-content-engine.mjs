@@ -108,7 +108,9 @@ try {
       assert.ok(source.includes(marker), 'direct proof must instrument the actual App owner');
       await route.fulfill({ response, body: source.replace(marker, `${marker}
         globalThis.__runtimePackReadDirect = async guid => {
-          const mesh = (await app.assets.loadByGuid(app.assets.parseGuid(guid))).unwrap();
+          const handle = (await app.assets.load(app.assets.parseGuid(guid), 'mesh')).unwrap();
+          const mesh = app.assets.read(handle).unwrap();
+          app.assets.release(handle).unwrap();
           return { typed: mesh.attributes.position instanceof Float32Array && ArrayBuffer.isView(mesh.indices),
             positions: Array.from(mesh.attributes.position), indices: Array.from(mesh.indices) };
         };
@@ -221,8 +223,12 @@ try {
   const revealContentBrowser = async () => {
     await contentBrowser.waitFor({ state: 'attached' });
     if (!(await contentBrowser.isVisible())) {
-      await page.locator('.fx-view-workspace-row.is-active .dv-groupview-edge .dv-tab')
-        .filter({ hasText: /^Content Browser$/ }).click();
+      const presentation = await client.call('presentation.get');
+      const panel = presentation.panels.find(panel => panel.title === 'Content Browser');
+      assert.ok(panel?.mounted, 'Content Browser must have a mounted native panel');
+      await client.call('presentation.panel.reveal', {
+        connectionId: presentation.connectionId, panelId: panel.id,
+      });
     }
     await contentBrowser.waitFor({ state: 'visible' });
   };
@@ -250,8 +256,8 @@ try {
         && config?.projectId === target.projectId && config.targetId === target.targetId
         && config.worldId === target.worldId && config.providerId?.startsWith('view-asset-references:');
     });
-    assert.equal(tooling.length, 1, 'The Scene must retain exactly one known resident query definition');
-    return { ...inspection, packs: inspection.packs.filter(pack => pack.source.packageId !== tooling[0].source.packageId) };
+    assert.equal(tooling.length, 0, 'Native asset reference reads must not admit a View query definition');
+    return inspection;
   };
   const capturePreview = async (subject) => {
     const deadline = Date.now() + 15000;
@@ -270,11 +276,6 @@ try {
       }
     }
   };
-  const residentDeadline = Date.now() + 30000;
-  while ((await runtime('inspect')).packs.length === 0) {
-    assert.ok(Date.now() < residentDeadline, 'The resident query definition must be admitted');
-    await new Promise(resolve => setTimeout(resolve, 50));
-  }
   assert.equal((await inspectUserContent()).packs.length, 0);
   const initialUrl = page.url();
   const sceneTab = page.getByRole('tab').filter({ hasText: /^Scene/ });
@@ -289,16 +290,18 @@ try {
       context.drawImage(bitmap, 0, 0);
       bitmap.close();
       const { data, width, height } = context.getImageData(0, 0, canvas.width, canvas.height);
+      const background = [data[0], data[1], data[2]];
       let left = width, top = height, right = -1, bottom = -1, count = 0;
       for (let y = 0; y < height; y++) for (let x = 0; x < width; x++) {
         const offset = (y * width + x) * 4;
-        if (data[offset + 3] > 0 && data[offset] < 225 && data[offset + 1] < 225 && data[offset + 2] < 225 &&
+        const contrast = Math.max(...background.map((channel, index) => Math.abs(data[offset + index] - channel)));
+        if (data[offset + 3] > 0 && contrast > 20 && data[offset] < 225 && data[offset + 1] < 225 && data[offset + 2] < 225 &&
             Math.abs(data[offset] - data[offset + 1]) <= 2 && Math.abs(data[offset + 1] - data[offset + 2]) <= 2) {
           left = Math.min(left, x); right = Math.max(right, x);
           top = Math.min(top, y); bottom = Math.max(bottom, y); count++;
         }
       }
-      return { width, height, left, right, top, bottom, count, aspect: (right - left + 1) / (bottom - top + 1) };
+      return { width, height, background, left, right, top, bottom, count, aspect: (right - left + 1) / (bottom - top + 1) };
     }, value.png);
     await writeFile(join(evidence, `${name}.png`), Buffer.from(value.png.split(',')[1], 'base64'));
     const { png, ...metadata } = value;
@@ -574,7 +577,12 @@ try {
       projectId: state.project.id, targetId: state.projectTarget.targetId,
       targetGeneration: state.projectTarget.generation,
     });
-    assert.deepEqual(inspected.inspection.meta.aabb, [-2, -1, -1, 2, 1, 1]);
+    // The runtime identity retains its content until explicit reload; source
+    // publication is a separate Catalog fact used for an explicit reopen.
+    assert.deepEqual(inspected.inspection.meta.aabb, [-1, -1, -1, 1, 1, 1]);
+    assert.equal(inspected.inspection.publication.digest, initialBinding.publication.digest);
+    assert.ok(inspected.inspection.source.publication);
+    assert.notEqual(inspected.inspection.source.publication.digest, initialBinding.publication.digest);
     const oldBinding = await captureTarget(previewTarget, 'previous-consumer');
     assert.deepEqual(await readBinding(previewTarget), initialBinding);
     await page.locator('[role="tab"][data-page-id="page-mesh"]').click();

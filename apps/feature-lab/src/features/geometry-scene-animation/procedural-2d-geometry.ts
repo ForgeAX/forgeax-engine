@@ -1,9 +1,14 @@
+import { AssetRegistry } from '@forgeax/engine/assets-runtime';
 import type { EntityHandle } from '@forgeax/engine/ecs';
-import { create2dGeometry, create2dRingGeometry, type Shape2d } from '@forgeax/engine/geometry';
+import {
+  create2dGeometry,
+  create2dRingGeometry,
+  createPrimitiveMesh,
+  type Shape2d,
+} from '@forgeax/engine/geometry';
 import { MeshFilter } from '@forgeax/engine/render';
-import type { MeshAsset } from '@forgeax/engine/types';
 import { defineFeature } from '../../lab/feature';
-import { MESH, spawnCamera, spawnMesh, unlit } from '../../lab/stage';
+import { spawnCamera, spawnMesh, unlit } from '../../lab/stage';
 
 const SHAPES: readonly Shape2d[] = [
   { kind: 'circle', radius: 0.45, resolution: 40 },
@@ -43,8 +48,21 @@ export default defineFeature({
   expect:
     'ON: two rows of eight flat unlit shapes plus a hexagon ring outline. OFF: every shape becomes the same flat square quad.',
   setup({ world }) {
+    const primitiveAssets = world.assets;
+    if (!(primitiveAssets instanceof AssetRegistry))
+      throw new Error('Scene requires its runtime asset owner');
+
+    const stageQuad = primitiveAssets.create(createPrimitiveMesh('quad').unwrap()).unwrap();
+
+    const sceneAssets = world.assets;
+    if (!(sceneAssets instanceof AssetRegistry))
+      throw new Error('Scene requires its runtime asset owner');
+
     spawnCamera(world, { eye: [0, 0, 6], target: [0, 0, 0] });
-    const entities: { entity: EntityHandle; mesh: ReturnType<typeof world.allocSharedRef> }[] = [];
+    const entities: {
+      entity: EntityHandle;
+      mesh: import('@forgeax/engine/types').AssetHandle<'mesh'>;
+    }[] = [];
     const add = (
       name: string,
       result: ReturnType<typeof create2dGeometry>,
@@ -55,7 +73,7 @@ export default defineFeature({
         console.warn(`[feature-lab] ${name} failed: ${result.error.code}`);
         return;
       }
-      const mesh = world.allocSharedRef<'MeshAsset', MeshAsset>('MeshAsset', result.value);
+      const mesh = sceneAssets.create(result.value).unwrap();
       entities.push({
         entity: spawnMesh(
           world,
@@ -82,7 +100,7 @@ export default defineFeature({
     return {
       toggle(on) {
         for (const { entity, mesh } of entities)
-          world.set(entity, MeshFilter, { assetHandle: on ? mesh : MESH.quad } as never);
+          world.set(entity, MeshFilter, { assetHandle: on ? mesh : stageQuad } as never);
       },
     };
   },

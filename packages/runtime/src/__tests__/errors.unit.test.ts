@@ -187,6 +187,16 @@ type RuntimeLayerError = RenderError | AssetRuntimeError | SkinError;
       it('AssetErrorCode exhaustive switch covers all members without default', () => {
         function exhaustive(code: AssetErrorCode): string {
           switch (code) {
+            case 'asset-reference-invalid':
+              return 'asset reference invalid';
+            case 'asset-owner-closed':
+              return 'asset owner closed';
+            case 'asset-write-conflict':
+              return 'asset write conflict';
+            case 'asset-budget-exceeded':
+              return 'asset budget exceeded';
+            case 'asset-not-ready':
+              return 'asset not ready';
             case 'asset-not-found':
               return 'not found';
             case 'asset-parse-failed':
@@ -311,10 +321,60 @@ type RuntimeLayerError = RenderError | AssetRuntimeError | SkinError;
 {
   // ─── from errors.test.ts ───
   describe('errors.test.ts', () => {
-    describe('AC-11 RuntimeErrorCode exhaustive switch (11 members, no default)', () => {
+    describe('AC-11 RuntimeErrorCode exhaustive switch (no default)', () => {
       it('exhaustive switch covers all members without a default branch', () => {
         function exhaustive(code: RuntimeLayerErrorCode): string {
           switch (code) {
+            case 'scene-sdf-unavailable':
+              return 'scene sdf unavailable';
+            case 'camera-view-invalid':
+              return 'camera view invalid';
+            case 'stereo-camera-invalid':
+              return 'stereo camera invalid';
+            case 'projected-decal-invalid':
+              return 'projected decal invalid';
+            case 'planar-reflection-invalid':
+              return 'planar reflection invalid';
+            case 'render-publication-invalid':
+              return 'render publication invalid';
+            case 'sun-cardinality':
+              return 'sun cardinality';
+            case 'outline-invalid-parameter':
+              return 'outline invalid parameter';
+            case 'barrel-distortion-invalid-parameter':
+              return 'barrel distortion invalid parameter';
+            case 'lens-effects-invalid-parameter':
+              return 'lens effects invalid parameter';
+            case 'lens-flare-invalid-parameter':
+              return 'lens flare invalid parameter';
+            case 'cloud-layer-invalid-parameter':
+              return 'cloud layer invalid parameter';
+            case 'cloud-layer-owner-conflict':
+              return 'cloud layer owner conflict';
+            case 'cloud-layer-cache-invalid':
+              return 'cloud layer cache invalid';
+            case 'cloud-layer-capability-missing':
+              return 'cloud layer capability missing';
+            case 'cloud-layer-resource-failed':
+              return 'cloud layer resource failed';
+            case 'dynamic-resolution-invalid-parameter':
+              return 'dynamic resolution invalid parameter';
+            case 'dynamic-resolution-requires-taa':
+              return 'dynamic resolution requires taa';
+            case 'dynamic-resolution-timing-unavailable':
+              return 'dynamic resolution timing unavailable';
+            case 'motion-blur-invalid-params':
+              return 'motion blur invalid params';
+            case 'render-target-layer-invalid':
+              return 'render target layer invalid';
+            case 'framebuffer-snapshot-failed':
+              return 'framebuffer snapshot failed';
+            case 'external-texture-invalid':
+              return 'external texture invalid';
+            case 'external-texture-state-invalid':
+              return 'external texture state invalid';
+            case 'skin-asset-unresolved':
+              return 'skin asset unresolved';
             case 'auto-exposure-invalid-parameter':
               return 'auto exposure invalid parameter';
             case 'auto-exposure-capability-unavailable':
@@ -511,6 +571,56 @@ type RuntimeLayerError = RenderError | AssetRuntimeError | SkinError;
       it('exhaustive switch covers all 3 new members alongside existing members', () => {
         function exhaustive(code: RuntimeLayerErrorCode): string {
           switch (code) {
+            case 'scene-sdf-unavailable':
+              return 'ok';
+            case 'camera-view-invalid':
+              return 'ok';
+            case 'stereo-camera-invalid':
+              return 'ok';
+            case 'projected-decal-invalid':
+              return 'ok';
+            case 'planar-reflection-invalid':
+              return 'ok';
+            case 'render-publication-invalid':
+              return 'ok';
+            case 'sun-cardinality':
+              return 'ok';
+            case 'outline-invalid-parameter':
+              return 'ok';
+            case 'barrel-distortion-invalid-parameter':
+              return 'ok';
+            case 'lens-effects-invalid-parameter':
+              return 'ok';
+            case 'lens-flare-invalid-parameter':
+              return 'ok';
+            case 'cloud-layer-invalid-parameter':
+              return 'ok';
+            case 'cloud-layer-owner-conflict':
+              return 'ok';
+            case 'cloud-layer-cache-invalid':
+              return 'ok';
+            case 'cloud-layer-capability-missing':
+              return 'ok';
+            case 'cloud-layer-resource-failed':
+              return 'ok';
+            case 'dynamic-resolution-invalid-parameter':
+              return 'ok';
+            case 'dynamic-resolution-requires-taa':
+              return 'ok';
+            case 'dynamic-resolution-timing-unavailable':
+              return 'ok';
+            case 'motion-blur-invalid-params':
+              return 'ok';
+            case 'render-target-layer-invalid':
+              return 'ok';
+            case 'framebuffer-snapshot-failed':
+              return 'ok';
+            case 'external-texture-invalid':
+              return 'ok';
+            case 'external-texture-state-invalid':
+              return 'ok';
+            case 'skin-asset-unresolved':
+              return 'ok';
             case 'auto-exposure-invalid-parameter':
             case 'auto-exposure-capability-unavailable':
             case 'auto-exposure-stale-generation':
@@ -1079,10 +1189,12 @@ type RuntimeLayerError = RenderError | AssetRuntimeError | SkinError;
         expect(member).toBe('fullscreen-input-not-found');
       });
 
-      it('exhaustive switch over PostProcessErrorCode covers 3 members without default', () => {
+      it('exhaustive switch over PostProcessErrorCode covers all members', () => {
         type Code = PostProcessErrorCode;
         const classify = (code: Code): string => {
           switch (code) {
+            case 'ssao-parameter-invalid':
+              return 'ssao parameter invalid';
             case 'post-process-already-registered':
               return 'register';
             case 'post-process-not-found':
@@ -1241,8 +1353,8 @@ type RuntimeLayerError = RenderError | AssetRuntimeError | SkinError;
         expect(err.expected).toContain('skeleton');
         expect(typeof err.hint).toBe('string');
         expect(err.hint).toBe(
-          'source SceneAsset is not catalogued: call registry.catalog(guid, payload) first, ' +
-            'or load through loadByGuid() which auto-catalogs GUID-scoped assets',
+          'load the asset with registry.load(guid, kind) and bind its returned handle; ' +
+            'save code-created content to a source asset before exporting a GUID reference',
         );
         expect(err.detail).toEqual({ field: 'skeleton', handle: 7 });
       });

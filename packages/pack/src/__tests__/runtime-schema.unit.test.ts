@@ -9,7 +9,16 @@ it('validates in a host that forbids runtime code generation', () => {
       '--disallow-code-generation-from-strings',
       '--input-type=module',
       '-e',
-      "for (const path of ['./src/schema-compiled.ts', './dist/schema.mjs']) { const module = await import(path); if (module.validateMeta({}) || module.validatePack({})) throw new Error('invalid input accepted'); }",
+      `import {registerHooks} from 'node:module';
+       registerHooks({resolve(specifier,context,nextResolve){
+         // Native type stripping retains .js specifiers in the source entry.
+         return nextResolve(specifier==='./material-program-wire.js'&&context.parentURL?.endsWith('/schema-compiled.ts')
+           ?new URL('./material-program-wire.ts',context.parentURL).href:specifier,context);
+       }});
+       for (const path of ['./src/schema-compiled.ts', './dist/schema.mjs']) {
+         const module = await import(path);
+         if (module.validateMeta({}) || module.validatePack({})) throw new Error('invalid input accepted');
+       }`,
     ],
     { cwd: new URL('../..', import.meta.url), encoding: 'utf8' },
   );

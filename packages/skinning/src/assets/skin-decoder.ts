@@ -9,9 +9,13 @@ import {
 } from '@forgeax/engine-types';
 
 function floatArray(value: unknown): Float32Array | undefined {
-  if (value instanceof Float32Array) return value;
-  if (Array.isArray(value) && value.every((item) => typeof item === 'number')) {
-    return Float32Array.from(value);
+  if (value instanceof Float32Array) return value.every(Number.isFinite) ? value : undefined;
+  if (
+    Array.isArray(value) &&
+    value.every((item) => typeof item === 'number' && Number.isFinite(item))
+  ) {
+    const result = Float32Array.from(value);
+    return result.every(Number.isFinite) ? result : undefined;
   }
   return undefined;
 }
@@ -23,9 +27,13 @@ export const skinContribution: AssetDecoderContribution<SkinAsset, 'skin'> = {
     async decode({ envelope }) {
       const payload = envelope.payload;
       if (
+        payload !== null &&
+        typeof payload === 'object' &&
         payload.kind === 'skin' &&
+        typeof payload.skeletonGuid === 'string' &&
         payload.skeletonGuid.length > 0 &&
-        payload.jointPaths.length > 0
+        Array.isArray(payload.jointPaths) &&
+        payload.jointPaths.every((path) => typeof path === 'string')
       ) {
         return ok(payload);
       }
@@ -60,7 +68,7 @@ export const skeletonContribution: AssetDecoderContribution<SkeletonAsset, 'skel
           Number.isSafeInteger(jointCount) &&
           (jointCount as number) >= 0 &&
           inverseBindMatrices.length === (jointCount as number) * 16 &&
-          (bounds === undefined || bounds.length === 6) &&
+          (source.bounds === undefined || (bounds !== undefined && bounds.length === 6)) &&
           (source.shadowCapsules === undefined || shadowCapsules !== undefined)
         ) {
           return ok({

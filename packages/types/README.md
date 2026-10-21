@@ -80,7 +80,7 @@ AI 用户应沿以下单一链路传递同一 GUID；`generation`、`digest` 和
 
 ```mermaid
 flowchart LR
-  A["Meta authoring"] --> B["import / cook"] --> C["Pack v2"] --> D["loadByGuid"]
+  A["Meta authoring"] --> B["import / cook"] --> C["Pack v2"] --> D["assets.load(guid, kind) → AssetHandle"]
   D --> E["World shared handle"] --> F["VolumetricFog"] --> G["inspect / verify"]
 ```
 
@@ -174,7 +174,7 @@ flowchart LR
 
 ## MaterialAsset route
 
-Use [`MaterialAsset`](./src/index.ts) for both built-in and custom materials. A root declares `passes` and the effective parameter contract; a child changes only the values it owns through `parent`. `MaterialTextureValue.coordinates` carries the glTF texture set and transform per slot. The recovery route is: validate the payload, cook the specialization, publish the record and artifact, then call `loadByGuid` and allocate a World handle from the loaded payload.
+Use [`MaterialAsset`](./src/index.ts) for both built-in and custom materials. A root declares `passes` and the effective parameter contract; a child changes only the values it owns through `parent`. `MaterialTextureValue.coordinates` carries the glTF texture set and transform per slot. The recovery route is: validate the payload, cook the specialization, publish the record and artifact, then call `assets.load(guid, 'material')` and bind the returned owner-scoped asset handle directly. Read detached content with `assets.read(handle)`; write through the owner.
 
 Float data textures read with `textureLoad` can declare
 `{ name: 'lookup', type: 'texture', sampleType: 'unfilterable-float' }`.
@@ -209,8 +209,9 @@ must be fixed at its producer; absent color is the only white/no-stream path.
 
 `Asset` is the closed durable payload union. Public consumers use the
 existing names `AssetGuid`, `sourceKey`, `refs`, `artifacts`, `mediaType`, and
-`programFingerprint`; owners may narrow a successful `loadByGuid<T>` result to
-the concrete type without parsing error messages. Errors retain `code`,
+`programFingerprint`. `assets.load(guid, kind)` returns `AssetHandle<K, P>`;
+built-in kind literals and custom `AssetKind<P>` tokens select the payload type
+read by `assets.read(handle)`. Errors retain `code`,
 `expected`, `hint`, and discriminated `detail` so recovery remains executable.
 
 `AssetEvidence` is the derived, read-only join for one GUID. Its source of truth remains the producer source declaration, the catalog locator (`packageUrl` and optional `cookReceiptUrl`), the producer-owned `CookReceipt`, and Pack v2 artifact verification. This package owns the TypeScript vocabulary and closed error union; it does not infer facts from a catalog row alone.
@@ -257,7 +258,7 @@ Main entry: types plus pure functions over them (e.g. `Result` helpers, `isTrian
 | GPUFlagsConstant alias | `BufferUsageFlags` / `TextureUsageFlags` / `MapModeFlags` / `ShaderStageFlags` / `ColorWriteFlags` | TS side collapses to `number`; runtime values provided by `@webgpu/types` injected globals |
 | Enum alias pass-through | `TextureFormat` / `AddressMode` / `FilterMode` / `CompareFunction` / `PrimitiveTopology` / others | `@webgpu/types` namespace literal union pass-through |
 | Pass-based material types | `ParamSchemaEntry` / `MaterialAsset` / `MaterialPass` | ParamSchema entry shape + MaterialAsset with passes[] + pass descriptor; see MaterialAsset section below |
-| Asset register contracts | `register<MaterialAsset>()` / `registerWithGuid<MaterialAsset>()` / `lookupMaterialShader()` | Runtime factory functions + validation; detail in `packages/runtime/README.md` |
+| Managed asset contracts | `AssetHandle` / `AssetKind` / `AssetDecoderContribution` / `AssetError` | Runtime identity, kind-owned source admission and structured failures; see [`assets-runtime`](../assets-runtime/README.md) |
 | Remote error model | `RemoteErrorCode` / `RemoteError` | 5-member closed union (script-syntax-error / script-runtime-error / server-startup-failed / server-not-running / eval-result-not-serializable) + structured interface/detail; runtime class lives in `@forgeax/engine-remote/errors` (`implements RemoteError`); see [`@forgeax/engine-remote` README](../remote/README.md) for the full error model |
 
 ### Asset producer contract
@@ -379,130 +380,33 @@ package owns runtime behavior:
 This package does not define a second particle program, player, runtime
 resource, renderer feature, or registry.
 
-## Handle
+## AssetHandle
 
-> Cross-package `Handle<T,M>` single physical SSOT (feat-20260517-handle-type-unify). This section is the AI user's mid-level detail reference; top proposition at [`AGENTS.md` Breaking changes](../../AGENTS.md#breaking-changes) 2026-05-18 row; bottom-level fallback at [`src/handle.ts`](./src/handle.ts) IDE hover JSDoc.
-
-### Brand shape
-
-`Handle<T,M>` is a dual-axis phantom-branded `number`, zero runtime overhead (`__handle` field only exists at the type level), TS compile-time brand enforces cross-target / cross-mode non-assignability (charter P3 explicit failure + P4 consistent abstraction):
-
-```ts
-export type Handle<T extends string, M extends 'unique' | 'shared'> = number & {
-  readonly __handle: { readonly target: T; readonly mode: M };
-};
-```
-
-- **`T extends string`** -- asset target tag (e.g. `'MeshAsset'` / `'TextureAsset'`); cross-tag `Handle<'MeshAsset',M>` and `Handle<'TextureAsset',M>` are mutually non-assignable.
-- **`M extends 'unique' | 'shared'`** -- release responsibility: `'unique'` is tracked by ECS; `'shared'` is held by an external owner such as `AssetRegistry`; cross-mode non-assignability is a TS compile-time redline.
-
-Convenience aliases:
-
-| Alias | Shape | Where used |
-|:--|:--|:--|
-| `UniqueHandle<T>` | `Handle<T, 'unique'>` | ECS-owned handle; external callers normally write `Handle<T, 'unique'>` |
-| `SharedHandle<T>` | `Handle<T, 'shared'>` | `AssetRegistry.register<T>` return signature / `MeshFilter.assetHandle` column type |
-
-### `AssetTagMap`
-
-`AssetTagMap` is the closed mapping SSOT from `Asset.kind` literal to brand `target` tag string literal (D-1 path (a)); adding a new Asset variant only requires adding one row to this table + one line to `Asset` union for `register<NewVariant>(asset)` to correctly return `Handle<'XxxAsset','shared'>` (charter F1 single-indexable):
-
-| `kind` literal | `target` tag |
-|:--|:--|
-| `'mesh'` | `'MeshAsset'` |
-| `'texture'` | `'TextureAsset'` |
-| `'equirect'` | `'EquirectAsset'` |
-| `'sampler'` | `'SamplerAsset'` |
-| `'material'` | `'MaterialAsset'` |
-| `'scene'` | `'SceneAsset'` |
-| `'audio'` | `'AudioClipAsset'` |
-| `'skin'` | `'SkinAsset'` |
-| `'skeleton'` | `'SkeletonAsset'` |
-| `'animation-clip'` | `'AnimationClip'` |
-| `'animation-graph'` | `'AnimationGraph'` |
-| `'font'` | `'FontAsset'` |
-| `'render-pipeline'` | `'RenderPipelineAsset'` |
-| `'tileset'` | `'TilesetAsset'` |
-| `'video'` | `'VideoAsset'` |
-| `'particle-effect'` | `'ParticleEffectAsset'` |
-| `'ies-profile'` | `'IesProfileAsset'` |
-| `'plugin'` | `'PluginAsset'` |
-
-`MaterialAsset` is the closed material payload used by built-in and custom
-passes. `TagOf<MaterialAsset>` is `'MaterialAsset'`; module identity and cook
-facts are separate derived records, not authored asset variants.
-
-Adding an `Asset` union member without updating `AssetTagMap` makes `TagOf<NewAsset>` resolve to `never`; downstream `register<NewAsset>` reports the missing entry at typecheck.
-
-### `TagOf<T>` mapping
-
-Distributive conditional resolves an Asset variant TS type to the corresponding brand `target` tag literal:
+`AssetHandle<K, P>` is a realm-local numeric identity owned by the asset service.
+The kind literal determines the built-in payload type; a custom `AssetKind<P>`
+token supplies its host payload type. `load` and `create` return caller-owned
+references. A World constructed with that service retains schema `asset(kind)`
+fields, and callers release their own references after binding.
 
 ```ts
-export type TagOf<T extends Asset> = T extends { kind: infer K }
-  ? K extends keyof AssetTagMap
-    ? AssetTagMap[K]
-    : never
-  : never;
+const mesh = assets.create(createBoxGeometry(1, 1, 1).unwrap()).unwrap();
+// mesh: AssetHandle<'mesh', MeshAsset>
+const detached = assets.read(mesh).unwrap();
+assets.update(mesh, { vertices: detached.vertices }).unwrap();
+assets.release(mesh).unwrap();
 ```
 
-`AssetRegistry.register<T extends Asset>(asset: T): Handle<TagOf<T>, 'shared'>` is the primary consumer of this mapping -- AI users write `register(meshAsset)` and get `Handle<'MeshAsset', 'shared'>` without explicit generic parameter at the call site.
+`read` returns detached content. `update`, `replace` and `writeRange` validate
+complete candidates and advance revisions automatically. `copy` creates an
+independent identity; `snapshot` retains fixed content and dependency versions.
+See the [asset service contract](../assets-runtime/README.md) for ownership,
+source reload and failure semantics.
 
-### Three helper signatures
-
-```ts
-export function toUnique<T extends string>(raw: number): Handle<T, 'unique'>;
-export function toShared<T extends string>(raw: number): Handle<T, 'shared'>;
-export function unwrapHandle<T extends string, M extends 'unique' | 'shared'>(
-  h: Handle<T, M>,
-): number;
-```
-
-- **`toUnique<T>(raw)`** -- brand-creation factory for ECS-owned handles.
-- **`toShared<T>(raw)`** -- brand-creation factory for externally owned handles such as asset-registry entries.
-- **`unwrapHandle(h)`** -- brand removal helper, runtime identity; exists to converge all "brand -> raw u32" conversion points into one function, AC-01 grep gate sweeps scattered `as unknown as number` literals (D-7 / D-8 cast collapse plan). AI users at spawn-site / register-site typically do not need to call this directly (charter P1 progressive disclosure).
-
-Usage example:
-
-```ts
-import {
-  type Handle,
-  toShared,
-  unwrapHandle,
-} from '@forgeax/engine-types';
-import { createRenderer } from '@forgeax/engine-runtime';
-
-const rendererResult = await createRenderer(canvas);
-if (!rendererResult.ok) throw rendererResult.error;
-const renderer = rendererResult.value;
-
-// Asset registries return Handle<TagOf<T>, 'shared'>; this sample uses the
-// shared-handle constructor to keep the vocabulary example independent of a
-// concrete registry owner.
-const meshHandle = toShared<'MeshAsset'>(1);
-//    ^? Handle<'MeshAsset', 'shared'>
-
-// builtin handle u32 -> branded handle
-const HANDLE_FOO: Handle<'MeshAsset', 'shared'> = toShared<'MeshAsset'>(0xdead);
-
-// brand removal (only when interacting with underlying Map<number, ...> / data structure keys)
-const raw: number = unwrapHandle(meshHandle);
-```
-
-### Cross-package re-export pattern
-
-Same precedent as `LocalEntityId` / `SceneInstanceId`:
-
-- Physical SSOT is one file (`packages/types/src/handle.ts`); package barrel `index.ts` pass-through via `export * from './handle'`.
-- `@forgeax/engine-ecs` barrel re-exports a **narrowed subset** of the handle vocabulary; the complete brand and helper surface is available from `@forgeax/engine-types`.
-- Under `verbatimModuleSyntax: true`, `export type` and `export { runtime }` are strictly separate.
-- `UniqueHandle<T>` / `SharedHandle<T>` are convenience aliases; the internal string representation is not part of the public API.
-
-### Internal conventions
-
-- **String values are not handles** -- schema vocab `'string'` materializes as a native JS `string`; the storage representation is internal.
-- **`AC-01` exemption single point** -- only the helpers in `packages/types/src/handle.ts` may contain the brand-creation cast; brand creation elsewhere must route through `toUnique` / `toShared`. `rg -n 'as unknown as Handle<' packages apps` should hit 0.
-- **`unwrapHandle` is the sole channel for eliminating `as unknown as number`** -- `rg -n 'as unknown as number' packages apps` expected 0 hits (feat-20260517 M2-M4 sweep consequence).
+The lower-level `Handle<T, M>`, `UniqueHandle`, `SharedHandle`, `AssetTagMap`
+and `TagOf` vocabulary remains defined in [`src/handle.ts`](./src/handle.ts)
+for existing non-asset stores. It is separate from managed `AssetHandle`:
+asset handles come from the service and must never be fabricated with
+`toShared`, a numeric cast or an ECS reference store.
 
 ## MeshAsset material slots
 
@@ -637,31 +541,6 @@ Each entry in `MaterialAsset.passes[]` is a `MaterialPass` with a named `program
 
 Full interface source (SSOT): [`src/material/asset.ts`](./src/material/asset.ts).
 
-### Legacy `channelMap` field (StandardMaterialAsset -- pre-feat-20260523)
-
-`metallicRoughnessTexture` unpack four-channel index SSOT. **TS call surface** (form AI users write) is a string literal union object:
-
-```ts
-channelMap?: {
-  metallic: 'r' | 'g' | 'b' | 'a';
-  roughness: 'r' | 'g' | 'b' | 'a';
-  occlusion?: 'r' | 'g' | 'b' | 'a';
-}
-```
-
-| Field | Semantics | Default (glTF 2.0) | Shader consumption point |
-|:--|:--|:--|:--|
-| `channelMap.metallic` | metallic channel selection (`'r'|'g'|'b'|'a'`) | `'b'` (B channel) | `pbr.wgsl` `pick_channel(mrSample, material.channelMap.x)` |
-| `channelMap.roughness` | roughness channel selection | `'g'` (G channel) | `pbr.wgsl` `pick_channel(mrSample, material.channelMap.y)` |
-| `channelMap.occlusion?` | occlusion channel selection (OOS-3 reserved) | `'r'` (R channel) | Reserved OOS-3 occlusion path |
-
-**Default behavior**: `MaterialAsset.channelMap === undefined` auto-fills glTF 2.0 default `{ metallic: 'b', roughness: 'g', occlusion: 'r' }` at `AssetRegistry.register` (feat-20260518 M3 / w16); explicit override path = caller passes `channelMap: { metallic: 'r', roughness: 'b', ... }` literal object at register.
-
-**Validation**: `AssetRegistry.register` fail-fast rejects any value outside `'r'|'g'|'b'|'a'` -> `Result.err({ code: 'asset-invalid-value', detail: { field: 'channelMap.<key>', got: ... } })` (feat-20260518 AC-02).
-
-> [!NOTE]
-> Internal implementation note: host `AssetRegistry` maps `'r'/'g'/'b'/'a'` literals to 0/1/2/3 indices and packs into `vec4<u32>` UBO row (plan-strategy D-4); this is the host->shader UBO packing layer, **not the AI user call surface**. Shader only consumes packed scalar indices, no string vocab leaks to GPU side.
-
 ### `DirectionalLight.direction` field semantics
 
 > feat-20260518-pbr-direct-lighting-mvp / w17.5 -- `DirectionalLight.direction` (an `array<f32, 3>` column since feat-20260709 M2) is the **outgoing direction**: light from source pointing toward the illuminated point in world space; shader fragment internally `normalize(-view.lightDir)` reverses to get the BRDF L vector. Host (`render-system-record.ts`) verbatim uploads the host-provided `direction` components to the view UBO, shader holds the reverse semantic unilaterally (single SSOT, no double-negation risk).
@@ -671,7 +550,7 @@ channelMap?: {
 | `direction = [-0.5, -1, -0.3]` | Sun-like from upper-right-behind shining down onto forward-facing objects (M0 spike-report locked value; shared across multiple demos in `populateDemoWorld`) |
 | `color = [1, 1, 1], intensity = 1` | White light unit intensity (GGX direct light SSOT default case) |
 
-**Validation**: `AssetRegistry.register` does not validate `direction` magnitude; BRDF internally `nDotL = max(dot(n, l), 0.0)` naturally clamps back-face -> 0; `intensity = 0` is a legal case (feat-20260518 case C 0 light physically-correct black screen).
+**Shading**: Directional light data belongs to its ECS component; BRDF internally `nDotL = max(dot(n, l), 0.0)` naturally clamps back-face -> 0; `intensity = 0` is a legal case (feat-20260518 case C 0 light physically-correct black screen).
 
 ## Relationship with `@webgpu/types`
 
@@ -692,16 +571,16 @@ The unqualified word "name" appears at three different semantic layers. Confusin
 
 | Layer | What it is | Where it lives | How to read it | When to use it |
 |:--|:--|:--|:--|:--|
-| **Asset identity `name`** | The human-readable segment in `<packagePath>.<name>` -- a derived identity from the `Package` the asset belongs to, never stored on the POD | `AssetRegistry.resolveName(guid)` calls the `deriveAssetName` pure function; an explicit stored name wins for authored entries regardless of package cardinality, then a package basename or the no-package empty-string fallback is used | `reg.resolveName(guid)` | Inspector display, error messages, debug logs -- anywhere a human (or AI) needs to identify an asset |
+| **Asset display `name`** | A producer-derived display label, separate from the source GUID and runtime handle; never stored on the POD | The producer applies `deriveAssetName` and publishes `CatalogEntry.name`; an authored name wins, followed by the package basename fallback | `assets.catalogEntry(guid)?.name` | Inspector display, error messages and debug logs |
 | **Entity `Name` component** | An ECS component (`{ value: string }`) attached to spawned entities | ECS world storage (`world.get(entity, Name)`) | `world.get(e, Name).value` | Scene-graph debugging, joint-path resolution in skinning -- anything keyed off an entity's glTF node name. Unchanged by this feat (OOS-5) |
 | **material module id** | Published identifier of a material shader (e.g. `'forgeax::default-standard-pbr'`) | Derived from the cooked pass program; not an authored asset field | `MaterialAsset.passes[].program.module` | Shader module lookup and pipeline selection |
 
 > [!TIP]
-> **How to choose**: when displaying an asset to a human, use `resolveName(guid)` (layer 1). When reading a spawned entity's original node name from glTF/FBX, use the `Name` ECS component (layer 2). When binding a custom material pass, use its cooked `program.module` identifier (layer 3).
+> **How to choose**: when displaying a source asset, read its `CatalogEntry.name` (layer 1). When reading a spawned entity's original node name from glTF/FBX, use the `Name` ECS component (layer 2). When binding a custom material pass, use its cooked `program.module` identifier (layer 3).
 
-**Example**: A `Hero.glb` file imports as a single-asset package (path `'hero.glb'`, 1 mesh asset) without an authored display name, so `resolveName(meshGuid)` returns `'hero.glb'` (basename of the package path; the extension is kept). A single authored entry named `NewMaterial` in `Materials.pack.json` resolves to `NewMaterial`. Entity `Name` components on nodes inside the scene read `'Helmet'`, `'Sword'`, etc. from the glTF node hierarchy. A custom PBR module published as `'forgeax::custom-stylized-pbr'` routes through the cooked pass, not through `resolveName`.
+**Example**: A `Hero.glb` file imports as a single-asset package (path `'hero.glb'`, 1 mesh asset) without an authored display name, so the producer publishes `'hero.glb'` as the Catalog name (the extension is kept). A single authored entry named `NewMaterial` in `Materials.pack.json` publishes `NewMaterial`. Entity `Name` components on nodes inside the scene read `'Helmet'`, `'Sword'`, etc. from the glTF node hierarchy. A custom PBR module published as `'forgeax::custom-stylized-pbr'` routes through the cooked pass.
 
-**Identity types** (new in feat-20260618): `Package` (`{ path, assetGuids, assetCount }`), `PackIndexEntry.name?` (add-only optional, build-time resolved), `InspectEntry.name` (non-optional string, runtime resolved). All discoverable via `@forgeax/engine-types` IDE autocomplete. See [`skills/forgeax-engine-assets/SKILL.md`](../../skills/forgeax-engine-assets/SKILL.md) for the full identity model.
+**Identity types**: `AssetHandle` identifies runtime content; a GUID identifies source content; `CatalogEntry.name?` carries its producer-derived display label. See [`skills/forgeax-engine-assets/SKILL.md`](../../skills/forgeax-engine-assets/SKILL.md) for the full identity model.
 
 ### ShaderModule naming disambiguation
 
@@ -890,3 +769,7 @@ member order, final struct padding and allocation limits.
 runtime boundaries. It accepts mixed case and any version bits; canonical
 lowercase and identity generation remain Pack policies. Pack derives its
 `AssetGuid` byte brand from this package.
+
+Import and verified runtime envelopes derive their shared identity and payload
+fields from AssetEnvelope. Each boundary retains its own reference table and
+artifact representation.

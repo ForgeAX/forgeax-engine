@@ -46,9 +46,9 @@
     </section>
     <footer><div class="challenge"><span class="try-label">TRY THIS</span><p id="challenge">Pause sync, add a mark, then resume. The sign catches up.</p></div><span class="flow">DRAW <b>→</b> UPDATE <b>→</b> MODEL</span></footer>
     <details class="code"><summary>Use this in your game <span>6 lines to connect a canvas</span></summary><pre><code>const texture = new CanvasTexture(canvas, { flipY: false });
-const source = world.allocSharedRef('CanvasTextureSource', texture.source);
-const material = world.allocSharedRef('MaterialAsset',
-  Materials.unlit('#ffffff', { baseColorTexture: source }));
+const source = { source: texture.source };
+const material = assets.create(
+  Materials.unlit('#ffffff', { baseColorTexture: source })).unwrap();
 // Assign material to your model. After drawing:
 texture.update();</code></pre></details>
   </main>

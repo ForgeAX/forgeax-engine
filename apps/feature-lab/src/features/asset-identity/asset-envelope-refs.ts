@@ -1,5 +1,7 @@
-import { AssetRegistry, createCatalogSource } from '@forgeax/engine/assets-runtime';
+import { AssetRegistry, defineAssetKind } from '@forgeax/engine/assets-runtime';
+import { ok } from '@forgeax/engine/types';
 import { defineFeature } from '../../lab/feature';
+import { installMemoryPack } from '../asset-formats/fixtures/memory-pack';
 
 const ROOT = '0190a1b2-c3d4-7e5f-8a9b-0c1d2e3f4b01';
 const MID = '0190a1b2-c3d4-7e5f-8a9b-0c1d2e3f4b02';
@@ -32,49 +34,37 @@ export default defineFeature({
   catalog: 'AssetEnvelope refs',
   kind: 'headless',
   summary:
-    'Each envelope lists its dependencies in `refs`; payload fields point at refs by index and loadByGuid walks the graph.',
+    'Each envelope lists its dependencies in `refs`; payload fields point at refs by index and assets.load admits the complete graph.',
   expect:
     'Loading the root resolves mid and leaf transitively; a dangling ref fails with a structured error naming its referrer.',
   async run(checks) {
-    const fetcher = (async (input: RequestInfo | URL) =>
-      String(input) === PACK_URL
-        ? new Response(JSON.stringify(PACK))
-        : new Response('', { status: 404 })) as typeof fetch;
-    const assets = new AssetRegistry({} as never);
+    const assets = new AssetRegistry();
+    const nodeKind = defineAssetKind<{ name: string; child?: number }>('lab-node');
     const seen: string[] = [];
-    assets.loaders.registerPackLoader({
-      kind: 'lab-node',
-      load: (input) => {
-        seen.push(`${String(input.payload.name)}:${input.refs.join(',')}`);
-        return { kind: 'lab-node', ...input.payload };
+    assets.installDecoder(nodeKind, {
+      decode: async ({ envelope }) => {
+        seen.push(String(envelope.payload.name));
+        return ok(envelope.payload);
       },
     });
-    const entries = [ROOT, MID, LEAF, BROKEN].map((guid) => ({
-      guid,
-      kind: 'lab-node',
-      packageUrl: PACK_URL,
-      sourcePath: guid,
-    }));
-    assets.setCatalogSource(
-      createCatalogSource({ entries: entries as never, fetch: fetcher }),
-      fetcher,
-    );
+    await installMemoryPack(assets, PACK.assets, PACK_URL);
 
-    const root = await assets.loadByGuid(assets.parseGuid(ROOT));
+    const root = await assets.load(ROOT, nodeKind);
     checks.ok('root loads', root.ok, root.ok ? undefined : root.error.code);
-    checks.equal('loader receives refs as GUID strings', seen[0], `root:${MID}`);
-    checks.ok('mid is loaded through refs', assets.lookup(assets.parseGuid(MID)) !== undefined);
-    checks.ok('leaf is loaded recursively', assets.lookup(assets.parseGuid(LEAF)) !== undefined);
+    checks.ok('root is decoded', seen.includes('root'));
+    checks.ok('mid is loaded through refs', seen.includes('mid'));
+    checks.ok('leaf is loaded recursively', seen.includes('leaf'));
 
-    const broken = await assets.loadByGuid(assets.parseGuid(BROKEN));
+    const broken = await assets.load(BROKEN, nodeKind);
     checks.equal(
       'dangling ref is a structured failure',
       broken.ok ? 'ok' : broken.error.code,
-      'asset-not-imported',
+      'asset-not-found',
     );
     checks.ok(
       'failure names the missing ref',
       !broken.ok && JSON.stringify(broken.error).includes(MISSING),
     );
+    assets.dispose();
   },
 });
